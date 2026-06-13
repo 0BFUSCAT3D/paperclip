@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
-import { act, forwardRef, useImperativeHandle } from "react";
+import { forwardRef, useImperativeHandle } from "react";
+import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -25,6 +24,24 @@ const mockIssuesApi = vi.hoisted(() => ({
   listFeedbackVotes: vi.fn(),
 }));
 const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
+
+function act<T>(callback: () => T): T;
+function act<T>(callback: () => Promise<T>): Promise<T>;
+function act<T>(callback: () => T | Promise<T>): T | Promise<T> {
+  let result: T | Promise<T> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  if (result && typeof (result as Promise<T>).then === "function") {
+    return (result as Promise<T>).then(async (value) => {
+      await Promise.resolve();
+      flushSync(() => {});
+      return value;
+    });
+  }
+  flushSync(() => {});
+  return result as T;
+}
 
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
@@ -53,9 +70,14 @@ vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../components/ChatComposer", () => ({
-  ChatComposer: forwardRef((_props, ref) => {
+  ChatComposer: forwardRef((props: { submitKey?: string; hint?: ReactNode }, ref) => {
     useImperativeHandle(ref, () => ({ focus: vi.fn() }));
-    return <div data-testid="chat-composer" />;
+    return (
+      <div data-testid="chat-composer">
+        <span data-testid="chat-composer-submit-key">{props.submitKey}</span>
+        <span data-testid="chat-composer-hint">{props.hint}</span>
+      </div>
+    );
   }),
 }));
 vi.mock("../components/AgentBubbleActionRow", () => ({
@@ -219,6 +241,13 @@ describe("BoardChat staged typing intro", () => {
     expect(hasChips(container)).toBe(true);
   });
 
+  it("uses the issue-chat composer shortcut without guidance text", async () => {
+    await render();
+
+    expect(container.querySelector('[data-testid="chat-composer-submit-key"]')?.textContent).toBe("mod-enter");
+    expect(container.querySelector('[data-testid="chat-composer-hint"]')?.textContent).toBe("");
+  });
+
   it("skips the staged reveal when a user comment already exists", async () => {
     mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
     await render();
@@ -267,43 +296,32 @@ describe("BoardChat staged typing intro", () => {
     expect(hasWelcome(container)).toBe(true);
     expect(hasTypingDots(container)).toBe(false);
   });
-});
 
-describe("typing-dots CSS animation guard (PAP-54 failure mode)", () => {
-  // PAP-54: the .typing-dots CSS block was silently dropped from index.css
-  // during a theme migration, leaving static markup with no animation. Guard
-  // the source so the block can't vanish again without failing a test. The
-  // browser-computed `animationName !== "none"` assertion lives in
-  // tests/e2e/conference-room-typing-intro.spec.ts.
-  // Locate ui/src/index.css regardless of whether vitest runs from ui/ or
-  // the workspace root (import.meta.url is an http URL under jsdom, and the
-  // css pipeline swallows `?raw` imports — plain fs is the reliable path).
-  function readIndexCss(): string {
-    let dir = process.cwd();
-    for (let depth = 0; depth < 6; depth++) {
-      for (const candidate of [
-        path.join(dir, "src/index.css"),
-        path.join(dir, "ui/src/index.css"),
-      ]) {
-        if (existsSync(candidate)) return readFileSync(candidate, "utf8");
-      }
-      dir = path.dirname(dir);
-    }
-    throw new Error("ui/src/index.css not found from " + process.cwd());
-  }
-  const css = readIndexCss();
+  it("reserves mobile viewport height and bottom-nav space for the composer", async () => {
+    await render();
 
-  it("keeps the bounce animation wired to .typing-dots span", () => {
-    const spanRules = [...css.matchAll(/\.typing-dots span\s*\{[^}]*\}/g)].map(
-      (m) => m[0],
+    const shell = container.querySelector(
+      '[data-testid="board-chat-shell"]',
+    ) as HTMLDivElement | null;
+    expect(shell).not.toBeNull();
+    expect(shell?.className).toContain("h-(--sz-calc-43)");
+    expect(shell?.className).toContain("-m-4");
+    expect(shell?.className).toContain("md:h-(--sz-calc-29)");
+
+    const dock = container.querySelector(
+      '[data-testid="board-chat-composer-dock"]',
+    ) as HTMLDivElement | null;
+    expect(dock).not.toBeNull();
+    expect(dock?.className).toContain("bottom-0");
+    expect(dock?.className).toContain("px-4");
+    expect(dock?.className).toContain("md:px-6");
+
+    const feedButton = container.querySelector(
+      'button[aria-label="Open agent feed"]',
+    ) as HTMLButtonElement | null;
+    expect(feedButton).not.toBeNull();
+    expect(feedButton?.className).toContain(
+      "bottom-(--sz-calc-45)",
     );
-    expect(spanRules.length).toBeGreaterThan(0);
-    expect(
-      spanRules.some((rule) => /animation:\s*typing-bounce/.test(rule)),
-    ).toBe(true);
-  });
-
-  it("keeps the typing-bounce keyframes", () => {
-    expect(css).toMatch(/@keyframes typing-bounce\s*\{/);
   });
 });

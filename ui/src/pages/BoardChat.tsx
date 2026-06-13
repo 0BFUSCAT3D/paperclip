@@ -668,7 +668,10 @@ export function BoardChat() {
   }
 
   return (
-    <div className="flex h-(--sz-calc-29) flex-col -m-6">
+    <div
+      data-testid="board-chat-shell"
+      className="flex h-(--sz-calc-43) flex-col -m-4 md:h-(--sz-calc-29) md:-m-6"
+    >
       <div
         ref={splitContainerRef}
         className="flex min-h-0 min-w-0 flex-1 flex-row"
@@ -734,7 +737,7 @@ export function BoardChat() {
           >
             {/* pb clears the floating glass dock (PAP-131) so the last bubble can
                  scroll fully above the composer. */}
-            <div className="flex flex-col gap-4 px-6 pt-3 pb-32">
+            <div className="flex flex-col gap-4 px-4 pt-3 pb-32 md:px-6">
               {/* Typing bubble — shown unconditionally until the reveal
                    timer fires, so the animation is guaranteed to be
                    visible even while agent/goal data is still loading. */}
@@ -952,23 +955,26 @@ export function BoardChat() {
           {/* Input — shared ChatComposer (PAP-95a), adopted bare: textarea + send.
                No mode chip (the room has no task lifecycle). Multiline like task
                comments (PAP-116): text soft-wraps and the box auto-grows instead of
-               clipping / showing a horizontal scrollbar. Sends on plain Enter today
-               (Shift+Enter for a newline); flipping to ⌘/Ctrl+Enter is pending board
-               confirmation.
+               clipping / showing a horizontal scrollbar. It uses the same submit
+               shortcut as task comments: Cmd/Ctrl+Enter sends, plain Enter inserts
+               a newline.
 
                PAP-131 (PAP-128 A): the dock floats over the message stream so text
                scrolls behind the translucent glass box. The old hard black gradient
                mask is gone — the dock carries the task-style soft top fade instead
                (mirrors IssueChatThread's composer dock). pointer-events pass through
                the fade so the scrollbar stays usable; the composer re-enables them. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/0 px-6 pt-6 pb-5">
+          <div
+            data-testid="board-chat-composer-dock"
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-background via-background/95 to-background/0 px-4 pt-6 pb-4 md:px-6 md:pb-5"
+          >
             <ChatComposer
               ref={composerRef}
               value={input}
               onChange={setInput}
               onSubmit={handleSend}
               placeholder="Ask anything about your company..."
-              submitKey="enter"
+              submitKey="mod-enter"
               surface="translucent"
               submitting={sending}
               disabled={sending}
@@ -1006,7 +1012,7 @@ export function BoardChat() {
               type="button"
               size="icon"
               variant="secondary"
-              className="fixed bottom-20 right-4 z-20 h-10 w-10 rounded-full shadow-lg"
+              className="fixed bottom-(--sz-calc-45) right-4 z-20 h-10 w-10 rounded-full shadow-lg"
               aria-label="Open agent feed"
             >
               <Activity className="h-4 w-4" />
