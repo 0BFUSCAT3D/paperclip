@@ -128,6 +128,7 @@ import {
   computeComposerHandoffPreview,
   extractAgentMentionIds,
   findPlainAgentNameCandidate,
+  resolveMentionedAgentAssigneeValue,
   type ComposerHandoffPreview,
   type HandoffAgentMention,
 } from "../lib/interrupt-handoff";
@@ -3708,6 +3709,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentItem[]>([]);
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
+  const reassignOptionIds = useMemo(() => new Set(reassignOptions.map((option) => option.value)), [reassignOptions]);
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [noAssigneeDialogOpen, setNoAssigneeDialogOpen] = useState(false);
   const [dismissedCoachToken, setDismissedCoachToken] = useState<string | null>(null);
@@ -3762,6 +3764,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   useEffect(() => {
     setReassignTarget(effectiveSuggestedAssigneeValue);
   }, [effectiveSuggestedAssigneeValue]);
+
+  const firstMentionedAssigneeValue = useMemo(
+    () => resolveMentionedAgentAssigneeValue(body, reassignOptionIds),
+    [body, reassignOptionIds],
+  );
+
+  useEffect(() => {
+    if (!enableReassign || !firstMentionedAssigneeValue) return;
+    setReassignTarget(firstMentionedAssigneeValue);
+  }, [enableReassign, firstMentionedAssigneeValue]);
 
   useEffect(() => {
     setPendingWorkMode(resolvedIssueWorkMode);
