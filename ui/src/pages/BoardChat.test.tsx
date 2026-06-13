@@ -24,6 +24,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listFeedbackVotes: vi.fn(),
 }));
 const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
+const mockChatComposerProps = vi.hoisted(() => [] as Array<{ submitKey?: string; hint?: ReactNode }>);
 
 function act<T>(callback: () => T): T;
 function act<T>(callback: () => Promise<T>): Promise<T>;
@@ -71,6 +72,7 @@ vi.mock("../components/MarkdownBody", () => ({
 }));
 vi.mock("../components/ChatComposer", () => ({
   ChatComposer: forwardRef((props: { submitKey?: string; hint?: ReactNode }, ref) => {
+    mockChatComposerProps.push(props);
     useImperativeHandle(ref, () => ({ focus: vi.fn() }));
     return (
       <div data-testid="chat-composer">
@@ -152,6 +154,7 @@ describe("BoardChat staged typing intro", () => {
     mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE]);
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
+    mockChatComposerProps.length = 0;
   });
 
   afterEach(async () => {
@@ -251,6 +254,7 @@ describe("BoardChat staged typing intro", () => {
   it("skips the staged reveal when a user comment already exists", async () => {
     mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
     await render();
+    await advance(0);
 
     // Fast-forwarded: no dots, welcome immediately, no timer needed.
     expect(hasTypingDots(container)).toBe(false);
@@ -323,5 +327,11 @@ describe("BoardChat staged typing intro", () => {
     expect(feedButton?.className).toContain(
       "bottom-(--sz-calc-45)",
     );
+  });
+
+  it("configures the Conference Room composer to submit on Cmd/Ctrl+Enter", async () => {
+    await render();
+
+    expect(mockChatComposerProps.at(-1)?.submitKey).toBe("mod-enter");
   });
 });

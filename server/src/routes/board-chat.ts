@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -64,7 +64,7 @@ const MAX_CONCURRENT_BOARD_CHATS = 3;
 
 export function boardChatRoutes(
   db: Db,
-  opts: { deploymentMode: DeploymentMode },
+  opts: { deploymentMode: DeploymentMode; deploymentExposure: DeploymentExposure },
 ) {
   const router = Router();
   let liveBoardChats = 0;
@@ -108,13 +108,16 @@ export function boardChatRoutes(
     }
 
     // The relay spawns the operator's local `claude` CLI with permissions
-    // skipped (it must run headless), so it is only safe where the requester
-    // IS the machine operator: local_trusted is loopback-only single-operator
-    // by construction (see server/src/index.ts boot guards). Refuse everywhere
-    // else rather than lending the server's shell to remote users.
-    if (opts.deploymentMode !== "local_trusted") {
+    // skipped (it must run headless), so it is only safe for the machine
+    // operator: local_trusted loopback or authenticated/private instance-admin
+    // board sessions. Refuse authenticated/public rather than lending the
+    // server's shell to internet-reachable users.
+    const isSupportedDeployment =
+      opts.deploymentMode === "local_trusted" ||
+      (opts.deploymentMode === "authenticated" && opts.deploymentExposure === "private");
+    if (!isSupportedDeployment) {
       res.status(403).json({
-        error: "Board chat is only available on local single-operator instances",
+        error: "Board chat is only available on local or private operator instances",
         code: "DEPLOYMENT_MODE_UNSUPPORTED",
       });
       return;
@@ -131,6 +134,7 @@ export function boardChatRoutes(
       return;
     }
 
+    assertInstanceAdmin(req);
     // The body-supplied companyId must belong to the authenticated actor —
     // it scopes issue reads/writes below and is exported to the subprocess.
     assertCompanyAccess(req, companyId);

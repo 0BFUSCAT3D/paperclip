@@ -22,13 +22,17 @@ vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 vi.mock("../routes/authz.js", () => ({
   getActorInfo: () => ({ actorId: "user-1", agentId: null, runId: null }),
   assertCompanyAccess: () => {},
+  assertInstanceAdmin: () => {},
 }));
 
-async function createApp(deploymentMode: "local_trusted" | "authenticated" = "local_trusted") {
+async function createApp(
+  deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
+  deploymentExposure: "private" | "public" = "private",
+) {
   const { boardChatRoutes } = await import("../routes/board-chat.js");
   const app = express();
   app.use(express.json());
-  app.use("/api", boardChatRoutes({} as any, { deploymentMode }));
+  app.use("/api", boardChatRoutes({} as any, { deploymentMode, deploymentExposure }));
   return app;
 }
 
@@ -55,9 +59,9 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 
-  it("returns 403 DEPLOYMENT_MODE_UNSUPPORTED outside local_trusted even with the flag on", async () => {
+  it("returns 403 DEPLOYMENT_MODE_UNSUPPORTED for authenticated public instances", async () => {
     mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
-    const app = await createApp("authenticated");
+    const app = await createApp("authenticated", "public");
 
     const res = await request(app)
       .post("/api/board/chat/stream")
@@ -68,12 +72,22 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("lets requests past the guard when the flag is on (400 on missing body, not 403)", async () => {
+  it("lets local_trusted requests past the deployment guard when the flag is on", async () => {
     mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
     const app = await createApp();
 
     // Omit the body so the request stops at validation — proves the guard
     // admitted it without spawning the chat subprocess.
+    const res = await request(app).post("/api/board/chat/stream").send({});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "companyId and message are required" });
+  });
+
+  it("lets authenticated private requests past the deployment guard when the flag is on", async () => {
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    const app = await createApp("authenticated", "private");
+
     const res = await request(app).post("/api/board/chat/stream").send({});
 
     expect(res.status).toBe(400);
