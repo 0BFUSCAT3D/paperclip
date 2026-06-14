@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
@@ -81,13 +82,13 @@ describe("SelectedAgentChatView", () => {
   });
 
   afterEach(() => {
-    act(() => root.unmount());
+    flushSync(() => root.unmount());
     container.remove();
     vi.clearAllMocks();
   });
 
-  function render(node: React.ReactNode) {
-    act(() => root.render(node));
+  function render(node: ReactNode) {
+    flushSync(() => root.render(node));
   }
 
   it("renders the real selected-agent identity in the header", () => {
@@ -131,7 +132,7 @@ describe("SelectedAgentChatView", () => {
       (b) => b.textContent === "Try again",
     );
     expect(retry).toBeTruthy();
-    act(() => retry!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    flushSync(() => retry!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
@@ -144,9 +145,8 @@ describe("SelectedAgentChatView", () => {
       "Sarah",
     );
     const send = container.querySelector('[data-testid="send"]') as HTMLButtonElement;
-    await act(async () => {
-      send.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    flushSync(() => send.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await Promise.resolve();
     expect(onSend).toHaveBeenCalledWith("hello");
   });
 
