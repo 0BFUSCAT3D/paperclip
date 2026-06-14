@@ -37,6 +37,18 @@ export type IssueUpdateResponse = Issue & {
   blockedByIssueIds?: string[];
 };
 
+export type SelectedAgentChatTarget = {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+};
+
+export type SelectedAgentChatCommentResponse = {
+  comment: IssueComment;
+  targetAgent: SelectedAgentChatTarget;
+};
+
 export type ResolveRecoveryActionResponse = {
   issue: Issue;
   recoveryAction: IssueRecoveryAction;
@@ -300,6 +312,23 @@ export const issuesApi = {
         body,
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
+      },
+    ),
+  // Selected-agent chat: post a message that wakes a real agent (default: the
+  // company CEO) to reply on this issue. The reply lands as a normal,
+  // real-agent-authored comment and the run is visible via live-runs/active-run
+  // scoped to the same `targetAgentId`. Backend: PAP-11115.
+  addSelectedAgentChatComment: (
+    id: string,
+    body: string,
+    options?: { targetAgentId?: string | null; interrupt?: boolean },
+  ) =>
+    api.post<SelectedAgentChatCommentResponse>(
+      `/issues/${id}/selected-agent-chat/comments`,
+      {
+        body,
+        ...(options?.targetAgentId ? { targetAgentId: options.targetAgentId } : {}),
+        ...(options?.interrupt === undefined ? {} : { interrupt: options.interrupt }),
       },
     ),
   cancelComment: (id: string, commentId: string) =>
