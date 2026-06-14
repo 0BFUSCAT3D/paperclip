@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 
-import { forwardRef, useImperativeHandle } from "react";
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -9,44 +8,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BoardChat } from "./BoardChat";
 
 /**
- * Regression coverage for the post-wizard Conference Room intro (PAP-134,
- * plan: PAP-133 A+B): a fresh mount shows the three-dot typing bubble for
- * ~2s, then the CEO welcome, then the suggestion chips ~700ms later. The
- * staged reveal must hold while the onboarding wizard overlay is open or
- * the tab is hidden, and must fast-forward when the user already replied.
+ * Conference Room transport coverage (PAP-11123). The room is backed by a
+ * `board_chat` issue and the real-agent conversation runs over
+ * SelectedAgentChat — so the page resolves/mints the backing issue, surfaces
+ * history, and hands the resolved issue + CEO default target to the chat
+ * surface. The legacy SSE-stream transport assertions are gone.
  */
 
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
-const mockGoalsApi = vi.hoisted(() => ({ list: vi.fn() }));
-const mockIssuesApi = vi.hoisted(() => ({
-  list: vi.fn(),
-  listComments: vi.fn(),
-  listFeedbackVotes: vi.fn(),
-}));
-const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
-const mockChatComposerProps = vi.hoisted(() => [] as Array<{ submitKey?: string; hint?: ReactNode; onChange?: (value: string) => void; onSubmit?: () => void }>);
-
-function act<T>(callback: () => T): T;
-function act<T>(callback: () => Promise<T>): Promise<T>;
-function act<T>(callback: () => T | Promise<T>): T | Promise<T> {
-  let result: T | Promise<T> | undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  if (result && typeof (result as Promise<T>).then === "function") {
-    return (result as Promise<T>).then(async (value) => {
-      await Promise.resolve();
-      flushSync(() => {});
-      return value;
-    });
-  }
-  flushSync(() => {});
-  return result as T;
-}
+const mockIssuesApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
+const mockBoardChatApi = vi.hoisted(() => ({ resolveConversation: vi.fn() }));
+const mockSelectedAgentChatProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
-vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("../api/auth", () => ({ authApi: mockAuthApi }));
+vi.mock("../api/boardChat", () => ({ boardChatApi: mockBoardChatApi }));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -59,35 +37,21 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
-vi.mock("../context/DialogContext", () => ({
-  useDialogState: () => ({ onboardingOpen: mockDialogState.onboardingOpen }),
-}));
-
-// Heavy children that are irrelevant to the staged intro.
+// Heavy children irrelevant to the transport.
 vi.mock("../components/ActivityFeed", () => ({
   ActivityFeed: () => <div data-testid="activity-feed" />,
 }));
-vi.mock("../components/MarkdownBody", () => ({
-  MarkdownBody: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-}));
-vi.mock("../components/ChatComposer", () => ({
-  ChatComposer: forwardRef((props: { submitKey?: string; hint?: ReactNode }, ref) => {
-    mockChatComposerProps.push(props);
-    useImperativeHandle(ref, () => ({ focus: vi.fn() }));
+vi.mock("../components/SelectedAgentChat", () => ({
+  SelectedAgentChat: (props: Record<string, unknown>) => {
+    mockSelectedAgentChatProps.push(props);
     return (
-      <div data-testid="chat-composer">
-        <span data-testid="chat-composer-submit-key">{props.submitKey}</span>
-        <span data-testid="chat-composer-hint">{props.hint}</span>
-      </div>
+      <div
+        data-testid="selected-agent-chat"
+        data-issue-id={String(props.issueId)}
+        data-default-target={String(props.defaultTargetAgentId)}
+      />
     );
-  }),
-}));
-vi.mock("../components/AgentBubbleActionRow", () => ({
-  AgentBubbleActionRow: () => null,
-  agentBubbleDateLabel: () => "",
-}));
-vi.mock("../components/AgentIconPicker", () => ({
-  AgentIcon: () => null,
+  },
 }));
 vi.mock("@/components/ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -108,6 +72,15 @@ vi.mock("@/components/ui/sheet", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+  await Promise.resolve();
+  flushSync(() => {});
+}
 
 class ResizeObserverStub {
   observe() {}
@@ -125,13 +98,13 @@ const CEO_AGENT = {
 const BOARD_ISSUE = {
   id: "issue-board",
   identifier: "PAP-1",
-  title: "Board Operations",
+  title: "How is hiring going?",
   originKind: "board_chat",
   status: "in_progress",
   createdAt: "2026-06-10T00:00:00.000Z",
   updatedAt: "2026-06-10T00:00:00.000Z",
 };
-const OLDER_BOARD_ISSUE = {
+const LEGACY_BOARD_ISSUE = {
   id: "issue-board-old",
   identifier: "PAP-0",
   title: "Board Operations",
@@ -140,44 +113,25 @@ const OLDER_BOARD_ISSUE = {
   createdAt: "2026-06-09T00:00:00.000Z",
   updatedAt: "2026-06-09T00:00:00.000Z",
 };
-const USER_COMMENT = {
-  id: "comment-user-1",
-  body: "Hi Alex!",
-  authorAgentId: null,
-  authorUserId: "user-1",
-  createdAt: "2026-06-10T00:00:00.000Z",
-};
 
-function hasTypingDots(container: HTMLElement) {
-  return container.querySelectorAll(".typing-dots").length > 0;
-}
-
-function hasWelcome(container: HTMLElement) {
-  return (container.textContent ?? "").includes("Welcome to");
-}
-
-function hasChips(container: HTMLElement) {
-  return (container.textContent ?? "").includes("Draft a Company Brief");
-}
-
-describe("BoardChat staged typing intro", () => {
+describe("BoardChat Conference Room transport", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
+  let queryClient: QueryClient | null = null;
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockDialogState.onboardingOpen = false;
     mockAgentsApi.list.mockResolvedValue([CEO_AGENT]);
-    mockGoalsApi.list.mockResolvedValue([
-      { id: "goal-1", title: "Build affordable robots", status: "active" },
-    ]);
     mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE]);
-    mockIssuesApi.listComments.mockResolvedValue([]);
-    mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
-    mockChatComposerProps.length = 0;
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "sess-1", userId: "user-1" },
+      user: { id: "user-1", name: "Board" },
+    });
+    mockBoardChatApi.resolveConversation.mockResolvedValue({ issue: BOARD_ISSUE });
+    mockSelectedAgentChatProps.length = 0;
   });
 
   afterEach(async () => {
@@ -186,20 +140,12 @@ describe("BoardChat staged typing intro", () => {
     });
     root = null;
     container.remove();
-    sessionStorage.clear();
     vi.unstubAllGlobals();
     vi.useRealTimers();
     vi.clearAllMocks();
-    // Drop any per-test document.visibilityState override.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    delete (document as any).visibilityState;
   });
 
-  let queryClient: QueryClient | null = null;
-
   function buildElement() {
-    // A fresh element every time — rendering an identical element reference
-    // lets React bail out of re-rendering, which would hide mock-state flips.
     return (
       <QueryClientProvider client={queryClient!}>
         <BoardChat />
@@ -215,184 +161,63 @@ describe("BoardChat staged typing intro", () => {
     await act(async () => {
       root!.render(buildElement());
     });
-    // Let the agent/goal/issue queries resolve, plus the follow-up render
-    // that enables the comments query off boardIssueId. react-query batches
-    // notifications through zero-delay timers, so flush those too.
-    for (let i = 0; i < 6; i++) {
+    // Flush the agent/session/issue queries plus follow-up effect renders.
+    for (let i = 0; i < 8; i++) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
     }
   }
 
-  /** Re-render the existing tree so hooks re-read mutated mock state. */
-  async function rerender() {
-    await act(async () => {
-      root!.render(buildElement());
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-  }
-
-  async function advance(ms: number) {
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(ms);
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  }
-
-  it("reveals typing dots, then the welcome at 2s, then chips at +700ms", async () => {
-    await render();
-
-    // Fresh mount: dots only.
-    expect(hasTypingDots(container)).toBe(true);
-    expect(hasWelcome(container)).toBe(false);
-
-    // Just before the reveal: still dots.
-    await advance(1900);
-    expect(hasTypingDots(container)).toBe(true);
-    expect(hasWelcome(container)).toBe(false);
-
-    // t=2s: welcome bubble lands, dots leave, chips not yet.
-    await advance(100);
-    expect(hasWelcome(container)).toBe(true);
-    expect(hasTypingDots(container)).toBe(false);
-    expect(hasChips(container)).toBe(false);
-
-    // t=2.7s: chips stage in.
-    await advance(700);
-    expect(hasChips(container)).toBe(true);
-  });
-
-  it("uses the issue-chat composer shortcut without guidance text", async () => {
-    await render();
-
-    expect(container.querySelector('[data-testid="chat-composer-submit-key"]')?.textContent).toBe("mod-enter");
-    expect(container.querySelector('[data-testid="chat-composer-hint"]')?.textContent).toBe("");
-  });
-
-  it("skips the staged reveal when a user comment already exists", async () => {
-    mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
-    await render();
-    await advance(1);
-
-    // Fast-forwarded: no dots, welcome immediately, no timer needed.
-    expect(hasTypingDots(container)).toBe(false);
-    expect(hasWelcome(container)).toBe(true);
-  });
-
-  it("holds the dots while the onboarding wizard overlay is open (PAP-134)", async () => {
-    mockDialogState.onboardingOpen = true;
-    await render();
-
-    // The 2s window must not burn behind the wizard overlay.
-    await advance(2500);
-    expect(hasTypingDots(container)).toBe(true);
-    expect(hasWelcome(container)).toBe(false);
-
-    // Wizard closes → reveal timer starts fresh.
-    mockDialogState.onboardingOpen = false;
-    await rerender();
-    await advance(2000);
-    expect(hasWelcome(container)).toBe(true);
-    expect(hasTypingDots(container)).toBe(false);
-  });
-
-  it("holds the dots while the document is hidden (PAP-134)", async () => {
-    let visibility: DocumentVisibilityState = "hidden";
-    Object.defineProperty(document, "visibilityState", {
-      configurable: true,
-      get: () => visibility,
-    });
-    await render();
-
-    // The 2s window must not burn while the tab is hidden.
-    await advance(2500);
-    expect(hasTypingDots(container)).toBe(true);
-    expect(hasWelcome(container)).toBe(false);
-
-    // Tab becomes visible → reveal timer starts fresh.
-    visibility = "visible";
-    await act(async () => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await advance(2000);
-    expect(hasWelcome(container)).toBe(true);
-    expect(hasTypingDots(container)).toBe(false);
-  });
-
-  it("reserves mobile viewport height and bottom-nav space for the composer", async () => {
-    await render();
-
-    const shell = container.querySelector(
-      '[data-testid="board-chat-shell"]',
-    ) as HTMLDivElement | null;
-    expect(shell).not.toBeNull();
-    expect(shell?.className).toContain("h-(--sz-calc-43)");
-    expect(shell?.className).toContain("-m-4");
-    expect(shell?.className).toContain("md:h-(--sz-calc-29)");
-
-    const dock = container.querySelector(
-      '[data-testid="board-chat-composer-dock"]',
-    ) as HTMLDivElement | null;
-    expect(dock).not.toBeNull();
-    expect(dock?.className).toContain("bottom-0");
-    expect(dock?.className).toContain("px-4");
-    expect(dock?.className).toContain("md:px-6");
-
-    const feedButton = container.querySelector(
-      'button[aria-label="Open agent feed"]',
-    ) as HTMLButtonElement | null;
-    expect(feedButton).not.toBeNull();
-    expect(feedButton?.className).toContain(
-      "bottom-(--sz-calc-45)",
-    );
-  });
-
-  it("configures the Conference Room composer to submit on Cmd/Ctrl+Enter", async () => {
-    await render();
-
-    expect(mockChatComposerProps.at(-1)?.submitKey).toBe("mod-enter");
-  });
-
   it("loads Conference Room history by board_chat origin", async () => {
     await render();
 
-    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-      originKind: "board_chat",
-      sortField: "updated",
-      sortDir: "desc",
-    }));
+    expect(mockIssuesApi.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        originKind: "board_chat",
+        sortField: "updated",
+        sortDir: "desc",
+      }),
+    );
   });
 
-  it("uses a friendly date label for legacy Board Operations history rows", async () => {
-    mockIssuesApi.list.mockResolvedValue([OLDER_BOARD_ISSUE]);
+  it("renders SelectedAgentChat over the resolved board issue with the CEO as default target", async () => {
     await render();
 
-    expect(container.textContent).toMatch(/Chat from .*2026/);
-    expect(container.textContent).not.toContain("PAP-0");
+    const surface = container.querySelector(
+      '[data-testid="selected-agent-chat"]',
+    ) as HTMLDivElement | null;
+    expect(surface).not.toBeNull();
+    expect(surface?.getAttribute("data-issue-id")).toBe(BOARD_ISSUE.id);
+    expect(surface?.getAttribute("data-default-target")).toBe(CEO_AGENT.id);
+
+    const lastProps = mockSelectedAgentChatProps.at(-1);
+    expect(lastProps?.companyId).toBe("company-1");
+    expect(lastProps?.currentUserId).toBe("user-1");
   });
 
-  it("starts a fresh server-side conversation after New chat is clicked", async () => {
-    const encoder = new TextEncoder();
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = new ReadableStream({
-        start(controller) {
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify({ type: "start", issueId: "issue-new" })}\n\n` +
-                `data: ${JSON.stringify({ type: "done", issueId: "issue-new" })}\n\n`,
-            ),
-          );
-          controller.close();
-        },
-      });
-      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  it("mints the first conversation when the company has no history", async () => {
+    mockIssuesApi.list.mockResolvedValue([]);
+    mockBoardChatApi.resolveConversation.mockResolvedValue({
+      issue: { ...BOARD_ISSUE, id: "issue-minted", title: "New chat" },
     });
-    vi.stubGlobal("fetch", fetchMock);
+    await render();
+
+    expect(mockBoardChatApi.resolveConversation).toHaveBeenCalledWith(
+      "company-1",
+      undefined,
+    );
+    const surface = container.querySelector(
+      '[data-testid="selected-agent-chat"]',
+    ) as HTMLDivElement | null;
+    expect(surface?.getAttribute("data-issue-id")).toBe("issue-minted");
+  });
+
+  it("forces a fresh conversation when New chat is clicked", async () => {
+    mockBoardChatApi.resolveConversation.mockResolvedValue({
+      issue: { ...BOARD_ISSUE, id: "issue-fresh", title: "New chat" },
+    });
     await render();
 
     const newChatButton = container.querySelector(
@@ -403,60 +228,46 @@ describe("BoardChat staged typing intro", () => {
     await act(async () => {
       newChatButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await act(async () => {
-      (mockChatComposerProps.at(-1)?.onChange as (value: string) => void)("Fresh start");
-    });
-    await act(async () => {
-      (mockChatComposerProps.at(-1)?.onSubmit as () => void)();
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
+    for (let i = 0; i < 4; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    }
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
-    expect(body).toEqual({
-      companyId: "company-1",
-      message: "Fresh start",
+    expect(mockBoardChatApi.resolveConversation).toHaveBeenCalledWith("company-1", {
       newConversation: true,
     });
+    const surface = container.querySelector(
+      '[data-testid="selected-agent-chat"]',
+    ) as HTMLDivElement | null;
+    expect(surface?.getAttribute("data-issue-id")).toBe("issue-fresh");
   });
 
-  it("switches comment history when a prior chat is selected", async () => {
-    const olderPlanningIssue = {
-      ...OLDER_BOARD_ISSUE,
-      title: "Older planning chat",
-    };
-    mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE, olderPlanningIssue]);
-    mockIssuesApi.listComments.mockImplementation(async (issueId: string) =>
-      issueId === olderPlanningIssue.id
-        ? [{ ...USER_COMMENT, id: "comment-old", body: "Older chat" }]
-        : [],
-    );
+  it("uses a friendly date label for legacy Board Operations history rows", async () => {
+    mockIssuesApi.list.mockResolvedValue([LEGACY_BOARD_ISSUE]);
     await render();
 
-    expect(mockIssuesApi.listComments).toHaveBeenCalledWith(BOARD_ISSUE.id);
+    expect(container.textContent).toMatch(/Chat from .*2026/);
+    expect(container.textContent).not.toContain("PAP-0");
+  });
 
-    const historyButton = container.querySelector(
-      'button[aria-label="chat history"]',
+  it("reserves mobile viewport height and bottom-nav space for the agent feed", async () => {
+    await render();
+
+    const shell = container.querySelector(
+      '[data-testid="board-chat-shell"]',
+    ) as HTMLDivElement | null;
+    expect(shell).not.toBeNull();
+    expect(shell?.className).toContain("h-(--sz-calc-43)");
+    expect(shell?.className).toContain("-m-4");
+    expect(shell?.className).toContain("md:h-(--sz-calc-29)");
+
+    const feedButton = container.querySelector(
+      'button[aria-label="Open agent feed"]',
     ) as HTMLButtonElement | null;
-    expect(historyButton).not.toBeNull();
-    await act(async () => {
-      historyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const olderButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes(olderPlanningIssue.title),
-    ) as HTMLButtonElement | undefined;
-    expect(olderButton).toBeDefined();
-    await act(async () => {
-      olderButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-
-    expect(mockIssuesApi.listComments).toHaveBeenCalledWith(olderPlanningIssue.id);
-    expect(container.textContent).toContain("Older chat");
+    expect(feedButton).not.toBeNull();
+    expect(feedButton?.className).toContain(
+      "bottom-(--sz-calc-45)",
+    );
   });
 });

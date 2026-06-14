@@ -94,6 +94,70 @@ function isLegacyBoardChatIssue(issue: {
   );
 }
 
+/**
+ * Resolve the standing `board_chat` conversation issue for a company, creating
+ * one (origin-tagged) if none is open. Shared by `/board/chat/stream` (the
+ * legacy concierge relay) and `/board/chat/conversations` (the real-agent
+ * Conference Room, PAP-11099): both need a backing issue the web client cannot
+ * mint itself, since `createIssueBaseSchema` strips `originKind`.
+ *
+ * - `wantsNewConversation` skips reuse and always creates a fresh conversation
+ *   (the room's "New chat" control).
+ * - Otherwise reuse the most-recent open origin-tagged issue, then adopt and
+ *   repair a legacy "Board Operations" issue, then create.
+ * - `message`, when present, seeds a first-message title; absent (the room
+ *   mints before the first message), it falls back to "New chat".
+ */
+async function resolveOrCreateBoardChatIssue(
+  issueSvc: ReturnType<typeof issueService>,
+  companyId: string,
+  opts: {
+    message?: string;
+    wantsNewConversation?: boolean;
+    createdByUserId?: string | null;
+    responsibleUserId?: string | null;
+    trustExplicitResponsibleUserId?: boolean;
+  },
+): Promise<{ id: string }> {
+  if (!opts.wantsNewConversation) {
+    const boardChatIssues = await issueSvc.list(companyId, {
+      originKind: BOARD_CHAT_ORIGIN_KIND,
+      sortField: "updated",
+      sortDir: "desc",
+    });
+    const boardIssue = boardChatIssues.find(isOpenBoardChatIssue);
+    if (boardIssue) return boardIssue;
+
+    const legacyIssues = await issueSvc.list(companyId, {
+      q: LEGACY_BOARD_CHAT_TITLE,
+      sortField: "updated",
+      sortDir: "desc",
+    });
+    const legacyIssue = legacyIssues.find(isLegacyBoardChatIssue);
+    if (legacyIssue) {
+      try {
+        await issueSvc.update(legacyIssue.id, { originKind: BOARD_CHAT_ORIGIN_KIND });
+      } catch {
+        /* best-effort legacy repair; the selected issue still anchors this request */
+      }
+      return legacyIssue;
+    }
+  }
+
+  return issueSvc.create(companyId, {
+    title: opts.message ? deriveBoardChatIssueTitle(opts.message) : "New chat",
+    description: BOARD_CHAT_DESCRIPTION,
+    originKind: BOARD_CHAT_ORIGIN_KIND,
+    // `todo` rather than `in_progress`: this is an unassigned standing issue,
+    // and the service rejects in_progress issues without an assignee.
+    status: "todo",
+    priority: "medium",
+    createdByUserId: opts.createdByUserId ?? null,
+    responsibleUserId: opts.responsibleUserId ?? null,
+    trustExplicitResponsibleUserId: opts.trustExplicitResponsibleUserId ?? false,
+  });
+}
+
 export function boardChatRoutes(
   db: Db,
   opts: { deploymentMode: DeploymentMode; deploymentExposure: DeploymentExposure },
@@ -192,49 +256,14 @@ export function boardChatRoutes(
     // below is intentionally narrow so unrelated "Board Operations" tasks are
     // not silently pulled into Conference Room history.
     if (!issueId) {
-      if (!wantsNewConversation) {
-        const boardChatIssues = await issueSvc.list(companyId, {
-          originKind: BOARD_CHAT_ORIGIN_KIND,
-          sortField: "updated",
-          sortDir: "desc",
-        });
-        const boardIssue = boardChatIssues.find(isOpenBoardChatIssue);
-        if (boardIssue) {
-          issueId = boardIssue.id;
-        }
-        if (!issueId) {
-          const legacyIssues = await issueSvc.list(companyId, {
-            q: LEGACY_BOARD_CHAT_TITLE,
-            sortField: "updated",
-            sortDir: "desc",
-          });
-          const legacyIssue = legacyIssues.find(isLegacyBoardChatIssue);
-          if (legacyIssue) {
-            issueId = legacyIssue.id;
-            try {
-              await issueSvc.update(legacyIssue.id, { originKind: BOARD_CHAT_ORIGIN_KIND });
-            } catch {
-              /* best-effort legacy repair; the selected issue still anchors this request */
-            }
-          }
-        }
-      }
-      if (!issueId) {
-        const created = await issueSvc.create(companyId, {
-          title: deriveBoardChatIssueTitle(message),
-          description: BOARD_CHAT_DESCRIPTION,
-          originKind: BOARD_CHAT_ORIGIN_KIND,
-          // `todo` rather than `in_progress`: this is an unassigned standing
-          // issue, and the service rejects in_progress issues without an
-          // assignee.
-          status: "todo",
-          priority: "medium",
-          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-          responsibleUserId: actor.actorType === "user" ? actor.actorId : null,
-          trustExplicitResponsibleUserId: actor.actorType === "user",
-        });
-        issueId = created.id;
-      }
+      const issue = await resolveOrCreateBoardChatIssue(issueSvc, companyId, {
+        message,
+        wantsNewConversation,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        responsibleUserId: actor.actorType === "user" ? actor.actorId : null,
+        trustExplicitResponsibleUserId: actor.actorType === "user",
+      });
+      issueId = issue.id;
     }
 
     const resolvedIssueId = issueId!;
@@ -457,6 +486,48 @@ export function boardChatRoutes(
     // Feed the prompt to the CLI via stdin.
     proc.stdin.write(prompt);
     proc.stdin.end();
+  });
+
+  // Mint (or resolve) the backing `board_chat` conversation issue WITHOUT
+  // spawning the concierge subprocess. The live Conference Room (PAP-11099
+  // Phase 3b) renders the real-agent `SelectedAgentChat` over this issue;
+  // the web client can't create it directly because `originKind` is stripped
+  // by the issue create schema. Gated like `/board/chat/stream` on the
+  // experimental flag + instance admin + company access — but with no
+  // deployment-mode restriction, since nothing is spawned here.
+  router.post("/board/chat/conversations", async (req, res) => {
+    const experimental = await instanceSettingsService(db).getExperimental();
+    if (experimental.enableConferenceRoomChat !== true) {
+      res.status(403).json({
+        error: "Conference Room Chat is not enabled",
+        code: "FEATURE_DISABLED",
+      });
+      return;
+    }
+
+    const { companyId, newConversation, message } = req.body as {
+      companyId?: string;
+      newConversation?: boolean | string;
+      message?: string;
+    };
+    if (!companyId) {
+      res.status(400).json({ error: "companyId is required" });
+      return;
+    }
+
+    assertInstanceAdmin(req);
+    assertCompanyAccess(req, companyId);
+
+    const actor = getActorInfo(req);
+    const wantsNewConversation = newConversation === true || newConversation === "true";
+    const issue = await resolveOrCreateBoardChatIssue(issueService(db), companyId, {
+      message,
+      wantsNewConversation,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      responsibleUserId: actor.actorType === "user" ? actor.actorId : null,
+      trustExplicitResponsibleUserId: actor.actorType === "user",
+    });
+    res.status(200).json({ issue });
   });
 
   return router;
