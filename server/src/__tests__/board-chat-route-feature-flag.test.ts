@@ -96,6 +96,10 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
 });
 
 describe("board-chat client disconnect", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   function makeFakeProc() {
     const proc = new EventEmitter() as any;
     proc.stdout = new EventEmitter();
@@ -139,6 +143,42 @@ describe("board-chat client disconnect", () => {
     // Let the subprocess close handler run so the slot is released.
     fakeProc.exitCode = 143;
     fakeProc.emit("close", 143);
+    await pending;
+  });
+
+  it("tags newly created Board Operations issues as board chat conversations", async () => {
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    mockIssueService.list.mockResolvedValue([]);
+    mockIssueService.create.mockResolvedValue({ id: "issue-new" });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
+    mockIssueService.listComments.mockResolvedValue([]);
+    const fakeProc = makeFakeProc();
+    mockSpawn.mockReturnValue(fakeProc);
+    const app = await createApp();
+
+    const req = request(app)
+      .post("/api/board/chat/stream")
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify({ companyId: "company-1", message: "hello" }));
+    const pending = req.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalled());
+    fakeProc.exitCode = 0;
+    fakeProc.emit("close", 0);
+
+    expect(mockIssueService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      title: "Board Operations",
+      originKind: "board_chat",
+    }));
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "issue-new",
+      "hello",
+      expect.any(Object),
+    );
+    req.abort();
     await pending;
   });
 });

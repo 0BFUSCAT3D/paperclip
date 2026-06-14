@@ -123,11 +123,13 @@ export function boardChatRoutes(
       return;
     }
 
-    const { companyId, message, taskId } = req.body as {
+    const { companyId, message, taskId, newConversation } = req.body as {
       companyId?: string;
       message?: string;
       taskId?: string;
+      newConversation?: boolean | string;
     };
+    const wantsNewConversation = newConversation === true || newConversation === "true";
 
     if (!companyId || !message) {
       res.status(400).json({ error: "companyId and message are required" });
@@ -150,26 +152,34 @@ export function boardChatRoutes(
     }
 
     const issueSvc = issueService(db);
-    let issueId = taskId;
     const actor = getActorInfo(req);
+    let issueId = wantsNewConversation ? undefined : taskId;
 
     // Find or create the standing "Board Operations" issue that anchors the
     // board conversation + decision log.
     if (!issueId) {
-      const companyIssues = await issueSvc.list(companyId, { q: "Board Operations" });
-      const boardIssue = companyIssues.find(
-        (i) =>
-          i.title === "Board Operations" &&
-          i.status !== "done" &&
-          i.status !== "cancelled",
-      );
-      if (boardIssue) {
-        issueId = boardIssue.id;
-      } else {
+      if (!wantsNewConversation) {
+        const companyIssues = await issueSvc.list(companyId, {
+          q: "Board Operations",
+          sortField: "updated",
+          sortDir: "desc",
+        });
+        const boardIssue = companyIssues.find(
+          (i) =>
+            i.title === "Board Operations" &&
+            i.status !== "done" &&
+            i.status !== "cancelled",
+        );
+        if (boardIssue) {
+          issueId = boardIssue.id;
+        }
+      }
+      if (!issueId) {
         const created = await issueSvc.create(companyId, {
           title: "Board Operations",
           description:
             "Standing issue for board concierge conversations and decision log",
+          originKind: "board_chat",
           // `todo` rather than `in_progress`: this is an unassigned standing
           // issue, and the service rejects in_progress issues without an
           // assignee.

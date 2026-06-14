@@ -22,7 +22,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Activity, ArrowDown, History, MessageSquarePlus, X } from "lucide-react";
+import { Activity, ArrowDown, History, MessageSquarePlus } from "lucide-react";
 import { ActivityFeed } from "../components/ActivityFeed";
 import { ChatComposer, type ChatComposerHandle } from "../components/ChatComposer";
 import {
@@ -30,9 +30,16 @@ import {
   agentBubbleDateLabel,
 } from "../components/AgentBubbleActionRow";
 import { AgentIcon } from "../components/AgentIconPicker";
-import { cn, formatDateTime } from "../lib/utils";
+import { cn, formatDateTime, relativeTime } from "../lib/utils";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 
 /**
  * Board Concierge Chat — a chat interface powered by the board-member skill.
@@ -49,6 +56,7 @@ const DEFAULT_CHAT_FRACTION = 2 / 3;
 /** Wrapped markdown in bubbles; pre/table scroll horizontally when needed. */
 const BOARD_CHAT_MARKDOWN_CLASS =
   "max-w-full overflow-visible [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto";
+const BOARD_CHAT_ISSUE_TITLE = "Board Operations";
 
 const boardChatBubbleShell =
   "min-w-0 max-w-(--pct-85) break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
@@ -190,6 +198,8 @@ export function BoardChat() {
   const [statusText, setStatusText] = useState("");
   const [errorText, setErrorText] = useState("");
   const [boardIssueId, setBoardIssueId] = useState<string | null>(null);
+  const [isComposingNewConversation, setIsComposingNewConversation] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [optimisticMessage, setOptimisticMessage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -233,8 +243,11 @@ export function BoardChat() {
         queryClient.removeQueries({ queryKey: queryKeys.issues.comments(boardIssueId) });
       }
       setBoardIssueId(null);
+      setIsComposingNewConversation(false);
+      setHistoryOpen(false);
       setStreamingText("");
       setStatusText("");
+      setErrorText("");
       setSending(false);
       setOptimisticMessage(null);
       prevCompanyRef.current = selectedCompanyId;
@@ -297,29 +310,125 @@ export function BoardChat() {
     return active?.title ?? null;
   }, [goals]);
 
-  // Find or detect the board operations issue
+  // Find or detect board chat conversations. They are backed by ordinary
+  // company-scoped issues so history survives reloads without a separate chat
+  // store.
   const { data: issues } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryFn: () =>
+      issuesApi.list(selectedCompanyId!, {
+        q: BOARD_CHAT_ISSUE_TITLE,
+        limit: 50,
+        sortField: "updated",
+        sortDir: "desc",
+      }),
     enabled: !!selectedCompanyId,
   });
 
+  const boardChatIssues = useMemo(
+    () =>
+      (issues ?? [])
+        .filter(
+          (i) =>
+            i.title === BOARD_CHAT_ISSUE_TITLE &&
+            i.status !== "cancelled",
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        ),
+    [issues],
+  );
+
   useEffect(() => {
-    if (!issues) {
-      setBoardIssueId(null);
+    if (!issues || isComposingNewConversation) {
+      if (!issues) setBoardIssueId(null);
       return;
     }
-    const boardIssue = issues.find(
-      (i) => i.title === "Board Operations" && i.status !== "done" && i.status !== "cancelled",
-    );
-    setBoardIssueId(boardIssue?.id ?? null);
-  }, [issues]);
+    if (boardIssueId && boardChatIssues.some((issue) => issue.id === boardIssueId)) {
+      return;
+    }
+    const boardIssue = boardChatIssues.find((i) => i.status !== "done");
+    setBoardIssueId(boardIssue?.id ?? boardChatIssues[0]?.id ?? null);
+  }, [issues, boardChatIssues, boardIssueId, isComposingNewConversation]);
 
-  // Fetch comments for the board issue
+  const activeBoardIssue = useMemo(
+    () => boardChatIssues.find((issue) => issue.id === boardIssueId) ?? null,
+    [boardChatIssues, boardIssueId],
+  );
+
+  const scrollStorageKey = useMemo(
+    () =>
+      selectedCompanyId
+        ? `paperclip.boardChat.scrollTop.${selectedCompanyId}.${boardIssueId ?? "new"}`
+        : null,
+    [selectedCompanyId, boardIssueId],
+  );
+
+  const resetConversationViewport = useCallback(() => {
+    hasRestoredScrollRef.current = false;
+    wasNearBottomRef.current = true;
+    setHasNewBelow(false);
+    const scrollContainer = scrollContainerRef.current;
+    if (typeof scrollContainer?.scrollTo === "function") {
+      scrollContainer.scrollTo({ top: 0 });
+    } else if (scrollContainer) {
+      scrollContainer.scrollTop = 0;
+    }
+  }, []);
+
+  const handleNewChat = useCallback(() => {
+    if (sending) return;
+    if (boardIssueId) {
+      queryClient.removeQueries({ queryKey: queryKeys.issues.comments(boardIssueId) });
+    }
+    setBoardIssueId(null);
+    setIsComposingNewConversation(true);
+    setHistoryOpen(false);
+    setStreamingText("");
+    setStatusText("");
+    setErrorText("");
+    setOptimisticMessage(null);
+    setWelcomeRevealed(false);
+    setChipsRevealed(false);
+    setInput("");
+    resetConversationViewport();
+    composerRef.current?.focus();
+  }, [boardIssueId, queryClient, resetConversationViewport, sending]);
+
+  const handleSelectConversation = useCallback(
+    (issueId: string) => {
+      if (sending) return;
+      setBoardIssueId(issueId);
+      setIsComposingNewConversation(false);
+      setHistoryOpen(false);
+      setStreamingText("");
+      setStatusText("");
+      setErrorText("");
+      setOptimisticMessage(null);
+      resetConversationViewport();
+    },
+    [resetConversationViewport, sending],
+  );
+
+  useEffect(() => {
+    resetConversationViewport();
+  }, [boardIssueId, resetConversationViewport]);
+
+  useEffect(() => {
+    if (!selectedCompanyId || boardIssueId || isComposingNewConversation) return;
+    if (!issues) return;
+    if (boardChatIssues.length > 0) return;
+    setIsComposingNewConversation(true);
+  }, [selectedCompanyId, boardIssueId, isComposingNewConversation, issues, boardChatIssues.length]);
+
+  // Fetch comments for the selected board issue. New Chat intentionally has
+  // no issue id until the first message is sent, so it renders as an empty
+  // conversation instead of snapping back to the latest historical issue.
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(boardIssueId ?? ""),
     queryFn: () => issuesApi.listComments(boardIssueId!),
-    enabled: !!boardIssueId,
+    enabled: !!boardIssueId && !isComposingNewConversation,
     refetchInterval: 3000,
   });
 
@@ -338,7 +447,7 @@ export function BoardChat() {
   const { data: feedbackVotes } = useQuery({
     queryKey: queryKeys.issues.feedbackVotes(boardIssueId ?? ""),
     queryFn: () => issuesApi.listFeedbackVotes(boardIssueId!),
-    enabled: !!boardIssueId,
+    enabled: !!boardIssueId && !isComposingNewConversation,
   });
 
   const voteByComment = useMemo(() => {
@@ -355,7 +464,7 @@ export function BoardChat() {
       vote: FeedbackVoteValue,
       options?: { allowSharing?: boolean; reason?: string },
     ) => {
-      if (!boardIssueId) return;
+      if (!boardIssueId || isComposingNewConversation) return;
       await issuesApi.upsertFeedbackVote(boardIssueId, {
         targetType: "issue_comment",
         targetId: commentId,
@@ -367,7 +476,7 @@ export function BoardChat() {
         queryKey: queryKeys.issues.feedbackVotes(boardIssueId),
       });
     },
-    [boardIssueId, queryClient],
+    [boardIssueId, isComposingNewConversation, queryClient],
   );
 
   // Reset the staged reveal on mount AND whenever the active company
@@ -460,7 +569,8 @@ export function BoardChat() {
     if (!container) return;
 
     try {
-      const saved = sessionStorage.getItem("paperclip.boardChat.scrollTop");
+      if (!scrollStorageKey) return;
+      const saved = sessionStorage.getItem(scrollStorageKey);
       if (saved != null) {
         const parsed = Number(saved);
         if (Number.isFinite(parsed)) {
@@ -473,7 +583,7 @@ export function BoardChat() {
 
     container.scrollTop = container.scrollHeight;
     hasRestoredScrollRef.current = true;
-  }, [sortedComments.length]);
+  }, [sortedComments.length, scrollStorageKey]);
 
   // User sent a message: always scroll so their just-typed message is in
   // view, even if they were scrolled up reading history.
@@ -510,10 +620,9 @@ export function BoardChat() {
       rafId = requestAnimationFrame(() => {
         rafId = null;
         try {
-          sessionStorage.setItem(
-            "paperclip.boardChat.scrollTop",
-            String(container.scrollTop),
-          );
+          if (scrollStorageKey) {
+            sessionStorage.setItem(scrollStorageKey, String(container.scrollTop));
+          }
         } catch { /* sessionStorage unavailable */ }
       });
     };
@@ -522,7 +631,7 @@ export function BoardChat() {
       container.removeEventListener("scroll", handleScroll);
       if (rafId != null) cancelAnimationFrame(rafId);
     };
-  }, []);
+  }, [scrollStorageKey]);
 
   // Elapsed timer for thinking state — tick at 100ms so the tenths place
   // updates smoothly and the wait feels quicker than a whole-second counter.
@@ -567,7 +676,8 @@ export function BoardChat() {
           body: JSON.stringify({
             companyId: selectedCompanyId,
             message: trimmed,
-            taskId: boardIssueId ?? undefined,
+            taskId: isComposingNewConversation ? undefined : boardIssueId ?? undefined,
+            newConversation: isComposingNewConversation,
           }),
           signal: controller.signal,
         });
@@ -608,6 +718,7 @@ export function BoardChat() {
                 setStatusText(event.text);
               } else if (event.type === "start" && event.issueId) {
                 setBoardIssueId(event.issueId);
+                setIsComposingNewConversation(false);
               } else if (event.type === "error") {
                 setErrorText(
                   event.message ||
@@ -648,7 +759,7 @@ export function BoardChat() {
         composerRef.current?.focus();
       }
     },
-    [sending, selectedCompanyId, boardIssueId, queryClient],
+    [sending, selectedCompanyId, boardIssueId, isComposingNewConversation, queryClient],
   );
 
   const handleSend = useCallback(() => {
@@ -702,7 +813,11 @@ export function BoardChat() {
                 {ceoAgent?.name ?? "Conference Room"}
               </h3>
               <p className="text-xs text-muted-foreground">
-                {selectedCompany?.name ?? "Your company"}
+                {isComposingNewConversation
+                  ? "New chat"
+                  : activeBoardIssue
+                    ? `${selectedCompany?.name ?? "Your company"} · updated ${relativeTime(activeBoardIssue.updatedAt)}`
+                    : selectedCompany?.name ?? "Your company"}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
@@ -714,6 +829,7 @@ export function BoardChat() {
                     size="icon-sm"
                     className="text-muted-foreground"
                     aria-label="chat history"
+                    onClick={() => setHistoryOpen(true)}
                   >
                     <History className="h-4 w-4" />
                   </Button>
@@ -728,6 +844,8 @@ export function BoardChat() {
                     size="icon-sm"
                     className="text-muted-foreground"
                     aria-label="new chat"
+                    onClick={handleNewChat}
+                    disabled={sending || isComposingNewConversation}
                   >
                     <MessageSquarePlus className="h-4 w-4" />
                   </Button>
@@ -736,6 +854,64 @@ export function BoardChat() {
               </Tooltip>
             </div>
           </div>
+          <Sheet open={historyOpen} onOpenChange={setHistoryOpen}>
+            <SheetContent side="right" className="w-[min(24rem,100vw)] p-0 sm:max-w-md">
+              <SheetHeader className="border-b px-4 py-3">
+                <SheetTitle className="text-sm">Chat history</SheetTitle>
+                <SheetDescription>
+                  Pick up a previous CEO conversation.
+                </SheetDescription>
+              </SheetHeader>
+              <div className="min-h-0 overflow-y-auto py-2">
+                <div className="px-3 pb-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-full justify-start"
+                    onClick={handleNewChat}
+                    disabled={sending || isComposingNewConversation}
+                  >
+                    <MessageSquarePlus className="h-4 w-4" />
+                    New chat
+                  </Button>
+                </div>
+                {boardChatIssues.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                    No previous chats yet.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {boardChatIssues.map((issue) => {
+                      const active = issue.id === boardIssueId && !isComposingNewConversation;
+                      return (
+                        <button
+                          key={issue.id}
+                          type="button"
+                          className={cn(
+                            "flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-accent",
+                            active && "bg-accent/70",
+                          )}
+                          onClick={() => handleSelectConversation(issue.id)}
+                          disabled={sending || active}
+                        >
+                          <History className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-foreground">
+                              {issue.identifier ?? issue.title}
+                            </span>
+                            <span className="block truncate text-xs text-muted-foreground">
+                              Updated {relativeTime(issue.updatedAt)}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </SheetContent>
+          </Sheet>
           {/* Messages — scroll viewport flush right so the scrollbar sits on the pane/divider edge */}
           <div className="relative min-h-0 min-w-0 flex-1">
           <div

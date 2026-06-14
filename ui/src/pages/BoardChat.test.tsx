@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import { forwardRef, useImperativeHandle } from "react";
-import { flushSync } from "react-dom";
 import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +24,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listFeedbackVotes: vi.fn(),
 }));
 const mockDialogState = vi.hoisted(() => ({ onboardingOpen: false }));
-const mockChatComposerProps = vi.hoisted(() => [] as Array<{ submitKey?: string; hint?: ReactNode }>);
+const mockChatComposerProps = vi.hoisted(() => [] as Array<{ submitKey?: string; hint?: ReactNode; onChange?: (value: string) => void; onSubmit?: () => void }>);
 
 function act<T>(callback: () => T): T;
 function act<T>(callback: () => Promise<T>): Promise<T>;
@@ -97,11 +97,17 @@ vi.mock("@/components/ui/tooltip", () => ({
 vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SheetTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-  SheetContent: () => null,
+  SheetContent: ({ children }: { children: ReactNode }) => (
+    <div data-testid="sheet-content">{children}</div>
+  ),
+  SheetHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SheetTitle: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  SheetDescription: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
 
 class ResizeObserverStub {
   observe() {}
@@ -116,7 +122,22 @@ const CEO_AGENT = {
   status: "active",
   icon: null,
 };
-const BOARD_ISSUE = { id: "issue-board", title: "Board Operations", status: "in_progress" };
+const BOARD_ISSUE = {
+  id: "issue-board",
+  identifier: "PAP-1",
+  title: "Board Operations",
+  status: "in_progress",
+  createdAt: "2026-06-10T00:00:00.000Z",
+  updatedAt: "2026-06-10T00:00:00.000Z",
+};
+const OLDER_BOARD_ISSUE = {
+  id: "issue-board-old",
+  identifier: "PAP-0",
+  title: "Board Operations",
+  status: "todo",
+  createdAt: "2026-06-09T00:00:00.000Z",
+  updatedAt: "2026-06-09T00:00:00.000Z",
+};
 const USER_COMMENT = {
   id: "comment-user-1",
   body: "Hi Alex!",
@@ -333,5 +354,85 @@ describe("BoardChat staged typing intro", () => {
     await render();
 
     expect(mockChatComposerProps.at(-1)?.submitKey).toBe("mod-enter");
+  });
+
+  it("starts a fresh server-side conversation after New chat is clicked", async () => {
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              `data: ${JSON.stringify({ type: "start", issueId: "issue-new" })}\n\n` +
+                `data: ${JSON.stringify({ type: "done", issueId: "issue-new" })}\n\n`,
+            ),
+          );
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await render();
+
+    const newChatButton = container.querySelector(
+      'button[aria-label="new chat"]',
+    ) as HTMLButtonElement | null;
+    expect(newChatButton).not.toBeNull();
+
+    await act(async () => {
+      newChatButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      (mockChatComposerProps.at(-1)?.onChange as (value: string) => void)("Fresh start");
+    });
+    await act(async () => {
+      (mockChatComposerProps.at(-1)?.onSubmit as () => void)();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({
+      companyId: "company-1",
+      message: "Fresh start",
+      newConversation: true,
+    });
+  });
+
+  it("switches comment history when a prior chat is selected", async () => {
+    mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE, OLDER_BOARD_ISSUE]);
+    mockIssuesApi.listComments.mockImplementation(async (issueId: string) =>
+      issueId === OLDER_BOARD_ISSUE.id
+        ? [{ ...USER_COMMENT, id: "comment-old", body: "Older chat" }]
+        : [],
+    );
+    await render();
+
+    expect(mockIssuesApi.listComments).toHaveBeenCalledWith(BOARD_ISSUE.id);
+
+    const historyButton = container.querySelector(
+      'button[aria-label="chat history"]',
+    ) as HTMLButtonElement | null;
+    expect(historyButton).not.toBeNull();
+    await act(async () => {
+      historyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const olderButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes(OLDER_BOARD_ISSUE.identifier),
+    ) as HTMLButtonElement | undefined;
+    expect(olderButton).toBeDefined();
+    await act(async () => {
+      olderButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(mockIssuesApi.listComments).toHaveBeenCalledWith(OLDER_BOARD_ISSUE.id);
+    expect(container.textContent).toContain("Older chat");
   });
 });
