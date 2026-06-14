@@ -173,6 +173,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
+  "- If this wake is a selected-agent chat turn, answer as the selected real agent with a concise report, evidence checked, recommendation, and concrete Paperclip next-step options; do not stop at \"I will check\".",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
 
@@ -665,6 +666,9 @@ type PaperclipWakePayload = {
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
+  selectedAgentChat: boolean;
+  targetAgentId: string | null;
+  taskKey: string | null;
   checkedOutByHarness: boolean;
   // Experimental: write user-interaction content in ASD-STE100 Simplified
   // Technical English with brief decision context.
@@ -1319,6 +1323,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     reason: asString(payload.reason, "").trim() || null,
     recovery,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    selectedAgentChat: asBoolean(payload.selectedAgentChat, false),
+    targetAgentId: asString(payload.targetAgentId, "").trim() || null,
+    taskKey: asString(payload.taskKey, "").trim() || null,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     simplifiedEnglishInteractions: asBoolean(payload.simplifiedEnglishInteractions, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
@@ -1600,6 +1607,26 @@ export function renderPaperclipWakePrompt(
       .join(", ") || "(none)";
     lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
     lines.push(`- checkbox selection options: ${selectedOptions}`);
+  }
+  if (normalized.selectedAgentChat) {
+    lines.push(
+      "- selected-agent chat: yes",
+      `- selected target agent id: ${normalized.targetAgentId ?? "unknown"}`,
+    );
+    if (normalized.taskKey) {
+      lines.push(`- selected-agent task key: ${normalized.taskKey}`);
+    }
+    lines.push(
+      "",
+      "Selected-agent chat response contract:",
+      "- You are the selected real agent answering the board/user, not a concierge or substitute persona.",
+      "- For status, check-in, review-help, or investigative prompts, return a concise final answer in this shape: Report, What I checked, Recommendation, Options.",
+      "- In `What I checked`, name the Paperclip evidence you used, such as issues, comments, runs, documents, work products, approvals, or dashboard state. If you cannot access something, say that plainly.",
+      "- In `Options`, propose concrete next steps backed by Paperclip work objects or interactions, such as `suggest_tasks`, `request_confirmation`, or `ask_user_questions` when a real board choice is needed.",
+      "- Do not expose API keys, auth-token handling, internal tool narration, or raw command/debug notes.",
+      "- Do not end with vague `let me know` or `I will check` prose. Either answer from available context, create/suggest real follow-up work, or report the blocker and exact owner/action.",
+      "",
+    );
   }
   if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;
