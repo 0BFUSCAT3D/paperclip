@@ -81,11 +81,15 @@ function isLegacyBoardChatIssue(issue: {
   description?: string | null;
   originKind?: string | null;
   status?: string | null;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
 }) {
   return (
     issue.title === LEGACY_BOARD_CHAT_TITLE &&
     issue.description === BOARD_CHAT_DESCRIPTION &&
     (issue.originKind === undefined || issue.originKind === null || issue.originKind === "manual") &&
+    issue.assigneeAgentId === null &&
+    issue.assigneeUserId === null &&
     isOpenBoardChatIssue(issue)
   );
 }

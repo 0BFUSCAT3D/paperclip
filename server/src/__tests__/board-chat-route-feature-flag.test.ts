@@ -194,6 +194,8 @@ describe("board-chat client disconnect", () => {
           description: "Standing issue for board concierge conversations and decision log",
           originKind: "manual",
           status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: null,
         },
       ]);
     mockIssueService.update.mockResolvedValue({ id: "issue-legacy", originKind: "board_chat" });
@@ -226,6 +228,64 @@ describe("board-chat client disconnect", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "issue-legacy",
+      "hello",
+      expect.any(Object),
+    );
+    req.abort();
+    await pending;
+  });
+
+  it("does not repair or anchor assigned manual issues that only look like legacy board chat issues", async () => {
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    mockIssueService.list
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: "issue-agent-assigned-manual",
+          title: "Board Operations",
+          description: "Standing issue for board concierge conversations and decision log",
+          originKind: "manual",
+          status: "todo",
+          assigneeAgentId: "agent-1",
+          assigneeUserId: null,
+        },
+        {
+          id: "issue-user-assigned-manual",
+          title: "Board Operations",
+          description: "Standing issue for board concierge conversations and decision log",
+          originKind: "manual",
+          status: "todo",
+          assigneeAgentId: null,
+          assigneeUserId: "user-2",
+        },
+      ]);
+    mockIssueService.create.mockResolvedValue({ id: "issue-new" });
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
+    mockIssueService.listComments.mockResolvedValue([]);
+    const fakeProc = makeFakeProc();
+    mockSpawn.mockReturnValue(fakeProc);
+    const app = await createApp();
+
+    const req = request(app)
+      .post("/api/board/chat/stream")
+      .set("Content-Type", "application/json")
+      .send(JSON.stringify({ companyId: "company-1", message: "hello" }));
+    const pending = req.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalled());
+    fakeProc.exitCode = 0;
+    fakeProc.emit("close", 0);
+
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      title: "hello",
+      originKind: "board_chat",
+    }));
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "issue-new",
       "hello",
       expect.any(Object),
     );
