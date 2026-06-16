@@ -95,11 +95,19 @@ const CEO_AGENT = {
   status: "active",
   icon: null,
 };
+const CTO_AGENT = {
+  id: "agent-cto",
+  name: "Morgan",
+  role: "cto",
+  status: "active",
+  icon: null,
+};
 const BOARD_ISSUE = {
   id: "issue-board",
   identifier: "PAP-1",
   title: "How is hiring going?",
   originKind: "board_chat",
+  originId: "agent-ceo",
   status: "in_progress",
   createdAt: "2026-06-10T00:00:00.000Z",
   updatedAt: "2026-06-10T00:00:00.000Z",
@@ -109,6 +117,7 @@ const LEGACY_BOARD_ISSUE = {
   identifier: "PAP-0",
   title: "Board Operations",
   originKind: "board_chat",
+  originId: null,
   status: "todo",
   createdAt: "2026-06-09T00:00:00.000Z",
   updatedAt: "2026-06-09T00:00:00.000Z",
@@ -249,6 +258,22 @@ describe("BoardChat Conference Room transport", () => {
 
     expect(container.textContent).toMatch(/Chat from .*2026/);
     expect(container.textContent).not.toContain("PAP-0");
+  });
+
+  it("shows the selected chat agent in history rows", async () => {
+    mockAgentsApi.list.mockResolvedValue([CEO_AGENT, CTO_AGENT]);
+    mockIssuesApi.list.mockResolvedValue([
+      {
+        ...BOARD_ISSUE,
+        id: "issue-cto-chat",
+        originId: CTO_AGENT.id,
+        title: "Architecture review",
+      },
+    ]);
+    await render();
+
+    expect(container.textContent).toContain("Architecture review");
+    expect(container.textContent).toContain("Morgan · CTO");
   });
 
   it("reserves mobile viewport height and bottom-nav space for the agent feed", async () => {

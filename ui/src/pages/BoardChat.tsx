@@ -24,7 +24,7 @@ import { Activity, AlertCircle, History, Loader2, MessageSquarePlus } from "luci
 import { ActivityFeed } from "../components/ActivityFeed";
 import { SelectedAgentChat } from "../components/SelectedAgentChat";
 import { cn, relativeTime } from "../lib/utils";
-import type { Issue } from "@paperclipai/shared";
+import { AGENT_ROLE_LABELS, type Agent, type Issue } from "@paperclipai/shared";
 import {
   Sheet,
   SheetContent,
@@ -51,6 +51,7 @@ const DEFAULT_CHAT_FRACTION = 2 / 3;
 
 const BOARD_CHAT_ISSUE_TITLE = "Board Operations";
 const BOARD_CHAT_ORIGIN_KIND = "board_chat";
+const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 const boardChatHistoryDateFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -70,6 +71,21 @@ function boardChatHistoryLabel(issue: Pick<Issue, "title" | "createdAt" | "updat
     return `Chat from ${formatBoardChatHistoryDate(issue.createdAt ?? issue.updatedAt)}`;
   }
   return issue.title;
+}
+
+function boardChatHistoryAgentLabel(
+  issue: Pick<Issue, "originId" | "originKind">,
+  agentsById: Map<string, Agent>,
+  fallbackAgent: Agent | null,
+): string | null {
+  const targetAgent =
+    issue.originKind === BOARD_CHAT_ORIGIN_KIND && issue.originId
+      ? agentsById.get(issue.originId) ?? null
+      : null;
+  const agent = targetAgent ?? fallbackAgent;
+  if (!agent) return null;
+  const role = roleLabels[agent.role] ?? agent.role;
+  return `${agent.name} · ${role}`;
 }
 
 export function BoardChat() {
@@ -174,6 +190,10 @@ export function BoardChat() {
 
   const ceoAgent = useMemo(
     () => agents?.find((a) => a.role === "ceo" && a.status !== "terminated"),
+    [agents],
+  );
+  const agentsById = useMemo(
+    () => new Map((agents ?? []).map((agent) => [agent.id, agent] as const)),
     [agents],
   );
 
@@ -290,6 +310,11 @@ export function BoardChat() {
     setMintError(null);
   }, []);
 
+  const refreshBoardChatHistory = useCallback(async () => {
+    if (!historyQueryKey) return;
+    await queryClient.invalidateQueries({ queryKey: historyQueryKey });
+  }, [historyQueryKey, queryClient]);
+
   if (!selectedCompanyId) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -395,6 +420,11 @@ export function BoardChat() {
                     {boardChatIssues.map((issue) => {
                       const active = issue.id === boardIssueId;
                       const label = boardChatHistoryLabel(issue);
+                      const agentLabel = boardChatHistoryAgentLabel(
+                        issue,
+                        agentsById,
+                        ceoAgent ?? null,
+                      );
                       return (
                         <button
                           key={issue.id}
@@ -412,7 +442,7 @@ export function BoardChat() {
                               {label}
                             </span>
                             <span className="block truncate text-xs text-muted-foreground">
-                              Updated {relativeTime(issue.updatedAt)}
+                              {agentLabel ? `${agentLabel} · ` : ""}updated {relativeTime(issue.updatedAt)}
                             </span>
                           </span>
                         </button>
@@ -436,6 +466,7 @@ export function BoardChat() {
               defaultTargetAgentId={ceoAgent?.id ?? null}
               currentUserId={currentUserId}
               emptyMessage={`Send ${ceoAgent?.name ?? "your CEO"} a message to start the conversation.`}
+              onMessageSent={refreshBoardChatHistory}
               className="min-h-0 flex-1"
             />
           ) : mintError ? (

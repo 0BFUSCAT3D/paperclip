@@ -10,6 +10,7 @@ const ASSIGNEE_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  update: vi.fn(),
   addComment: vi.fn(),
   listComments: vi.fn(),
   getComment: vi.fn(),
@@ -175,6 +176,7 @@ describe("selected-agent issue chat backend", () => {
       explanation: "Allowed by test grant.",
     });
     mockIssueService.getById.mockResolvedValue(makeIssue());
+    mockIssueService.update.mockResolvedValue(makeIssue());
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: ISSUE_ID,
@@ -237,6 +239,55 @@ describe("selected-agent issue chat backend", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.anything(),
+    );
+  });
+
+  it("titles new board chat issues from the first selected-agent message and stores the target agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      originKind: "board_chat",
+      originId: null,
+      title: "New chat",
+    }));
+    const db = createDbStub(
+      [makeAgent({ id: CEO_AGENT_ID, name: "CEO", role: "ceo" })],
+      [],
+    );
+
+    const res = await request(await createApp(db))
+      .post(`/api/issues/${ISSUE_ID}/selected-agent-chat/comments`)
+      .send({ body: "Can you summarize the hiring plan before tomorrow?" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      ISSUE_ID,
+      {
+        originId: CEO_AGENT_ID,
+        title: "Can you summarize the hiring plan before tomorrow?",
+      },
+    );
+  });
+
+  it("keeps a custom board chat title while refreshing the selected target agent", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      originKind: "board_chat",
+      originId: CEO_AGENT_ID,
+      title: "Hiring plan",
+    }));
+    const db = createDbStub(
+      [makeAgent()],
+      [],
+    );
+
+    const res = await request(await createApp(db))
+      .post(`/api/issues/${ISSUE_ID}/selected-agent-chat/comments`)
+      .send({ body: "switch this to the CTO", targetAgentId: TARGET_AGENT_ID });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      ISSUE_ID,
+      {
+        originId: TARGET_AGENT_ID,
+      },
     );
   });
 

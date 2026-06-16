@@ -1809,6 +1809,16 @@ function selectedAgentChatTaskKey(issueId: string, targetAgentId: string) {
   return `selected-agent-chat:${issueId}:${targetAgentId}`;
 }
 
+const BOARD_CHAT_ORIGIN_KIND = "board_chat";
+const BOARD_CHAT_GENERIC_TITLES = new Set(["New chat", "Board Operations"]);
+
+function deriveSelectedAgentBoardChatTitle(message: string): string {
+  const singleLine = message.replace(/\s+/g, " ").trim();
+  if (!singleLine) return "New chat";
+  if (singleLine.length <= 80) return singleLine;
+  return `${singleLine.slice(0, 77).trimEnd()}...`;
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -10900,6 +10910,19 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
         sourceTrust,
       });
+
+      if (issue.originKind === BOARD_CHAT_ORIGIN_KIND) {
+        const boardChatPatch: Partial<typeof issueRows.$inferInsert> = {};
+        if (issue.originId !== targetAgent.id) {
+          boardChatPatch.originId = targetAgent.id;
+        }
+        if (BOARD_CHAT_GENERIC_TITLES.has(issue.title)) {
+          boardChatPatch.title = deriveSelectedAgentBoardChatTitle(req.body.body);
+        }
+        if (Object.keys(boardChatPatch).length > 0) {
+          await svc.update(issue.id, boardChatPatch);
+        }
+      }
 
       await issueReferencesSvc.syncComment(comment.id);
       await logActivity(db, {

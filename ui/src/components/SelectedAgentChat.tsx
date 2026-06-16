@@ -315,6 +315,7 @@ export interface SelectedAgentChatProps {
   showAgentSwitcher?: boolean;
   currentUserId?: string | null;
   emptyMessage?: string;
+  onMessageSent?: () => void | Promise<void>;
   className?: string;
 }
 
@@ -333,6 +334,7 @@ export function SelectedAgentChat({
   showAgentSwitcher = true,
   currentUserId,
   emptyMessage,
+  onMessageSent,
   className,
 }: SelectedAgentChatProps) {
   const queryClient = useQueryClient();
@@ -409,6 +411,7 @@ export function SelectedAgentChat({
       setErrorText(null);
       try {
         await issuesApi.addSelectedAgentChatComment(issueId, body, { targetAgentId });
+        await onMessageSent?.();
         invalidateRuns();
       } catch (err) {
         setErrorText(
@@ -420,7 +423,7 @@ export function SelectedAgentChat({
         throw err;
       }
     },
-    [issueId, targetAgentId, invalidateRuns],
+    [issueId, targetAgentId, onMessageSent, invalidateRuns],
   );
 
   const handleStopRun = useCallback(
