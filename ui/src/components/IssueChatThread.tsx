@@ -189,6 +189,7 @@ import {
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { CommentAttributionChip } from "./CommentAttributionChip";
 import { resolveCommentAttribution } from "../lib/comment-attribution";
+import { AnimatedPaperclipIcon } from "./AnimatedPaperclipIcon";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -1048,10 +1049,10 @@ function IssueChatChainOfThought({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-              {agentIcon ? (
+              {isActive ? (
+                <AnimatedPaperclipIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+              ) : agentIcon ? (
                 <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-              ) : isActive ? (
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
               ) : (
                 <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
@@ -1179,7 +1180,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
     <div className="flex gap-2 px-1">
       <div className="flex flex-col items-center pt-0.5">
         {isRunning ? (
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground/50" />
+          <AnimatedPaperclipIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
         ) : (
           <ToolIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
         )}
@@ -1998,7 +1999,7 @@ function IssueChatAssistantMessage({
                     liveBlueBadge,
                   )}
                 >
-                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <AnimatedPaperclipIcon className="h-3 w-3" />
                   Running
                 </Badge>
               ) : null}
@@ -2017,11 +2018,7 @@ function IssueChatAssistantMessage({
                   <div className="rounded-lg px-1 py-2">
                     <div className="flex min-w-0 items-center gap-2.5">
                       <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-                        {agentIcon ? (
-                          <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-                        ) : (
-                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                        )}
+                        <AnimatedPaperclipIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="shimmer-text">{waitingText}</span>
                       </span>
                     </div>
