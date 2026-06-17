@@ -8597,6 +8597,7 @@ export function issueRoutes(
         reviewPolicy: effectiveReviewPolicy,
       });
     }
+    if (commentBody && !(await assertBoardChatGenericCommentAllowed(req, res, existing))) return;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {

@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   listComments: vi.fn(),
   getComment: vi.fn(),
   getRelationSummaries: vi.fn(),
+  findMentionedAgents: vi.fn(async () => []),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -26,7 +27,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 
 const mockIssueReferenceService = vi.hoisted(() => ({
-  listIssueReferenceSummary: vi.fn(async () => []),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
   diffIssueReferenceSummary: vi.fn(() => ({
     addedReferencedIssues: [],
     removedReferencedIssues: [],
@@ -94,7 +95,9 @@ vi.mock("../services/index.js", () => ({
   }),
   logActivity: mockLogActivity,
   projectService: () => ({}),
-  routineService: () => ({}),
+  routineService: () => ({
+    syncRunStatusForIssue: vi.fn(async () => undefined),
+  }),
   workProductService: () => ({}),
 }));
 
@@ -386,6 +389,24 @@ describe("selected-agent issue chat backend", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("rejects board comments on board_chat issues through the generic issue update route", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      originKind: "board_chat",
+      assigneeAgentId: null,
+      status: "todo",
+    }));
+    const app = await createApp(createDbStub());
+
+    const res = await request(app)
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({ comment: "bypass selected chat" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("board_chat_generic_comments_forbidden");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("rejects agent API comments on board_chat issues without a selected-agent chat run", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       originKind: "board_chat",
@@ -419,6 +440,40 @@ describe("selected-agent issue chat backend", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("rejects agent API update comments on board_chat issues without a selected-agent chat run", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      originKind: "board_chat",
+      assigneeAgentId: null,
+      status: "todo",
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      agentId: TARGET_AGENT_ID,
+      status: "running",
+      contextSnapshot: {
+        issueId: ISSUE_ID,
+        selectedAgentChat: false,
+        targetAgentId: TARGET_AGENT_ID,
+      },
+    });
+    const app = await createApp(createDbStub(), {
+      type: "agent",
+      agentId: TARGET_AGENT_ID,
+      companyId: COMPANY_ID,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({ comment: "agent bypass" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("board_chat_selected_agent_run_required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("allows the active selected-agent chat target to reply on a board_chat issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       originKind: "board_chat",
@@ -448,6 +503,49 @@ describe("selected-agent issue chat backend", () => {
       .send({ body: "Here is the report." });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      ISSUE_ID,
+      "Here is the report.",
+      expect.objectContaining({ agentId: TARGET_AGENT_ID, runId: "run-selected" }),
+      expect.any(Object),
+    );
+  });
+
+  it("allows the active selected-agent chat target to reply through the issue update route", async () => {
+    const boardChatIssue = makeIssue({
+      originKind: "board_chat",
+      assigneeAgentId: null,
+      status: "todo",
+    });
+    mockIssueService.getById.mockResolvedValue(boardChatIssue);
+    mockIssueService.update.mockResolvedValue(boardChatIssue);
+    mockIssueReferenceService.listIssueReferenceSummary.mockResolvedValue({
+      outbound: [],
+      inbound: [],
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-selected",
+      agentId: TARGET_AGENT_ID,
+      status: "running",
+      contextSnapshot: {
+        issueId: ISSUE_ID,
+        selectedAgentChat: true,
+        targetAgentId: TARGET_AGENT_ID,
+      },
+    });
+    const app = await createApp(createDbStub(), {
+      type: "agent",
+      agentId: TARGET_AGENT_ID,
+      companyId: COMPANY_ID,
+      runId: "run-selected",
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .patch(`/api/issues/${ISSUE_ID}`)
+      .send({ comment: "Here is the report." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       ISSUE_ID,
       "Here is the report.",
