@@ -14,9 +14,20 @@ import type { IssueChatComment } from "../lib/issue-chat-messages";
 // Stub the heavy thread renderer so the View's own wiring (identity header,
 // switcher, error/loading states, send pass-through) is what we assert.
 vi.mock("./IssueChatThread", () => ({
-  IssueChatThread: (props: { emptyMessage?: string; onAdd: (b: string) => Promise<void> }) => (
+  IssueChatThread: (props: {
+    emptyMessage?: string;
+    onAdd: (b: string) => Promise<void>;
+    backgroundWorkChildren?: unknown[];
+    suppressIssueStatusNotices?: boolean;
+    composerHint?: string | null;
+  }) => (
     <div data-testid="issue-chat-thread">
       <span data-testid="empty-message">{props.emptyMessage}</span>
+      <span data-testid="background-work-count">{props.backgroundWorkChildren?.length ?? 0}</span>
+      <span data-testid="status-notices">
+        {props.suppressIssueStatusNotices ? "suppressed" : "visible"}
+      </span>
+      <span data-testid="composer-hint">{props.composerHint}</span>
       <button type="button" data-testid="send" onClick={() => void props.onAdd("hello")}>
         send
       </button>
@@ -192,6 +203,36 @@ describe("SelectedAgentChatView", () => {
     flushSync(() => send.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await Promise.resolve();
     expect(onSend).toHaveBeenCalledWith("hello");
+  });
+
+  it("forwards Conference Room background-work state to the issue thread", () => {
+    render(
+      <SelectedAgentChatView
+        agents={[ceo]}
+        targetAgentId={ceo.id}
+        comments={[]}
+        backgroundWorkChildren={[
+          {
+            id: "issue-child",
+            identifier: "PAP-2",
+            title: "Background task",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: ceo.id,
+            assigneeUserId: null,
+          },
+        ]}
+        suppressIssueStatusNotices
+        composerHint="Ask me anything while I work on this."
+        onSend={async () => {}}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="background-work-count"]')?.textContent).toBe("1");
+    expect(container.querySelector('[data-testid="status-notices"]')?.textContent).toBe("suppressed");
+    expect(container.querySelector('[data-testid="composer-hint"]')?.textContent).toBe(
+      "Ask me anything while I work on this.",
+    );
   });
 
   it("offers the switcher only when more than one agent is invokable", () => {

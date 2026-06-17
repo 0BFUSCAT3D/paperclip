@@ -16,6 +16,10 @@ describe("default agent instruction bundles", () => {
     expect(bundle["AGENTS.md"]).toContain("suggest_tasks");
     expect(bundle["AGENTS.md"]).toContain("request_confirmation");
     expect(bundle["AGENTS.md"]).toContain("ask_user_questions");
+    expect(bundle["AGENTS.md"]).toContain("This surface is for triage, status, delegation, and decisions");
+    expect(bundle["AGENTS.md"]).toContain("Bounded reporting work is allowed");
+    expect(bundle["AGENTS.md"]).toContain("Do not write feature code, fix bugs");
+    expect(bundle["AGENTS.md"]).toContain("link it as a blocker of this conversation");
     expect(bundle["AGENTS.md"]).toContain("Do not expose API keys");
     expect(bundle["AGENTS.md"]).toContain("I will check");
   });
@@ -28,8 +32,11 @@ describe("default agent instruction bundles", () => {
     expect(bundle["AGENTS.md"]).toContain("Report");
     expect(bundle["AGENTS.md"]).toContain("What I checked");
     expect(bundle["AGENTS.md"]).toContain("Options");
+    expect(bundle["AGENTS.md"]).toContain("This surface is for triage, status, delegation, and decisions");
+    expect(bundle["AGENTS.md"]).toContain("Bounded reporting work is allowed");
     expect(bundle["AGENTS.md"]).toContain("Keep the CEO boundary intact");
     expect(bundle["AGENTS.md"]).toContain("you do not personally do implementation work");
+    expect(bundle["AGENTS.md"]).toContain("link it as a blocker of this conversation");
   });
 
   it("still resolves only CEO roles to the CEO bundle", () => {

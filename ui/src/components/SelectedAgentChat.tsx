@@ -7,6 +7,7 @@ import {
   type AskUserQuestionsInteraction,
   type FeedbackVote,
   type FeedbackVoteValue,
+  type IssueRelationIssueSummary,
   type IssueThreadInteraction,
   type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
@@ -95,6 +96,9 @@ export interface SelectedAgentChatViewProps {
   companyId?: string | null;
   projectId?: string | null;
   currentUserId?: string | null;
+  backgroundWorkChildren?: IssueRelationIssueSummary[];
+  suppressIssueStatusNotices?: boolean;
+  composerHint?: string | null;
   /** True while the first comments fetch is in flight (no data yet). */
   loading?: boolean;
   /** Surface a delivery/transport failure inline (CR8). */
@@ -143,6 +147,9 @@ export function SelectedAgentChatView({
   companyId,
   projectId,
   currentUserId,
+  backgroundWorkChildren = [],
+  suppressIssueStatusNotices = false,
+  composerHint = null,
   loading = false,
   errorText,
   onRetry,
@@ -286,10 +293,13 @@ export function SelectedAgentChatView({
             projectId={projectId}
             agentMap={agentMap}
             currentUserId={currentUserId}
+            backgroundWorkChildren={backgroundWorkChildren}
+            suppressIssueStatusNotices={suppressIssueStatusNotices}
             mentions={mentions}
             emptyMessage={
               emptyMessage ?? `Send ${targetName} a message to start the conversation.`
             }
+            composerHint={composerHint}
             onAdd={handleAdd}
             onStopRun={onStopRun}
             onVote={onVote}
@@ -313,6 +323,7 @@ export interface SelectedAgentChatProps {
   /** Preferred initial target; defaults to the company CEO. */
   defaultTargetAgentId?: string | null;
   showAgentSwitcher?: boolean;
+  conferenceRoomMode?: boolean;
   currentUserId?: string | null;
   emptyMessage?: string;
   onMessageSent?: () => void | Promise<void>;
@@ -332,6 +343,7 @@ export function SelectedAgentChat({
   agents: providedAgents,
   defaultTargetAgentId,
   showAgentSwitcher = true,
+  conferenceRoomMode = false,
   currentUserId,
   emptyMessage,
   onMessageSent,
@@ -370,6 +382,13 @@ export function SelectedAgentChat({
     refetchInterval: SELECTED_AGENT_CHAT_POLL_MS,
   });
 
+  const issueQuery = useQuery({
+    queryKey: queryKeys.issues.detail(issueId),
+    queryFn: () => issuesApi.get(issueId),
+    refetchInterval: SELECTED_AGENT_CHAT_POLL_MS,
+    enabled: conferenceRoomMode,
+  });
+
   const liveRunsQuery = useQuery({
     queryKey: targetAgentId
       ? queryKeys.issues.selectedAgentChatLiveRuns(issueId, targetAgentId)
@@ -393,9 +412,29 @@ export function SelectedAgentChat({
     queryFn: () => issuesApi.listFeedbackVotes(issueId),
   });
 
+  const backgroundWorkChildren = useMemo(() => {
+    if (!conferenceRoomMode) return [];
+    const seen = new Set<string>();
+    const children: IssueRelationIssueSummary[] = [];
+    for (const child of [
+      ...(issueQuery.data?.blockedBy ?? []),
+      ...(issueQuery.data?.blocks ?? []),
+    ]) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      children.push(child);
+    }
+    return children;
+  }, [conferenceRoomMode, issueQuery.data?.blockedBy, issueQuery.data?.blocks]);
+
+  const hasOpenBackgroundWork = backgroundWorkChildren.some(
+    (child) => child.status !== "done" && child.status !== "cancelled",
+  );
+
   const invalidateRuns = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
     if (targetAgentId) {
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.selectedAgentChatLiveRuns(issueId, targetAgentId),
@@ -502,6 +541,9 @@ export function SelectedAgentChat({
       companyId={companyId}
       projectId={projectId}
       currentUserId={currentUserId}
+      backgroundWorkChildren={backgroundWorkChildren}
+      suppressIssueStatusNotices={conferenceRoomMode}
+      composerHint={hasOpenBackgroundWork ? "Ask me anything while I work on this." : null}
       loading={commentsQuery.isLoading}
       errorText={errorText}
       onRetry={errorText ? () => setErrorText(null) : undefined}

@@ -1388,12 +1388,17 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("selected-agent chat: yes");
     expect(prompt).toContain("selected target agent id: 11111111-1111-4111-8111-111111111111");
+    expect(prompt).toContain("Conference Room (selected-agent chat) contract");
+    expect(prompt).toContain("discussion thread, not a concierge, relay, or substitute persona");
     expect(prompt).toContain("Report, What I checked, Recommendation, Options");
-    expect(prompt).toContain("issues, comments, runs, documents, work products, approvals, or dashboard state");
+    expect(prompt).toContain("Bounded reporting work is allowed only when it directly improves the answer");
+    expect(prompt).toContain("Do not write feature code, fix bugs, run deploys");
+    expect(prompt).toContain("link it as a blocker of this conversation");
+    expect(prompt).toContain("issues, comments, runs, documents, work products, approvals, dashboard state");
     expect(prompt).toContain("suggest_tasks");
     expect(prompt).toContain("request_confirmation");
     expect(prompt).toContain("ask_user_questions");
-    expect(prompt).toContain("Do not expose API keys");
+    expect(prompt).toContain("Privacy: never expose API keys");
     expect(prompt).toContain("Do not end with vague `let me know` or `I will check` prose");
   });
 

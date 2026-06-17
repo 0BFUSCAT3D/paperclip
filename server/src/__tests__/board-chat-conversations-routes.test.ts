@@ -143,4 +143,16 @@ describe("POST /api/board/chat/conversations (PAP-11123)", () => {
       expect.objectContaining({ originKind: "board_chat" }),
     );
   });
+
+  it("does not expose the retired legacy stream endpoint", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/board/chat/stream")
+      .send({ companyId: "company-1", message: "hello" });
+
+    expect(res.status).toBe(404);
+    expect(mockGetExperimental).not.toHaveBeenCalled();
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
 });

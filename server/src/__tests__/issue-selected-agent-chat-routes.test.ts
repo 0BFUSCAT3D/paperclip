@@ -22,9 +22,16 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  reportRunActivity: vi.fn(async () => undefined),
 }));
 
 const mockIssueReferenceService = vi.hoisted(() => ({
+  listIssueReferenceSummary: vi.fn(async () => []),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
   syncComment: vi.fn(async () => undefined),
 }));
 
@@ -141,7 +148,16 @@ function createDbStub(...selectRows: Array<Array<Record<string, unknown>>>) {
   };
 }
 
-async function createApp(db: Record<string, unknown>) {
+async function createApp(
+  db: Record<string, unknown>,
+  actor: Express.Request["actor"] = {
+    type: "board",
+    userId: "local-board",
+    companyIds: [COMPANY_ID],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  },
+) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -149,13 +165,7 @@ async function createApp(db: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: [COMPANY_ID],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes(db as any, {} as any));
@@ -357,5 +367,92 @@ describe("selected-agent issue chat backend", () => {
     }
     expect(mockIssueService.listComments).not.toHaveBeenCalled();
     expect(mockIssueService.getComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects board comments on board_chat issues through the generic issue comment route", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      originKind: "board_chat",
+      assigneeAgentId: null,
+      status: "todo",
+    }));
+    const app = await createApp(createDbStub());
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "bypass selected chat" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("board_chat_generic_comments_forbidden");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent API comments on board_chat issues without a selected-agent chat run", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      originKind: "board_chat",
+      assigneeAgentId: null,
+      status: "todo",
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      agentId: TARGET_AGENT_ID,
+      status: "running",
+      contextSnapshot: {
+        issueId: ISSUE_ID,
+        selectedAgentChat: false,
+        targetAgentId: TARGET_AGENT_ID,
+      },
+    });
+    const app = await createApp(createDbStub(), {
+      type: "agent",
+      agentId: TARGET_AGENT_ID,
+      companyId: COMPANY_ID,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "agent bypass" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("board_chat_selected_agent_run_required");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows the active selected-agent chat target to reply on a board_chat issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      originKind: "board_chat",
+      assigneeAgentId: null,
+      status: "todo",
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-selected",
+      agentId: TARGET_AGENT_ID,
+      status: "running",
+      contextSnapshot: {
+        issueId: ISSUE_ID,
+        selectedAgentChat: true,
+        targetAgentId: TARGET_AGENT_ID,
+      },
+    });
+    const app = await createApp(createDbStub(), {
+      type: "agent",
+      agentId: TARGET_AGENT_ID,
+      companyId: COMPANY_ID,
+      runId: "run-selected",
+      source: "agent_key",
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${ISSUE_ID}/comments`)
+      .send({ body: "Here is the report." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      ISSUE_ID,
+      "Here is the report.",
+      expect.objectContaining({ agentId: TARGET_AGENT_ID, runId: "run-selected" }),
+      expect.any(Object),
+    );
   });
 });

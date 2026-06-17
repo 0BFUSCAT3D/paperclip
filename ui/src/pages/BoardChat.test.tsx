@@ -204,6 +204,7 @@ describe("BoardChat Conference Room transport", () => {
     const lastProps = mockSelectedAgentChatProps.at(-1);
     expect(lastProps?.companyId).toBe("company-1");
     expect(lastProps?.currentUserId).toBe("user-1");
+    expect(lastProps?.conferenceRoomMode).toBe(true);
   });
 
   it("mints the first conversation when the company has no history", async () => {

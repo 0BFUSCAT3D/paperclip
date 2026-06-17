@@ -4902,6 +4902,47 @@ export function issueRoutes(
       .then((rows) => rows[0] ?? null);
   }
 
+  async function assertBoardChatGenericCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: { id: string; originKind?: string | null },
+  ) {
+    if (issue.originKind !== BOARD_CHAT_ORIGIN_KIND) return true;
+    if (req.actor.type !== "agent") {
+      res.status(403).json({
+        error: "Conference Room comments must use selected-agent chat",
+        code: "board_chat_generic_comments_forbidden",
+      });
+      return false;
+    }
+
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+    const run = await heartbeat.getRun(runId);
+    const context =
+      run?.contextSnapshot && typeof run.contextSnapshot === "object"
+        ? (run.contextSnapshot as Record<string, unknown>)
+        : null;
+    const selectedAgentRun =
+      run?.status === "running" &&
+      run.agentId === actorAgentId &&
+      context?.selectedAgentChat === true &&
+      context?.issueId === issue.id &&
+      context?.targetAgentId === actorAgentId;
+    if (selectedAgentRun) return true;
+
+    res.status(403).json({
+      error: "Only the active selected-agent chat target can comment on Conference Room issues",
+      code: "board_chat_selected_agent_run_required",
+    });
+    return false;
+  }
+
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
     return {
       errorCode: "operator_interrupted",
@@ -11231,6 +11272,7 @@ export function issueRoutes(
       await denyIssueWrite(req, res, issue, "issue_write_attribution_spoof_rejected");
       return;
     }
+    if (!(await assertBoardChatGenericCommentAllowed(req, res, issue))) return;
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     const commentAuthorizationReason = issueWriteAuthorizationReason(req, commentAccessDecision);

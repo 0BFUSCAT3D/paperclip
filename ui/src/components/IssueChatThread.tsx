@@ -190,6 +190,7 @@ import { SourceTrustBadge } from "./SourceTrustBadge";
 import { CommentAttributionChip } from "./CommentAttributionChip";
 import { resolveCommentAttribution } from "../lib/comment-attribution";
 import { AnimatedPaperclipIcon } from "./AnimatedPaperclipIcon";
+import { BoardChatBackgroundWorkCard } from "./BoardChatBackgroundWorkCard";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -453,6 +454,7 @@ interface IssueChatThreadProps {
   blockedBy?: IssueRelationIssueSummary[];
   /** Company-wide set of issue ids with a live (queued/running) run. */
   liveIssueIds?: ReadonlySet<string>;
+  backgroundWorkChildren?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
@@ -506,6 +508,7 @@ interface IssueChatThreadProps {
   mentions?: MentionOption[];
   composerDisabledReason?: string | null;
   composerHint?: string | null;
+  suppressIssueStatusNotices?: boolean;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
@@ -4355,6 +4358,7 @@ export function IssueChatThread({
   issueId = null,
   blockedBy = [],
   liveIssueIds,
+  backgroundWorkChildren = [],
   blockerAttention = null,
   successfulRunHandoff = null,
   scheduledRetry = null,
@@ -4396,6 +4400,7 @@ export function IssueChatThread({
   mentions = [],
   composerDisabledReason = null,
   composerHint = null,
+  suppressIssueStatusNotices = false,
   showComposer = true,
   showJumpToLatest,
   autoScrollToLatestOnInitialLoad = false,
@@ -5105,75 +5110,83 @@ export function IssueChatThread({
             )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
-                  <IssueAssignedBacklogNotice
-                    issueStatus={issueStatus ?? ""}
-                    assigneeAgent={assignedAgent}
-                    assigneeUserId={assigneeUserId}
-                    onResume={onResumeFromBacklog}
-                    resuming={resumeFromBacklogPending}
+                  <BoardChatBackgroundWorkCard
+                    childrenIssues={backgroundWorkChildren}
+                    agentMap={agentMap}
                   />
-                  {recoveryAction ? (
-                    <IssueRecoveryActionCard
-                      action={recoveryAction}
-                      agentMap={agentMap}
-                      onResolve={onResolveRecoveryAction}
-                      onReissueIsolated={onReissueIsolatedRecoveryAction}
-                      reissuePending={reissueIsolatedRecoveryActionPending}
-                      onReconcileForward={onReconcileForwardRecoveryAction}
-                      onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
-                      onQuarantineRestore={onQuarantineRestoreRecoveryAction}
-                      quarantineRestorePending={quarantineRestoreRecoveryActionPending}
-                      canBreakGlass={canBreakGlassRecoveryAction}
-                      reconcilePending={reconcileRecoveryActionPending}
-                      canFalsePositive={canFalsePositiveRecoveryAction}
-                    />
+                  {!suppressIssueStatusNotices ? (
+                    <>
+                      <IssueAssignedBacklogNotice
+                        issueStatus={issueStatus ?? ""}
+                        assigneeAgent={assignedAgent}
+                        assigneeUserId={assigneeUserId}
+                        onResume={onResumeFromBacklog}
+                        resuming={resumeFromBacklogPending}
+                      />
+                      {recoveryAction ? (
+                        <IssueRecoveryActionCard
+                          action={recoveryAction}
+                          agentMap={agentMap}
+                          onResolve={onResolveRecoveryAction}
+                          onReissueIsolated={onReissueIsolatedRecoveryAction}
+                          reissuePending={reissueIsolatedRecoveryActionPending}
+                          onReconcileForward={onReconcileForwardRecoveryAction}
+                          onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                          onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                          quarantineRestorePending={quarantineRestoreRecoveryActionPending}
+                          canBreakGlass={canBreakGlassRecoveryAction}
+                          reconcilePending={reconcileRecoveryActionPending}
+                          canFalsePositive={canFalsePositiveRecoveryAction}
+                        />
+                      ) : null}
+                      {legacyRecoverySourceIssue ? (
+                        <SystemNotice
+                          tone="info"
+                          label="Legacy recovery task"
+                          body={
+                            <span>
+                              Legacy recovery task. Newer recovery actions live on the source task
+                              {legacyRecoverySourceIssue.identifier ? (
+                                <>
+                                  {" — "}
+                                  <Link
+                                    to={legacyRecoverySourceIssue.href}
+                                    className="underline-offset-2 hover:underline"
+                                  >
+                                    {legacyRecoverySourceIssue.identifier}
+                                    {legacyRecoverySourceIssue.title ? (
+                                      <span className="text-muted-foreground">
+                                        {" "}
+                                        — {legacyRecoverySourceIssue.title}
+                                      </span>
+                                    ) : null}
+                                  </Link>
+                                </>
+                              ) : (
+                                "."
+                              )}
+                            </span>
+                          }
+                        />
+                      ) : null}
+                      <IssueBlockedNotice
+                        issueId={issueId}
+                        issueStatus={issueStatus}
+                        blockers={unresolvedBlockers}
+                        allBlockers={blockedBy}
+                        liveIssueIds={liveIssueIds}
+                        blockerAttention={blockerAttention}
+                         successfulRunHandoff={recoveryAction ? null : successfulRunHandoffWithLiveness}
+                        scheduledRetry={scheduledRetry}
+                        agentName={
+                          successfulRunHandoff?.assigneeAgentId
+                            ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
+                            : null
+                        }
+                      />
+                      <IssueAssigneePausedNotice agent={assignedAgent} />
+                    </>
                   ) : null}
-                  {legacyRecoverySourceIssue ? (
-                    <SystemNotice
-                      tone="info"
-                      label="Legacy recovery task"
-                      body={
-                        <span>
-                          Legacy recovery task. Newer recovery actions live on the source task
-                          {legacyRecoverySourceIssue.identifier ? (
-                            <>
-                              {" — "}
-                              <Link
-                                to={legacyRecoverySourceIssue.href}
-                                className="underline-offset-2 hover:underline"
-                              >
-                                {legacyRecoverySourceIssue.identifier}
-                                {legacyRecoverySourceIssue.title ? (
-                                  <span className="text-muted-foreground">
-                                    {" "}
-                                    — {legacyRecoverySourceIssue.title}
-                                  </span>
-                                ) : null}
-                              </Link>
-                            </>
-                          ) : (
-                            "."
-                          )}
-                        </span>
-                      }
-                    />
-                  ) : null}
-                  <IssueBlockedNotice
-                    issueId={issueId}
-                    issueStatus={issueStatus}
-                    blockers={unresolvedBlockers}
-                    allBlockers={blockedBy}
-                    liveIssueIds={liveIssueIds}
-                    blockerAttention={blockerAttention}
-                    successfulRunHandoff={recoveryAction ? null : successfulRunHandoffWithLiveness}
-                    scheduledRetry={scheduledRetry}
-                    agentName={
-                      successfulRunHandoff?.assigneeAgentId
-                        ? agentMap?.get(successfulRunHandoff.assigneeAgentId)?.name ?? null
-                        : null
-                    }
-                  />
-                  <IssueAssigneePausedNotice agent={assignedAgent} />
                 </div>
               ) : null}
               {footer ? <div data-testid="issue-chat-thread-footer">{footer}</div> : null}
