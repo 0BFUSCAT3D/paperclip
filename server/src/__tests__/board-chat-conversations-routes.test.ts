@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  getById: vi.fn(),
 }));
 const mockAssertInstanceAdmin = vi.hoisted(() => vi.fn());
 const mockAssertCompanyAccess = vi.hoisted(() => vi.fn());
@@ -35,6 +36,8 @@ async function createApp(
 
 const OPEN_BOARD_ISSUE = {
   id: "issue-open",
+  companyId: "company-1",
+  identifier: "PAP-1",
   title: "How is hiring going?",
   originKind: "board_chat",
   status: "todo",
@@ -49,6 +52,7 @@ describe("POST /api/board/chat/conversations (PAP-11123)", () => {
     mockIssueService.list.mockResolvedValue([]);
     mockIssueService.create.mockResolvedValue({ id: "issue-new", originKind: "board_chat" });
     mockIssueService.update.mockResolvedValue(undefined);
+    mockIssueService.getById.mockResolvedValue(null);
   });
 
   it("returns 403 FEATURE_DISABLED when enableConferenceRoomChat is off", async () => {
@@ -107,6 +111,19 @@ describe("POST /api/board/chat/conversations (PAP-11123)", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 
+  it("reuses a done board_chat issue because stable URLs stay available until cancellation", async () => {
+    mockIssueService.list.mockResolvedValue([{ ...OPEN_BOARD_ISSUE, id: "issue-done", status: "done" }]);
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/board/chat/conversations")
+      .send({ companyId: "company-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.id).toBe("issue-done");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
   it("mints an origin-tagged todo issue when no conversation is open", async () => {
     const app = await createApp();
 
@@ -153,6 +170,41 @@ describe("POST /api/board/chat/conversations (PAP-11123)", () => {
 
     expect(res.status).toBe(404);
     expect(mockGetExperimental).not.toHaveBeenCalled();
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("resolves a valid direct board_chat conversation ref without creating", async () => {
+    mockIssueService.getById.mockResolvedValue(OPEN_BOARD_ISSUE);
+    const app = await createApp();
+
+    const res = await request(app)
+      .get("/api/board/chat/conversations/PAP-1")
+      .query({ companyId: "company-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      issue: expect.objectContaining({ id: "issue-open", identifier: "PAP-1" }),
+      unavailableReason: null,
+    });
+    expect(mockIssueService.getById).toHaveBeenCalledWith("PAP-1");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["not_found", null],
+    ["cancelled", { ...OPEN_BOARD_ISSUE, status: "cancelled" }],
+    ["wrong_company", { ...OPEN_BOARD_ISSUE, companyId: "company-2" }],
+    ["wrong_kind", { ...OPEN_BOARD_ISSUE, originKind: "manual" }],
+  ])("returns %s for unavailable direct conversation refs", async (reason, issue) => {
+    mockIssueService.getById.mockResolvedValue(issue);
+    const app = await createApp();
+
+    const res = await request(app)
+      .get("/api/board/chat/conversations/some-ref")
+      .query({ companyId: "company-1" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ issue: null, unavailableReason: reason });
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });
 });

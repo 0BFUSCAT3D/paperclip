@@ -22,4 +22,11 @@ export const boardChatApi = {
       companyId,
       ...(options?.newConversation ? { newConversation: true } : {}),
     }),
+  getConversation: (companyId: string, conversationRef: string) => {
+    const params = new URLSearchParams({ companyId });
+    return api.get<{
+      issue: Issue | null;
+      unavailableReason: "not_found" | "wrong_company" | "wrong_kind" | "cancelled" | null;
+    }>(`/board/chat/conversations/${encodeURIComponent(conversationRef)}?${params.toString()}`);
+  },
 };

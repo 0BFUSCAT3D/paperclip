@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BoardChat } from "./BoardChat";
 
@@ -18,13 +19,18 @@ import { BoardChat } from "./BoardChat";
 const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
-const mockBoardChatApi = vi.hoisted(() => ({ resolveConversation: vi.fn() }));
+const mockBoardChatApi = vi.hoisted(() => ({
+  resolveConversation: vi.fn(),
+  getConversation: vi.fn(),
+}));
 const mockAssistantChatProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+const mockCopyTextToClipboard = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
 vi.mock("../api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("../api/boardChat", () => ({ boardChatApi: mockBoardChatApi }));
+vi.mock("../lib/clipboard", () => ({ copyTextToClipboard: mockCopyTextToClipboard }));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
@@ -104,6 +110,7 @@ const CTO_AGENT = {
 };
 const BOARD_ISSUE = {
   id: "issue-board",
+  companyId: "company-1",
   identifier: "PAP-1",
   title: "How is hiring going?",
   originKind: "board_chat",
@@ -114,6 +121,7 @@ const BOARD_ISSUE = {
 };
 const LEGACY_BOARD_ISSUE = {
   id: "issue-board-old",
+  companyId: "company-1",
   identifier: "PAP-0",
   title: "Board Operations",
   originKind: "board_chat",
@@ -127,6 +135,7 @@ describe("BoardChat Conference Room transport", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
   let queryClient: QueryClient | null = null;
+  let currentPath = "";
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -140,7 +149,18 @@ describe("BoardChat Conference Room transport", () => {
       user: { id: "user-1", name: "Board" },
     });
     mockBoardChatApi.resolveConversation.mockResolvedValue({ issue: BOARD_ISSUE });
+    mockBoardChatApi.getConversation.mockImplementation(
+      async (_companyId: string, ref: string) => ({
+        issue:
+          ref === LEGACY_BOARD_ISSUE.identifier || ref === LEGACY_BOARD_ISSUE.id
+            ? LEGACY_BOARD_ISSUE
+            : BOARD_ISSUE,
+        unavailableReason: null,
+      }),
+    );
+    mockCopyTextToClipboard.mockResolvedValue(undefined);
     mockAssistantChatProps.length = 0;
+    currentPath = "";
   });
 
   afterEach(async () => {
@@ -154,27 +174,49 @@ describe("BoardChat Conference Room transport", () => {
     vi.clearAllMocks();
   });
 
-  function buildElement() {
+  function LocationProbe() {
+    const location = useLocation();
+    currentPath = `${location.pathname}${location.search}${location.hash}`;
+    return null;
+  }
+
+  function buildElement(initialPath: string) {
     return (
-      <QueryClientProvider client={queryClient!}>
-        <BoardChat />
-      </QueryClientProvider>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <QueryClientProvider client={queryClient!}>
+          <LocationProbe />
+          <Routes>
+            <Route path="/:companyPrefix/board-chat" element={<BoardChat />} />
+            <Route path="/:companyPrefix/board-chat/:conversationRef" element={<BoardChat />} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>
     );
   }
 
-  async function render() {
+  async function render(initialPath = "/PAP/board-chat") {
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
     root = createRoot(container);
     await act(async () => {
-      root!.render(buildElement());
+      root!.render(buildElement(initialPath));
     });
     // Flush the agent/session/issue queries plus follow-up effect renders.
-    for (let i = 0; i < 8; i++) {
+    await flushEffects();
+  }
+
+  async function flushEffects(times = 12) {
+    for (let i = 0; i < times; i++) {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
+    }
+  }
+
+  async function waitForPath(path: string, times = 30) {
+    for (let i = 0; i < times && currentPath !== path; i++) {
+      await flushEffects(1);
     }
   }
 
@@ -208,12 +250,13 @@ describe("BoardChat Conference Room transport", () => {
     expect(lastProps?.showAgentSwitcher).toBe(false);
     expect(lastProps?.companyName).toBe("Acme Robotics");
     expect(lastProps?.emptyMessage).toBeUndefined();
+    expect(currentPath).toBe("/PAP/board-chat/PAP-1");
   });
 
-  it("mints the first conversation when the company has no history", async () => {
+  it("mints the first conversation when the company has no history and replaces to its URL", async () => {
     mockIssuesApi.list.mockResolvedValue([]);
     mockBoardChatApi.resolveConversation.mockResolvedValue({
-      issue: { ...BOARD_ISSUE, id: "issue-minted", title: "New chat" },
+      issue: { ...BOARD_ISSUE, id: "issue-minted", identifier: "PAP-2", title: "New chat" },
     });
     await render();
 
@@ -225,11 +268,13 @@ describe("BoardChat Conference Room transport", () => {
       '[data-testid="selected-agent-chat"]',
     ) as HTMLDivElement | null;
     expect(surface?.getAttribute("data-issue-id")).toBe("issue-minted");
+    await waitForPath("/PAP/board-chat/PAP-2");
+    expect(currentPath).toBe("/PAP/board-chat/PAP-2");
   });
 
   it("forces a fresh conversation when New chat is clicked", async () => {
     mockBoardChatApi.resolveConversation.mockResolvedValue({
-      issue: { ...BOARD_ISSUE, id: "issue-fresh", title: "New chat" },
+      issue: { ...BOARD_ISSUE, id: "issue-fresh", identifier: "PAP-3", title: "New chat" },
     });
     await render();
 
@@ -241,11 +286,7 @@ describe("BoardChat Conference Room transport", () => {
     await act(async () => {
       newChatButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    for (let i = 0; i < 4; i++) {
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-    }
+    await flushEffects();
 
     expect(mockBoardChatApi.resolveConversation).toHaveBeenCalledWith("company-1", {
       newConversation: true,
@@ -254,6 +295,94 @@ describe("BoardChat Conference Room transport", () => {
       '[data-testid="selected-agent-chat"]',
     ) as HTMLDivElement | null;
     expect(surface?.getAttribute("data-issue-id")).toBe("issue-fresh");
+    await flushEffects();
+    expect(currentPath).toBe("/PAP/board-chat/PAP-3");
+  });
+
+  it("renders the exact direct chat URL after refresh without resolving the latest chat", async () => {
+    const directIssue = {
+      ...BOARD_ISSUE,
+      id: "issue-direct",
+      identifier: "PAP-44",
+      title: "Budget review",
+    };
+    mockIssuesApi.list.mockResolvedValue([BOARD_ISSUE]);
+    mockBoardChatApi.getConversation.mockResolvedValue({
+      issue: directIssue,
+      unavailableReason: null,
+    });
+
+    await render("/PAP/board-chat/PAP-44");
+
+    expect(mockBoardChatApi.getConversation).toHaveBeenCalledWith("company-1", "PAP-44");
+    expect(mockBoardChatApi.resolveConversation).not.toHaveBeenCalled();
+    const surface = container.querySelector(
+      '[data-testid="selected-agent-chat"]',
+    ) as HTMLDivElement | null;
+    expect(surface?.getAttribute("data-issue-id")).toBe("issue-direct");
+    expect(currentPath).toBe("/PAP/board-chat/PAP-44");
+  });
+
+  it("canonicalizes UUID direct links to the issue identifier", async () => {
+    mockBoardChatApi.getConversation.mockResolvedValue({
+      issue: BOARD_ISSUE,
+      unavailableReason: null,
+    });
+
+    await render("/PAP/board-chat/issue-board");
+
+    expect(mockBoardChatApi.getConversation).toHaveBeenCalledWith("company-1", "issue-board");
+    expect(currentPath).toBe("/PAP/board-chat/PAP-1");
+  });
+
+  it("shows an explicit unavailable state for invalid direct links", async () => {
+    mockBoardChatApi.getConversation.mockResolvedValue({
+      issue: null,
+      unavailableReason: "wrong_kind",
+    });
+
+    await render("/PAP/board-chat/PAP-99");
+
+    expect(container.textContent).toContain(
+      "This link points to an issue, but it is not a Conference Room chat.",
+    );
+    expect(container.querySelector('[data-testid="selected-agent-chat"]')).toBeNull();
+    expect(mockBoardChatApi.resolveConversation).not.toHaveBeenCalled();
+  });
+
+  it("history rows navigate by canonical URL", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      BOARD_ISSUE,
+      { ...LEGACY_BOARD_ISSUE, id: "issue-board-old", identifier: "PAP-0" },
+    ]);
+    await render();
+
+    const oldChatButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Chat from"),
+    ) as HTMLButtonElement | undefined;
+    expect(oldChatButton).toBeTruthy();
+
+    await act(async () => {
+      oldChatButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushEffects();
+
+    expect(currentPath).toBe("/PAP/board-chat/PAP-0");
+  });
+
+  it("copies the canonical link for the current chat", async () => {
+    await render();
+
+    const copyButton = container.querySelector(
+      'button[aria-label="copy chat link"]',
+    ) as HTMLButtonElement | null;
+    expect(copyButton).not.toBeNull();
+
+    await act(async () => {
+      copyButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockCopyTextToClipboard).toHaveBeenCalledWith("http://localhost:3000/PAP/board-chat/PAP-1");
   });
 
   it("uses a friendly date label for legacy Board Operations history rows", async () => {

@@ -8,6 +8,12 @@ const BOARD_CHAT_ORIGIN_KIND = "board_chat";
 const LEGACY_BOARD_CHAT_TITLE = "Board Operations";
 const LEGACY_BOARD_CHAT_DESCRIPTION = "Standing issue for board concierge conversations and decision log";
 const BOARD_CHAT_DESCRIPTION = "Standing issue for Conference Room conversations and decision log";
+const BOARD_CHAT_UNAVAILABLE_REASONS = {
+  NOT_FOUND: "not_found",
+  WRONG_COMPANY: "wrong_company",
+  WRONG_KIND: "wrong_kind",
+  CANCELLED: "cancelled",
+} as const;
 
 function deriveBoardChatIssueTitle(message: string): string {
   const singleLine = message.replace(/\s+/g, " ").trim();
@@ -16,8 +22,8 @@ function deriveBoardChatIssueTitle(message: string): string {
   return `${singleLine.slice(0, 77).trimEnd()}...`;
 }
 
-function isOpenBoardChatIssue(issue: { status?: string | null }) {
-  return issue.status !== "done" && issue.status !== "cancelled";
+function isAvailableBoardChatIssue(issue: { status?: string | null }) {
+  return issue.status !== "cancelled";
 }
 
 function isLegacyBoardChatIssue(issue: {
@@ -34,8 +40,23 @@ function isLegacyBoardChatIssue(issue: {
     (issue.originKind === undefined || issue.originKind === null || issue.originKind === "manual") &&
     issue.assigneeAgentId === null &&
     issue.assigneeUserId === null &&
-    isOpenBoardChatIssue(issue)
+    isAvailableBoardChatIssue(issue)
   );
+}
+
+function getBoardChatUnavailableReason(
+  issue: {
+    companyId?: string | null;
+    originKind?: string | null;
+    status?: string | null;
+  } | null,
+  companyId: string,
+) {
+  if (!issue) return BOARD_CHAT_UNAVAILABLE_REASONS.NOT_FOUND;
+  if (issue.companyId !== companyId) return BOARD_CHAT_UNAVAILABLE_REASONS.WRONG_COMPANY;
+  if (issue.originKind !== BOARD_CHAT_ORIGIN_KIND) return BOARD_CHAT_UNAVAILABLE_REASONS.WRONG_KIND;
+  if (issue.status === "cancelled") return BOARD_CHAT_UNAVAILABLE_REASONS.CANCELLED;
+  return null;
 }
 
 /**
@@ -46,7 +67,7 @@ function isLegacyBoardChatIssue(issue: {
  *
  * - `wantsNewConversation` skips reuse and always creates a fresh conversation
  *   (the room's "New chat" control).
- * - Otherwise reuse the most-recent open origin-tagged issue, then adopt and
+ * - Otherwise reuse the most-recent non-cancelled origin-tagged issue, then adopt and
  *   repair a legacy "Board Operations" issue, then create.
  * - `message`, when present, seeds a first-message title; absent (the room
  *   mints before the first message), it falls back to "New chat".
@@ -68,7 +89,7 @@ async function resolveOrCreateBoardChatIssue(
       sortField: "updated",
       sortDir: "desc",
     });
-    const boardIssue = boardChatIssues.find(isOpenBoardChatIssue);
+    const boardIssue = boardChatIssues.find(isAvailableBoardChatIssue);
     if (boardIssue) return boardIssue;
 
     const legacyIssues = await issueSvc.list(companyId, {
@@ -147,6 +168,36 @@ export function boardChatRoutes(
       trustExplicitResponsibleUserId: actor.actorType === "user",
     });
     res.status(200).json({ issue });
+  });
+
+  // Resolve a direct Conference Room URL ref. This intentionally does not
+  // create or redirect: invalid direct links need a visible unavailable state
+  // while valid UUID links can be canonicalized client-side to identifiers.
+  router.get("/board/chat/conversations/:conversationRef", async (req, res) => {
+    const experimental = await instanceSettingsService(db).getExperimental();
+    if (experimental.enableConferenceRoomChat !== true) {
+      res.status(403).json({
+        error: "Conference Room Chat is not enabled",
+        code: "FEATURE_DISABLED",
+      });
+      return;
+    }
+
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
+    if (!companyId) {
+      res.status(400).json({ error: "companyId is required" });
+      return;
+    }
+
+    assertInstanceAdmin(req);
+    assertCompanyAccess(req, companyId);
+
+    const issue = await issueService(db).getById(req.params.conversationRef as string);
+    const unavailableReason = getBoardChatUnavailableReason(issue, companyId);
+    res.status(200).json({
+      issue: unavailableReason ? null : issue,
+      unavailableReason,
+    });
   });
 
   return router;
