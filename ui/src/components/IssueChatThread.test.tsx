@@ -16,6 +16,7 @@ import {
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
+import type { IssueChatComposerHandle } from "./IssueChatThread";
 import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
@@ -3500,7 +3501,7 @@ describe("IssueChatThread", () => {
 
   it("exposes a composer focus handle that forwards to the editor", () => {
     const root = createRoot(container);
-    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
+    const composerRef = createRef<IssueChatComposerHandle>();
     const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
     const requestAnimationFrameMock = vi
       .spyOn(window, "requestAnimationFrame")
@@ -3549,7 +3550,7 @@ describe("IssueChatThread", () => {
 
   it("restores a cancelled queued draft into the composer handle", () => {
     const root = createRoot(container);
-    const composerRef = createRef<{ focus: () => void; restoreDraft: (submittedBody: string) => void }>();
+    const composerRef = createRef<IssueChatComposerHandle>();
     const scrollByMock = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
     const requestAnimationFrameMock = vi
       .spyOn(window, "requestAnimationFrame")
@@ -3584,6 +3585,12 @@ describe("IssueChatThread", () => {
     expect(editor?.value).toBe("Queued message");
     expect(markdownEditorFocusMock).toHaveBeenCalledTimes(1);
     expect(scrollByMock).toHaveBeenCalledWith({ top: 96, behavior: "smooth" });
+
+    act(() => {
+      composerRef.current?.setDraft("Starter prompt");
+    });
+
+    expect(editor?.value).toBe("Starter prompt");
 
     scrollByMock.mockRestore();
     requestAnimationFrameMock.mockRestore();

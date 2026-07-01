@@ -410,6 +410,7 @@ export function shouldRenderComposerHandoffPreview(body: string, preview: Compos
 export interface IssueChatComposerHandle {
   focus: () => void;
   restoreDraft: (submittedBody: string) => void;
+  setDraft: (body: string) => void;
 }
 
 interface IssueChatComposerProps {
@@ -515,6 +516,7 @@ interface IssueChatThreadProps {
   autoScrollToLatestOnInitialLoad?: boolean;
   autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
+  emptyState?: ReactNode;
   footer?: ReactNode;
   /**
    * Issue header content (title row, badges, plugin toolbars) rendered INSIDE
@@ -3790,6 +3792,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       );
       focusComposer();
     },
+    setDraft: (nextBody: string) => {
+      setBody(nextBody);
+      focusComposer();
+    },
   }), []);
 
   async function handleSubmit() {
@@ -4406,6 +4412,7 @@ export function IssueChatThread({
   autoScrollToLatestOnInitialLoad = false,
   autoScrollToHashOnInitialLoad = false,
   emptyMessage,
+  emptyState,
   footer,
   variant = "full",
   enableLiveTranscriptPolling = true,
@@ -5075,14 +5082,16 @@ export function IssueChatThread({
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
               {messages.length === 0 ? (
-                <Card className={cn(
-                  "block shadow-none text-center text-sm text-muted-foreground",
-                  variant === "embedded"
-                    ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
-                    : "border-dashed px-6 py-10",
-                )}>
-                  {resolvedEmptyMessage}
-                </Card>
+                emptyState ?? (
+                  <Card className={cn(
+                    "block shadow-none text-center text-sm text-muted-foreground",
+                    variant === "embedded"
+                      ? "border-dashed border-border/70 bg-background/60 px-4 py-6"
+                      : "border-dashed px-6 py-10",
+                  )}>
+                    {resolvedEmptyMessage}
+                  </Card>
+                )
               ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
                 <VirtualizedIssueChatThreadList
                   ref={virtualizedThreadRef}
