@@ -10,7 +10,7 @@ import { BoardChat } from "./BoardChat";
 /**
  * Conference Room transport coverage (PAP-11123). The room is backed by a
  * `board_chat` issue and the real-agent conversation runs over
- * SelectedAgentChat — so the page resolves/mints the backing issue, surfaces
+ * AssistantChat — so the page resolves/mints the backing issue, surfaces
  * history, and hands the resolved issue + CEO default target to the chat
  * surface. The legacy SSE-stream transport assertions are gone.
  */
@@ -19,7 +19,7 @@ const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
 const mockBoardChatApi = vi.hoisted(() => ({ resolveConversation: vi.fn() }));
-const mockSelectedAgentChatProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+const mockAssistantChatProps = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -41,14 +41,14 @@ vi.mock("../context/BreadcrumbContext", () => ({
 vi.mock("../components/ActivityFeed", () => ({
   ActivityFeed: () => <div data-testid="activity-feed" />,
 }));
-vi.mock("../components/SelectedAgentChat", () => ({
-  SelectedAgentChat: (props: Record<string, unknown>) => {
-    mockSelectedAgentChatProps.push(props);
+vi.mock("../components/AssistantChat", () => ({
+  AssistantChat: (props: Record<string, unknown>) => {
+    mockAssistantChatProps.push(props);
     return (
       <div
         data-testid="selected-agent-chat"
         data-issue-id={String(props.issueId)}
-        data-default-target={String(props.defaultTargetAgentId)}
+        data-target-agent-id={String(props.targetAgentId)}
       />
     );
   },
@@ -140,7 +140,7 @@ describe("BoardChat Conference Room transport", () => {
       user: { id: "user-1", name: "Board" },
     });
     mockBoardChatApi.resolveConversation.mockResolvedValue({ issue: BOARD_ISSUE });
-    mockSelectedAgentChatProps.length = 0;
+    mockAssistantChatProps.length = 0;
   });
 
   afterEach(async () => {
@@ -191,7 +191,7 @@ describe("BoardChat Conference Room transport", () => {
     );
   });
 
-  it("renders SelectedAgentChat over the resolved board issue with the CEO as default target", async () => {
+  it("renders AssistantChat over the resolved board issue with the CEO as default target", async () => {
     await render();
 
     const surface = container.querySelector(
@@ -199,12 +199,12 @@ describe("BoardChat Conference Room transport", () => {
     ) as HTMLDivElement | null;
     expect(surface).not.toBeNull();
     expect(surface?.getAttribute("data-issue-id")).toBe(BOARD_ISSUE.id);
-    expect(surface?.getAttribute("data-default-target")).toBe(CEO_AGENT.id);
+    expect(surface?.getAttribute("data-target-agent-id")).toBe(CEO_AGENT.id);
 
-    const lastProps = mockSelectedAgentChatProps.at(-1);
+    const lastProps = mockAssistantChatProps.at(-1);
     expect(lastProps?.companyId).toBe("company-1");
     expect(lastProps?.currentUserId).toBe("user-1");
-    expect(lastProps?.conferenceRoomMode).toBe(true);
+    expect(lastProps?.targetAgentId).toBe(CEO_AGENT.id);
     expect(lastProps?.showAgentSwitcher).toBe(false);
     expect(lastProps?.companyName).toBe("Acme Robotics");
     expect(lastProps?.emptyMessage).toBeUndefined();

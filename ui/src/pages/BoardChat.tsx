@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Activity, AlertCircle, History, Loader2, MessageSquarePlus } from "lucide-react";
 import { ActivityFeed } from "../components/ActivityFeed";
-import { SelectedAgentChat } from "../components/SelectedAgentChat";
+import { AssistantChat } from "../components/AssistantChat";
 import { cn, relativeTime } from "../lib/utils";
 import { AGENT_ROLE_LABELS, type Agent, type Issue } from "@paperclipai/shared";
 import {
@@ -38,7 +38,7 @@ import {
  * Conference Room — the board user's live conversation with the real company
  * CEO (PAP-11099). The room is backed by an ordinary company-scoped
  * `board_chat` issue (so history survives reloads) and the conversation runs
- * over the reusable {@link SelectedAgentChat} surface: durable history is the
+ * over the reusable {@link AssistantChat} surface: durable history is the
  * issue's comments, live output is the target agent's active run, and
  * next-step choices are real issue-thread interactions. Sending wakes the real
  * agent (default CEO) — no board-concierge persona.
@@ -347,7 +347,7 @@ export function BoardChat() {
           style={innerWidth > 0 && containerWidth >= 2 * SPLIT_MIN_PANE_PX + SPLIT_DIVIDER_PX ? { width: leftPaneWidth } : undefined}
         >
           {/* Room toolbar — history + new-chat controls. The agent identity
-               (real CEO, no concierge persona) is rendered by SelectedAgentChat
+               (real CEO, no concierge persona) is rendered by AssistantChat
                just below. */}
           <div className="relative flex shrink-0 items-center justify-between gap-2 px-4 py-2">
             <p className="min-w-0 truncate text-xs text-muted-foreground">
@@ -454,18 +454,17 @@ export function BoardChat() {
             </SheetContent>
           </Sheet>
 
-          {/* Center column — the real-agent conversation. SelectedAgentChat
+          {/* Center column — the real-agent conversation. AssistantChat
                owns the identity header, message stream, interaction cards,
                live/active-run row, and composer. */}
           {boardIssueId ? (
-            <SelectedAgentChat
+            <AssistantChat
               key={boardIssueId}
               issueId={boardIssueId}
               companyId={selectedCompanyId}
               agents={agents}
-              defaultTargetAgentId={ceoAgent?.id ?? null}
+              targetAgentId={ceoAgent?.id ?? null}
               showAgentSwitcher={false}
-              conferenceRoomMode
               companyName={selectedCompany?.name ?? null}
               currentUserId={currentUserId}
               onMessageSent={refreshBoardChatHistory}

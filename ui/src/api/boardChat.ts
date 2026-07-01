@@ -4,7 +4,7 @@ import { api } from "./client";
 /**
  * Conference Room (board chat) transport. The room is backed by an ordinary
  * company-scoped `board_chat` issue so history survives reloads; the real
- * agent conversation runs over `SelectedAgentChat` (PAP-11099 Phase 3b).
+ * agent conversation runs over `AssistantChat` (PAP-11099 Phase 3b).
  */
 export const boardChatApi = {
   /**
