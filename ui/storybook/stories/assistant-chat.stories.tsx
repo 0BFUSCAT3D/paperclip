@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
 import { AssistantChatView } from "@/components/AssistantChat";
-import type { IssueChatComment } from "@/lib/issue-chat-messages";
+import type { IssueChatComment, IssueChatTranscriptEntry } from "@/lib/issue-chat-messages";
 import { pendingSuggestedTasksInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { storybookAgents } from "../fixtures/paperclipData";
 
@@ -94,6 +94,38 @@ const runningLiveRun: LiveRunForIssue = {
   issueId,
 };
 
+const runningTranscriptsByRunId = new Map<string, readonly IssueChatTranscriptEntry[]>([
+  [
+    runningActiveRun.id,
+    [
+      {
+        kind: "thinking",
+        ts: "2026-06-14T15:05:03.000Z",
+        text: "Checking recent connector status, open task blockers, and whether the Sheets API key is still the gating item.",
+      },
+      {
+        kind: "tool_call",
+        ts: "2026-06-14T15:05:07.000Z",
+        name: "search_issues",
+        toolUseId: "tool-ceo-active-1",
+        input: { q: "MCP connector Sheets blocked" },
+      },
+      {
+        kind: "tool_result",
+        ts: "2026-06-14T15:05:09.000Z",
+        toolUseId: "tool-ceo-active-1",
+        content: "Found two connector tasks complete and one Sheets task blocked on missing Google API credentials.",
+        isError: false,
+      },
+      {
+        kind: "assistant",
+        ts: "2026-06-14T15:05:12.000Z",
+        text: "I am checking the team status now and will summarize the blocker and recommended next step.",
+      },
+    ],
+  ],
+]);
+
 function Frame({ children }: { children: React.ReactNode }) {
   return (
     <div className="paperclip-story__frame mx-auto flex h-[640px] w-full max-w-3xl flex-col overflow-hidden">
@@ -158,6 +190,7 @@ export const ActiveRun: Story = {
       comments={[conversationComments[0]!]}
       activeRun={runningActiveRun}
       liveRuns={[runningLiveRun]}
+      transcriptsByRunId={runningTranscriptsByRunId}
     />
   ),
 };

@@ -17,7 +17,6 @@ describe("resolveIssueChatThreadPreset", () => {
       suppressIssueStatusNotices: false,
       enableReassign: false,
       showBackgroundWorkChildren: true,
-      showRunFinalizationActions: true,
       composerSubmitKey: "mod-enter",
       composerSingleLine: false,
     });
@@ -42,10 +41,8 @@ describe("resolveIssueChatThreadPreset", () => {
       suppressIssueStatusNotices: true,
       enableReassign: false,
       showBackgroundWorkChildren: false,
-      showRunFinalizationActions: false,
       composerSubmitKey: "enter",
       composerSingleLine: true,
-      composerMentions: "optional",
     });
   });
 

@@ -105,6 +105,8 @@ vi.mock("./MarkdownEditor", () => ({
     className,
     contentClassName,
     fileDropTarget,
+    onSubmit,
+    submitKey = "mod-enter",
   }: {
     value?: string;
     onChange?: (value: string) => void;
@@ -112,6 +114,8 @@ vi.mock("./MarkdownEditor", () => ({
     className?: string;
     contentClassName?: string;
     fileDropTarget?: "editor" | "parent";
+    onSubmit?: () => void;
+    submitKey?: "mod-enter" | "enter";
   }, ref) => {
     useImperativeHandle(ref, () => ({
       focus: markdownEditorFocusMock,
@@ -123,9 +127,24 @@ vi.mock("./MarkdownEditor", () => ({
         data-class-name={className}
         data-content-class-name={contentClassName}
         data-file-drop-target={fileDropTarget}
+        data-submit-key={submitKey}
         placeholder={placeholder}
         value={value}
         onChange={(event) => onChange?.(event.target.value)}
+        onKeyDown={(event) => {
+          const shouldSubmit =
+            onSubmit
+            && event.key === "Enter"
+            && (
+              submitKey === "enter"
+                ? !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+                : event.metaKey || event.ctrlKey
+            );
+          if (shouldSubmit) {
+            event.preventDefault();
+            onSubmit();
+          }
+        }}
       />
     );
   }),
@@ -400,6 +419,150 @@ describe("IssueChatThread", () => {
       children: "1. **Readable** markdown on blue",
       className: expect.stringContaining("paperclip-markdown-on-accent"),
     }));
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("wires the assistant preset to Enter-to-send and keeps Shift+Enter for new lines", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            preset="assistant"
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
+    expect(editor).not.toBeNull();
+    expect(editor?.dataset.submitKey).toBe("enter");
+    expect(container.textContent).toContain("Enter to send · Shift+Enter for a new line");
+
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(editor, "Assistant reply");
+      editor?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await act(async () => {
+      editor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(appendMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      editor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+
+    expect(appendMock).toHaveBeenCalledTimes(1);
+    expect(appendMock).toHaveBeenCalledWith(expect.objectContaining({
+      content: [{ type: "text", text: "Assistant reply" }],
+    }));
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders assistant preset turns as compact rows and starts live reasoning collapsed", async () => {
+    const root = createRoot(container);
+    const transcriptsByRunId = new Map<string, readonly IssueChatTranscriptEntry[]>([
+      [
+        "run-active",
+        [
+          {
+            kind: "thinking",
+            ts: "2026-04-06T12:00:01.000Z",
+            text: "Checking the active run transcript before reporting back.",
+          },
+          {
+            kind: "tool_call",
+            ts: "2026-04-06T12:00:02.000Z",
+            name: "read_file",
+            toolUseId: "tool-active-1",
+            input: { path: "ui/src/components/IssueChatThread.tsx" },
+          },
+        ],
+      ],
+    ]);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            preset="assistant"
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[{
+              id: "run-active",
+              status: "running",
+              invocationSource: "manual",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent One",
+              adapterType: "codex_local",
+            }]}
+            activeRun={{
+              id: "run-active",
+              status: "running",
+              invocationSource: "manual",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent One",
+              adapterType: "codex_local",
+              issueId: "issue-1",
+            }}
+            transcriptsByRunId={transcriptsByRunId}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const viewport = container.querySelector('[data-testid="thread-viewport"]') as HTMLDivElement | null;
+    expect(viewport?.className).toContain("space-y-3");
+    const workingButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent?.includes("Working"),
+    );
+    expect(workingButton).toBeDefined();
+    expect(workingButton?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).not.toContain("Checking the active run transcript");
+
+    await act(async () => {
+      workingButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Checking the active run transcript");
 
     act(() => {
       root.unmount();

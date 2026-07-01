@@ -193,7 +193,10 @@ import { AnimatedPaperclipIcon } from "./AnimatedPaperclipIcon";
 import { BoardChatBackgroundWorkCard } from "./BoardChatBackgroundWorkCard";
 import {
   resolveIssueChatThreadPreset,
+  type IssueChatThreadComposerSubmitKey,
+  type IssueChatThreadDensity,
   type IssueChatThreadPresetName,
+  type IssueChatThreadWorkingIndicator,
 } from "./chat-thread-presets";
 
 interface IssueChatMessageContext {
@@ -254,6 +257,8 @@ interface IssueChatMessageContext {
   externalReferences?: MarkdownExternalReferenceMap;
   /** Linkify `PAP-C7` case chips in comment bodies (experimental Cases flag). */
   linkCaseReferences?: boolean;
+  density: IssueChatThreadDensity;
+  workingIndicator: IssueChatThreadWorkingIndicator;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -261,6 +266,8 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   feedbackTermsUrl: null,
   issueStatus: undefined,
   successfulRunHandoff: null,
+  density: "comfortable",
+  workingIndicator: "expanded",
 });
 
 const AGENT_COMMENT_BUBBLE_WIDTH_CLASS = "max-w-(--sz-calc-7) sm:max-w-(--pct-85)";
@@ -433,6 +440,8 @@ interface IssueChatComposerProps {
   userLabelMap?: ReadonlyMap<string, string> | null;
   composerDisabledReason?: string | null;
   composerHint?: string | null;
+  composerSubmitKey?: IssueChatThreadComposerSubmitKey;
+  composerSingleLine?: boolean;
   issueStatus?: string;
   issueWorkMode?: IssueWorkMode;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
@@ -539,6 +548,8 @@ interface IssueChatThreadProps {
    */
   issueBrief?: TaskChatIssueBrief;
   variant?: "full" | "embedded";
+  density?: IssueChatThreadDensity;
+  workingIndicator?: IssueChatThreadWorkingIndicator;
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
@@ -996,7 +1007,7 @@ function IssueChatChainOfThought({
   message: ThreadMessage;
   cotParts: readonly IssueChatCoTPart[];
 }) {
-  const { agentMap } = useContext(IssueChatCtx);
+  const { agentMap, workingIndicator } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
@@ -1026,12 +1037,16 @@ function IssueChatChainOfThought({
     segmentIndex: myIndex,
     segmentCount: rawSegments.length,
   });
-  const [expanded, setExpanded] = useState(isActive);
+  const [expanded, setExpanded] = useState(isActive && workingIndicator !== "collapsed");
   const liveElapsed = useLiveElapsed(segmentTiming?.startMs, isActive);
 
   useEffect(() => {
+    if (workingIndicator === "collapsed") {
+      if (!isActive) setExpanded(false);
+      return;
+    }
     if (isActive) setExpanded(true);
-  }, [isActive]);
+  }, [isActive, workingIndicator]);
 
   let headerVerb: string;
   let headerSuffix: string | null = null;
@@ -1054,13 +1069,26 @@ function IssueChatChainOfThought({
     <div>
       <button
         type="button"
-        className="group flex w-full items-start gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
+        aria-expanded={expanded}
+        className={cn(
+          "group flex w-full items-start gap-2.5 text-left transition-colors hover:bg-accent/5",
+          workingIndicator === "collapsed" && isActive
+            ? "rounded-full px-1 py-1"
+            : "rounded-lg px-1 py-2",
+        )}
         onClick={() => hasContent && setExpanded((v) => !v)}
       >
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-              {isActive ? (
+            <span className={cn(
+              "inline-flex items-center gap-2 font-medium text-foreground/80",
+              workingIndicator === "collapsed" && isActive
+                ? "rounded-full border border-border/70 bg-muted/30 px-2 py-0.5 text-xs"
+                : "text-sm",
+            )}>
+              {workingIndicator === "collapsed" && isActive ? (
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-500" />
+              ) : isActive ? (
                 <AnimatedPaperclipIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
               ) : agentIcon ? (
                 <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
@@ -1476,6 +1504,7 @@ function IssueChatUserMessage({
     onDeleteComment,
     currentUserId,
     userProfileMap,
+    density,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1519,6 +1548,131 @@ function IssueChatUserMessage({
     setDeleteDialogOpen(false);
     void onDeleteComment?.(commentId);
   };
+  if (density === "compact") {
+    return (
+      <>
+        <div id={anchorId}>
+          <div className="group flex items-start gap-2.5 py-1">
+            {authorAvatar}
+            <div className="min-w-0 flex-1">
+              <div className="mb-0.5 flex min-w-0 items-center gap-2">
+                <span className="truncate text-xs font-medium text-foreground">{resolvedAuthorName}</span>
+                {message.createdAt ? (
+                  <a
+                    href={anchorId ? `#${anchorId}` : undefined}
+                    className="shrink-0 text-[10px] text-muted-foreground/60 hover:text-foreground hover:underline"
+                  >
+                    {commentDateLabel(message.createdAt)}
+                  </a>
+                ) : null}
+                <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
+                {followUpRequested ? (
+                  <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                    Follow-up
+                  </Badge>
+                ) : null}
+                {!deleted ? (
+                  <span className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                    <button
+                      type="button"
+                      className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+                      title="Copy message"
+                      aria-label="Copy message"
+                      onClick={() => {
+                        const text = message.content
+                          .filter((p): p is { type: "text"; text: string } => p.type === "text")
+                          .map((p) => p.text)
+                          .join("\n\n");
+                        void copyTextToClipboard(text).then(() => {
+                          setCopied(true);
+                          setTimeout(() => setCopied(false), 2000);
+                        }).catch((error) => {
+                          toastActions?.pushToast({
+                            title: "Copy failed",
+                            body: error instanceof Error ? error.message : "Unable to copy message",
+                            tone: "error",
+                          });
+                        });
+                      }}
+                    >
+                      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    </button>
+                    {canDeleteComment ? (
+                      <button
+                        type="button"
+                        className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-destructive"
+                        title="Delete comment"
+                        aria-label="Delete comment"
+                        onClick={handleDeleteComment}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    ) : null}
+                  </span>
+                ) : null}
+              </div>
+              {queued ? (
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+                    {queueBadgeLabel}
+                  </span>
+                  {queueTargetRunId && onInterruptQueued ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                      disabled={isInterruptingQueuedRun}
+                      onClick={() => void onInterruptQueued(queueTargetRunId)}
+                    >
+                      {isInterruptingQueuedRun ? "Interrupting..." : "Interrupt"}
+                    </Button>
+                  ) : null}
+                  {onCancelQueued ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                      onClick={() => onCancelQueued(commentId)}
+                    >
+                      Cancel
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              {deleted ? (
+                <div className="text-sm italic text-muted-foreground">Comment deleted</div>
+              ) : (
+                <div className={cn("min-w-0 max-w-full space-y-2 text-sm leading-6 text-foreground", pending && "opacity-80")}>
+                  <IssueChatTextParts message={message} />
+                </div>
+              )}
+              {pending ? (
+                <div className="mt-1 text-[11px] text-muted-foreground">Sending...</div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete comment?</DialogTitle>
+              <DialogDescription>
+                This will replace the comment with a deleted-comment marker.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={confirmDeleteComment}>
+                Delete comment
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </>
+    );
+  }
   const messageBody = (
     <div className={cn("flex min-w-0 max-w-(--pct-85) flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
@@ -1713,6 +1867,7 @@ function IssueChatAssistantMessage({
     runFinalizationActions = [],
     userLabelMap,
     issueAssigneeAgentId,
+    density,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -1902,6 +2057,121 @@ function IssueChatAssistantMessage({
       </DropdownMenu>
     </div>
   );
+
+  if (density === "compact") {
+    const compactActions = (
+      <span className="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <button
+          type="button"
+          className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
+          title="Copy message"
+          aria-label="Copy message"
+          onClick={() => {
+            void copyTextToClipboard(copyText).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            }).catch((error) => {
+              toastActions?.pushToast({
+                title: "Copy failed",
+                body: error instanceof Error ? error.message : "Unable to copy message",
+                tone: "error",
+              });
+            });
+          }}
+        >
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
+        {commentId && onVote ? (
+          <IssueChatFeedbackButtons
+            activeVote={activeVote}
+            sharingPreference={feedbackDataSharingPreference}
+            termsUrl={feedbackTermsUrl ?? null}
+            onVote={handleVote}
+          />
+        ) : null}
+        {canStopRun && onStopRun && runId ? (
+          <button
+            type="button"
+            disabled={isStoppingRun}
+            className={cn(
+              "inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50",
+              stopRunVariant === "pause"
+                ? "hover:text-amber-700 dark:hover:text-amber-300"
+                : "hover:text-red-700 dark:hover:text-red-300",
+            )}
+            title={isStoppingRun ? stoppingRunLabel : stopRunLabel}
+            aria-label={isStoppingRun ? stoppingRunLabel : stopRunLabel}
+            onClick={() => void onStopRun(runId)}
+          >
+            {stopRunVariant === "pause" ? (
+              <PauseCircle className="h-3.5 w-3.5" />
+            ) : (
+              <Square className="h-3.5 w-3.5 fill-current" />
+            )}
+          </button>
+        ) : null}
+      </span>
+    );
+
+    return (
+      <div id={anchorId}>
+        <div className="group flex items-start gap-2.5 py-1">
+          {agentAvatar}
+          <div className="min-w-0 flex-1">
+            <div className="mb-0.5 flex min-w-0 items-center gap-2">
+              <span className="truncate text-xs font-medium text-foreground">{authorName}</span>
+              {message.createdAt ? (
+                <a
+                  href={anchorId ? `#${anchorId}` : undefined}
+                  className="shrink-0 text-[10px] text-muted-foreground/60 hover:text-foreground hover:underline"
+                >
+                  {commentDateLabel(message.createdAt)}
+                </a>
+              ) : null}
+              <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
+              {followUpRequested ? (
+                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                  Follow-up
+                </Badge>
+              ) : null}
+              {isRunning ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 dark:text-cyan-200">
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                  Running
+                </span>
+              ) : null}
+              {!deleted ? compactActions : null}
+            </div>
+            {deleted ? (
+              <div className="text-sm italic text-muted-foreground">Comment deleted</div>
+            ) : (
+              <div className="min-w-0 max-w-full space-y-2 text-sm leading-6 text-foreground">
+                <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
+                {message.content.length === 0 && waitingText ? (
+                  <div className="flex min-w-0 items-center gap-2 py-1 text-sm text-muted-foreground">
+                    <AnimatedPaperclipIcon className="h-4 w-4 shrink-0" />
+                    <span className="shimmer-text">{waitingText}</span>
+                  </div>
+                ) : null}
+                {notices.length > 0 ? (
+                  <div className="space-y-2">
+                    {notices.map((notice, index) => (
+                      <div
+                        key={`${message.id}:notice:${index}`}
+                        className="rounded-sm bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
+                      >
+                        {notice}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Genuine agent comment → neutral left-aligned bubble (mirror of the human
   // blue bubble in IssueChatUserMessage). See PAP-95 rev 6.
@@ -3464,7 +3734,10 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     };
   }, [mode]);
 
-  const gap = variant === "embedded"
+  const { density } = useContext(IssueChatCtx);
+  const gap = density === "compact"
+    ? 12
+    : variant === "embedded"
     ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
     : VIRTUALIZED_THREAD_GAP_FULL_PX;
 
@@ -3705,6 +3978,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   userLabelMap = null,
   composerDisabledReason = null,
   composerHint = null,
+  composerSubmitKey = "mod-enter",
+  composerSingleLine = false,
   issueStatus,
   issueWorkMode,
   onWorkModeChange,
@@ -4113,10 +4388,16 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
+        submitKey={composerSubmitKey}
         imageUploadHandler={onImageUpload}
         fileDropTarget="parent"
         bordered={false}
-        contentClassName="max-h-(--sz-28dvh) overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
+        contentClassName={cn(
+          "overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide",
+          composerSingleLine
+            ? "min-h-(--sz-2rem) max-h-(--sz-7_5rem)"
+            : "max-h-(--sz-28dvh)",
+        )}
       />
 
       {coachVisible && plainNameCandidate ? (
@@ -4422,7 +4703,9 @@ export function IssueChatThread(props: IssueChatThreadProps) {
     suggestedAssigneeValue,
     mentions = [],
     composerDisabledReason = null,
-    composerHint = null,
+    composerHint = presetConfig.composerSubmitKey === "enter"
+      ? "Enter to send · Shift+Enter for a new line"
+      : null,
     suppressIssueStatusNotices = presetConfig.suppressIssueStatusNotices,
     showComposer = presetConfig.showComposer,
     showJumpToLatest = presetConfig.showJumpToLatest,
@@ -4433,6 +4716,8 @@ export function IssueChatThread(props: IssueChatThreadProps) {
     emptyState,
     footer,
     variant = presetConfig.variant,
+    density = presetConfig.density,
+    workingIndicator = presetConfig.workingIndicator,
     enableLiveTranscriptPolling = true,
     transcriptsByRunId,
     hasOutputForRun: hasOutputForRunOverride,
@@ -5026,6 +5311,8 @@ export function IssueChatThread(props: IssueChatThreadProps) {
       successfulRunHandoff: successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
+      density,
+      workingIndicator,
     }),
     [
       feedbackDataSharingPreference,
@@ -5055,6 +5342,8 @@ export function IssueChatThread(props: IssueChatThreadProps) {
       successfulRunHandoffWithLiveness,
       externalReferences,
       linkCaseReferences,
+      density,
+      workingIndicator,
     ],
   );
 
@@ -5071,7 +5360,7 @@ export function IssueChatThread(props: IssueChatThreadProps) {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <IssueChatCtx.Provider value={chatCtx}>
-      <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
+      <div className={cn(density === "compact" ? "space-y-3" : variant === "embedded" ? "space-y-3" : "space-y-4")}>
         {resolvedShowJumpToLatest ? (
           <div className="flex justify-end">
             <button
@@ -5094,7 +5383,7 @@ export function IssueChatThread(props: IssueChatThreadProps) {
           <div data-testid="thread-root">
             <div
               data-testid="thread-viewport"
-              className={variant === "embedded" ? "space-y-3" : "space-y-4"}
+              className={density === "compact" ? "space-y-3" : variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
               {messages.length === 0 ? (
                 emptyState ?? (
@@ -5256,6 +5545,8 @@ export function IssueChatThread(props: IssueChatThreadProps) {
               userLabelMap={userLabelMap}
               composerDisabledReason={composerDisabledReason}
               composerHint={composerHint}
+              composerSubmitKey={presetConfig.composerSubmitKey}
+              composerSingleLine={presetConfig.composerSingleLine}
               issueStatus={issueStatus}
               issueWorkMode={issueWorkMode}
               onWorkModeChange={onWorkModeChange}

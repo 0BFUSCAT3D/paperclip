@@ -30,7 +30,7 @@ import type { MentionOption } from "./MarkdownEditor";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
-import type { IssueChatComment } from "../lib/issue-chat-messages";
+import type { IssueChatComment, IssueChatTranscriptEntry } from "../lib/issue-chat-messages";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 
@@ -221,6 +221,7 @@ export interface AssistantChatViewProps {
   interactions?: IssueThreadInteraction[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
+  transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   feedbackVotes?: FeedbackVote[];
   issueId?: string | null;
   companyId?: string | null;
@@ -278,6 +279,7 @@ export function AssistantChatView({
   interactions,
   liveRuns,
   activeRun,
+  transcriptsByRunId,
   feedbackVotes,
   issueId,
   companyId,
@@ -460,6 +462,7 @@ export function AssistantChatView({
             interactions={interactions}
             liveRuns={liveRuns}
             activeRun={activeRun}
+            transcriptsByRunId={transcriptsByRunId}
             feedbackVotes={feedbackVotes}
             issueId={issueId}
             companyId={companyId}

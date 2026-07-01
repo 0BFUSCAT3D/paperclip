@@ -20,10 +20,8 @@ export interface IssueChatThreadPresetConfig {
   suppressIssueStatusNotices: boolean;
   enableReassign: boolean;
   showBackgroundWorkChildren: boolean;
-  showRunFinalizationActions: boolean;
   composerSubmitKey: IssueChatThreadComposerSubmitKey;
   composerSingleLine: boolean;
-  composerMentions: "enabled" | "optional";
 }
 
 export interface IssueChatThreadPresetOverrides {
@@ -63,10 +61,8 @@ const ISSUE_CHAT_THREAD_PRESETS: Record<IssueChatThreadPresetName, IssueChatThre
     suppressIssueStatusNotices: false,
     enableReassign: false,
     showBackgroundWorkChildren: true,
-    showRunFinalizationActions: true,
     composerSubmitKey: "mod-enter",
     composerSingleLine: false,
-    composerMentions: "enabled",
   },
   assistant: {
     density: "compact",
@@ -79,10 +75,8 @@ const ISSUE_CHAT_THREAD_PRESETS: Record<IssueChatThreadPresetName, IssueChatThre
     suppressIssueStatusNotices: true,
     enableReassign: false,
     showBackgroundWorkChildren: false,
-    showRunFinalizationActions: false,
     composerSubmitKey: "enter",
     composerSingleLine: true,
-    composerMentions: "optional",
   },
 };
 
@@ -108,9 +102,7 @@ export function resolveIssueChatThreadPreset(
     enableReassign: overrides.enableReassign ?? definition.enableReassign,
     showBackgroundWorkChildren:
       overrides.showBackgroundWorkChildren ?? definition.showBackgroundWorkChildren,
-    showRunFinalizationActions: definition.showRunFinalizationActions,
     composerSubmitKey: definition.composerSubmitKey,
     composerSingleLine: definition.composerSingleLine,
-    composerMentions: definition.composerMentions,
   };
 }
