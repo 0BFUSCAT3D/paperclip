@@ -254,7 +254,7 @@ describe("BoardChat staged typing intro", () => {
   it("skips the staged reveal when a user comment already exists", async () => {
     mockIssuesApi.listComments.mockResolvedValue([USER_COMMENT]);
     await render();
-    await advance(0);
+    await advance(1);
 
     // Fast-forwarded: no dots, welcome immediately, no timer needed.
     expect(hasTypingDots(container)).toBe(false);
