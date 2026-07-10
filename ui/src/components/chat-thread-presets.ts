@@ -56,7 +56,7 @@ const ISSUE_CHAT_THREAD_PRESETS: Record<IssueChatThreadPresetName, IssueChatThre
     variant: "full",
     showComposer: true,
     showJumpToLatest: (variant) => variant === "full",
-    autoScrollToLatestOnInitialLoad: true,
+    autoScrollToLatestOnInitialLoad: false,
     emptyMessage: taskEmptyMessage,
     suppressIssueStatusNotices: false,
     enableReassign: false,
@@ -77,8 +77,8 @@ const ISSUE_CHAT_THREAD_PRESETS: Record<IssueChatThreadPresetName, IssueChatThre
     suppressIssueStatusNotices: true,
     enableReassign: false,
     showBackgroundWorkChildren: false,
-    composerSubmitKey: "enter",
-    composerSingleLine: true,
+    composerSubmitKey: "mod-enter",
+    composerSingleLine: false,
   },
 };
 

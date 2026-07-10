@@ -51,6 +51,7 @@ const mockResolveHeartbeatSchedulingSuppression = vi.hoisted(() =>
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({}),
+  companySkillService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(async () => true),
     decide: mockAccessDecide,

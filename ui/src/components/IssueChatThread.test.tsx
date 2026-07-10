@@ -425,7 +425,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("wires the assistant preset to Enter-to-send and keeps Shift+Enter for new lines", async () => {
+  it("wires the assistant preset to the issue chat composer shortcut without guidance copy", async () => {
     const root = createRoot(container);
 
     act(() => {
@@ -446,8 +446,9 @@ describe("IssueChatThread", () => {
 
     const editor = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
     expect(editor).not.toBeNull();
-    expect(editor?.dataset.submitKey).toBe("enter");
-    expect(container.textContent).toContain("Enter to send · Shift+Enter for a new line");
+    expect(editor?.dataset.submitKey).toBe("mod-enter");
+    expect(editor?.dataset.contentClassName).toContain("max-h-(--sz-28dvh)");
+    expect(container.textContent).not.toContain("Enter to send · Shift+Enter for a new line");
 
     act(() => {
       const valueSetter = Object.getOwnPropertyDescriptor(
@@ -461,7 +462,6 @@ describe("IssueChatThread", () => {
     await act(async () => {
       editor?.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter",
-        shiftKey: true,
         bubbles: true,
         cancelable: true,
       }));
@@ -471,6 +471,7 @@ describe("IssueChatThread", () => {
     await act(async () => {
       editor?.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter",
+        metaKey: true,
         bubbles: true,
         cancelable: true,
       }));

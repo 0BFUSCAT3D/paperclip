@@ -18,7 +18,7 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../routes/authz.js", () => ({
-  getActorInfo: () => ({ actorId: "user-1", agentId: null, runId: null }),
+  getActorInfo: () => ({ actorType: "user", actorId: "user-1", agentId: null, runId: null }),
   assertCompanyAccess: mockAssertCompanyAccess,
   assertInstanceAdmin: mockAssertInstanceAdmin,
 }));

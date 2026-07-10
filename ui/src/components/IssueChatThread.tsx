@@ -1560,14 +1560,14 @@ function IssueChatUserMessage({
                 {message.createdAt ? (
                   <a
                     href={anchorId ? `#${anchorId}` : undefined}
-                    className="shrink-0 text-[10px] text-muted-foreground/60 hover:text-foreground hover:underline"
+                    className="shrink-0 text-(length:--text-nano) text-muted-foreground/60 hover:text-foreground hover:underline"
                   >
                     {commentDateLabel(message.createdAt)}
                   </a>
                 ) : null}
                 <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
                 {followUpRequested ? (
-                  <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                  <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
                     Follow-up
                   </Badge>
                 ) : null}
@@ -1613,14 +1613,14 @@ function IssueChatUserMessage({
               </div>
               {queued ? (
                 <div className="mb-1.5 flex items-center gap-2">
-                  <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+                  <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
                     {queueBadgeLabel}
                   </span>
                   {queueTargetRunId && onInterruptQueued ? (
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                      className="h-6 border-red-300 px-2 text-(length:--text-micro) text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
                       disabled={isInterruptingQueuedRun}
                       onClick={() => void onInterruptQueued(queueTargetRunId)}
                     >
@@ -1631,7 +1631,7 @@ function IssueChatUserMessage({
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                      className="h-6 border-amber-300 px-2 text-(length:--text-micro) text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
                       onClick={() => onCancelQueued(commentId)}
                     >
                       Cancel
@@ -1647,7 +1647,7 @@ function IssueChatUserMessage({
                 </div>
               )}
               {pending ? (
-                <div className="mt-1 text-[11px] text-muted-foreground">Sending...</div>
+                <div className="mt-1 text-(length:--text-micro) text-muted-foreground">Sending...</div>
               ) : null}
             </div>
           </div>
@@ -2123,19 +2123,19 @@ function IssueChatAssistantMessage({
               {message.createdAt ? (
                 <a
                   href={anchorId ? `#${anchorId}` : undefined}
-                  className="shrink-0 text-[10px] text-muted-foreground/60 hover:text-foreground hover:underline"
+                  className="shrink-0 text-(length:--text-nano) text-muted-foreground/60 hover:text-foreground hover:underline"
                 >
                   {commentDateLabel(message.createdAt)}
                 </a>
               ) : null}
               <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
               {followUpRequested ? (
-                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
                   Follow-up
                 </Badge>
               ) : null}
               {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 dark:text-cyan-200">
+                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium text-cyan-700 dark:text-cyan-200">
                   <span className="h-1.5 w-1.5 rounded-full bg-current" />
                   Running
                 </span>
@@ -3992,7 +3992,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachmentItem[]>([]);
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
-  const reassignOptionIds = useMemo(() => new Set(reassignOptions.map((option) => option.value)), [reassignOptions]);
+  const reassignOptionIds = useMemo(() => new Set(reassignOptions.map((option) => option.id)), [reassignOptions]);
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [noAssigneeDialogOpen, setNoAssigneeDialogOpen] = useState(false);
   const [dismissedCoachToken, setDismissedCoachToken] = useState<string | null>(null);

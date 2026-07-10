@@ -102,13 +102,13 @@ export function BoardChatBackgroundWorkCard({
                         className="inline-flex min-w-0 items-center gap-1 rounded-sm font-mono text-xs font-medium text-sky-900 underline-offset-2 hover:underline dark:text-sky-100"
                       >
                         <span className="shrink-0">{child.identifier ?? child.id.slice(0, 8)}</span>
-                        <span className="max-w-[18rem] truncate font-sans text-[11px] font-normal text-muted-foreground">
+                        <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) font-normal text-muted-foreground">
                           {child.title}
                         </span>
                       </IssueLinkQuicklook>
                       <span
                         className={cn(
-                          "inline-flex w-fit shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                          "inline-flex w-fit shrink-0 items-center rounded-full border px-2 py-0.5 text-(length:--text-micro) font-medium",
                           status.className,
                         )}
                       >
@@ -116,7 +116,7 @@ export function BoardChatBackgroundWorkCard({
                       </span>
                     </div>
                     {assignee || status.actionLabel ? (
-                      <div className="mt-1 flex min-w-0 flex-col gap-1 text-[11px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                      <div className="mt-1 flex min-w-0 flex-col gap-1 text-(length:--text-micro) text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
                         {assignee ? <span className="truncate">{assignee}</span> : <span />}
                         {status.actionLabel ? (
                           <Link

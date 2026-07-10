@@ -74,9 +74,7 @@ vi.mock("./IssueChatThread", async () => {
           {(props.suppressIssueStatusNotices ?? props.preset === "assistant") ? "suppressed" : "visible"}
         </span>
         <span data-testid="composer-hint">
-          {props.composerHint === undefined && props.preset === "assistant"
-            ? "Enter to send · Shift+Enter for a new line"
-            : props.composerHint}
+          {props.composerHint}
         </span>
         <span data-testid="image-upload-enabled">{String(Boolean(props.imageUploadHandler))}</span>
         <span data-testid="attach-enabled">{String(Boolean(props.onAttachImage))}</span>
@@ -475,7 +473,7 @@ describe("AssistantChatView", () => {
     );
   });
 
-  it("allows the assistant preset default composer hint when no custom hint is provided", () => {
+  it("does not add conference-room shortcut guidance when no custom hint is provided", () => {
     render(
       <AssistantChatView
         agents={[ceo]}
@@ -486,9 +484,7 @@ describe("AssistantChatView", () => {
       />,
     );
 
-    expect(container.querySelector('[data-testid="composer-hint"]')?.textContent).toBe(
-      "Enter to send · Shift+Enter for a new line",
-    );
+    expect(container.querySelector('[data-testid="composer-hint"]')?.textContent).toBe("");
   });
 
   it("renders assistant starter prompts without the large start-message placeholder", () => {
