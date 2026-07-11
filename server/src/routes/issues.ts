@@ -1760,9 +1760,9 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
 function hasUnresolvedBlockersForCommentMove(input: {
   allBlockersDone: boolean;
   unresolvedBlockerCount: number;
-  implicitHumanCommentMoveRequested: boolean;
+  relaxFinalizeBarrierForHumanComment: boolean;
 }) {
-  return input.implicitHumanCommentMoveRequested
+  return input.relaxFinalizeBarrierForHumanComment
     ? !input.allBlockersDone
     : input.unresolvedBlockerCount > 0;
 }
@@ -7782,6 +7782,8 @@ export function issueRoutes(
       (explicitMoveToTodoRequested ||
         implicitHumanCommentMoveRequested ||
         shouldResumeInProgressScheduledRetry);
+    const relaxFinalizeBarrierForHumanComment =
+      implicitHumanCommentMoveRequested && !explicitMoveToTodoRequested;
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
       ? await issueReferencesSvc.listIssueReferenceSummary(existing.id)
       : null;
@@ -7793,7 +7795,7 @@ export function issueRoutes(
       ? hasUnresolvedBlockersForCommentMove({
           allBlockersDone: dependencyReadiness.allBlockersDone,
           unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
-          implicitHumanCommentMoveRequested,
+          relaxFinalizeBarrierForHumanComment,
         })
       : false;
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
@@ -9971,6 +9973,8 @@ export function issueRoutes(
       (explicitMoveToTodoRequested ||
         implicitHumanCommentMoveRequested ||
         shouldResumeInProgressScheduledRetry);
+    const relaxFinalizeBarrierForHumanComment =
+      implicitHumanCommentMoveRequested && !explicitMoveToTodoRequested;
     const dependencyReadiness =
       isBlocked && effectiveMoveToTodoRequested
         ? await svc.getDependencyReadiness(issue.id)
@@ -9979,7 +9983,7 @@ export function issueRoutes(
       ? hasUnresolvedBlockersForCommentMove({
           allBlockersDone: dependencyReadiness.allBlockersDone,
           unresolvedBlockerCount: dependencyReadiness.unresolvedBlockerCount,
-          implicitHumanCommentMoveRequested,
+          relaxFinalizeBarrierForHumanComment,
         })
       : false;
     if (resumeRequested === true && isBlocked && hasUnresolvedFirstClassBlockers) {
