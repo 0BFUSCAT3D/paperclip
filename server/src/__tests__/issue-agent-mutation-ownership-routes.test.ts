@@ -1628,6 +1628,7 @@ describe("agent issue mutation checkout ownership", () => {
     );
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
+      ownerType: "agent",
       ownerAgentId,
     });
 
@@ -1641,6 +1642,29 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+  });
+
+  it("rejects the source assignee when a recovery action is board-owned without an agent owner", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId, assigneeUserId: null }),
+    );
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerType: "board",
+      ownerAgentId: null,
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryActionId,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Board-owned recovery action requires board resolution");
     expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
   });
 
