@@ -267,6 +267,17 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     await svc.syncRunStatusForIssue(executionIssue.id);
+    const [failedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      failureReason: "Execution issue moved to blocked",
+      triggerPayload: {
+        transientFailure: {
+          code: "execution_issue_status",
+          status: "blocked",
+        },
+      },
+    });
     await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, executionIssue.id));
     await svc.syncRunStatusForIssue(executionIssue.id);
 
@@ -275,6 +286,13 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       status: "issue_created",
       failureReason: null,
       completedAt: null,
+      triggerPayload: {
+        transientFailure: {
+          code: "execution_issue_status",
+          status: "blocked",
+          clearedAt: expect.any(String),
+        },
+      },
     });
   });
 
@@ -305,6 +323,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     await svc.syncRunStatusForIssue(executionIssue.id);
+    const [failedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      failureReason: "Execution issue moved to blocked",
+    });
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, executionIssue.id));
     await svc.syncRunStatusForIssue(executionIssue.id);
 
@@ -315,6 +338,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       triggerPayload: {
         input: "preserved",
         transientFailure: {
+          code: "execution_issue_status",
+          status: "blocked",
           reason: "Execution issue moved to blocked",
         },
       },
