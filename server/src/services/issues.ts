@@ -306,6 +306,42 @@ async function resolveResponsibleUserIdForIssueCreate(
   return input.createdByUserId ?? null;
 }
 
+async function resolveCreatedFromIssueIdForCreate(
+  reader: DbReader,
+  companyId: string,
+  input: {
+    issueId: string;
+    createdFromIssueId?: string | null;
+    actorRunId?: string | null;
+  },
+) {
+  const explicitCreatedFromIssueId = readStringFromRecord(input, "createdFromIssueId");
+  if (explicitCreatedFromIssueId) {
+    if (explicitCreatedFromIssueId === input.issueId) {
+      throw unprocessable("Issue cannot be its own originating issue");
+    }
+
+    const sourceIssue = await reader
+      .select({ companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, explicitCreatedFromIssueId))
+      .then((rows) => rows[0] ?? null);
+    if (!sourceIssue) throw unprocessable("Originating issue not found");
+    if (sourceIssue.companyId !== companyId) {
+      throw unprocessable("Originating issue must belong to the same company");
+    }
+    return explicitCreatedFromIssueId;
+  }
+
+  if (!input.actorRunId) return null;
+  return reader
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.checkoutRunId, input.actorRunId)))
+    .limit(1)
+    .then((rows) => rows[0]?.id ?? null);
+}
+
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   settings: ReturnType<typeof parseIssueExecutionWorkspaceSettings>,
 ) {
@@ -3085,6 +3121,7 @@ const issueListSelect = {
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
+  createdFromIssueId: issues.createdFromIssueId,
   title: issues.title,
   description: sql<string | null>`
     CASE
@@ -6749,6 +6786,7 @@ export function issueService(db: Db) {
 
           const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
             ...nextChildInput,
+            createdFromIssueId: sourceIssue.id,
             executionWorkspaceInheritanceMode: "strategy_only",
           });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
@@ -6886,6 +6924,8 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      const issueId = issueData.id ?? randomUUID();
+      issueData.id = issueId;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -6916,6 +6956,12 @@ export function issueService(db: Db) {
           const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
         }
+
+        const createdFromIssueId = await resolveCreatedFromIssueIdForCreate(tx, companyId, {
+          issueId,
+          createdFromIssueId: issueData.createdFromIssueId ?? null,
+          actorRunId: actorRunId ?? null,
+        });
 
         let existingIssue: typeof issues.$inferSelect | undefined;
         let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
@@ -7122,6 +7168,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          createdFromIssueId,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
