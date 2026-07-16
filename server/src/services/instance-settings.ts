@@ -30,6 +30,7 @@ interface InstanceSettingsServiceOptions {
   runtimeEnv?: Record<string, string | undefined>;
   now?: () => Date;
   generateInstanceNonce?: () => string;
+  generateSeedEpoch?: () => string;
 }
 
 type WorktreeRunExecutionSuppressedReason =
@@ -37,6 +38,7 @@ type WorktreeRunExecutionSuppressedReason =
   | "flag_disabled"
   | "missing_cutoff"
   | "missing_instance_id"
+  | "missing_seed_epoch"
   | "instance_id_mismatch"
   | "settings_read_error";
 
@@ -45,6 +47,8 @@ export type WorktreeRunExecutionActivationState =
       armed: true;
       cutoff: string;
       activationInstanceId: string;
+      instanceNonce: string;
+      seedEpoch: string;
       reason: null;
     }
   | {
@@ -63,6 +67,7 @@ function stripServerManagedExperimentalPatchFields(
 ): PatchInstanceExperimentalSettings {
   const {
     worktreeRunExecutionInstanceNonce: _ignoredInstanceNonce,
+    worktreeRunExecutionSeedEpoch: _ignoredSeedEpoch,
     worktreeRunExecutionActivatedAt: _ignoredActivatedAt,
     worktreeRunExecutionActivationInstanceId: _ignoredActivationInstanceId,
     ...patchable
@@ -147,6 +152,12 @@ export function resolveWorktreeRunExecutionActivation(
       experimental.worktreeRunExecutionActivationInstanceId,
     );
   }
+  if (!experimental.worktreeRunExecutionSeedEpoch) {
+    return suppressWorktreeRunExecution(
+      "missing_seed_epoch",
+      experimental.worktreeRunExecutionActivationInstanceId,
+    );
+  }
   if (
     experimental.worktreeRunExecutionActivationInstanceId !==
     experimental.worktreeRunExecutionInstanceNonce
@@ -160,6 +171,8 @@ export function resolveWorktreeRunExecutionActivation(
     armed: true,
     cutoff: experimental.worktreeRunExecutionActivatedAt,
     activationInstanceId: experimental.worktreeRunExecutionInstanceNonce,
+    instanceNonce: experimental.worktreeRunExecutionInstanceNonce,
+    seedEpoch: experimental.worktreeRunExecutionSeedEpoch,
     reason: null,
   };
 }
@@ -229,6 +242,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionInstanceNonce: parsed.data.worktreeRunExecutionInstanceNonce ?? null,
+      worktreeRunExecutionSeedEpoch: parsed.data.worktreeRunExecutionSeedEpoch ?? null,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
         parsed.data.worktreeRunExecutionActivationInstanceId ?? null,
@@ -263,6 +277,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceDirtyQuarantineRepair: true,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionInstanceNonce: null,
+    worktreeRunExecutionSeedEpoch: null,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
     issueGraphLivenessAutoRecoveryLookbackHours:
@@ -327,7 +342,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
   async function ensureWorktreeInstanceNonce(row: typeof instanceSettings.$inferSelect) {
     if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) return row;
-    if (normalizeExperimentalSettings(row.experimental).worktreeRunExecutionInstanceNonce) return row;
+    const normalized = normalizeExperimentalSettings(row.experimental);
+    if (normalized.worktreeRunExecutionInstanceNonce && normalized.worktreeRunExecutionSeedEpoch) return row;
 
     const now = new Date();
     const instanceNonce = (options.generateInstanceNonce ?? randomUUID)();
@@ -339,13 +355,17 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       .set({
         experimental: {
           ...experimental,
-          worktreeRunExecutionInstanceNonce: instanceNonce,
+          worktreeRunExecutionInstanceNonce:
+            normalized.worktreeRunExecutionInstanceNonce ?? instanceNonce,
+          worktreeRunExecutionSeedEpoch:
+            normalized.worktreeRunExecutionSeedEpoch ?? (options.generateSeedEpoch ?? randomUUID)(),
         },
         updatedAt: now,
       })
       .where(and(
         eq(instanceSettings.id, row.id),
-        sql`${instanceSettings.experimental} ->> 'worktreeRunExecutionInstanceNonce' is null`,
+        sql`${instanceSettings.experimental} ->> 'worktreeRunExecutionInstanceNonce' is null
+          or ${instanceSettings.experimental} ->> 'worktreeRunExecutionSeedEpoch' is null`,
       ))
       .returning();
     if (updated) return updated;
