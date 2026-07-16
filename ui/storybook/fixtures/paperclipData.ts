@@ -715,7 +715,6 @@ export function createIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: "workspace-board-ui",
     goalId: "goal-company",
     parentId: null,
-    createdFromIssueId: null,
     title: "Create super-detailed storybooks for the project",
     description: "Set up Storybook and move UX review surfaces into stories.",
     status: "in_progress",
@@ -761,6 +760,7 @@ export function createIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: recent(90),
     updatedAt: recent(3),
     ...overrides,
+    createdFromIssueId: overrides.createdFromIssueId ?? null,
     workMode: overrides.workMode ?? "standard",
   };
 }
