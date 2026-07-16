@@ -94,6 +94,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorkspaceDirtyQuarantineRepair: true,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionInstanceNonce: null,
+    worktreeRunExecutionSeedEpoch: null,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
   };
