@@ -1441,6 +1441,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     expect(second.body).toMatchObject({
       reused: true,
+      issue: {
+        id: sourceIssueId,
+        activeRecoveryAction: null,
+      },
       recoveryIssue: {
         id: first.body.recoveryIssue.id,
       },
