@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { logRouteActivity } from "./activity-audit.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -2091,6 +2092,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     await assertCanReadConfigurations(req, companyId);
     const rows = await svc.list(companyId);
+    await logRouteActivity(db, req, { companyId, action: "agent.configuration_read", entityType: "company", entityId: companyId, details: { agentCount: rows.length } });
     res.json(rows.map((row) => redactAgentConfiguration(row)));
   });
 
@@ -2230,6 +2232,7 @@ export function agentRoutes(
       return;
     }
     await assertCanReadConfigurations(req, agent.companyId);
+    await logRouteActivity(db, req, { companyId: agent.companyId, action: "agent.configuration_read", entityType: "agent", entityId: agent.id });
     res.json(redactAgentConfiguration(agent));
   });
 
@@ -2242,6 +2245,7 @@ export function agentRoutes(
     }
     await assertCanReadConfigurations(req, agent.companyId);
     const revisions = await svc.listConfigRevisions(id);
+    await logRouteActivity(db, req, { companyId: agent.companyId, action: "agent.config_revisions_read", entityType: "agent", entityId: agent.id, details: { revisionCount: revisions.length } });
     res.json(revisions.map((revision) => redactConfigRevision(revision)));
   });
 
@@ -2259,6 +2263,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Revision not found" });
       return;
     }
+    await logRouteActivity(db, req, { companyId: agent.companyId, action: "agent.config_revision_read", entityType: "agent_config_revision", entityId: revisionId, details: { agentId: agent.id } });
     res.json(redactConfigRevision(revision));
   });
 
@@ -2795,7 +2800,9 @@ export function agentRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
     await assertCanReadAgent(req, existing);
-    res.json(await instructions.getBundle(existing));
+    const bundle = await instructions.getBundle(existing);
+    await logRouteActivity(db, req, { companyId: existing.companyId, action: "agent.instructions_read", entityType: "agent", entityId: existing.id });
+    res.json(bundle);
   });
 
   router.patch("/agents/:id/instructions-bundle", validate(updateAgentInstructionsBundleSchema), async (req, res) => {
@@ -2856,7 +2863,9 @@ export function agentRoutes(
       return;
     }
 
-    res.json(await instructions.readFile(existing, relativePath));
+    const file = await instructions.readFile(existing, relativePath);
+    await logRouteActivity(db, req, { companyId: existing.companyId, action: "agent.instructions_file_read", entityType: "agent", entityId: existing.id, details: { path: relativePath } });
+    res.json(file);
   });
 
   router.put("/agents/:id/instructions-bundle/file", validate(upsertAgentInstructionsFileSchema), async (req, res) => {
@@ -3337,6 +3346,7 @@ export function agentRoutes(
       return;
     }
     const keys = await svc.listKeys(id);
+    await logRouteActivity(db, req, { companyId: agent.companyId, action: "agent.key_metadata_read", entityType: "agent", entityId: agent.id, details: { keyCount: keys.length } });
     res.json(keys);
   });
 
@@ -3792,6 +3802,8 @@ export function agentRoutes(
       offset: Number.isFinite(offset) ? offset : 0,
       limitBytes,
     });
+
+    await logRouteActivity(db, req, { companyId: run.companyId, action: "heartbeat.log_read", entityType: "heartbeat_run", entityId: runId, details: { offset: Number.isFinite(offset) ? offset : 0, limitBytes } });
 
     res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
