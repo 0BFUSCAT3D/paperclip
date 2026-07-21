@@ -65,6 +65,7 @@ import {
   instanceDatabaseBackupRoutes,
   type InstanceDatabaseBackupService,
 } from "./routes/instance-database-backups.js";
+import { instanceStateSnapshotRoutes, type InstanceStateSnapshotService } from "./routes/instance-state-snapshots.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -256,7 +257,9 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    stateSnapshotService?: InstanceStateSnapshotService;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    stateSnapshotHealth?: { markerDir: string; enabled: boolean; maxAgeHours: number };
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -373,6 +376,7 @@ export async function createApp(
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
       databaseBackupHealth: opts.databaseBackupHealth,
+      stateSnapshotHealth: opts.stateSnapshotHealth,
     }),
   );
   api.use(openApiRoutes());
@@ -463,6 +467,9 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
+  }
+  if (opts.stateSnapshotService) {
+    api.use(instanceStateSnapshotRoutes(opts.stateSnapshotService));
   }
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
