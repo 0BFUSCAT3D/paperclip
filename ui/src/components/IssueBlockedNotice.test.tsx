@@ -771,7 +771,7 @@ describe("IssueBlockedNotice", () => {
         ]}
       />,
     );
-    expect(node.textContent).toContain("Work on this task is blocked by the linked task");
+    expect(node.textContent).toContain("A message won’t restart this task yet");
     expect(node.querySelector('[data-testid="issue-blocked-notice-satisfied-row"]')?.textContent).toContain("TASK-145");
     expect(node.querySelector('[data-testid="issue-blocked-notice-cancelled-row"]')?.textContent).toContain("TASK-199");
   });
