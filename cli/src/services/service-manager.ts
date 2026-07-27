@@ -53,6 +53,9 @@ export const defaultCommandRunner: CommandRunner = async (command, args, options
 };
 
 function escapeSystemd(value: string): string {
+  if (/\r|\n/.test(value)) {
+    throw new Error("Systemd service values must not contain line breaks");
+  }
   return value
     .replaceAll("\\", "\\\\")
     .replaceAll('"', '\\"')
@@ -82,7 +85,7 @@ export function launchdServiceName(instanceId: string): string {
 
 export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
   return `[Unit]
-Description=Paperclip AI (${input.instanceId})
+Description=Paperclip AI (${escapeSystemd(input.instanceId)})
 After=network.target
 StartLimitIntervalSec=60
 StartLimitBurst=5
