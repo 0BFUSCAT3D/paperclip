@@ -2653,7 +2653,7 @@ export function pluginRoutes(
           supported: true,
           valid: false,
           warningCount: 0,
-          errorCount: validation.errors.length,
+          errorCount: validation.errors?.length ?? 0,
           secretRefCount: 0,
           configKeyCount: Object.keys(body.configJson).length,
           outcome: "schema_validation_failed",
