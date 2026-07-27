@@ -203,6 +203,7 @@ async function renderForm(
     visibleConfigurationSections?: ReadonlySet<string>;
     onDirtyChange?: (dirty: boolean) => void;
     onDirtyDetailsChange?: (details: { count: number; sections: string[] }) => void;
+    onChangesetChange?: Parameters<typeof AgentConfigForm>[0]["onChangesetChange"];
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -233,6 +234,7 @@ async function renderForm(
             sectionLayout={options.configurationShell ? "cards" : undefined}
             onDirtyChange={options.onDirtyChange}
             onDirtyDetailsChange={options.onDirtyDetailsChange}
+            onChangesetChange={options.onChangesetChange}
           />
         </TooltipProvider>
       </QueryClientProvider>,
@@ -630,6 +632,7 @@ describe("AgentConfigForm environment selector", () => {
   it("reports editor-local environment drafts as unsaved configuration", async () => {
     const onDirtyChange = vi.fn();
     const onDirtyDetailsChange = vi.fn();
+    const onChangesetChange = vi.fn();
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
     ], {
@@ -641,6 +644,7 @@ describe("AgentConfigForm environment selector", () => {
       visibleConfigurationSections: new Set(["environment"]),
       onDirtyChange,
       onDirtyDetailsChange,
+      onChangesetChange,
     });
     roots.push(result.root);
 
@@ -657,6 +661,13 @@ describe("AgentConfigForm environment selector", () => {
       count: 1,
       sections: ["environment"],
     });
+    expect(onChangesetChange.mock.lastCall?.[0]).toEqual([
+      expect.objectContaining({
+        key: "adapterConfig.env",
+        section: "Environment",
+        after: { API_TOKEN: { type: "plain", value: "draft-token" } },
+      }),
+    ]);
   });
 
   it("surfaces request failures instead of converting them into model test checks", async () => {

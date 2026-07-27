@@ -338,7 +338,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
-  const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
+  const [environmentDraft, setEnvironmentDraft] = useState<Record<string, EnvBinding> | null>(null);
   const agentRef = useRef<Agent | null>(null);
 
   // Clear overlay when agent data refreshes (after save)
@@ -352,6 +352,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const overlayDirty = !isCreate && isOverlayDirty(overlay);
+  const environmentDraftDirty = environmentDraft !== null;
   const isDirty = overlayDirty || environmentDraftDirty;
   const dirtyDetails = useMemo(() => {
     const details = getAgentConfigDirtyDetails(overlay);
@@ -363,10 +364,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         : [...details.sections, "environment"],
     };
   }, [environmentDraftDirty, overlay]);
-  const changes = useMemo(
-    () => isCreate ? [] : buildAgentConfigChanges(props.agent, overlay),
-    [isCreate, overlay, !isCreate ? props.agent : undefined], // eslint-disable-line react-hooks/exhaustive-deps
-  );
+  const changes = useMemo(() => {
+    if (isCreate) return [];
+    const changesOverlay = environmentDraft && !("env" in overlay.adapterConfig)
+      ? {
+          ...overlay,
+          adapterConfig: { ...overlay.adapterConfig, env: environmentDraft },
+        }
+      : overlay;
+    return buildAgentConfigChanges(props.agent, changesOverlay);
+  }, [environmentDraft, isCreate, overlay, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
   const revertChange = useCallback((key: string) => {
     setOverlay((current) => revertAgentConfigChange(current, key));
   }, []);
@@ -418,7 +425,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     environmentVariablesEditorRef.current?.discardPendingDraft();
-    setEnvironmentDraftDirty(false);
+    setEnvironmentDraft(null);
     setOverlay({ ...emptyOverlay });
   }, []);
 
@@ -1459,7 +1466,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? set!({ envBindings: env ?? {}, envVars: "" })
                       : mark("adapterConfig", "env", env)
                   }
-                  onDirtyChange={isCreate ? undefined : setEnvironmentDraftDirty}
+                  onDraftChange={isCreate ? undefined : setEnvironmentDraft}
                 />
               </Field>}
 
@@ -1645,7 +1652,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     ? set!({ envBindings: env ?? {}, envVars: "" })
                     : mark("adapterConfig", "env", env)
                 }
-                onDirtyChange={isCreate ? undefined : setEnvironmentDraftDirty}
+                onDraftChange={isCreate ? undefined : setEnvironmentDraft}
               />
               {!isCreate && (
                 <Field label="Secret access" hint={help.secretAccess}>

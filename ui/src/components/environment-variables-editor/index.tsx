@@ -135,6 +135,8 @@ export interface EnvironmentVariablesEditorProps {
   footerHint?: ReactNode | null;
   /** Reports editor-local draft changes that are not yet promoted to the parent value. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Reports the current editor-local draft, or null when it matches the controlled value. */
+  onDraftChange?: (draft: Record<string, EnvBinding> | null) => void;
 }
 
 export interface EnvironmentVariablesEditorHandle {
@@ -158,6 +160,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   reservedPrefixes = DEFAULT_RESERVED_PREFIXES,
   footerHint,
   onDirtyChange,
+  onDraftChange,
 }: EnvironmentVariablesEditorProps, ref) {
   const toast = useOptionalToastActions();
   const editorRootRef = useRef<HTMLDivElement | null>(null);
@@ -238,8 +241,10 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   const hasUnsavedChanges = draftValueKey !== committedValueKey;
 
   useEffect(() => {
-    onDirtyChange?.(!disabled && hasUnsavedChanges);
-  }, [disabled, hasUnsavedChanges, onDirtyChange]);
+    const dirty = !disabled && hasUnsavedChanges;
+    onDirtyChange?.(dirty);
+    onDraftChange?.(dirty ? (draftValue ?? {}) : null);
+  }, [disabled, draftValue, hasUnsavedChanges, onDirtyChange, onDraftChange]);
 
   // Which variables differ from the committed baseline, so the unsaved-changes
   // banner can say *what* is unsaved instead of a bare label. A rename shows
