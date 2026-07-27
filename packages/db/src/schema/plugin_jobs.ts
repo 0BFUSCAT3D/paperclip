@@ -92,11 +92,11 @@ export const pluginJobRuns = pgTable(
     /** Host-derived actor id that triggered this run, when not scheduler-owned. */
     triggeredByActorId: text("triggered_by_actor_id"),
     /** Host-derived agent id that triggered this run, when applicable. */
-    triggeredByAgentId: uuid("triggered_by_agent_id").references(() => agents.id),
+    triggeredByAgentId: uuid("triggered_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     /** Host-derived board/user id that triggered this run, when applicable. */
     triggeredByUserId: text("triggered_by_user_id"),
     /** Host-derived heartbeat run id that triggered this run, when applicable. */
-    triggeredByRunId: uuid("triggered_by_run_id").references(() => heartbeatRuns.id),
+    triggeredByRunId: uuid("triggered_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     /** Responsible user resolved by the host for this run, when known. */
     responsibleUserId: text("responsible_user_id"),
     /** Current lifecycle state of this run. */
