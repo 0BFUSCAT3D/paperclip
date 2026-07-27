@@ -73,9 +73,11 @@ describe("update command", () => {
     flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, source: "git", version: "0.3.1", channel: "pinned", repo: "paperclipai/paperclip", ref: "master", sha: oldSha, payloadPath: oldPayload, installedAt: "2026-07-22T00:00:00.000Z", previous: [] }, paths);
     const backup = vi.fn(async () => undefined);
+    const confirm = vi.fn(async () => true);
     const restartActiveService = vi.fn(async () => true);
     const runCommand = vi.fn(async (file: string) => file === "curl" ? { stdout: JSON.stringify({ sha: newSha }), stderr: "" } : { stdout: "0.3.1\n", stderr: "" });
-    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService, now: () => new Date("2026-07-22T12:00:00Z") });
+    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, confirm, restartActiveService, now: () => new Date("2026-07-22T12:00:00Z") });
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining(`commit ${newSha.slice(0, 12)}`));
     expect(backup).toHaveBeenCalledOnce();
     expect(restartActiveService).toHaveBeenCalledWith("0.3.1");
     expect(readInstallManifest(paths)?.sha).toBe(newSha);

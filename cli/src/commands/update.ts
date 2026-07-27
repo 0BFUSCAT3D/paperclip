@@ -138,6 +138,10 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
     const targetSha = await resolveGitHubRef(manifest.repo, manifest.ref, runCommand);
     if (targetSha === manifest.sha) { emit(options, { mode, source: "git", changed: false, sha: targetSha, ref: manifest.ref }, `${manifest.repo}@${manifest.ref} is already at ${targetSha.slice(0, 12)}.`); return; }
     if (options.check || options.dryRun) { emit(options, { mode, source: "git", changed: true, currentSha: manifest.sha, targetSha, ref: manifest.ref, dryRun: Boolean(options.dryRun) }, `Git update available: ${manifest.sha.slice(0, 12)} → ${targetSha.slice(0, 12)}.`); if (options.check) process.exitCode = 10; return; }
+    if (options.yes !== true) {
+      const confirmed = await (overrides.confirm ?? defaultConfirm)(`Update from ${manifest.repo}@${manifest.ref} and execute build scripts from commit ${targetSha.slice(0, 12)}?`);
+      if (!confirmed) throw new Error("Git update cancelled. Re-run with --yes to confirm executing build scripts from the updated commit.");
+    }
     if (options.backup !== false) await (overrides.backup ?? (() => dbBackupCommand({})))();
     const installed = await withInstallStoreLock(async () => {
       const payload = await installGitPayload(manifest.repo!, targetSha, runCommand, paths);

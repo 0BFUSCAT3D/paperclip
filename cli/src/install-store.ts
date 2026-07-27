@@ -151,6 +151,14 @@ export async function withInstallStoreLock<T>(
 ): Promise<T> {
   if (options.initialize !== false) initializeInstallStore(paths);
   const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const processIsAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  };
   const acquire = (): void => {
     const temporaryPath = `${paths.lockPath}.${token}.tmp`;
     try {
@@ -163,6 +171,12 @@ export async function withInstallStoreLock<T>(
       }
       const owner = fs.readFileSync(paths.lockPath, "utf8").trim();
       const ownerPid = Number.parseInt(owner.split(":", 1)[0] ?? "", 10);
+      if (Number.isInteger(ownerPid) && ownerPid > 0 && !processIsAlive(ownerPid)) {
+        fs.rmSync(paths.lockPath);
+        fs.rmSync(temporaryPath, { force: true });
+        acquire();
+        return;
+      }
       const ownerLabel = Number.isInteger(ownerPid) && ownerPid > 0 ? ` (pid ${ownerPid})` : "";
       throw new Error(
         `Another managed install is already running${ownerLabel}. ` +
