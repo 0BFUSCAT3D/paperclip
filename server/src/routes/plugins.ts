@@ -2648,6 +2648,16 @@ export function pluginRoutes(
     if (schema && Object.keys(schema).length > 0) {
       const validation = validateInstanceConfig(body.configJson, schema);
       if (!validation.valid) {
+        await logResolvedPluginActivity(req, "plugin.config.tested", plugin, {
+          companyId,
+          supported: true,
+          valid: false,
+          warningCount: 0,
+          errorCount: validation.errors.length,
+          secretRefCount: 0,
+          configKeyCount: Object.keys(body.configJson).length,
+          outcome: "schema_validation_failed",
+        }, { companyId });
         res.status(400).json({
           error: "Configuration does not match the plugin's instanceConfigSchema",
           fieldErrors: validation.errors,

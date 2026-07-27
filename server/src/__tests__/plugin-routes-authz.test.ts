@@ -421,6 +421,56 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(auditCalls).not.toContain("submitted-secret-value");
   }, 20_000);
 
+  it("audits plugin config tests rejected by schema validation", async () => {
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        instanceConfigSchema: {
+          type: "object",
+          properties: { port: { type: "number" } },
+          required: ["port"],
+        },
+      },
+    });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor({ runId: runA }), {}, {
+      bridgeDeps: {
+        workerManager: { call, isRunning: vi.fn(() => true) },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/config/test`)
+      .send({ companyId: companyA, configJson: { port: "not-a-number" } });
+
+    expect(res.status).toBe(400);
+    expect(call).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA,
+      actorType: "user",
+      actorId: "user-1",
+      runId: runA,
+      action: "plugin.config.tested",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        companyId: companyA,
+        supported: true,
+        valid: false,
+        warningCount: 0,
+        errorCount: 1,
+        secretRefCount: 0,
+        configKeyCount: 1,
+        outcome: "schema_validation_failed",
+      }),
+    }));
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("not-a-number");
+  }, 20_000);
+
   it("rejects plugin config saves that reference another company's secret before syncing bindings", async () => {
     readyPlugin();
     mockSecretService.getById.mockResolvedValue({ id: secretId, companyId: companyB, status: "active" });
