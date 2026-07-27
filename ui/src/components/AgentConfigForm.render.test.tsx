@@ -201,6 +201,8 @@ async function renderForm(
     showAdapterTestEnvironmentButton?: boolean;
     configurationShell?: boolean;
     visibleConfigurationSections?: ReadonlySet<string>;
+    onDirtyChange?: (dirty: boolean) => void;
+    onDirtyDetailsChange?: (details: { count: number; sections: string[] }) => void;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -229,6 +231,8 @@ async function renderForm(
             configurationShell={options.configurationShell}
             visibleConfigurationSections={options.visibleConfigurationSections}
             sectionLayout={options.configurationShell ? "cards" : undefined}
+            onDirtyChange={options.onDirtyChange}
+            onDirtyDetailsChange={options.onDirtyDetailsChange}
           />
         </TooltipProvider>
       </QueryClientProvider>,
@@ -621,6 +625,38 @@ describe("AgentConfigForm environment selector", () => {
         }),
       ]);
     }
+  });
+
+  it("reports editor-local environment drafts as unsaved configuration", async () => {
+    const onDirtyChange = vi.fn();
+    const onDirtyDetailsChange = vi.fn();
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: {
+        env: { API_TOKEN: { type: "plain", value: "old-token" } },
+      },
+    }, {
+      configurationShell: true,
+      visibleConfigurationSections: new Set(["environment"]),
+      onDirtyChange,
+      onDirtyDetailsChange,
+    });
+    roots.push(result.root);
+
+    const valueInput = result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]');
+    expect(valueInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(valueInput!, "draft-token");
+    });
+    await flushReact();
+
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    expect(onDirtyDetailsChange).toHaveBeenLastCalledWith({
+      count: 1,
+      sections: ["environment"],
+    });
   });
 
   it("surfaces request failures instead of converting them into model test checks", async () => {

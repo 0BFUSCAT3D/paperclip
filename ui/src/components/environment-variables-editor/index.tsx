@@ -143,6 +143,8 @@ export interface EnvironmentVariablesEditorHandle {
    * action reads parent state. Returns the promoted value when a draft existed.
    */
   flushPendingDraft: () => Record<string, EnvBinding> | null;
+  /** Discard the editor-local draft and restore the controlled value. */
+  discardPendingDraft: () => void;
 }
 
 export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorHandle, EnvironmentVariablesEditorProps>(function EnvironmentVariablesEditor({
@@ -288,7 +290,20 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     return draftValue ?? {};
   }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
 
-  useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
+  const discardPendingDraft = useCallback(() => {
+    if (disabled || !hasUnsavedChanges) return;
+    pendingSaveValueKeyRef.current = null;
+    const nextRows = rowsFromValue(value);
+    setRows(nextRows);
+    touchCommittedNames(nextRows);
+    markCommitted(normalizedEnvKey(value), nextRows);
+  }, [disabled, hasUnsavedChanges, value]);
+
+  useImperativeHandle(
+    ref,
+    () => ({ flushPendingDraft, discardPendingDraft }),
+    [discardPendingDraft, flushPendingDraft],
+  );
 
   useEffect(() => {
     const form = editorRootRef.current?.closest("form");
