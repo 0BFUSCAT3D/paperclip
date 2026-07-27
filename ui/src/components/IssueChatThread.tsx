@@ -232,6 +232,10 @@ interface IssueChatMessageContext {
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
   ) => Promise<void> | void;
+  onSubmitOtherResponse?: (
+    interaction: IssueThreadInteraction,
+    response: string,
+  ) => Promise<void> | void;
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
@@ -2848,6 +2852,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onSubmitInteractionAnswers,
     onCancelInteraction,
     onSubmitInteractionVerdicts,
+    onSubmitOtherResponse,
     onUploadImage,
     externalReferences,
   } = useContext(IssueChatCtx);
@@ -2907,6 +2912,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
             onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+            onSubmitOtherResponse={onSubmitOtherResponse}
             onUploadImage={onUploadImage}
             externalReferences={externalReferences}
           />
@@ -4886,6 +4892,7 @@ export function IssueChatThread({
   }
 
   const stableOnVote = useStableEvent(onVote);
+  const stableOnAdd = useStableEvent(onAdd);
   const stableOnStopRun = useStableEvent(onStopRun);
   const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
   const stableOnCancelQueued = useStableEvent(onCancelQueued);
@@ -4921,6 +4928,10 @@ export function IssueChatThread({
       onSubmitInteractionAnswers: stableOnSubmitInteractionAnswers,
       onCancelInteraction: stableOnCancelInteraction,
       onSubmitInteractionVerdicts: stableOnSubmitInteractionVerdicts,
+      onSubmitOtherResponse: async (_interaction, response) => {
+        if (!stableOnAdd) return;
+        await stableOnAdd(response);
+      },
       onUploadImage: stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
@@ -4949,6 +4960,7 @@ export function IssueChatThread({
       stableOnSubmitInteractionAnswers,
       stableOnCancelInteraction,
       stableOnSubmitInteractionVerdicts,
+      stableOnAdd,
       stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
