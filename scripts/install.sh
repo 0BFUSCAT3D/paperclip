@@ -20,6 +20,11 @@ INSTALL_SERVICE=0
 DRY_RUN=0
 VERBOSE=0
 TEMP_DIR=""
+PIPED_INSTALL=0
+
+if [ -z "${BASH_SOURCE[0]:-}" ] || [ ! -f "${BASH_SOURCE[0]}" ]; then
+  PIPED_INSTALL=1
+fi
 
 usage() {
   cat <<'EOF'
@@ -334,6 +339,9 @@ else
     log "Node.js $(node --version 2>/dev/null || printf unknown) is too old; Node.js >= $MIN_NODE_MAJOR is required"
   else
     log "Node.js was not found"
+  fi
+  if [ "$PIPED_INSTALL" = "1" ]; then
+    fail "Node.js bootstrap is disabled for piped installs; download install.sh, review it, and run 'bash install.sh --no-prompt'"
   fi
   check_version_manager
   log "Installing Node.js $DEFAULT_NODE_MAJOR"

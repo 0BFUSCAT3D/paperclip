@@ -111,6 +111,18 @@ echo "==> piped --no-prompt"
 run_with_node piped bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-prompt --no-onboard'
 assert_line "$RESULTS_DIR/piped.args" "--yes"
 
+echo "==> piped mode refuses privileged Node bootstrap"
+if docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -e PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  ubuntu:24.04 \
+  bash -c 'cat /paperclip-scripts/install.sh | bash -s -- --no-prompt --no-onboard' \
+  >"$RESULTS_DIR/piped-no-node.out" 2>&1; then
+  echo "Expected piped install without Node.js to fail before privileged bootstrap" >&2
+  exit 1
+fi
+assert_line "$RESULTS_DIR/piped-no-node.out" "[paperclip] error: Node.js bootstrap is disabled for piped installs; download install.sh, review it, and run 'bash install.sh --no-prompt'"
+
 echo "==> dry run"
 run_with_node dry-run bash /paperclip-scripts/install.sh --no-prompt --dry-run --no-onboard
 [ ! -e "$RESULTS_DIR/dry-run.args" ] || {

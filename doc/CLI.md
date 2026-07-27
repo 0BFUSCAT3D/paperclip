@@ -27,6 +27,12 @@ fi
 bash install.sh
 ```
 
+The checksum detects transfer or publishing mistakes but is served from the
+same origin as the installer. Use a release-tag or commit-pinned GitHub copy
+when you need an independently hosted source. Piped installs require supported
+Node.js, npm, and npx to already be installed; download the script first before
+allowing it to bootstrap Node.js with privileged package-manager commands.
+
 First-time local bootstrap from a source checkout:
 
 ```sh
