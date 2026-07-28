@@ -407,6 +407,27 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(1);
   });
 
+  it("retargets a self-mode watchdog to the current assignee before waking", async () => {
+    const companyId = await seedCompany();
+    const formerAssigneeId = await seedAgent(companyId, { name: "Former Assignee" });
+    const currentAssigneeId = await seedAgent(companyId, { name: "Current Assignee" });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-REASSIGNED",
+      status: "done",
+      assigneeAgentId: currentAssigneeId,
+    });
+    await seedWatchdog(companyId, sourceId, formerAssigneeId, { mode: "self" });
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.agentId).toBe(currentAssigneeId);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.watchdogAgentId).toBe(currentAssigneeId);
+  });
+
   it("retries a self review when the wake was not queued", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);

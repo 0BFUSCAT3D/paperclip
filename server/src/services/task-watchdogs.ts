@@ -1667,7 +1667,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
-    const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
+    let watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
     const sourceIssue = await db
       .select()
       .from(issues)
@@ -1675,6 +1675,19 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       .then((rows) => rows[0] ?? null);
     if (!sourceIssue || sourceIssue.originKind === TASK_WATCHDOG_ORIGIN_KIND) {
       return { state: "skipped" as const, reason: "watched_issue_not_applicable" };
+    }
+
+    if (issueWatchdogMode(watchdog) === "self" && watchdog.watchdogAgentId !== sourceIssue.assigneeAgentId) {
+      if (!sourceIssue.assigneeAgentId) {
+        return { state: "skipped" as const, reason: "self_watchdog_issue_unassigned" };
+      }
+      await assertWatchdogAgentInvokable(db, watchdog.companyId, sourceIssue.assigneeAgentId);
+      watchdog = await db
+        .update(issueWatchdogs)
+        .set({ watchdogAgentId: sourceIssue.assigneeAgentId, updatedAt: new Date() })
+        .where(eq(issueWatchdogs.id, watchdog.id))
+        .returning()
+        .then((rows) => rows[0] ?? watchdog);
     }
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
