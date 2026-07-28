@@ -1527,6 +1527,31 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     runId: string | null;
   }) {
     const { watchdog, sourceIssue, classification } = input;
+    const now = new Date();
+    const claimed = await db
+      .update(issueWatchdogs)
+      .set({
+        lastObservedFingerprint: classification.stopFingerprint,
+        lastObservedStopSnapshot: classification.stopSnapshot,
+        lastReviewedFingerprint: classification.stopFingerprint,
+        lastReviewedStopSnapshot: classification.stopSnapshot,
+        lastTriggeredAt: now,
+        triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(issueWatchdogs.id, watchdog.id),
+        sql`${issueWatchdogs.lastReviewedFingerprint} is distinct from ${classification.stopFingerprint}`,
+      ))
+      .returning({ id: issueWatchdogs.id });
+    if (claimed.length === 0) {
+      return {
+        ...classification,
+        state: "already_reviewed" as const,
+        reason: "The current stopped subtree fingerprint was already claimed for self review.",
+      };
+    }
+
     await issuesSvc.addComment(
       sourceIssue.id,
       buildSelfReviewComment({
@@ -1546,20 +1571,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         }),
       },
     );
-
-    const now = new Date();
-    await db
-      .update(issueWatchdogs)
-      .set({
-        lastObservedFingerprint: classification.stopFingerprint,
-        lastObservedStopSnapshot: classification.stopSnapshot,
-        lastReviewedFingerprint: classification.stopFingerprint,
-        lastReviewedStopSnapshot: classification.stopSnapshot,
-        lastTriggeredAt: now,
-        triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
-        updatedAt: now,
-      })
-      .where(eq(issueWatchdogs.id, watchdog.id));
 
     await logActivity(db, {
       companyId: sourceIssue.companyId,

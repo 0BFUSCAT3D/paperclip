@@ -371,6 +371,34 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(commentsAfter).toHaveLength(1);
   });
 
+  it("self mode atomically claims a stopped fingerprint across concurrent reconciliations", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-RACE",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, {
+      mode: "self",
+      instructions: "Verify the report exists and passes lint.",
+    });
+    const { service, wakes } = createService();
+
+    const results = await Promise.all([
+      service.reconcileTaskWatchdogs({ companyId }),
+      service.reconcileTaskWatchdogs({ companyId }),
+    ]);
+
+    expect(results.reduce((total, result) => total + result.triggered, 0)).toBe(1);
+    expect(results.reduce((total, result) => total + result.alreadyReviewed, 0)).toBe(1);
+    expect(wakes).toHaveLength(1);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId));
+    expect(comments).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.triggerCount).toBe(1);
+  });
+
   it("does not trigger while a non-watchdog descendant has live work", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-2", status: "in_progress" });
