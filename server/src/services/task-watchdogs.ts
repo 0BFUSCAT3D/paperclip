@@ -1527,90 +1527,111 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     runId: string | null;
   }) {
     const { watchdog, sourceIssue, classification } = input;
-    const now = new Date();
-    const claimed = await db
-      .update(issueWatchdogs)
-      .set({
-        lastObservedFingerprint: classification.stopFingerprint,
-        lastObservedStopSnapshot: classification.stopSnapshot,
-        lastReviewedFingerprint: classification.stopFingerprint,
-        lastReviewedStopSnapshot: classification.stopSnapshot,
-        lastTriggeredAt: now,
-        triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(issueWatchdogs.id, watchdog.id),
-        sql`${issueWatchdogs.lastReviewedFingerprint} is distinct from ${classification.stopFingerprint}`,
-      ))
-      .returning({ id: issueWatchdogs.id });
-    if (claimed.length === 0) {
-      return {
-        ...classification,
-        state: "already_reviewed" as const,
-        reason: "The current stopped subtree fingerprint was already claimed for self review.",
-      };
-    }
-
-    await issuesSvc.addComment(
-      sourceIssue.id,
-      buildSelfReviewComment({
-        stopFingerprint: classification.stopFingerprint,
-        stoppedLeaves: classification.stoppedLeaves,
-        pendingInteractionsByIssueId: classification.pendingInteractionsByIssueId,
-        goalInstructions: watchdog.instructions,
-      }),
-      { runId: input.runId },
-      {
-        authorType: "system",
-        metadata: stoppedFingerprintMetadata({
-          sourceIssueId: sourceIssue.id,
-          stopFingerprint: classification.stopFingerprint,
-          waitsByIssueId: classification.stopSnapshot.waitsByIssueId,
-          resumed: true,
-        }),
-      },
-    );
-
-    await logActivity(db, {
-      companyId: sourceIssue.companyId,
-      actorType: "system",
-      actorId: "system",
-      agentId: watchdog.watchdogAgentId,
-      runId: input.runId,
-      action: "issue.task_watchdog_triggered",
-      entityType: "issue",
-      entityId: sourceIssue.id,
-      details: {
-        source: "task_watchdogs.evaluate",
-        mode: "self",
-        watchdogId: watchdog.id,
-        stopFingerprint: classification.stopFingerprint,
-        stopSnapshot: classification.stopSnapshot,
-        stoppedLeaves: classification.stoppedLeaves,
-      },
-    });
-
     const context = selfWatchdogWakeContext({ watchdog, sourceIssue, classification });
-    const wake = deps.enqueueWakeup
-      ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "task_watchdog_self_review",
-        payload: context,
-        contextSnapshot: context,
-        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
-        requestedByActorType: "system",
-        requestedByActorId: null,
-      })
-      : null;
+    const wakeNotQueued = new Error("Self-review wake was not queued.");
 
-    return {
-      state: "triggered" as const,
-      classification,
-      watchdogIssueId: sourceIssue.id,
-      wakeupRunId: wake?.id ?? null,
-    };
+    try {
+      return await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(sql`select id from issue_watchdogs where id = ${watchdog.id} for update`);
+        const persisted = await tx
+          .select({ lastReviewedFingerprint: issueWatchdogs.lastReviewedFingerprint })
+          .from(issueWatchdogs)
+          .where(eq(issueWatchdogs.id, watchdog.id))
+          .then((rows) => rows[0] ?? null);
+        if (!persisted || persisted.lastReviewedFingerprint === classification.stopFingerprint) {
+          return {
+            ...classification,
+            state: "already_reviewed" as const,
+            reason: "The current stopped subtree fingerprint was already claimed for self review.",
+          };
+        }
+
+        const wake = deps.enqueueWakeup
+          ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "task_watchdog_self_review",
+            payload: context,
+            contextSnapshot: context,
+            idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+            requestedByActorType: "system",
+            requestedByActorId: null,
+          })
+          : null;
+        if (!wake) throw wakeNotQueued;
+
+        await issuesSvc.addComment(
+          sourceIssue.id,
+          buildSelfReviewComment({
+            stopFingerprint: classification.stopFingerprint,
+            stoppedLeaves: classification.stoppedLeaves,
+            pendingInteractionsByIssueId: classification.pendingInteractionsByIssueId,
+            goalInstructions: watchdog.instructions,
+          }),
+          { runId: input.runId },
+          {
+            authorType: "system",
+            metadata: stoppedFingerprintMetadata({
+              sourceIssueId: sourceIssue.id,
+              stopFingerprint: classification.stopFingerprint,
+              waitsByIssueId: classification.stopSnapshot.waitsByIssueId,
+              resumed: true,
+            }),
+          },
+          tx,
+        );
+
+        const now = new Date();
+        await tx
+          .update(issueWatchdogs)
+          .set({
+            lastObservedFingerprint: classification.stopFingerprint,
+            lastObservedStopSnapshot: classification.stopSnapshot,
+            lastReviewedFingerprint: classification.stopFingerprint,
+            lastReviewedStopSnapshot: classification.stopSnapshot,
+            lastTriggeredAt: now,
+            triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
+            updatedAt: now,
+          })
+          .where(eq(issueWatchdogs.id, watchdog.id));
+
+        await logActivity(txDb, {
+          companyId: sourceIssue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: watchdog.watchdogAgentId,
+          runId: input.runId,
+          action: "issue.task_watchdog_triggered",
+          entityType: "issue",
+          entityId: sourceIssue.id,
+          details: {
+            source: "task_watchdogs.evaluate",
+            mode: "self",
+            watchdogId: watchdog.id,
+            stopFingerprint: classification.stopFingerprint,
+            stopSnapshot: classification.stopSnapshot,
+            stoppedLeaves: classification.stoppedLeaves,
+          },
+        });
+
+        return {
+          state: "triggered" as const,
+          classification,
+          watchdogIssueId: sourceIssue.id,
+          wakeupRunId: wake.id,
+        };
+      });
+    } catch (error) {
+      if (error === wakeNotQueued) {
+        return {
+          ...classification,
+          state: "wake_not_queued" as const,
+          reason: wakeNotQueued.message,
+        };
+      }
+      throw error;
+    }
   }
 
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {

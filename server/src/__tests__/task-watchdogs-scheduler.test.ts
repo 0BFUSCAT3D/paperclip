@@ -399,6 +399,35 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(1);
   });
 
+  it("retries a self review when the wake was not queued", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-RETRY",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, { mode: "self" });
+    const suppressedService = taskWatchdogService(db, {
+      enqueueWakeup: async () => null,
+    });
+
+    const suppressed = await suppressedService.reconcileTaskWatchdogs({ companyId });
+
+    expect(suppressed).toMatchObject({ checked: 1, triggered: 0, skipped: 1 });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(0);
+    const [unreviewed] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(unreviewed?.lastReviewedFingerprint).toBeNull();
+    expect(unreviewed?.triggerCount).toBe(0);
+
+    const { service, wakes } = createService();
+    const retried = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(retried).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(1);
+  });
+
   it("does not trigger while a non-watchdog descendant has live work", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-2", status: "in_progress" });
