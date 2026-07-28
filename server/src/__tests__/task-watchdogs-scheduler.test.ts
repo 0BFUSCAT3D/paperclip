@@ -163,10 +163,18 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
   function createService() {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> | undefined }> = [];
+    const wakeIdsByIdempotencyKey = new Map<string, string>();
     const service = taskWatchdogService(db, {
       enqueueWakeup: async (agentId, opts) => {
+        const idempotencyKey = typeof opts?.idempotencyKey === "string" ? opts.idempotencyKey : null;
+        if (idempotencyKey?.startsWith("task_watchdog_self:")) {
+          const existingId = wakeIdsByIdempotencyKey.get(idempotencyKey);
+          if (existingId) return { id: existingId };
+        }
+        const id = randomUUID();
+        if (idempotencyKey?.startsWith("task_watchdog_self:")) wakeIdsByIdempotencyKey.set(idempotencyKey, id);
         wakes.push({ agentId, opts });
-        return { id: randomUUID() };
+        return { id };
       },
     });
     return { service, wakes };
@@ -338,7 +346,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.agentId).toBe(agentId);
     expect(wakes[0]?.opts?.reason).toBe("task_watchdog_self_review");
-    expect(wakes[0]?.opts?.idempotencyKey).toMatch(/^task_watchdog:[^:]+:task_watchdog_stop:/);
+    expect(wakes[0]?.opts?.idempotencyKey).toMatch(/^task_watchdog_self:[^:]+:task_watchdog_stop:/);
     expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
       issueId: sourceId,
       taskId: sourceId,
