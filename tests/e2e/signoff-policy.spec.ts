@@ -75,6 +75,39 @@ async function getIssueRunLockState(board: APIRequestContext, issueId: string): 
   };
 }
 
+/**
+ * A lost run-lock race surfaces as one of two 409 conflicts, depending on which
+ * endpoint lost: a PATCH under a stale run id answers "Issue run ownership
+ * conflict", while a checkout that lost the lock answers "Issue checkout
+ * conflict". Only these two are transient and safe to retry under the winning
+ * run id.
+ *
+ * Every other 409 is a genuine outcome the suite's negative paths must observe
+ * unretried — a non-participant's "Issue is checked out by another agent"
+ * rejection, a paused-project refusal, or a lifecycle block. (The missing
+ * comment case is a 400, so it never enters a retry path.) Matching on the
+ * error message, rather than the bare 409 status, keeps those failing for the
+ * right reason.
+ */
+const RUN_LOCK_CONFLICT_ERRORS = new Set([
+  "Issue run ownership conflict",
+  "Issue checkout conflict",
+]);
+
+async function isRunLockConflictResponse(
+  res: Awaited<ReturnType<APIRequestContext["patch"]>>,
+): Promise<boolean> {
+  if (res.status() !== 409) return false;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return false;
+  }
+  const error = (body as { error?: unknown } | null)?.error;
+  return typeof error === "string" && RUN_LOCK_CONFLICT_ERRORS.has(error);
+}
+
 async function retryAgentPatchWithCurrentLockOnConflict(
   board: APIRequestContext,
   agent: AgentAuth,
@@ -82,7 +115,7 @@ async function retryAgentPatchWithCurrentLockOnConflict(
   failedRes: Awaited<ReturnType<APIRequestContext["patch"]>>,
   patchData: Record<string, unknown>,
 ) {
-  if (failedRes.status() !== 409) return failedRes;
+  if (!(await isRunLockConflictResponse(failedRes))) return failedRes;
   const issueRunLock = await getIssueRunLockState(board, issueId);
   if (issueRunLock.assigneeAgentId !== agent.agentId) return failedRes;
 
@@ -100,17 +133,20 @@ async function retryAgentPatchWithCurrentLockOnConflict(
  * PATCH an issue as an agent, using a freshly invoked heartbeat run.
  *
  * Invoking a heartbeat starts a background run that races this PATCH for the
- * issue's run-lock: the background run may check the issue out (flipping it to
- * `in_progress` under its own run id) a moment before — or after — this PATCH
- * lands, and the server answers the loser with a 409 ("Issue is checked out by
- * another agent"). With `retries: 0` / `workers: 1` a single transient 409
- * fails the whole shard, so we retry a run-lock 409 under the issue's *current*
- * lock, bounded by escalating backoff to cover the race window.
+ * issue's run-lock: the background run may check the issue out (flipping its
+ * checkout run id under its own id) a moment before — or after — this PATCH
+ * lands, and the server answers the loser with a run-ownership 409 ("Issue run
+ * ownership conflict"). With `retries: 0` / `workers: 1` a single transient 409
+ * fails the whole shard, so we retry that specific conflict under the issue's
+ * *current* lock, bounded by escalating backoff to cover the race window.
  *
  * The retry is intentionally narrow so the suite's negative paths keep failing
  * for the right reason:
- *   - It only re-PATCHes while the issue is still assigned to the acting agent,
- *     so a non-participant's genuine 409/403 rejection is returned untouched.
+ *   - It only retries the run-lock conflict itself (see
+ *     `isRunLockConflictResponse`); any other 409 — a non-participant's
+ *     "checked out by another agent" rejection, a lifecycle block — is returned
+ *     untouched for the caller to assert on.
+ *   - It only re-PATCHes while the issue is still assigned to the acting agent.
  *   - It re-PATCHes under the winning run id (or the invoked run id once the
  *     background run has released its lock), so a real validation error such as
  *     the missing-comment 400 surfaces instead of a masking transient 409.
@@ -134,11 +170,11 @@ async function agentPatch(
     });
 
   let res = await patchWith(runId);
-  for (let attempt = 1; attempt < maxAttempts && res.status() === 409; attempt++) {
+  for (let attempt = 1; attempt < maxAttempts && (await isRunLockConflictResponse(res)); attempt++) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(maxBackoffMs, backoffMs * 2 ** (attempt - 1))));
     const issueRunLock = await getIssueRunLockState(board, issueId);
-    // A 409 on an issue no longer assigned to us is a genuine rejection, not a
-    // run-lock race — leave it for the caller to assert on.
+    // A run-lock conflict on an issue no longer assigned to us is a genuine
+    // rejection, not a race — leave it for the caller to assert on.
     if (issueRunLock.assigneeAgentId !== agent.agentId) break;
     const retryRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId ?? runId;
     res = await patchWith(retryRunId);
