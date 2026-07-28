@@ -37,6 +37,7 @@ describe("instance settings service", () => {
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
+      enableWatchdogEverything: false,
       enableCloudSync: true,
       enableBuiltInAgents: true,
       enableBetaSkills: false,
@@ -77,6 +78,14 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
     expect(
       normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
+    ).toBe(false);
+  });
+
+  it("defaults enableWatchdogEverything to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableWatchdogEverything).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableWatchdogEverything).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableTaskWatchdogs: true }).enableWatchdogEverything,
     ).toBe(false);
   });
 

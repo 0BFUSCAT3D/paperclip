@@ -104,6 +104,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableWatchdogEverything: {
+    title: "Watchdog Everything",
+    description:
+      "On new task assignments, instruct the assignee to triage whether the task needs a completion goal and, if so, register it as a self-mode watchdog on the task itself; the watchdog then wakes the same agent directly on the task to verify the goal — no separate watchdog sub-task.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableIssuePlanDecompositions: {
     title: "Task Plan Decomposition Panel",
     description: "Show accepted-plan decomposition history on task detail pages.",

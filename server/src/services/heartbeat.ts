@@ -239,6 +239,7 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
+  isAssignmentShapedPaperclipWakeReason,
   readPaperclipSkillSyncPreference,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
@@ -4957,6 +4958,8 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
+    taskWatchdogEverything: (input.contextSnapshot.taskWatchdogEverything ?? null) as unknown,
+    taskWatchdogSelfReview: (input.contextSnapshot.taskWatchdogSelfReview ?? null) as unknown,
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
     continuationSummary: safeContinuationSummary
       ? {
@@ -12426,6 +12429,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     } else {
       delete context.paperclipSkillTest;
+    }
+    // Experimental "watchdog everything": on assignment-shaped wakes for an
+    // issue with no active watchdog, the wake payload instructs the assignee
+    // to first triage whether the task needs a completion-goal watchdog and,
+    // if so, register it on itself in self mode before doing the work.
+    delete context.taskWatchdogEverything;
+    if (
+      issueContext &&
+      issueContext.assigneeAgentId === agent.id &&
+      issueContext.originKind !== "task_watchdog" &&
+      issueContext.status !== "done" &&
+      issueContext.status !== "cancelled" &&
+      isAssignmentShapedPaperclipWakeReason(readNonEmptyString(context.wakeReason)) &&
+      (await instanceSettings.getExperimental()).enableWatchdogEverything === true
+    ) {
+      const activeWatchdog = await taskWatchdogs.getActiveForIssue(agent.companyId, issueContext.id);
+      if (!activeWatchdog) {
+        context.taskWatchdogEverything = {
+          watchedIssueId: issueContext.id,
+          watchedIssueIdentifier: issueContext.identifier,
+          selfAgentId: agent.id,
+        };
+      }
     }
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,

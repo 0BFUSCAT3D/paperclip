@@ -130,6 +130,19 @@ describe("instance experimental settings validators", () => {
     });
   });
 
+  it("defaults watchdog everything off and accepts patches", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+    expect(settings.enableWatchdogEverything).toBe(false);
+
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableWatchdogEverything: true,
+      }),
+    ).toEqual({
+      enableWatchdogEverything: true,
+    });
+  });
+
   it("accepts apps patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({

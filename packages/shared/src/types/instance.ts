@@ -53,6 +53,7 @@ export interface InstanceExperimentalSettings {
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
   enableTaskWatchdogs: boolean;
+  enableWatchdogEverything: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;

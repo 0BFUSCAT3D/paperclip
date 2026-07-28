@@ -48,6 +48,8 @@ type ActorFields = {
 export type IssueWatchdogUpsertInput = {
   agentId: string;
   instructions?: string | null;
+  // Omitted keeps the existing mode on update and defaults to "subtask" on create.
+  mode?: "subtask" | "self" | null;
   actor?: ActorFields;
 };
 
@@ -232,6 +234,10 @@ function normalizeInstructions(value: string | null | undefined): string | null 
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export function issueWatchdogMode(row: Pick<IssueWatchdogRow, "mode">): "subtask" | "self" {
+  return row.mode === "self" ? "self" : "subtask";
+}
+
 export function summarizeIssueWatchdog(row: IssueWatchdogRow): IssueWatchdogSummary {
   return {
     id: row.id,
@@ -240,6 +246,7 @@ export function summarizeIssueWatchdog(row: IssueWatchdogRow): IssueWatchdogSumm
     watchdogAgentId: row.watchdogAgentId,
     instructions: row.instructions,
     status: row.status as IssueWatchdogSummary["status"],
+    mode: issueWatchdogMode(row),
     watchdogIssueId: row.watchdogIssueId,
     lastObservedFingerprint: row.lastObservedFingerprint,
     lastReviewedFingerprint: row.lastReviewedFingerprint,
@@ -650,6 +657,77 @@ function buildStoppedFingerprintComment(input: {
   ].filter((line) => line !== "").join("\n");
 }
 
+function buildSelfReviewComment(input: {
+  stopFingerprint: string;
+  stoppedLeaves: TaskWatchdogStoppedLeaf[];
+  pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
+  goalInstructions: string | null;
+}) {
+  const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
+  const leafLines = input.stoppedLeaves.slice(0, 12).map((leaf) => {
+    const interactionKinds = new Map(
+      (input.pendingInteractionsByIssueId[leaf.issueId] ?? []).map((wait) => [wait.id, wait.kind]),
+    );
+    const waits = [
+      ...leaf.pendingInteractionIds.map((id) => `${interactionKinds.get(id) ?? "interaction"} ${shortId(id)}`),
+      ...leaf.pendingApprovalIds.map((id) => `approval ${shortId(id)}`),
+    ];
+    return `- ${leaf.identifier ?? leaf.issueId}: ${leaf.status}${waits.length > 0 ? ` (pending ${waits.join(", ")})` : ""}`;
+  });
+  const more = input.stoppedLeaves.length > leafLines.length
+    ? `\n- ...and ${input.stoppedLeaves.length - leafLines.length} more stopped leaves`
+    : "";
+  return [
+    "Self-watchdog review triggered: this task's subtree has no live execution path. The assignee is being woken on this task to verify the completion goal.",
+    "",
+    `Stopped fingerprint: \`${input.stopFingerprint}\``,
+    ...(input.goalInstructions
+      ? ["", "Completion goal under verification:", markdownQuote(input.goalInstructions)]
+      : []),
+    "",
+    "Stopped leaves:",
+    ...(leafLines.length > 0 ? leafLines : ["- No open leaf issues (subtree is terminal)."]),
+    more,
+  ].filter((line) => line !== "").join("\n");
+}
+
+function markdownQuote(text: string) {
+  return text.split("\n").map((line) => `> ${line}`).join("\n");
+}
+
+// Self mode wakes the watchdog agent directly on the watched issue. This
+// context deliberately does NOT use the `taskWatchdog` key: that key activates
+// the restricted task-watchdog mutation scope for the run, which is wrong here
+// — in self mode the watchdog agent is the issue's own assignee and operates
+// under its normal permissions.
+function selfWatchdogWakeContext(input: {
+  watchdog: IssueWatchdogRow;
+  sourceIssue: IssueRow;
+  classification: Extract<TaskWatchdogClassifierResult, { state: "stopped" }>;
+}) {
+  return {
+    issueId: input.sourceIssue.id,
+    taskId: input.sourceIssue.id,
+    wakeReason: "task_watchdog_self_review",
+    source: "task_watchdog_self",
+    taskWatchdogSelfReview: {
+      watchdogId: input.watchdog.id,
+      watchedIssueId: input.sourceIssue.id,
+      watchedIssueIdentifier: input.sourceIssue.identifier,
+      watchedIssueTitle: input.sourceIssue.title,
+      stopFingerprint: input.classification.stopFingerprint,
+      goalInstructions: input.watchdog.instructions,
+      stoppedLeaves: input.classification.stoppedLeaves,
+      pendingInteractions: input.classification.pendingInteractionsByIssueId,
+      pendingApprovals: Object.fromEntries(Object.entries(input.classification.stopSnapshot.waitsByIssueId)
+        .filter(([, waits]) => waits.pendingApprovalIds.length > 0)
+        .map(([issueId, waits]) => [issueId, waits.pendingApprovalIds])),
+    },
+    resumeIntent: true,
+    followUpRequested: true,
+  };
+}
+
 function stoppedFingerprintMetadata(input: {
   sourceIssueId: string;
   stopFingerprint: string;
@@ -792,6 +870,7 @@ async function updateIssueWatchdogRow(
     .set({
       watchdogAgentId: input.agentId,
       instructions: normalizeInstructions(input.instructions),
+      mode: input.mode ?? issueWatchdogMode(existing),
       status: "active",
       updatedByAgentId: input.actor?.agentId ?? null,
       updatedByUserId: input.actor?.userId ?? null,
@@ -831,6 +910,7 @@ export async function upsertIssueWatchdogForIssue(
       issueId,
       watchdogAgentId: input.agentId,
       instructions: normalizeInstructions(input.instructions),
+      mode: input.mode ?? "subtask",
       status: "active",
       createdByAgentId: input.actor?.agentId ?? null,
       createdByUserId: input.actor?.userId ?? null,
@@ -1435,6 +1515,93 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return created;
   }
 
+  // Self mode: no watchdog sub-task. Post the review context on the watched
+  // issue itself and wake the watchdog agent (normally the assignee) directly
+  // on it to verify the completion goal. The fingerprint is marked reviewed at
+  // trigger time so each stopped state produces exactly one verification wake
+  // — a simple task that genuinely finished never churns.
+  async function triggerSelfReview(input: {
+    watchdog: IssueWatchdogRow;
+    sourceIssue: IssueRow;
+    classification: Extract<TaskWatchdogClassifierResult, { state: "stopped" }>;
+    runId: string | null;
+  }) {
+    const { watchdog, sourceIssue, classification } = input;
+    await issuesSvc.addComment(
+      sourceIssue.id,
+      buildSelfReviewComment({
+        stopFingerprint: classification.stopFingerprint,
+        stoppedLeaves: classification.stoppedLeaves,
+        pendingInteractionsByIssueId: classification.pendingInteractionsByIssueId,
+        goalInstructions: watchdog.instructions,
+      }),
+      { runId: input.runId },
+      {
+        authorType: "system",
+        metadata: stoppedFingerprintMetadata({
+          sourceIssueId: sourceIssue.id,
+          stopFingerprint: classification.stopFingerprint,
+          waitsByIssueId: classification.stopSnapshot.waitsByIssueId,
+          resumed: true,
+        }),
+      },
+    );
+
+    const now = new Date();
+    await db
+      .update(issueWatchdogs)
+      .set({
+        lastObservedFingerprint: classification.stopFingerprint,
+        lastObservedStopSnapshot: classification.stopSnapshot,
+        lastReviewedFingerprint: classification.stopFingerprint,
+        lastReviewedStopSnapshot: classification.stopSnapshot,
+        lastTriggeredAt: now,
+        triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
+        updatedAt: now,
+      })
+      .where(eq(issueWatchdogs.id, watchdog.id));
+
+    await logActivity(db, {
+      companyId: sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: watchdog.watchdogAgentId,
+      runId: input.runId,
+      action: "issue.task_watchdog_triggered",
+      entityType: "issue",
+      entityId: sourceIssue.id,
+      details: {
+        source: "task_watchdogs.evaluate",
+        mode: "self",
+        watchdogId: watchdog.id,
+        stopFingerprint: classification.stopFingerprint,
+        stopSnapshot: classification.stopSnapshot,
+        stoppedLeaves: classification.stoppedLeaves,
+      },
+    });
+
+    const context = selfWatchdogWakeContext({ watchdog, sourceIssue, classification });
+    const wake = deps.enqueueWakeup
+      ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "task_watchdog_self_review",
+        payload: context,
+        contextSnapshot: context,
+        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      })
+      : null;
+
+    return {
+      state: "triggered" as const,
+      classification,
+      watchdogIssueId: sourceIssue.id,
+      wakeupRunId: wake?.id ?? null,
+    };
+  }
+
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
     const watchdog = await markTerminalWatchdogIssueReviewed(row, opts);
     const sourceIssue = await db
@@ -1450,6 +1617,15 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state !== "stopped") {
       return { state: classification.state, reason: classification.reason, classification };
+    }
+
+    if (issueWatchdogMode(watchdog) === "self") {
+      return triggerSelfReview({
+        watchdog,
+        sourceIssue,
+        classification,
+        runId: opts.runId ?? null,
+      });
     }
 
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(

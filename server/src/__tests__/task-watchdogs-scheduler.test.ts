@@ -144,13 +144,19 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   }
 
-  async function seedWatchdog(companyId: string, issueId: string, agentId: string) {
+  async function seedWatchdog(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    overrides: Partial<typeof issueWatchdogs.$inferInsert> = {},
+  ) {
     const [row] = await db.insert(issueWatchdogs).values({
       companyId,
       issueId,
       watchdogAgentId: agentId,
       instructions: "Verify stopped work.",
       status: "active",
+      ...overrides,
     }).returning();
     return row;
   }
@@ -301,6 +307,68 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(comments).toHaveLength(2);
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.triggerCount).toBe(2);
+  });
+
+  it("self mode posts the review on the watched issue and wakes the agent directly on it", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, {
+      mode: "self",
+      instructions: "Verify the report exists and passes lint.",
+    });
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(result.watchdogIssueIds).toEqual([sourceId]);
+
+    // No separate watchdog sub-task in self mode.
+    const watchdogIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(watchdogIssues).toHaveLength(0);
+
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.agentId).toBe(agentId);
+    expect(wakes[0]?.opts?.reason).toBe("task_watchdog_self_review");
+    expect(wakes[0]?.opts?.idempotencyKey).toMatch(/^task_watchdog:[^:]+:task_watchdog_stop:/);
+    expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
+      issueId: sourceId,
+      taskId: sourceId,
+      wakeReason: "task_watchdog_self_review",
+      taskWatchdogSelfReview: {
+        watchedIssueId: sourceId,
+        watchedIssueIdentifier: "WDOG-SELF",
+        goalInstructions: "Verify the report exists and passes lint.",
+      },
+    });
+    // Self wakes must not carry the restricted task-watchdog mutation scope key.
+    expect((wakes[0]?.opts?.contextSnapshot as Record<string, unknown>).taskWatchdog).toBeUndefined();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Self-watchdog review triggered");
+    expect(comments[0]?.body).toContain("Verify the report exists and passes lint.");
+
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).toMatch(/^task_watchdog_stop:/);
+    expect(watchdog?.lastReviewedFingerprint).toBe(watchdog?.lastObservedFingerprint);
+    expect(watchdog?.watchdogIssueId).toBeNull();
+    expect(watchdog?.triggerCount).toBe(1);
+
+    // The same stopped state is reviewed-at-trigger: no re-wake, no comment churn.
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+    expect(second).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+    const commentsAfter = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId));
+    expect(commentsAfter).toHaveLength(1);
   });
 
   it("does not trigger while a non-watchdog descendant has live work", async () => {

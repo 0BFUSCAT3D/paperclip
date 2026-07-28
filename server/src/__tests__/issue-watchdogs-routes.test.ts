@@ -225,11 +225,12 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       watchdogAgentId: firstAgentId,
       instructions: "Check screenshots and tests.",
       status: "active",
+      mode: "subtask",
     });
 
     const updated = await request(app)
       .put(`/api/issues/${issueId}/watchdog`)
-      .send({ agentId: secondAgentId, instructions: "Be skeptical." });
+      .send({ agentId: secondAgentId, instructions: "Be skeptical.", mode: "self" });
 
     expect(updated.status, JSON.stringify(updated.body)).toBe(200);
     expect(updated.body.id).toBe(created.body.id);
@@ -238,11 +239,19 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       watchdogAgentId: secondAgentId,
       instructions: "Be skeptical.",
       status: "active",
+      mode: "self",
     });
+
+    // Omitting mode on a later update keeps the stored mode.
+    const modeKept = await request(app)
+      .put(`/api/issues/${issueId}/watchdog`)
+      .send({ agentId: secondAgentId, instructions: "Be skeptical." });
+    expect(modeKept.status, JSON.stringify(modeKept.body)).toBe(200);
+    expect(modeKept.body).toMatchObject({ id: created.body.id, mode: "self" });
 
     const read = await request(app).get(`/api/issues/${issueId}/watchdog`);
     expect(read.status, JSON.stringify(read.body)).toBe(200);
-    expect(read.body).toMatchObject({ id: created.body.id, watchdogAgentId: secondAgentId });
+    expect(read.body).toMatchObject({ id: created.body.id, watchdogAgentId: secondAgentId, mode: "self" });
 
     const detail = await request(app).get(`/api/issues/${issueId}`);
     expect(detail.status, JSON.stringify(detail.body)).toBe(200);
@@ -279,6 +288,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     const actionNames = actions.map((row) => row.action);
     expect(actionNames.filter((action) => action.startsWith("issue.watchdog_"))).toEqual([
       "issue.watchdog_created",
+      "issue.watchdog_updated",
       "issue.watchdog_updated",
       "issue.watchdog_removed",
     ]);

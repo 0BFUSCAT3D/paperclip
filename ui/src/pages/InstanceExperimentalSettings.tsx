@@ -368,6 +368,7 @@ export function InstanceExperimentalSettings() {
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
+  const enableWatchdogEverything = experimentalQuery.data?.enableWatchdogEverything === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
@@ -684,6 +685,16 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableTaskWatchdogs}
         ariaLabel="Toggle task watchdogs experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Watchdog Everything"
+        description="On new task assignments, instruct the assignee to first decide whether the task needs a completion goal and, if so, register it as a self-mode watchdog on the task itself. The watchdog then wakes the same agent directly on the task to verify the goal passed — no separate watchdog sub-task is created. Simple tasks are allowed to skip the watchdog."
+        checked={enableWatchdogEverything}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableWatchdogEverything: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableWatchdogEverything}
+        ariaLabel="Toggle watchdog everything experimental setting"
       />
 
       <ExperimentalToggleCard

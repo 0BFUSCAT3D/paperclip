@@ -5518,6 +5518,7 @@ export function issueRoutes(
     const { watchdog, created } = await taskWatchdogsSvc.upsertForIssue(issue.companyId, issue.id, {
       agentId: req.body.agentId,
       instructions: req.body.instructions,
+      mode: req.body.mode,
       actor: {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
@@ -5538,6 +5539,7 @@ export function issueRoutes(
         identifier: issue.identifier,
         watchdogId: watchdog.id,
         watchdogAgentId: watchdog.watchdogAgentId,
+        watchdogMode: watchdog.mode ?? "subtask",
         instructionsChanged: (existingWatchdog?.instructions ?? null) !== (watchdog.instructions ?? null),
       },
     });
