@@ -552,10 +552,10 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
 
 async function assertWatchedIssue(dbOrTx: any, companyId: string, issueId: string) {
   const issue = await dbOrTx
-    .select({ id: issues.id, companyId: issues.companyId })
+    .select({ id: issues.id, companyId: issues.companyId, assigneeAgentId: issues.assigneeAgentId })
     .from(issues)
     .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-    .then((rows: Array<{ id: string; companyId: string }>) => rows[0] ?? null);
+    .then((rows: Array<{ id: string; companyId: string; assigneeAgentId: string | null }>) => rows[0] ?? null);
   if (!issue) throw notFound("Issue not found");
   return issue;
 }
@@ -896,7 +896,7 @@ export async function upsertIssueWatchdogForIssue(
   issueId: string,
   input: IssueWatchdogUpsertInput,
 ): Promise<{ watchdog: IssueWatchdog; created: boolean }> {
-  await assertWatchedIssue(dbOrTx, companyId, issueId);
+  const issue = await assertWatchedIssue(dbOrTx, companyId, issueId);
   await assertWatchdogAgentInvokable(dbOrTx, companyId, input.agentId);
 
   const now = new Date();
@@ -905,6 +905,15 @@ export async function upsertIssueWatchdogForIssue(
     .from(issueWatchdogs)
     .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)))
     .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
+
+  const effectiveMode = input.mode ?? issueWatchdogMode(existing ?? { mode: "subtask" });
+  if (effectiveMode === "self" && issue.assigneeAgentId !== input.agentId) {
+    throw conflict("Self-mode watchdog agent must be the watched issue assignee", {
+      issueId,
+      assigneeAgentId: issue.assigneeAgentId,
+      watchdogAgentId: input.agentId,
+    });
+  }
 
   if (existing) {
     const updated = await updateIssueWatchdogRow(dbOrTx, existing, input, now);
@@ -1569,8 +1578,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     }
 
     const now = new Date();
-    const claimed = await db
-      .update(issueWatchdogs)
+    const claimed = await db.transaction(async (tx) => {
+      const rows = await tx
+        .update(issueWatchdogs)
       .set({
         lastObservedFingerprint: classification.stopFingerprint,
         lastObservedStopSnapshot: classification.stopSnapshot,
@@ -1585,6 +1595,28 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         sql`${issueWatchdogs.lastReviewedFingerprint} is distinct from ${classification.stopFingerprint}`,
       ))
       .returning({ id: issueWatchdogs.id });
+      if (rows.length > 0) {
+        await logActivity(tx as unknown as Db, {
+          companyId: sourceIssue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: watchdog.watchdogAgentId,
+          runId: input.runId,
+          action: "issue.task_watchdog_triggered",
+          entityType: "issue",
+          entityId: sourceIssue.id,
+          details: {
+            source: "task_watchdogs.evaluate",
+            mode: "self",
+            watchdogId: watchdog.id,
+            stopFingerprint: classification.stopFingerprint,
+            stopSnapshot: classification.stopSnapshot,
+            stoppedLeaves: classification.stoppedLeaves,
+          },
+        });
+      }
+      return rows;
+    });
 
     await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${idempotencyKey}))`);
@@ -1624,24 +1656,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
     }
 
-    await logActivity(db, {
-      companyId: sourceIssue.companyId,
-      actorType: "system",
-      actorId: "system",
-      agentId: watchdog.watchdogAgentId,
-      runId: input.runId,
-      action: "issue.task_watchdog_triggered",
-      entityType: "issue",
-      entityId: sourceIssue.id,
-      details: {
-        source: "task_watchdogs.evaluate",
-        mode: "self",
-        watchdogId: watchdog.id,
-        stopFingerprint: classification.stopFingerprint,
-        stopSnapshot: classification.stopSnapshot,
-        stoppedLeaves: classification.stoppedLeaves,
-      },
-    });
+
 
     return {
       state: "triggered" as const,

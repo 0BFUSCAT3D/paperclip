@@ -210,9 +210,13 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
 
   it("creates, updates, reads, lists, and removes an issue watchdog with activity logs", async () => {
     const companyId = await seedCompany();
-    const issueId = await seedIssue(companyId, { identifier: "WDOG-1", issueNumber: 1 });
     const firstAgentId = await seedAgent(companyId, { name: "First Watchdog" });
     const secondAgentId = await seedAgent(companyId, { name: "Second Watchdog" });
+    const issueId = await seedIssue(companyId, {
+      identifier: "WDOG-1",
+      issueNumber: 1,
+      assigneeAgentId: secondAgentId,
+    });
     const app = createApp(companyId);
 
     const created = await request(app)
@@ -227,6 +231,12 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       status: "active",
       mode: "subtask",
     });
+
+
+    const rejectedSelf = await request(app)
+      .put(`/api/issues/${issueId}/watchdog`)
+      .send({ agentId: firstAgentId, instructions: "Be skeptical.", mode: "self" });
+    expect(rejectedSelf.status, JSON.stringify(rejectedSelf.body)).toBe(409);
 
     const updated = await request(app)
       .put(`/api/issues/${issueId}/watchdog`)
