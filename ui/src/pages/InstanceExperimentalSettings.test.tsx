@@ -89,6 +89,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableCloudSync: false,
     enableServerInfoDebugView: false,
     enableSmokeLab: false,
+    enableSkillUsageAnalytics: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
