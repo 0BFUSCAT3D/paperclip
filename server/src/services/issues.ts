@@ -6761,6 +6761,74 @@ export function issueService(db: Db) {
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
         if (lockedSelfWatchdog) {
+          const cancelledAt = new Date();
+          const cancellationReason = "Cancelled because the self-review issue was reassigned before the run started";
+          const cancelledRuns = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: cancelledAt,
+              error: cancellationReason,
+              errorCode: "issue_reassigned",
+              updatedAt: cancelledAt,
+            })
+            .where(and(
+              eq(heartbeatRuns.companyId, existing.companyId),
+              inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+              sql`${heartbeatRuns.contextSnapshot} -> 'taskWatchdogSelfReview' ->> 'watchdogId' = ${lockedSelfWatchdog.id}`,
+            ))
+            .returning({
+              id: heartbeatRuns.id,
+              agentId: heartbeatRuns.agentId,
+              wakeupRequestId: heartbeatRuns.wakeupRequestId,
+            });
+          const wakeupRequestIds = cancelledRuns
+            .map((run: { wakeupRequestId: string | null }) => run.wakeupRequestId)
+            .filter((requestId: string | null): requestId is string => Boolean(requestId));
+          if (wakeupRequestIds.length > 0) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: cancelledAt,
+                error: cancellationReason,
+                updatedAt: cancelledAt,
+              })
+              .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+          }
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: cancelledAt,
+              error: cancellationReason,
+              updatedAt: cancelledAt,
+            })
+            .where(and(
+              eq(agentWakeupRequests.companyId, existing.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' -> 'taskWatchdogSelfReview' ->> 'watchdogId' = ${lockedSelfWatchdog.id}`,
+            ));
+          for (const cancelledRun of cancelledRuns) {
+            await logActivity(tx as unknown as Db, {
+              companyId: existing.companyId,
+              actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+              actorId: actorAgentId ?? actorUserId ?? "issue_service",
+              agentId: cancelledRun.agentId,
+              runId: null,
+              action: "heartbeat.cancelled",
+              entityType: "heartbeat_run",
+              entityId: cancelledRun.id,
+              issueId: existing.id,
+              details: {
+                source: "self_watchdog_reassignment",
+                issueId: existing.id,
+                watchdogId: lockedSelfWatchdog.id,
+                previousAssigneeAgentId: existing.assigneeAgentId,
+                currentAssigneeAgentId: nextAssigneeAgentId,
+              },
+            });
+          }
           await tx
             .update(issueWatchdogs)
             .set({

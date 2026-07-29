@@ -450,11 +450,40 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
     const firstWakes: string[] = [];
     const firstService = taskWatchdogService(db, {
-      enqueueWakeup: async (agentId) => {
+      enqueueWakeup: async (agentId, opts) => {
         firstWakes.push(agentId);
+        const [wakeupRequest] = await db
+          .insert(agentWakeupRequests)
+          .values({
+            companyId,
+            agentId,
+            source: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            reason: opts?.reason,
+            payload: opts?.payload,
+            status: "queued",
+            idempotencyKey: opts?.idempotencyKey,
+          })
+          .returning();
+        const [run] = await db
+          .insert(heartbeatRuns)
+          .values({
+            companyId,
+            agentId,
+            invocationSource: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            status: "queued",
+            wakeupRequestId: wakeupRequest!.id,
+            contextSnapshot: opts?.contextSnapshot,
+          })
+          .returning();
+        await db
+          .update(agentWakeupRequests)
+          .set({ runId: run!.id })
+          .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
         signalWakeStarted();
         await wakeCanFinish;
-        return { id: randomUUID() };
+        return { id: run!.id };
       },
     });
 
@@ -470,6 +499,19 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       watchdogAgentId: currentAssigneeId,
       lastReviewedFingerprint: null,
     });
+    const [cancelledRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, formerAssigneeId));
+    expect(cancelledRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+    });
+    const [cancelledWake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, formerAssigneeId));
+    expect(cancelledWake).toMatchObject({ status: "cancelled" });
 
     const { service, wakes } = createService();
     const second = await service.reconcileTaskWatchdogs({ companyId });
