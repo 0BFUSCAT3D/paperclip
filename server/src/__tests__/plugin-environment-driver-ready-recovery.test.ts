@@ -37,10 +37,10 @@ const manifest: PaperclipPluginManifestV1 = {
   ],
 };
 
-function createPlugin(status: string) {
+function createPlugin(status: string, options: { id?: string; pluginKey?: string } = {}) {
   return {
-    id: PLUGIN_ID,
-    pluginKey: PLUGIN_KEY,
+    id: options.id ?? PLUGIN_ID,
+    pluginKey: options.pluginKey ?? PLUGIN_KEY,
     status,
     manifestJson: manifest,
   };
@@ -212,5 +212,39 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       }),
     ]);
     expect(secondDrivers).toEqual(firstDrivers);
+  });
+
+  it("bounds slow managed bundled recovery attempts without serial waits", async () => {
+    vi.useFakeTimers();
+    try {
+      const plugins = [
+        createPlugin("ready"),
+        createPlugin("ready", {
+          id: "plugin-modal",
+          pluginKey: "paperclip.modal-sandbox-provider",
+        }),
+      ];
+      mockRegistry.list.mockResolvedValue(plugins);
+      const worker = createWorkerManager();
+      const startWorker = vi.fn(() => new Promise<boolean>(() => {}));
+
+      const driversPromise = listReadyPluginEnvironmentDrivers({
+        db: {} as never,
+        workerManager: worker.workerManager,
+        recoverMissingWorker: {
+          pluginKeys: [PLUGIN_KEY, "paperclip.modal-sandbox-provider"],
+          startWorker,
+          timeoutMs: 25,
+        },
+      });
+      await Promise.resolve();
+
+      expect(startWorker).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(25);
+
+      await expect(driversPromise).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
