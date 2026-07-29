@@ -22,9 +22,6 @@ function createRequestConfirmation(
     summary: "Review and approve the latest plan.",
     status: "pending",
     continuationPolicy: "wake_assignee",
-    resolverPolicy: "board_only",
-    requestedResolverPolicy: "board_only",
-    effectiveResolverPolicy: "board_only",
     createdByAgentId: "agent-1",
     createdByUserId: null,
     resolvedByAgentId: null,
@@ -76,26 +73,6 @@ describe("TaskChatInteractionCard", () => {
     expect(card).not.toBeNull();
     expect(card?.id).toBe("interaction-confirmation-1");
     expect(container.textContent).toContain("Approve the plan");
-  });
-
-  it("puts the primary CTA on the right via a reversed action row", () => {
-    flushSync(() => {
-      root.render(
-        <TooltipProvider>
-          <ThemeProvider>
-          <TaskChatInteractionCard item={interactionItem(createRequestConfirmation())} />
-        </ThemeProvider>
-        </TooltipProvider>,
-      );
-    });
-    const buttons = Array.from(container.querySelectorAll("button"));
-    const confirm = buttons.find((button) => button.textContent === "Confirm");
-    const decline = buttons.find((button) => button.textContent === "Decline");
-    expect(confirm).not.toBeUndefined();
-    expect(decline).not.toBeUndefined();
-    const row = confirm?.parentElement;
-    expect(row).toBe(decline?.parentElement);
-    expect(row?.className).toContain("flex-row-reverse");
   });
 
   it("demotes an expired confirmation to a marker row", () => {

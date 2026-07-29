@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { IssueChatThread } from "@/components/IssueChatThread";
 import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
@@ -9,13 +9,23 @@ import {
   transcriptToTaskChatItems,
 } from "@/components/task-chat/transcript-adapter";
 import type {
+  TaskChatInteractionItem,
   TaskChatItem,
   TaskChatTurnChildItem,
   TaskChatTurnItem,
 } from "@/components/task-chat/task-chat-model";
+import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { workModeMetaFor } from "@/lib/work-mode-meta";
+
+function toMs(value: Date | string | null | undefined): number {
+  if (!value) return 0;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
 
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 
@@ -44,6 +54,9 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 export function TaskChatThread(props: TaskChatThreadProps) {
   const {
     comments,
+    interactions,
+    timelineEvents,
+    issueId = null,
     agentMap,
     userLabelMap,
     currentUserId,
@@ -65,6 +78,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     reassignOptions,
     currentAssigneeValue,
     issueStatus,
+    onAcceptInteraction,
+    onRejectInteraction,
+    onSubmitInteractionAnswers,
+    onCancelInteraction,
+    onSubmitInteractionVerdicts,
+    externalReferences,
   } = props;
 
   const agentModeLabel = workModeMetaFor(issueWorkMode).label;
@@ -148,6 +167,64 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [linkedRuns]);
 
+  const { data: planDocument } = useIssuePlanDocument(issueId);
+
+  // Comments, interactions, and the plan-doc marker merged into one
+  // chronological backbone (same sort keys and same-run handoff shift as the
+  // legacy buildIssueChatMessages), so plan-mode confirmation/question cards
+  // land where they happened in the conversation.
+  const orderedEntries = useMemo(() => {
+    const entries: { ms: number; order: number; id: string; item: TaskChatItem }[] = [];
+    // commentsToTaskChatItems skips deleted comments — mirror its filter so the
+    // two lists stay index-aligned.
+    const visibleComments = comments.filter((comment) => !comment.deletedAt);
+    visibleComments.forEach((comment, index) => {
+      const item = commentItems[index];
+      if (!item) return;
+      entries.push({ ms: toMs(comment.createdAt), order: 1, id: item.id, item });
+    });
+    for (const interaction of interactions ?? []) {
+      const createdAtMs = toMs(interaction.createdAt);
+      const handoffAtMs =
+        interaction.kind === "request_confirmation" && interaction.sourceRunId
+          ? latestSameRunHandoffTimestamp({
+              interactionCreatedAtMs: createdAtMs,
+              sourceRunId: interaction.sourceRunId,
+              comments,
+              timelineEvents: timelineEvents ?? [],
+              linkedRuns: linkedRuns ?? [],
+              liveRuns: liveRuns ?? [],
+            })
+          : null;
+      const id = `interaction:${interaction.id}`;
+      entries.push({
+        ms: handoffAtMs ?? createdAtMs,
+        order: 2,
+        id,
+        item: { id, kind: "interaction", interaction },
+      });
+    }
+    if (planDocument) {
+      const revision = planDocument.latestRevisionNumber ?? 1;
+      const id = `plan-doc:${planDocument.latestRevisionId ?? planDocument.id}`;
+      entries.push({
+        ms: toMs(planDocument.updatedAt),
+        order: 0,
+        id,
+        item: {
+          id,
+          kind: "marker",
+          variant: "turn_boundary",
+          label: revision > 1 ? "Plan updated" : "Plan created",
+          detail: `rev ${revision} — see the Plan tab`,
+        },
+      });
+    }
+    return entries.sort(
+      (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
+    );
+  }, [comments, commentItems, interactions, timelineEvents, linkedRuns, liveRuns, planDocument]);
+
   const items = useMemo<TaskChatItem[]>(() => {
     // Settled turns for every terminal run whose transcript we have. The
     // transcript's assistant text is excluded — it already landed as the run's
@@ -202,10 +279,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }
 
     const out: TaskChatItem[] = [];
-    for (const item of commentItems) {
-      const preceding = turnsByAnchor.get(item.id);
+    for (const entry of orderedEntries) {
+      const preceding = turnsByAnchor.get(entry.id);
       if (preceding) out.push(...preceding);
-      out.push(item);
+      out.push(entry.item);
     }
     out.push(...unanchored);
 
@@ -243,7 +320,37 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return out;
     // `tick` is intentionally a dependency so elapsed advances each second.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commentItems, runs, liveRun, transcriptByRun, linkedRunMetaById, firstCommentIdByRun, tick]);
+  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, firstCommentIdByRun, tick]);
+
+  const renderInteraction = useCallback(
+    (item: TaskChatInteractionItem) => (
+      <TaskChatInteractionCard
+        item={item}
+        agentMap={agentMap}
+        currentUserId={currentUserId}
+        userLabelMap={userLabelMap}
+        onAcceptInteraction={onAcceptInteraction}
+        onRejectInteraction={onRejectInteraction}
+        onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+        onCancelInteraction={onCancelInteraction}
+        onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+        onUploadImage={imageUploadHandler}
+        externalReferences={externalReferences}
+      />
+    ),
+    [
+      agentMap,
+      currentUserId,
+      userLabelMap,
+      onAcceptInteraction,
+      onRejectInteraction,
+      onSubmitInteractionAnswers,
+      onCancelInteraction,
+      onSubmitInteractionVerdicts,
+      imageUploadHandler,
+      externalReferences,
+    ],
+  );
 
   return (
     <div
@@ -254,11 +361,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         {items.length === 0 ? (
           <div className="px-3 py-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
         ) : (
-          <TaskChatThreadView items={items} />
+          <TaskChatThreadView items={items} renderInteraction={renderInteraction} />
         )}
       </div>
       {showComposer ? (
-        <div className="sticky bottom-0 z-10 mx-auto flex w-full max-w-3xl flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="sticky bottom-0 z-10 mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           {composerAccessory}
           <TaskChatComposer
             onAdd={onAdd}

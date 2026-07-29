@@ -1,5 +1,6 @@
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import type { TaskChatItem } from "./task-chat-model";
+import type { TaskChatInteractionItem, TaskChatItem } from "./task-chat-model";
 import { TaskChatTurn } from "./TaskChatTurn";
 import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatMarker } from "./TaskChatMarker";
@@ -12,6 +13,12 @@ import { TaskMessageScroller } from "./TaskMessageScroller";
 interface TaskChatThreadViewProps {
   items: TaskChatItem[];
   onApprovalDecision?: (statusItemId: string, optionId: string) => void;
+  /**
+   * Renders an interleaved issue-thread interaction (the live thread supplies
+   * TaskChatInteractionCard bound to its accept/reject handlers). Interaction
+   * items render nothing without it — the harness has no control plane.
+   */
+  renderInteraction?: (item: TaskChatInteractionItem) => ReactNode;
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
@@ -20,6 +27,7 @@ interface TaskChatThreadViewProps {
 function renderItem(
   item: TaskChatItem,
   onApprovalDecision?: (statusItemId: string, optionId: string) => void,
+  renderInteraction?: (item: TaskChatInteractionItem) => ReactNode,
 ) {
   switch (item.kind) {
     case "message":
@@ -39,6 +47,8 @@ function renderItem(
       );
     case "usage":
       return <TaskChatUsageReadout item={item} />;
+    case "interaction":
+      return renderInteraction ? renderInteraction(item) : null;
     case "turn":
       return (
         <TaskChatTurn
@@ -63,13 +73,14 @@ function renderItem(
 export function TaskChatThreadView({
   items,
   onApprovalDecision,
+  renderInteraction,
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
   const body = (
-    <div className={cn("mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-4", className)}>
+    <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4", className)}>
       {items.map((item) => (
-        <div key={item.id}>{renderItem(item, onApprovalDecision)}</div>
+        <div key={item.id}>{renderItem(item, onApprovalDecision, renderInteraction)}</div>
       ))}
     </div>
   );

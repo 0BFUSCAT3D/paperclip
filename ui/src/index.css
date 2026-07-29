@@ -256,6 +256,10 @@
      follow + pinned composer) inside the page flow. 21rem ≈ chrome above the
      thread (topbar + title row + tabs) plus page padding. */
   --tc-thread-max-h: calc(100dvh - 21rem);
+
+  /* Redesigned chat-shell column cap (phase 2c): one token caps the page
+     wrapper, thread body, and pinned composer so they widen in lockstep. */
+  --tc-shell-max-w: 60rem;
 }
 
 .dark {

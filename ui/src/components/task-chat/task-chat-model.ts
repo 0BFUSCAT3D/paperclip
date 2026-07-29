@@ -12,6 +12,7 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
+import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
 
 /** Who authored a thread row — the primary legibility signal. */
 export type TaskChatAuthorKind = "human" | "agent" | "system";
@@ -147,6 +148,18 @@ export interface TaskChatUsageItem {
   usage: TaskChatTokenUsage;
 }
 
+/**
+ * An issue-thread interaction (plan confirmation, question card, suggested
+ * tasks…) interleaved chronologically into the thread. The payload is the
+ * existing control-plane IssueThreadInteraction — the render layer wraps the
+ * shared IssueThreadInteractionCard rather than re-modeling the five kinds.
+ */
+export interface TaskChatInteractionItem {
+  id: string;
+  kind: "interaction";
+  interaction: IssueThreadInteraction;
+}
+
 /** Items a turn can group — everything except another turn. */
 export type TaskChatTurnChildItem =
   | TaskChatMessageItem
@@ -190,6 +203,7 @@ export type TaskChatItem =
   | TaskChatStatusItem
   | TaskChatMarkerItem
   | TaskChatUsageItem
+  | TaskChatInteractionItem
   | TaskChatTurnItem;
 
 /** A structured plan entry (ACP PlanEntry) for the Plans tab. */
