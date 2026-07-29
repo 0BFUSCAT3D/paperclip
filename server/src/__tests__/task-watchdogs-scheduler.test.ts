@@ -170,15 +170,22 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const wakeIdsByIdempotencyKey = new Map<string, string>();
     const service = taskWatchdogService(db, {
       enqueueWakeup: async (agentId, opts) => {
-        const idempotencyKey = typeof opts?.idempotencyKey === "string" ? opts.idempotencyKey : null;
-        if (idempotencyKey?.startsWith("task_watchdog_self:")) {
-          const existingId = wakeIdsByIdempotencyKey.get(idempotencyKey);
-          if (existingId) return { id: existingId };
-        }
-        const id = randomUUID();
-        if (idempotencyKey?.startsWith("task_watchdog_self:")) wakeIdsByIdempotencyKey.set(idempotencyKey, id);
-        wakes.push({ agentId, opts });
-        return { id };
+        return db.transaction(async (tx) => {
+          await opts?.beforeIssueLock?.(tx);
+          const idempotencyKey = typeof opts?.idempotencyKey === "string" ? opts.idempotencyKey : null;
+          if (idempotencyKey?.startsWith("task_watchdog_self:")) {
+            const existingId = wakeIdsByIdempotencyKey.get(idempotencyKey);
+            if (existingId) {
+              await opts?.onWakeQueued?.(tx, { id: existingId });
+              return { id: existingId };
+            }
+          }
+          const id = randomUUID();
+          await opts?.onWakeQueued?.(tx, { id });
+          if (idempotencyKey?.startsWith("task_watchdog_self:")) wakeIdsByIdempotencyKey.set(idempotencyKey, id);
+          wakes.push({ agentId, opts });
+          return { id };
+        });
       },
     });
     return { service, wakes };
@@ -413,6 +420,70 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(1);
   });
 
+  it("rolls back the self-review wake when claim bookkeeping fails", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-ATOMIC-WAKE",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, { mode: "self" });
+    const failingService = taskWatchdogService(db, {
+      enqueueWakeup: async (wakeAgentId, opts) => db.transaction(async (tx) => {
+        await opts?.beforeIssueLock?.(tx);
+        const [wakeupRequest] = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId,
+            agentId: wakeAgentId,
+            source: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            reason: opts?.reason,
+            payload: opts?.payload,
+            status: "queued",
+            idempotencyKey: opts?.idempotencyKey,
+          })
+          .returning();
+        const [run] = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId,
+            agentId: wakeAgentId,
+            invocationSource: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            status: "queued",
+            wakeupRequestId: wakeupRequest!.id,
+            contextSnapshot: opts?.contextSnapshot,
+          })
+          .returning();
+        await tx
+          .update(agentWakeupRequests)
+          .set({ runId: run!.id })
+          .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+        await opts?.onWakeQueued?.(tx, run!);
+        throw new Error("force self-review transaction rollback");
+      }),
+    });
+
+    await expect(failingService.reconcileTaskWatchdogs({ companyId }))
+      .rejects.toThrow("force self-review transaction rollback");
+
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(0);
+    const [unclaimed] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(unclaimed).toMatchObject({
+      lastReviewedFingerprint: null,
+      triggerCount: 0,
+    });
+
+    const { service, wakes } = createService();
+    const retried = await service.reconcileTaskWatchdogs({ companyId });
+    expect(retried).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+  });
+
   it("retargets a self-mode watchdog to the current assignee before waking", async () => {
     const companyId = await seedCompany();
     const formerAssigneeId = await seedAgent(companyId, { name: "Former Assignee" });
@@ -456,41 +527,45 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const firstWakes: string[] = [];
     const firstService = taskWatchdogService(db, {
       enqueueWakeup: async (agentId, opts) => {
-        firstWakes.push(agentId);
-        const [wakeupRequest] = await db
-          .insert(agentWakeupRequests)
-          .values({
-            companyId,
-            agentId,
-            source: opts?.source ?? "automation",
-            triggerDetail: opts?.triggerDetail,
-            reason: opts?.reason,
-            payload: opts?.payload,
-            status: "running",
-            startedAt: new Date(),
-            idempotencyKey: opts?.idempotencyKey,
-          })
-          .returning();
-        const [run] = await db
-          .insert(heartbeatRuns)
-          .values({
-            companyId,
-            agentId,
-            invocationSource: opts?.source ?? "automation",
-            triggerDetail: opts?.triggerDetail,
-            status: "running",
-            startedAt: new Date(),
-            wakeupRequestId: wakeupRequest!.id,
-            contextSnapshot: opts?.contextSnapshot,
-          })
-          .returning();
-        await db
-          .update(agentWakeupRequests)
-          .set({ runId: run!.id })
-          .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
-        signalWakeStarted();
-        await wakeCanFinish;
-        return { id: run!.id };
+        return db.transaction(async (tx) => {
+          await opts?.beforeIssueLock?.(tx);
+          firstWakes.push(agentId);
+          const [wakeupRequest] = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId,
+              agentId,
+              source: opts?.source ?? "automation",
+              triggerDetail: opts?.triggerDetail,
+              reason: opts?.reason,
+              payload: opts?.payload,
+              status: "running",
+              claimedAt: new Date(),
+              idempotencyKey: opts?.idempotencyKey,
+            })
+            .returning();
+          const [run] = await tx
+            .insert(heartbeatRuns)
+            .values({
+              companyId,
+              agentId,
+              invocationSource: opts?.source ?? "automation",
+              triggerDetail: opts?.triggerDetail,
+              status: "running",
+              startedAt: new Date(),
+              wakeupRequestId: wakeupRequest!.id,
+              contextSnapshot: opts?.contextSnapshot,
+            })
+            .returning();
+          await tx
+            .update(agentWakeupRequests)
+            .set({ runId: run!.id })
+            .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+          signalWakeStarted();
+          await wakeCanFinish;
+          await opts?.onWakeQueued?.(tx, run!);
+          return { id: run!.id };
+        });
       },
     });
 

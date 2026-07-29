@@ -2070,6 +2070,8 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  beforeIssueLock?: (tx: any) => Promise<void>;
+  onWakeQueued?: (tx: any, run: { id: string }) => Promise<void>;
 }
 
 type UsageTotals = {
@@ -15830,6 +15832,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const outcome = await db.transaction(async (tx) => {
+        await opts.beforeIssueLock?.(tx);
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
         );
@@ -16331,6 +16334,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               finishedAt: new Date(),
             });
 
+            await opts.onWakeQueued?.(tx, mergedRun);
+
             return { kind: "coalesced" as const, run: mergedRun };
           }
 
@@ -16582,6 +16587,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: new Date(),
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        await opts.onWakeQueued?.(tx, newRun);
 
         // executionRunId is NOT stamped here (enqueueWakeup queues the run but
         // doesn't start it). It will be stamped in claimQueuedRun() once the run

@@ -217,6 +217,8 @@ type TaskWatchdogWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  beforeIssueLock?: (tx: any) => Promise<void>;
+  onWakeQueued?: (tx: any, run: { id: string }) => Promise<void>;
 };
 
 type TaskWatchdogWakeup = (
@@ -227,6 +229,9 @@ type TaskWatchdogWakeup = (
 export type TaskWatchdogServiceDeps = {
   enqueueWakeup?: TaskWatchdogWakeup;
 };
+
+class SelfReviewAlreadyClaimedError extends Error {}
+class SelfReviewOwnershipChangedError extends Error {}
 
 function normalizeInstructions(value: string | null | undefined): string | null {
   if (value == null) return null;
@@ -865,10 +870,6 @@ function isActiveTaskWatchdogUniqueConflict(error: unknown) {
 
 function isIssueWatchdogUniqueConflict(error: unknown) {
   return isUniqueConstraintConflict(error, "issue_watchdogs_company_issue_uq");
-}
-
-function isTaskWatchdogSelfWakeUniqueConflict(error: unknown) {
-  return isUniqueConstraintConflict(error, "agent_wakeup_requests_task_watchdog_self_idempotency_uq");
 }
 
 async function updateIssueWatchdogRow(
@@ -1548,82 +1549,160 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     runId: string | null;
   }) {
     const { classification } = input;
-    return db.transaction(async (tx) => {
-      // Assignee changes take this same row lock before updating the issue. It
-      // therefore covers the full read -> wake -> reviewed-claim interval and
-      // prevents a wake from being durably routed to an owner that changed in
-      // the middle of dispatch.
-      const lockedWatchdog = await tx
-        .select()
-        .from(issueWatchdogs)
-        .where(eq(issueWatchdogs.id, input.watchdog.id))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!lockedWatchdog || lockedWatchdog.status !== "active" || issueWatchdogMode(lockedWatchdog) !== "self") {
-        return { state: "skipped" as const, reason: "self_watchdog_not_active" };
-      }
+    const expectedAgentId = input.sourceIssue.assigneeAgentId;
+    if (!expectedAgentId) {
+      return { state: "skipped" as const, reason: "self_watchdog_issue_unassigned" };
+    }
+    if (!deps.enqueueWakeup) {
+      return {
+        ...classification,
+        state: "wake_not_queued" as const,
+        reason: "Self-review wake was not queued.",
+      };
+    }
 
-      if (lockedWatchdog.lastReviewedFingerprint === classification.stopFingerprint) {
-        return {
-          ...classification,
-          state: "already_reviewed" as const,
-          reason: "The current stopped subtree fingerprint was already claimed for self review.",
-        };
-      }
+    const expectedWatchdog = {
+      ...input.watchdog,
+      watchdogAgentId: expectedAgentId,
+    };
+    const context = selfWatchdogWakeContext({
+      watchdog: expectedWatchdog,
+      sourceIssue: input.sourceIssue,
+      classification,
+    });
+    const idempotencyKey = taskWatchdogSelfWakeIdempotencyKey(
+      input.watchdog.id,
+      expectedAgentId,
+      classification.stopFingerprint,
+    );
+    let claimedWatchdog: IssueWatchdogRow | null = null;
+    let claimedSourceIssue: IssueRow | null = null;
 
-      const sourceIssue = await tx
-        .select()
-        .from(issues)
-        .where(and(
-          eq(issues.companyId, lockedWatchdog.companyId),
-          eq(issues.id, lockedWatchdog.issueId),
-          visibleIssueCondition(),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (!sourceIssue?.assigneeAgentId) {
-        return { state: "skipped" as const, reason: "self_watchdog_issue_unassigned" };
-      }
+    try {
+      const wake = await deps.enqueueWakeup(expectedAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "task_watchdog_self_review",
+        payload: context,
+        contextSnapshot: context,
+        idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        beforeIssueLock: async (tx) => {
+          const lockedWatchdog = await tx
+            .select()
+            .from(issueWatchdogs)
+            .where(eq(issueWatchdogs.id, input.watchdog.id))
+            .for("update")
+            .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
+          if (
+            !lockedWatchdog ||
+            lockedWatchdog.status !== "active" ||
+            issueWatchdogMode(lockedWatchdog) !== "self"
+          ) {
+            throw new SelfReviewOwnershipChangedError("self_watchdog_not_active");
+          }
+          if (lockedWatchdog.lastReviewedFingerprint === classification.stopFingerprint) {
+            throw new SelfReviewAlreadyClaimedError();
+          }
 
-      let watchdog = lockedWatchdog;
-      if (watchdog.watchdogAgentId !== sourceIssue.assigneeAgentId) {
-        await assertWatchdogAgentInvokable(tx as unknown as Db, watchdog.companyId, sourceIssue.assigneeAgentId);
-        watchdog = await tx
-          .update(issueWatchdogs)
-          .set({ watchdogAgentId: sourceIssue.assigneeAgentId, updatedAt: new Date() })
-          .where(eq(issueWatchdogs.id, watchdog.id))
-          .returning()
-          .then((rows) => rows[0] ?? watchdog);
-      }
-
-      const context = selfWatchdogWakeContext({ watchdog, sourceIssue, classification });
-      const idempotencyKey = taskWatchdogSelfWakeIdempotencyKey(
-        watchdog.id,
-        watchdog.watchdogAgentId,
-        classification.stopFingerprint,
-      );
-      const wake = deps.enqueueWakeup
-        ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "task_watchdog_self_review",
-          payload: context,
-          contextSnapshot: context,
-          idempotencyKey,
-          requestedByActorType: "system",
-          requestedByActorId: null,
-        }).catch(async (error: unknown) => {
-          if (!isTaskWatchdogSelfWakeUniqueConflict(error)) throw error;
-          return tx
-            .select({ id: agentWakeupRequests.runId })
-            .from(agentWakeupRequests)
+          const sourceIssue = await tx
+            .select()
+            .from(issues)
             .where(and(
-              eq(agentWakeupRequests.companyId, watchdog.companyId),
-              eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-              sql`${agentWakeupRequests.runId} is not null`,
+              eq(issues.companyId, lockedWatchdog.companyId),
+              eq(issues.id, lockedWatchdog.issueId),
+              visibleIssueCondition(),
             ))
-            .then((rows) => rows[0]?.id ? { id: rows[0].id } : null);
-        })
-        : null;
+            .then((rows: IssueRow[]) => rows[0] ?? null);
+          if (sourceIssue?.assigneeAgentId !== expectedAgentId) {
+            throw new SelfReviewOwnershipChangedError("self_watchdog_assignee_changed");
+          }
+
+          let currentWatchdog = lockedWatchdog;
+          if (currentWatchdog.watchdogAgentId !== expectedAgentId) {
+            await assertWatchdogAgentInvokable(tx as unknown as Db, currentWatchdog.companyId, expectedAgentId);
+            currentWatchdog = await tx
+              .update(issueWatchdogs)
+              .set({ watchdogAgentId: expectedAgentId, updatedAt: new Date() })
+              .where(eq(issueWatchdogs.id, currentWatchdog.id))
+              .returning()
+              .then((rows: IssueWatchdogRow[]) => rows[0] ?? currentWatchdog);
+          }
+
+          claimedWatchdog = currentWatchdog;
+          claimedSourceIssue = sourceIssue;
+        },
+        onWakeQueued: async (tx) => {
+          const watchdog = claimedWatchdog;
+          const sourceIssue = claimedSourceIssue;
+          if (!watchdog || !sourceIssue) {
+            throw new Error("Self-review wake transaction did not claim its watchdog source");
+          }
+
+          const now = new Date();
+          await tx
+            .update(issueWatchdogs)
+            .set({
+              lastObservedFingerprint: classification.stopFingerprint,
+              lastObservedStopSnapshot: classification.stopSnapshot,
+              lastReviewedFingerprint: classification.stopFingerprint,
+              lastReviewedStopSnapshot: classification.stopSnapshot,
+              lastTriggeredAt: now,
+              triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
+              updatedAt: now,
+            })
+            .where(eq(issueWatchdogs.id, watchdog.id));
+          await logActivity(tx as unknown as Db, {
+            companyId: sourceIssue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: watchdog.watchdogAgentId,
+            runId: input.runId,
+            action: "issue.task_watchdog_triggered",
+            entityType: "issue",
+            entityId: sourceIssue.id,
+            details: {
+              source: "task_watchdogs.evaluate",
+              mode: "self",
+              watchdogId: watchdog.id,
+              stopFingerprint: classification.stopFingerprint,
+              stopSnapshot: classification.stopSnapshot,
+              stoppedLeaves: classification.stoppedLeaves,
+            },
+          });
+
+          const commentExists = await tx
+            .select({ body: issueComments.body })
+            .from(issueComments)
+            .where(eq(issueComments.issueId, sourceIssue.id))
+            .then((rows: Array<{ body: string }>) =>
+              rows.some((row) => row.body.includes(classification.stopFingerprint))
+            );
+          if (!commentExists) {
+            await issuesSvc.addComment(
+              sourceIssue.id,
+              buildSelfReviewComment({
+                stopFingerprint: classification.stopFingerprint,
+                stoppedLeaves: classification.stoppedLeaves,
+                pendingInteractionsByIssueId: classification.pendingInteractionsByIssueId,
+                goalInstructions: watchdog.instructions,
+              }),
+              { runId: input.runId },
+              {
+                authorType: "system",
+                metadata: stoppedFingerprintMetadata({
+                  sourceIssueId: sourceIssue.id,
+                  stopFingerprint: classification.stopFingerprint,
+                  waitsByIssueId: classification.stopSnapshot.waitsByIssueId,
+                  resumed: true,
+                }),
+              },
+              tx,
+            );
+          }
+        },
+      });
       if (!wake) {
         return {
           ...classification,
@@ -1632,73 +1711,25 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         };
       }
 
-      const now = new Date();
-      await tx
-        .update(issueWatchdogs)
-        .set({
-          lastObservedFingerprint: classification.stopFingerprint,
-          lastObservedStopSnapshot: classification.stopSnapshot,
-          lastReviewedFingerprint: classification.stopFingerprint,
-          lastReviewedStopSnapshot: classification.stopSnapshot,
-          lastTriggeredAt: now,
-          triggerCount: sql`${issueWatchdogs.triggerCount} + 1`,
-          updatedAt: now,
-        })
-        .where(eq(issueWatchdogs.id, watchdog.id));
-      await logActivity(tx as unknown as Db, {
-        companyId: sourceIssue.companyId,
-        actorType: "system",
-        actorId: "system",
-        agentId: watchdog.watchdogAgentId,
-        runId: input.runId,
-        action: "issue.task_watchdog_triggered",
-        entityType: "issue",
-        entityId: sourceIssue.id,
-        details: {
-          source: "task_watchdogs.evaluate",
-          mode: "self",
-          watchdogId: watchdog.id,
-          stopFingerprint: classification.stopFingerprint,
-          stopSnapshot: classification.stopSnapshot,
-          stoppedLeaves: classification.stoppedLeaves,
-        },
-      });
-
-      const commentExists = await tx
-        .select({ body: issueComments.body })
-        .from(issueComments)
-        .where(eq(issueComments.issueId, sourceIssue.id))
-        .then((rows) => rows.some((row) => row.body.includes(classification.stopFingerprint)));
-      if (!commentExists) {
-        await issuesSvc.addComment(
-          sourceIssue.id,
-          buildSelfReviewComment({
-            stopFingerprint: classification.stopFingerprint,
-            stoppedLeaves: classification.stoppedLeaves,
-            pendingInteractionsByIssueId: classification.pendingInteractionsByIssueId,
-            goalInstructions: watchdog.instructions,
-          }),
-          { runId: input.runId },
-          {
-            authorType: "system",
-            metadata: stoppedFingerprintMetadata({
-              sourceIssueId: sourceIssue.id,
-              stopFingerprint: classification.stopFingerprint,
-              waitsByIssueId: classification.stopSnapshot.waitsByIssueId,
-              resumed: true,
-            }),
-          },
-          tx,
-        );
-      }
-
       return {
         state: "triggered" as const,
         classification,
-        watchdogIssueId: sourceIssue.id,
+        watchdogIssueId: input.sourceIssue.id,
         wakeupRunId: wake.id,
       };
-    });
+    } catch (error) {
+      if (error instanceof SelfReviewAlreadyClaimedError) {
+        return {
+          ...classification,
+          state: "already_reviewed" as const,
+          reason: "The current stopped subtree fingerprint was already claimed for self review.",
+        };
+      }
+      if (error instanceof SelfReviewOwnershipChangedError) {
+        return { state: "skipped" as const, reason: error.message };
+      }
+      throw error;
+    }
   }
 
   async function evaluateWatchdog(row: IssueWatchdogRow, opts: { runId?: string | null } = {}) {
