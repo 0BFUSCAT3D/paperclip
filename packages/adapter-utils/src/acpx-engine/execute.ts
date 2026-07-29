@@ -12,6 +12,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+type SkillUsageEventKind = "loaded" | "invoked";
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
@@ -690,6 +691,32 @@ async function buildSkillSetKey(input: {
   return hash.digest("hex");
 }
 
+const PAPERCLIP_SKILL_USAGE_EVENT_TYPE = "paperclip.skill.usage";
+
+async function emitPaperclipSkillUsageEvents(input: {
+  adapter: string;
+  entries: PaperclipSkillEntry[];
+  onEvent?: AdapterExecutionContext["onEvent"];
+  eventKind: SkillUsageEventKind;
+}) {
+  if (!input.onEvent) return;
+  for (const entry of input.entries) {
+    await input.onEvent({
+      eventType: PAPERCLIP_SKILL_USAGE_EVENT_TYPE,
+      stream: "system",
+      level: "info",
+      message: `paperclip skill loaded: ${entry.key}`,
+      payload: {
+        adapter: input.adapter,
+        skillKey: entry.key,
+        skillRuntimeName: entry.runtimeName,
+        skillVersionId: entry.versionId ?? null,
+        eventKind: input.eventKind,
+      },
+    });
+  }
+}
+
 async function resolveSelectedRuntimeSkills(
   config: Record<string, unknown>,
   moduleDir: string,
@@ -709,6 +736,7 @@ async function prepareClaudeSkillRuntime(input: {
   config: Record<string, unknown>;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
+  onEvent?: AdapterExecutionContext["onEvent"];
 }): Promise<{
   identity: Record<string, unknown>;
   promptInstructions: string;
@@ -719,6 +747,12 @@ async function prepareClaudeSkillRuntime(input: {
   const bundleRoot = path.join(input.stateDir, "runtime-skills", "claude", skillSetKey);
   const skillsHome = path.join(bundleRoot, ".claude", "skills");
   await fs.mkdir(skillsHome, { recursive: true });
+  await emitPaperclipSkillUsageEvents({
+    adapter: "claude",
+    entries: selectedSkills,
+    onEvent: input.onEvent,
+    eventKind: "loaded",
+  });
 
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
@@ -903,6 +937,12 @@ async function prepareCodexSkillRuntime(input: {
     }
   }
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
+  await emitPaperclipSkillUsageEvents({
+    adapter: "codex",
+    entries: selectedSkills,
+    onEvent: input.onEvent,
+    eventKind: "loaded",
+  });
 
   input.env.CODEX_HOME = effectiveCodexHome;
 
@@ -1441,6 +1481,7 @@ async function buildRuntime(input: {
       config,
       moduleDir: input.engine.moduleDir,
       onLog: input.ctx.onLog,
+      onEvent: input.ctx.onEvent,
     });
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;

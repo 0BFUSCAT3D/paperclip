@@ -93,7 +93,9 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
+import { skillAnalyticsService } from "./skill-analytics.js";
 import { toIssueWorkProduct } from "./work-products.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
@@ -2803,6 +2805,25 @@ export function companySkillService(db: Db) {
   const folderSvc = folderService(db);
   const agents = agentService(db);
   const projects = projectService(db);
+  const settings = instanceSettingsService(db);
+  const analytics = skillAnalyticsService(db);
+
+  async function applyUsageCountsForListedSkills(
+    companyId: string,
+    rows: CompanySkillListItem[],
+  ) {
+    const usageRows = await analytics.topUsedSkills(companyId, { window: "30d", limit: Math.min(rows.length, 500) });
+    const usageById = new Map(usageRows.map((row) => [row.skillId ?? "", row]));
+    const usageByKey = new Map(usageRows.map((row) => [row.skillKey, row]));
+    return rows.map((row) => {
+      const usageRow = usageById.get(row.id) ?? usageByKey.get(row.key);
+      return {
+        ...row,
+        usageCount: usageRow ? usageRow.totals.loadCount : 0,
+        invocationCount: usageRow ? usageRow.totals.invocationCount : 0,
+      };
+    });
+  }
 
   async function assertLocalImportSourceAllowed(companyId: string, source: string) {
     const sourceRealPath = await fs.realpath(path.resolve(source)).catch(() => null);
@@ -3173,14 +3194,22 @@ export function companySkillService(db: Db) {
       if (sort === "forks") return right.forkCount - left.forkCount || left.name.localeCompare(right.name);
       return left.name.localeCompare(right.name) || left.key.localeCompare(right.key);
     });
+    let usageEnriched = items;
+    if (query.include?.includes("usage")) {
+      const experimental = await settings.getExperimental();
+      if (experimental.enableSkillUsageAnalytics === true) {
+        usageEnriched = await applyUsageCountsForListedSkills(companyId, items);
+      }
+    }
+
     if (query.include?.includes("lastEditor")) {
-      const lastEditors = await listLastEditorsBySkillId(db, companyId, items.map((item) => item.id));
-      return items.map((item) => ({
+      const lastEditors = await listLastEditorsBySkillId(db, companyId, usageEnriched.map((item) => item.id));
+      return usageEnriched.map((item) => ({
         ...item,
         lastEditor: lastEditors.get(item.id) ?? null,
       }));
     }
-    return items;
+    return usageEnriched;
   }
 
   async function listFull(companyId: string): Promise<CompanySkill[]> {

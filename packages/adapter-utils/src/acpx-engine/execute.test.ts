@@ -614,6 +614,57 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
   });
 
+  it("emits paperclip skill usage loaded events for selected Claude runtime skills", async () => {
+    const root = await makeTempRoot();
+    const skill = await createSkill(root, "coach");
+    const { events } = await runExecutor({
+      agent: "claude",
+      stateDir: path.join(root, "state"),
+      paperclipRuntimeSkills: [skill],
+      paperclipSkillSync: { desiredSkills: [skill.key] },
+    });
+
+    const usageEvents = events.filter((event) => event.eventType === "paperclip.skill.usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      stream: "system",
+      level: "info",
+      payload: {
+        adapter: "claude",
+        skillKey: skill.key,
+        skillRuntimeName: skill.runtimeName,
+        eventKind: "loaded",
+      },
+    });
+  });
+
+  it("emits paperclip skill usage loaded events for selected Codex runtime skills", async () => {
+    const root = await makeTempRoot();
+    const codexHome = path.join(root, "codex-home");
+    const skill = await createSkill(root, "coach");
+
+    const { events } = await runExecutor({
+      agent: "codex",
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [skill],
+      paperclipSkillSync: { desiredSkills: [skill.key] },
+    });
+
+    const usageEvents = events.filter((event) => event.eventType === "paperclip.skill.usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      stream: "system",
+      level: "info",
+      payload: {
+        adapter: "codex",
+        skillKey: skill.key,
+        skillRuntimeName: skill.runtimeName,
+        eventKind: "loaded",
+      },
+    });
+  });
+
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");

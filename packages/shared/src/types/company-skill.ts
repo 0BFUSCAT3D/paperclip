@@ -13,7 +13,7 @@ export type CompanySkillSharingScope = "private" | "company" | "public_link";
 
 export type CompanySkillListSort = "alphabetical" | "recent" | "installs" | "stars" | "agents" | "forks";
 
-export type CompanySkillListInclude = "lastEditor";
+export type CompanySkillListInclude = "lastEditor" | "usage";
 
 export interface CompanySkillLastEditor {
   kind: "user" | "agent";
@@ -165,6 +165,7 @@ export interface CompanySkillUsageDetail {
   skillId: string | null;
   skillKey: string;
   window: SkillUsageWindow;
+  lastUsedAt: Date | null;
   totals: SkillUsageTotals;
   daily: CompanySkillUsageDailyBucket[];
   topAgents: CompanySkillUsageByAgent[];

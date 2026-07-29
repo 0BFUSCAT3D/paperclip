@@ -39,6 +39,7 @@ import {
   companySkillTestRuns,
   companySkillVersions,
   companySkills as companySkillsTable,
+  companySkillUsageEvents,
   companies,
   costEvents,
   documentAnnotationComments,
@@ -104,6 +105,11 @@ import {
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
+import {
+  buildSkillUsageInsertRows,
+  parsePaperclipSkillUsageEvent,
+  type PaperclipSkillUsageRuntimeEvent,
+} from "./skill-usage-events.js";
 import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
@@ -13176,6 +13182,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } | null;
     } = { pending: null };
     let persistedLogBytes = Number(run.logBytes ?? 0);
+    const paperclipSkillUsageEventsForRun: PaperclipSkillUsageRuntimeEvent[] = [];
+    const persistSkillUsageEvents = async () => {
+      if (paperclipSkillUsageEventsForRun.length === 0) return;
+      const runSkillKeys = Array.from(
+        new Set(
+          paperclipSkillUsageEventsForRun
+            .map((event) => event.skillKey)
+            .filter((skillKey): skillKey is string => Boolean(skillKey?.trim())),
+        ),
+      );
+      if (runSkillKeys.length === 0) return;
+
+      const skillRows = await db
+        .select({
+          key: companySkillsTable.key,
+          id: companySkillsTable.id,
+        })
+        .from(companySkillsTable)
+        .where(and(eq(companySkillsTable.companyId, run.companyId), inArray(companySkillsTable.key, runSkillKeys)));
+
+      const skillIdByKey = new Map(skillRows.map((row) => [row.key, row.id]));
+      const eventRows = buildSkillUsageInsertRows({
+        companyId: run.companyId,
+        agentId: run.agentId,
+        runId: run.id,
+        issueId,
+        events: paperclipSkillUsageEventsForRun,
+        skillIdByKey,
+      });
+
+      if (eventRows.length > 0) {
+        await db.insert(companySkillUsageEvents).values(eventRows);
+      }
+    };
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
       if (!pendingOutputProgress) return;
@@ -13460,6 +13500,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
         const eventType = event.eventType.trim();
         if (!eventType) return;
+        const parsedSkillUsageEvent = parsePaperclipSkillUsageEvent(event);
+        if (parsedSkillUsageEvent) {
+          paperclipSkillUsageEventsForRun.push(parsedSkillUsageEvent);
+        }
         await appendRunEvent(currentRun, seq++, {
           eventType: eventType.slice(0, 120),
           stream: event.stream,
@@ -13985,6 +14029,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
         });
         try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: finalizedRun.id }, "failed to persist paperclip skill usage events");
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to persist skill usage events: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+        try {
           await completeSkillTestRunForHeartbeatOutcome({
             run: finalizedRun,
             issueId,
@@ -14198,6 +14251,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           message,
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
+        try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: livenessRun.id }, "failed to persist paperclip skill usage events");
+        }
         try {
           await completeSkillTestRunForHeartbeatOutcome({
             run: livenessRun,

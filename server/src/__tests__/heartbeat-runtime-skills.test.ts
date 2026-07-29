@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
+  companySkillUsageEvents,
   companySkills,
   createDb,
   toolApplications,
@@ -80,12 +81,35 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     registerServerAdapter({
       type: TEST_ADAPTER_TYPE,
       execute: async (ctx) => {
+        const typedConfig = ctx.config as {
+          emitPaperclipSkillUsageEvents?: boolean;
+          paperclipSkillUsageEmitList?: PaperclipSkillEntry[];
+        };
         const serializedRuntimeInput = JSON.stringify({
           config: ctx.config,
           context: ctx.context,
           runtimeMcp: ctx.runtimeMcp,
         });
         await ctx.onLog("stdout", `${serializedRuntimeInput}\n`);
+        if (typedConfig.emitPaperclipSkillUsageEvents) {
+          const emitList = typedConfig.paperclipSkillUsageEmitList
+            ?? ((ctx.config.paperclipRuntimeSkills ?? []) as PaperclipSkillEntry[]);
+          for (const skill of emitList) {
+            await ctx.onEvent({
+              eventType: "paperclip.skill.usage",
+              stream: "system",
+              level: "info",
+              message: `skill emitted for ${skill.key}`,
+              payload: {
+                adapter: TEST_ADAPTER_TYPE,
+                skillKey: skill.key,
+                skillRuntimeName: skill.runtimeName,
+                skillVersionId: skill.versionId ?? null,
+                eventKind: "loaded",
+              },
+            });
+          }
+        }
         capturedRuns.push({
           agentId: ctx.agent.id,
           skills: (ctx.config.paperclipRuntimeSkills ?? []) as PaperclipSkillEntry[],
@@ -114,18 +138,19 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     await instanceSettingsService(db).updateExperimental({ enableBetaSkills: false });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.execute(sql.raw(`
-      TRUNCATE TABLE
-        "activity_log",
-        "environment_leases",
-        "environments",
-        "heartbeat_run_events",
-        "heartbeat_runs",
-        "agent_wakeup_requests",
-        "agent_runtime_state",
-        "company_skill_versions",
-        "company_skills",
-        "agents",
-        "companies"
+        TRUNCATE TABLE
+          "activity_log",
+          "environment_leases",
+          "environments",
+          "heartbeat_run_events",
+          "heartbeat_runs",
+          "agent_wakeup_requests",
+          "agent_runtime_state",
+          "company_skill_usage_events",
+          "company_skill_versions",
+          "company_skills",
+          "agents",
+          "companies"
       RESTART IDENTITY CASCADE
     `));
     await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -426,5 +451,88 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     const log = await heartbeat.readLog(run!.id);
     expect(log.content).not.toContain(bearer);
     expect(log.content).not.toContain("pcgw_");
+  });
+
+  it("persists loaded paperclip skill usage events with skill id resolution", async () => {
+    const companyId = randomUUID();
+    const companySkillId = randomUUID();
+    const knownSkillKey = `company/${companyId}/known-runtime`;
+    const unknownSkillKey = `company/${companyId}/unknown-runtime`;
+    const agentId = randomUUID();
+    const knownSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-usage-known-"));
+    const unknownSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-usage-unknown-"));
+    cleanupDirs.add(knownSkillDir);
+    cleanupDirs.add(unknownSkillDir);
+    await fs.writeFile(path.join(knownSkillDir, "SKILL.md"), "# Known\n", "utf8");
+    await fs.writeFile(path.join(unknownSkillDir, "SKILL.md"), "# Unknown\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Runtime Skill Capture",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companySkills).values({
+      id: companySkillId,
+      companyId,
+      key: knownSkillKey,
+      slug: "known-runtime",
+      name: "Known Runtime",
+      description: null,
+      markdown: "# Known\n",
+      sourceType: "local_path",
+      sourceLocator: knownSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runtime Skill Capture",
+      role: "engineer",
+      status: "idle",
+      adapterType: TEST_ADAPTER_TYPE,
+      adapterConfig: {
+        emitPaperclipSkillUsageEvents: true,
+        paperclipSkillUsageEmitList: [
+          {
+            key: knownSkillKey,
+            runtimeName: "known",
+            source: knownSkillDir,
+          },
+          {
+            key: unknownSkillKey,
+            runtimeName: "unknown",
+            source: unknownSkillDir,
+          },
+        ],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("succeeded");
+
+    const rows = await db
+      .select()
+      .from(companySkillUsageEvents)
+      .where(eq(companySkillUsageEvents.runId, run!.id));
+    const bySkillKey = new Map(rows.map((row) => [row.skillKey, row]));
+
+    const known = bySkillKey.get(knownSkillKey);
+    const unknown = bySkillKey.get(unknownSkillKey);
+
+    expect(known).toBeTruthy();
+    expect(unknown).toBeTruthy();
+    expect(known?.skillId).toBe(companySkillId);
+    expect(unknown?.skillId).toBeNull();
+    expect(known?.eventKind).toBe("loaded");
+    expect(unknown?.eventKind).toBe("loaded");
   });
 });
