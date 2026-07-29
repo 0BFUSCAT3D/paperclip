@@ -2,6 +2,8 @@
 
 Container images for running coding-agent harnesses in sandboxed environments (for example the kubernetes sandbox provider, stage 1 of the k8s contribution). Images are named `agent-runtime-{harness}:{version}` and published to `ghcr.io/paperclipai/` by the `agent-runtime-images` workflow. The registry is overridable: every reference flows through the `REGISTRY` bake variable.
 
+For the sandbox environment contract that the owner must meet, see [SANDBOX-REQUIREMENTS.md](SANDBOX-REQUIREMENTS.md).
+
 ## Image Lineup
 
 - **`agent-runtime-base`**: Foundation. Ubuntu 22.04 + Node 22 + git + tini + non-root user (uid 1000) + the agent shim.
