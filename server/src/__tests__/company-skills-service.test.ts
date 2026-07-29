@@ -448,6 +448,103 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  it("keeps usage counts for listed skills crowded out of the global top-N ranking", async () => {
+    const companyId = randomUUID();
+    const listedSkillId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableSkillUsageAnalytics: true });
+    const listedKey = `company/${companyId}/crowded-out`;
+    const trackedDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-crowded-out-"));
+    cleanupDirs.add(trackedDir);
+    await fs.writeFile(path.join(trackedDir, "SKILL.md"), "---\nname: Crowded Out\n---\n\n# Crowded Out\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Caller",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "succeeded",
+      createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000),
+    });
+    await db.insert(companySkills).values({
+      id: listedSkillId,
+      companyId,
+      key: listedKey,
+      slug: "crowded-out",
+      name: "Crowded Out",
+      description: null,
+      markdown: "# Crowded Out",
+      sourceType: "local_path",
+      sourceLocator: trackedDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: {},
+    });
+
+    const base = {
+      companyId,
+      skillVersionId: null,
+      agentId,
+      runId,
+      issueId: null,
+      adapter: "codex_local",
+    };
+    await db.insert(companySkillUsageEvents).values([
+      {
+        ...base,
+        skillKey: listedKey,
+        skillId: listedSkillId,
+        eventKind: "loaded",
+        createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000),
+      },
+      {
+        ...base,
+        skillKey: listedKey,
+        skillId: listedSkillId,
+        eventKind: "invoked",
+        createdAt: new Date(Date.now() - 4 * 60 * 60 * 1000 + 60_000),
+      },
+      // 501 distinct unlisted keys with one newer `loaded` event each: they
+      // tie the listed skill on the loaded metric, out-rank it on recency,
+      // and overflow any global top-N limit (the analytics cap is 500), so a
+      // global-ranking enrichment would zero-fill the listed skill.
+      ...Array.from({ length: 501 }, (_, index) => ({
+        ...base,
+        skillKey: `company/${companyId}/unlisted-${index}`,
+        skillId: null,
+        eventKind: "loaded",
+        createdAt: new Date(Date.now() - 60 * 60 * 1000 + index * 1_000),
+      })),
+    ]);
+
+    const listed = await svc.list(companyId, { include: ["usage"] });
+    const crowdedOut = listed.find((skill) => skill.id === listedSkillId);
+    expect(crowdedOut).toMatchObject({
+      id: listedSkillId,
+      usageCount: 1,
+      invocationCount: 1,
+    });
+  });
+
   it("does not enrich list usage when the feature flag is disabled", async () => {
     const companyId = randomUUID();
     const skillWithUsageId = randomUUID();

@@ -2812,15 +2812,33 @@ export function companySkillService(db: Db) {
     companyId: string,
     rows: CompanySkillListItem[],
   ) {
-    const usageRows = await analytics.topUsedSkills(companyId, { window: "30d", limit: Math.min(rows.length, 500) });
-    const usageById = new Map(usageRows.map((row) => [row.skillId ?? "", row]));
-    const usageByKey = new Map(usageRows.map((row) => [row.skillKey, row]));
+    const usageRows = rows.length > 0
+      ? await analytics.usageTotalsForSkills(companyId, {
+          window: "30d",
+          skillIds: rows.map((row) => row.id),
+          skillKeys: rows.map((row) => row.key),
+        })
+      : [];
+    const listedById = new Map(rows.map((row) => [row.id, row]));
+    const listedByKey = new Map(rows.map((row) => [row.key, row]));
+    const totalsBySkillId = new Map<string, { loadCount: number; invocationCount: number }>();
+    for (const usageRow of usageRows) {
+      // Events recorded before a skill row existed carry only the key; sum
+      // those into the same listed skill as id-resolved events.
+      const listed = (usageRow.skillId ? listedById.get(usageRow.skillId) : undefined)
+        ?? listedByKey.get(usageRow.skillKey);
+      if (!listed) continue;
+      const totals = totalsBySkillId.get(listed.id) ?? { loadCount: 0, invocationCount: 0 };
+      totals.loadCount += usageRow.totals.loadCount;
+      totals.invocationCount += usageRow.totals.invocationCount;
+      totalsBySkillId.set(listed.id, totals);
+    }
     return rows.map((row) => {
-      const usageRow = usageById.get(row.id) ?? usageByKey.get(row.key);
+      const totals = totalsBySkillId.get(row.id);
       return {
         ...row,
-        usageCount: usageRow ? usageRow.totals.loadCount : 0,
-        invocationCount: usageRow ? usageRow.totals.invocationCount : 0,
+        usageCount: totals?.loadCount ?? 0,
+        invocationCount: totals?.invocationCount ?? 0,
       };
     });
   }

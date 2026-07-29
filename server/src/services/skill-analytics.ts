@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -281,6 +281,58 @@ export function skillAnalyticsService(db: Db) {
           uniqueAgents: Number(row.uniqueAgents),
         };
       });
+    },
+
+    // Aggregates usage totals scoped to an explicit skill id/key set. Listed
+    // skills must be enriched through this instead of `topUsedSkills`: a
+    // global top-N ranking can crowd a listed skill out entirely (unlisted or
+    // bundled usage above it, or the limit cap), which would zero-fill a
+    // skill that has real usage.
+    usageTotalsForSkills: async (
+      companyId: string,
+      input: {
+        skillIds?: readonly string[];
+        skillKeys?: readonly string[];
+      } & Omit<SkillUsageWindowInput, "limit" | "metric">,
+    ): Promise<Array<{
+      skillId: string | null;
+      skillKey: string;
+      totals: { loadCount: number; invocationCount: number };
+    }>> => {
+      const { since, until } = resolveUsageRange(input);
+      const skillIds = Array.from(new Set((input.skillIds ?? []).filter((id) => id.trim().length > 0)));
+      const skillKeys = Array.from(new Set((input.skillKeys ?? []).filter((key) => key.trim().length > 0)));
+      if (skillIds.length === 0 && skillKeys.length === 0) return [];
+
+      const rows = await db
+        .select({
+          skillId: companySkillUsageEvents.skillId,
+          skillKey: companySkillUsageEvents.skillKey,
+          uses: loadedCount,
+          invocations: invokedCount,
+        })
+        .from(companySkillUsageEvents)
+        .where(
+          and(
+            eq(companySkillUsageEvents.companyId, companyId),
+            gte(companySkillUsageEvents.createdAt, since),
+            lte(companySkillUsageEvents.createdAt, until),
+            or(
+              skillIds.length > 0 ? inArray(companySkillUsageEvents.skillId, skillIds) : undefined,
+              skillKeys.length > 0 ? inArray(companySkillUsageEvents.skillKey, skillKeys) : undefined,
+            ),
+          ),
+        )
+        .groupBy(companySkillUsageEvents.skillId, companySkillUsageEvents.skillKey);
+
+      return rows.map((row) => ({
+        skillId: row.skillId,
+        skillKey: row.skillKey,
+        totals: {
+          loadCount: parseUsageCount(row.uses),
+          invocationCount: parseUsageCount(row.invocations),
+        },
+      }));
     },
 
     skillUsageDetail: async (
