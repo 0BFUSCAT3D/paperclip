@@ -176,12 +176,15 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
           if (idempotencyKey?.startsWith("task_watchdog_self:")) {
             const existingId = wakeIdsByIdempotencyKey.get(idempotencyKey);
             if (existingId) {
-              await opts?.onWakeQueued?.(tx, { id: existingId });
+              await opts?.onWakeAccepted?.(tx, {
+                wakeupRequestId: existingId,
+                runId: existingId,
+              });
               return { id: existingId };
             }
           }
           const id = randomUUID();
-          await opts?.onWakeQueued?.(tx, { id });
+          await opts?.onWakeAccepted?.(tx, { wakeupRequestId: id, runId: id });
           if (idempotencyKey?.startsWith("task_watchdog_self:")) wakeIdsByIdempotencyKey.set(idempotencyKey, id);
           wakes.push({ agentId, opts });
           return { id };
@@ -461,7 +464,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
           .update(agentWakeupRequests)
           .set({ runId: run!.id })
           .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
-        await opts?.onWakeQueued?.(tx, run!);
+        await opts?.onWakeAccepted?.(tx, {
+          wakeupRequestId: wakeupRequest!.id,
+          runId: run!.id,
+        });
         throw new Error("force self-review transaction rollback");
       }),
     });
@@ -563,7 +569,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
             .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
           signalWakeStarted();
           await wakeCanFinish;
-          await opts?.onWakeQueued?.(tx, run!);
+          await opts?.onWakeAccepted?.(tx, {
+            wakeupRequestId: wakeupRequest!.id,
+            runId: run!.id,
+          });
           return { id: run!.id };
         });
       },
@@ -634,6 +643,56 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(retried).toMatchObject({ checked: 1, triggered: 1 });
     expect(wakes).toHaveLength(1);
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(1);
+  });
+
+  it("claims a deferred self-review wake without duplicating it on reconciliation", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-DEFERRED",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, { mode: "self" });
+    const service = taskWatchdogService(db, {
+      enqueueWakeup: async (wakeAgentId, opts) => db.transaction(async (tx) => {
+        await opts?.beforeIssueLock?.(tx);
+        const [deferred] = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId,
+            agentId: wakeAgentId,
+            source: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            reason: opts?.reason,
+            payload: {
+              ...(opts?.payload ?? {}),
+              issueId: sourceId,
+              _paperclipWakeContext: opts?.contextSnapshot,
+            },
+            status: "deferred_issue_execution",
+            idempotencyKey: opts?.idempotencyKey,
+          })
+          .returning();
+        await opts?.onWakeAccepted?.(tx, {
+          wakeupRequestId: deferred!.id,
+          runId: null,
+        });
+        return null;
+      }),
+    });
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+    expect(second).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastReviewedFingerprint).not.toBeNull();
+    expect(watchdog?.triggerCount).toBe(1);
   });
 
   it("does not trigger while a non-watchdog descendant has live work", async () => {

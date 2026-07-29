@@ -2071,7 +2071,10 @@ interface WakeupOptions {
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
   beforeIssueLock?: (tx: any) => Promise<void>;
-  onWakeQueued?: (tx: any, run: { id: string }) => Promise<void>;
+  onWakeAccepted?: (
+    tx: any,
+    wake: { wakeupRequestId: string; runId: string | null },
+  ) => Promise<void>;
 }
 
 type UsageTotals = {
@@ -16318,23 +16321,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .returning()
               .then((rows) => rows[0] ?? availableActiveExecutionRun);
 
-            await tx.insert(agentWakeupRequests).values({
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_execution_same_name",
-              payload,
-              status: "coalesced",
-              coalescedCount: 1,
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-              runId: mergedRun.id,
-              finishedAt: new Date(),
-            });
+            const coalescedWake = await tx
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_execution_same_name",
+                payload,
+                status: "coalesced",
+                coalescedCount: 1,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                runId: mergedRun.id,
+                finishedAt: new Date(),
+              })
+              .returning({ id: agentWakeupRequests.id })
+              .then((rows) => rows[0]);
 
-            await opts.onWakeQueued?.(tx, mergedRun);
+            await opts.onWakeAccepted?.(tx, {
+              wakeupRequestId: coalescedWake.id,
+              runId: mergedRun.id,
+            });
 
             return { kind: "coalesced" as const, run: mergedRun };
           }
@@ -16384,20 +16394,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 })
                 .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
+              await opts.onWakeAccepted?.(tx, {
+                wakeupRequestId: existingDeferred.id,
+                runId: existingDeferred.runId,
+              });
+
               return { kind: "deferred" as const };
             }
 
-            await tx.insert(agentWakeupRequests).values({
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_execution_deferred",
-              payload: deferredPayload,
-              status: "deferred_issue_execution",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+            const deferredWake = await tx
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_execution_deferred",
+                payload: deferredPayload,
+                status: "deferred_issue_execution",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              })
+              .returning({ id: agentWakeupRequests.id })
+              .then((rows) => rows[0]);
+
+            await opts.onWakeAccepted?.(tx, {
+              wakeupRequestId: deferredWake.id,
+              runId: null,
             });
 
             return { kind: "deferred" as const };
@@ -16588,7 +16612,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
-        await opts.onWakeQueued?.(tx, newRun);
+        await opts.onWakeAccepted?.(tx, {
+          wakeupRequestId: wakeupRequest.id,
+          runId: newRun.id,
+        });
 
         // executionRunId is NOT stamped here (enqueueWakeup queues the run but
         // doesn't start it). It will be stamped in claimQueuedRun() once the run

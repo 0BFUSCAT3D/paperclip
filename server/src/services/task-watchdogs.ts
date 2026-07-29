@@ -218,7 +218,10 @@ type TaskWatchdogWakeupOptions = {
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
   beforeIssueLock?: (tx: any) => Promise<void>;
-  onWakeQueued?: (tx: any, run: { id: string }) => Promise<void>;
+  onWakeAccepted?: (
+    tx: any,
+    wake: { wakeupRequestId: string; runId: string | null },
+  ) => Promise<void>;
 };
 
 type TaskWatchdogWakeup = (
@@ -1577,6 +1580,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     );
     let claimedWatchdog: IssueWatchdogRow | null = null;
     let claimedSourceIssue: IssueRow | null = null;
+    let acceptedWakeRunId: string | null | undefined;
 
     try {
       const wake = await deps.enqueueWakeup(expectedAgentId, {
@@ -1633,7 +1637,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           claimedWatchdog = currentWatchdog;
           claimedSourceIssue = sourceIssue;
         },
-        onWakeQueued: async (tx) => {
+        onWakeAccepted: async (tx, wake) => {
+          acceptedWakeRunId = wake.runId;
           const watchdog = claimedWatchdog;
           const sourceIssue = claimedSourceIssue;
           if (!watchdog || !sourceIssue) {
@@ -1703,7 +1708,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           }
         },
       });
-      if (!wake) {
+      if (!wake && acceptedWakeRunId === undefined) {
         return {
           ...classification,
           state: "wake_not_queued" as const,
@@ -1715,7 +1720,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         state: "triggered" as const,
         classification,
         watchdogIssueId: input.sourceIssue.id,
-        wakeupRunId: wake.id,
+        wakeupRunId: wake?.id ?? acceptedWakeRunId ?? null,
       };
     } catch (error) {
       if (error instanceof SelfReviewAlreadyClaimedError) {
