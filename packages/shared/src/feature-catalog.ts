@@ -97,9 +97,9 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableTaskChatRedesign: {
-    title: "Task Chat Redesign",
+    title: "Chat-Style Tasks",
     description:
-      "Render the task comment thread as a Claude Code-style session: agent lifecycle states, a plan/artifact properties pane, and a dev harness. Experimental; behind this flag the current thread is unchanged.",
+      "Reimagines the task detail page as a live conversation with your agents: chat bubbles for people and agents, streaming activity — thinking, tool calls, diffs — that folds into a one-line summary when a turn finishes, inline plan/question/permission cards, a three-mode composer (Agent · Plan · Ask), and a resizable Properties · Plan · Artifacts pane.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
