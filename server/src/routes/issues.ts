@@ -2593,7 +2593,7 @@ export function issueRoutes(
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const svc = issueService(db, {
-    cancelHeartbeatRun: heartbeat.cancelRun,
+    finalizeCancelledHeartbeatRun: heartbeat.finalizeCancelledRun,
   });
   const enqueueRecoveryActionWakeup = opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);

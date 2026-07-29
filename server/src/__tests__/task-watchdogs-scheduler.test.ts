@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -582,7 +582,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     await wakeStarted;
     const heartbeat = heartbeatService(db);
     const reassignment = issueService(db, {
-      cancelHeartbeatRun: heartbeat.cancelRun,
+      finalizeCancelledHeartbeatRun: heartbeat.finalizeCancelledRun,
     }).update(sourceId, { assigneeAgentId: currentAssigneeId });
     releaseWake();
     await Promise.all([firstReconcile, reassignment]);
@@ -614,6 +614,88 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.agentId).toBe(currentAssigneeId);
     expect(wakes[0]?.opts?.idempotencyKey).toContain(currentAssigneeId);
+  });
+
+  it("rolls back self-review cancellation when reassignment fails", async () => {
+    const companyId = await seedCompany();
+    const formerAssigneeId = await seedAgent(companyId, { name: "Rollback Former Assignee" });
+    const currentAssigneeId = await seedAgent(companyId, { name: "Rollback Current Assignee" });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-REASSIGN-ROLLBACK",
+      status: "done",
+      assigneeAgentId: formerAssigneeId,
+    });
+    const watchdog = await seedWatchdog(companyId, sourceId, formerAssigneeId, { mode: "self" });
+    const [wakeupRequest] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId,
+        agentId: formerAssigneeId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "task_watchdog_self_review",
+        status: "running",
+        claimedAt: new Date(),
+      })
+      .returning();
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId: formerAssigneeId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date(),
+        wakeupRequestId: wakeupRequest!.id,
+        contextSnapshot: {
+          issueId: sourceId,
+          taskWatchdogSelfReview: { watchdogId: watchdog!.id },
+        },
+      })
+      .returning();
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: run!.id })
+      .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+
+    await db.execute(sql`
+      create or replace function fail_watchdog_reassignment_test()
+      returns trigger as $$
+      begin
+        raise exception 'forced reassignment failure';
+      end;
+      $$ language plpgsql
+    `);
+    await db.execute(sql`
+      create trigger fail_watchdog_reassignment_test_trigger
+      before update on issues
+      for each row execute function fail_watchdog_reassignment_test()
+    `);
+    const finalizedRunIds: string[] = [];
+    try {
+      await expect(issueService(db, {
+        finalizeCancelledHeartbeatRun: async (runId) => {
+          finalizedRunIds.push(runId);
+        },
+      }).update(sourceId, { assigneeAgentId: currentAssigneeId }))
+        .rejects.toThrow("Failed query: update \"issues\"");
+    } finally {
+      await db.execute(sql`drop trigger if exists fail_watchdog_reassignment_test_trigger on issues`);
+      await db.execute(sql`drop function if exists fail_watchdog_reassignment_test()`);
+    }
+
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceId));
+    const [unchangedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    const [unchangedWake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+    expect(unchangedIssue?.assigneeAgentId).toBe(formerAssigneeId);
+    expect(unchangedRun?.status).toBe("running");
+    expect(unchangedWake?.status).toBe("running");
+    expect(finalizedRunIds).toEqual([]);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run!.id))).toHaveLength(0);
   });
 
   it("retries a self review when the wake was not queued", async () => {
