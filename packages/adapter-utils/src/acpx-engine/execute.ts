@@ -750,17 +750,13 @@ async function prepareClaudeSkillRuntime(input: {
   const bundleRoot = path.join(input.stateDir, "runtime-skills", "claude", skillSetKey);
   const skillsHome = path.join(bundleRoot, ".claude", "skills");
   await fs.mkdir(skillsHome, { recursive: true });
-  await emitPaperclipSkillUsageEvents({
-    adapter: "claude",
-    entries: selectedSkills,
-    onEvent: input.onEvent,
-    eventKind: "loaded",
-  });
 
+  const materializedSkills: PaperclipSkillEntry[] = [];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await materializePaperclipSkillCopy(entry.source, target);
+      materializedSkills.push(entry);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
@@ -774,6 +770,14 @@ async function prepareClaudeSkillRuntime(input: {
       );
     }
   }
+  // Usage analytics only counts skills the session can actually read, so
+  // `loaded` must be emitted after materialization and skip failed copies.
+  await emitPaperclipSkillUsageEvents({
+    adapter: "claude",
+    entries: materializedSkills,
+    onEvent: input.onEvent,
+    eventKind: "loaded",
+  });
 
   const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
   const promptInstructions = selectedSkills.length > 0
@@ -925,10 +929,12 @@ async function prepareCodexSkillRuntime(input: {
     input.stepMetrics ?? {},
   );
 
+  const materializedSkills: PaperclipSkillEntry[] = [];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await materializePaperclipSkillCopy(entry.source, target);
+      materializedSkills.push(entry);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
@@ -943,9 +949,11 @@ async function prepareCodexSkillRuntime(input: {
     }
   }
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
+  // Usage analytics only counts skills the session can actually read, so
+  // `loaded` skips entries whose materialization failed above.
   await emitPaperclipSkillUsageEvents({
     adapter: "codex",
-    entries: selectedSkills,
+    entries: materializedSkills,
     onEvent: input.onEvent,
     eventKind: "loaded",
   });

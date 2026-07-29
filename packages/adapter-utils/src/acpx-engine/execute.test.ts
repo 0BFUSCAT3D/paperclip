@@ -642,6 +642,37 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
+  it("does not emit loaded usage events for Claude skills that fail to materialize", async () => {
+    const root = await makeTempRoot();
+    const good = await createSkill(root, "coach");
+    // A file (not a directory) survives skill-set hashing but makes
+    // materializePaperclipSkillCopy throw, exercising the per-entry catch.
+    const brokenSource = path.join(root, "broken-source");
+    await fs.writeFile(brokenSource, "not a skill directory", "utf8");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { events, logs } = await runExecutor({
+      agent: "claude",
+      stateDir: path.join(root, "state"),
+      paperclipRuntimeSkills: [good, broken],
+      paperclipSkillSync: { desiredSkills: [good.key, broken.key] },
+    });
+
+    const usageEvents = events.filter((event) => event.eventType === "paperclip.skill.usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      payload: { adapter: "claude", skillKey: good.key, eventKind: "loaded" },
+    });
+    expect(logs.some((log) =>
+      log.stream === "stderr" && log.text.includes(`Failed to materialize ACPX Claude skill "${broken.key}"`),
+    )).toBe(true);
+  });
+
   it("emits one invoked event when Claude invokes a selected skill", async () => {
     const root = await makeTempRoot();
     const skill = await createSkill(root, "coach");
@@ -694,6 +725,37 @@ describe("shared ACPX engine runtime behavior", () => {
         eventKind: "loaded",
       },
     });
+  });
+
+  it("does not emit loaded usage events for Codex skills that fail to materialize", async () => {
+    const root = await makeTempRoot();
+    const codexHome = path.join(root, "codex-home");
+    const good = await createSkill(root, "coach");
+    const brokenSource = path.join(root, "broken-source");
+    await fs.writeFile(brokenSource, "not a skill directory", "utf8");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { events, logs } = await runExecutor({
+      agent: "codex",
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [good, broken],
+      paperclipSkillSync: { desiredSkills: [good.key, broken.key] },
+    });
+
+    const usageEvents = events.filter((event) => event.eventType === "paperclip.skill.usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      payload: { adapter: "codex", skillKey: good.key, eventKind: "loaded" },
+    });
+    expect(logs.some((log) =>
+      log.stream === "stderr" && log.text.includes(`Failed to inject ACPX Codex skill "${broken.key}"`),
+    )).toBe(true);
   });
 
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
