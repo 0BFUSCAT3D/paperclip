@@ -84,6 +84,7 @@ import {
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
 import { measureStartupStep, type StartupStepMeasureOptions } from "./startup-timing.js";
+import { detectInvokedSkill, type SkillInvocationContext } from "./skill-invocation.js";
 import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -379,6 +380,7 @@ interface AcpxPreparedRuntime {
   remoteExecutionIdentity: Record<string, unknown> | null;
   skillPromptInstructions: string;
   skillsIdentity: Record<string, unknown>;
+  skillInvocationContext: SkillInvocationContext | null;
   childStderrLogPath: string | null;
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
@@ -705,7 +707,7 @@ async function emitPaperclipSkillUsageEvents(input: {
       eventType: PAPERCLIP_SKILL_USAGE_EVENT_TYPE,
       stream: "system",
       level: "info",
-      message: `paperclip skill loaded: ${entry.key}`,
+      message: `paperclip skill ${input.eventKind}: ${entry.key}`,
       payload: {
         adapter: input.adapter,
         skillKey: entry.key,
@@ -741,6 +743,7 @@ async function prepareClaudeSkillRuntime(input: {
   identity: Record<string, unknown>;
   promptInstructions: string;
   commandNotes: string[];
+  invocationContext: SkillInvocationContext | null;
 }> {
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
@@ -794,6 +797,9 @@ async function prepareClaudeSkillRuntime(input: {
     commandNotes: selectedSkills.length > 0
       ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
+    invocationContext: selectedSkills.length > 0
+      ? { skillRoot: skillsHome, entries: selectedSkills }
+      : null,
   };
 }
 
@@ -1473,6 +1479,7 @@ async function buildRuntime(input: {
 
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
+  let skillInvocationContext: SkillInvocationContext | null = null;
   const skillCommandNotes: string[] = [];
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
@@ -1485,6 +1492,7 @@ async function buildRuntime(input: {
     });
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
+    skillInvocationContext = preparedSkills.invocationContext;
     skillCommandNotes.push(...preparedSkills.commandNotes);
     paperclipClaudeSettings = await writePaperclipClaudeSettings({
       cwd,
@@ -1935,6 +1943,7 @@ async function buildRuntime(input: {
       ...skillsIdentity,
       commandNotes: skillCommandNotes,
     },
+    skillInvocationContext,
     childStderrLogPath,
     paperclipClaudeSettings,
     mcpServers,
@@ -2991,6 +3000,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
     const textParts: string[] = [];
+    const invokedSkillKeys = new Set<string>();
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
     try {
@@ -3022,6 +3032,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (event.type === "status" && event.tag === "usage_update") {
           eventBreakdown = event.breakdown ?? eventBreakdown;
           eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+        }
+        if (prepared.skillInvocationContext) {
+          const invokedSkill = detectInvokedSkill(event, prepared.skillInvocationContext);
+          if (invokedSkill && !invokedSkillKeys.has(invokedSkill.key)) {
+            invokedSkillKeys.add(invokedSkill.key);
+            await emitPaperclipSkillUsageEvents({
+              adapter: prepared.acpxAgent,
+              entries: [invokedSkill],
+              onEvent: ctx.onEvent,
+              eventKind: "invoked",
+            });
+          }
         }
         await emitRuntimeEvent(ctx, event);
       }

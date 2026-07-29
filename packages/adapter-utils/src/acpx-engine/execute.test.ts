@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcpRuntimeOptions } from "acpx/runtime";
+import type { AcpRuntimeEvent, AcpRuntimeOptions } from "acpx/runtime";
 import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
@@ -134,6 +134,7 @@ function createLocalSandboxRunner(
 function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
   onEnsureSession?: (input: Record<string, unknown>) => void,
+  runtimeEvents: AcpRuntimeEvent[] = [],
 ) {
   return {
     ensureSession: async (input: Record<string, unknown>) => {
@@ -146,6 +147,7 @@ function buildRuntime(
     },
     startTurn: () => ({
       events: (async function* () {
+        for (const event of runtimeEvents) yield event;
         yield { type: "done", stopReason: "end_turn" };
       })(),
       result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
@@ -167,6 +169,7 @@ async function runExecutor(
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
+    runtimeEvents?: AcpRuntimeEvent[];
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -179,11 +182,12 @@ async function runExecutor(
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
-    createRuntime: (options) => {
-      runtimeOptions.push(options as unknown as Record<string, unknown>);
+    createRuntime: (runtimeInput) => {
+      runtimeOptions.push(runtimeInput as unknown as Record<string, unknown>);
       return buildRuntime(
         ({ key, value }) => configOptions.push({ key, value }),
         (input) => sessionInputs.push(input),
+        options.runtimeEvents,
       ) as never;
     },
   });
@@ -636,6 +640,33 @@ describe("shared ACPX engine runtime behavior", () => {
         eventKind: "loaded",
       },
     });
+  });
+
+  it("emits one invoked event when Claude invokes a selected skill", async () => {
+    const root = await makeTempRoot();
+    const skill = await createSkill(root, "coach");
+    const stateDir = path.join(root, "state");
+    const skillEvent: AcpRuntimeEvent = {
+      type: "tool_call",
+      text: "Using skill",
+      title: "Skill",
+      rawInput: { skill: skill.runtimeName },
+    };
+
+    const { events } = await runExecutor({
+      agent: "claude",
+      stateDir,
+      paperclipRuntimeSkills: [skill],
+      paperclipSkillSync: { desiredSkills: [skill.key] },
+    }, {
+      // ACP can report both the initial call and later status updates.
+      runtimeEvents: [skillEvent, skillEvent],
+    });
+
+    expect(events.filter((event) => event.eventType === "paperclip.skill.usage")).toMatchObject([
+      { payload: { skillKey: skill.key, eventKind: "loaded" } },
+      { payload: { skillKey: skill.key, eventKind: "invoked" } },
+    ]);
   });
 
   it("emits paperclip skill usage loaded events for selected Codex runtime skills", async () => {
