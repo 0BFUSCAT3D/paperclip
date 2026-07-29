@@ -1530,6 +1530,12 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
+  // Task Chat Redesign (flag: enableTaskChatRedesign): with the flag ON the
+  // thread owns the center column — the legacy title/description block,
+  // sub-tasks table, plan decompositions and Documents section are gated off
+  // (plan lives in the properties-pane Plan tab). Flag OFF renders the legacy
+  // page byte-identically.
+  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
   const { openNewIssue } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
@@ -4498,7 +4504,7 @@ export function IssueDetail() {
           value={issue.title}
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
-          className="text-xl font-bold"
+          className={taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"}
         />
 
         <IssueMonitorBanner
@@ -4507,24 +4513,26 @@ export function IssueDetail() {
           checkingNow={checkIssueMonitorNow.isPending}
         />
 
-        <InlineEditor
-          value={issue.description ?? ""}
-          onSave={(description) => updateIssue.mutateAsync({ description })}
-          as="p"
-          className="text-sm leading-7 text-foreground"
-          placeholder="Add a description..."
-          multiline
-          foldable
-          mentions={mentionOptions}
-          externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
-          imageUploadHandler={async (file) => {
-            const attachment = await uploadAttachment.mutateAsync(file);
-            return attachment.contentPath;
-          }}
-          onDropFile={async (file) => {
-            await uploadAttachment.mutateAsync(file);
-          }}
-        />
+        {taskChatShellEnabled ? null : (
+          <InlineEditor
+            value={issue.description ?? ""}
+            onSave={(description) => updateIssue.mutateAsync({ description })}
+            as="p"
+            className="text-sm leading-7 text-foreground"
+            placeholder="Add a description..."
+            multiline
+            foldable
+            mentions={mentionOptions}
+            externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
+            imageUploadHandler={async (file) => {
+              const attachment = await uploadAttachment.mutateAsync(file);
+              return attachment.contentPath;
+            }}
+            onDropFile={async (file) => {
+              await uploadAttachment.mutateAsync(file);
+            }}
+          />
+        )}
       </div>
 
       <PluginSlotOutlet
@@ -4568,7 +4576,7 @@ export function IssueDetail() {
         missingBehavior="placeholder"
       />
 
-      {showRichSubIssuesSection ? (
+      {taskChatShellEnabled ? null : showRichSubIssuesSection ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-medium text-muted-foreground">Sub-tasks</h3>
@@ -4603,7 +4611,7 @@ export function IssueDetail() {
         </div>
       )}
 
-      {showPlanDecompositionsSection ? (
+      {!taskChatShellEnabled && showPlanDecompositionsSection ? (
         <IssuePlanDecompositionsSection
           issueId={issue.id}
           issueIdentifier={issue.identifier}
@@ -4611,6 +4619,9 @@ export function IssueDetail() {
         />
       ) : null}
 
+      {/* Flag ON: attachments/work products/workspace live in the properties
+          pane (Artifacts tab) — the center column belongs to the thread. */}
+      {taskChatShellEnabled ? null : (
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -4638,7 +4649,9 @@ export function IssueDetail() {
         agentMap={agentMap}
         userProfileMap={userProfileMap}
       />
+      )}
 
+      {taskChatShellEnabled ? null : (
       <IssueOutputSection
         workProducts={workProducts}
         onMediaClick={(item) => {
@@ -4653,8 +4666,9 @@ export function IssueDetail() {
           setGalleryOpen(true);
         }}
       />
+      )}
 
-      {attachmentsInitialLoading ? (
+      {taskChatShellEnabled ? null : attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
       ) : hasAttachments ? (
         <IssueAttachmentsSection
@@ -4692,6 +4706,7 @@ export function IssueDetail() {
         onOpenChange={setGalleryOpen}
       />
 
+      {taskChatShellEnabled ? null : (
       <IssueWorkspaceCard
         issue={issue}
         project={resolvedProject}
@@ -4699,8 +4714,9 @@ export function IssueDetail() {
         onBrowseFiles={fileViewerEnabled ? () => setFileViewerPromptOpen(true) : undefined}
         onOpenFileByPath={fileViewerEnabled ? () => setFileViewerPromptOpen(true) : undefined}
       />
+      )}
 
-      {fileViewerEnabled && issue.workProducts && issue.workProducts.length > 0 && (() => {
+      {!taskChatShellEnabled && fileViewerEnabled && issue.workProducts && issue.workProducts.length > 0 && (() => {
         const workProductsWithFileRefs = issue.workProducts
           .map((product) => ({ product, fileRef: extractWorkspaceFileRefFromWorkProduct(product) }))
           .filter(({ fileRef }) => fileRef !== null);

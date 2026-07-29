@@ -15,6 +15,12 @@ export interface TaskChatAdapterContext {
   agentMap?: Map<string, Agent>;
   userLabelMap?: ReadonlyMap<string, string> | null;
   currentUserId?: string | null;
+  /**
+   * Capitalized mode chip for agent-authored bubbles ("Agent mode" / "Plan
+   * mode" / "Ask mode") — the issue's work mode at render time (per-comment
+   * mode attribution is Tier-B, out of scope here).
+   */
+  agentModeLabel?: string;
 }
 
 function effectiveAgentId(comment: IssueChatComment): string | null {
@@ -78,6 +84,7 @@ export function commentsToTaskChatItems(
       timestamp: formatTimestamp(comment.createdAt),
       optimistic,
       agentGradient,
+      modeLabel: kind === "agent" ? ctx.agentModeLabel : undefined,
     });
   }
   return items;

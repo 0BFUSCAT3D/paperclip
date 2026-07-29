@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { Check, ChevronDown, X } from "lucide-react";
+import { Check, ChevronRight, X } from "lucide-react";
 import type { TaskChatTurnItem, TaskChatTurnChildItem } from "./task-chat-model";
 
 interface TaskChatTurnProps {
@@ -8,14 +8,21 @@ interface TaskChatTurnProps {
   renderChild: (child: TaskChatTurnChildItem) => ReactNode;
 }
 
-/** "✓ Worked · 38s · 3 tools · +34 −3 · 12.3k tokens" (parts omitted when unknown). */
-export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
-  const parts: string[] = [summary.failed ? "Stopped" : "Worked"];
+/** Metric segments after the label: "38s · 3 tools · +34 −3 · 12.3k tokens". */
+export function turnSummaryMetrics(summary: TaskChatTurnItem["summary"]): string {
+  const parts: string[] = [];
   if (summary.durationLabel) parts.push(summary.durationLabel);
   if (summary.toolCount > 0) parts.push(`${summary.toolCount} tool${summary.toolCount === 1 ? "" : "s"}`);
   if (summary.added > 0 || summary.removed > 0) parts.push(`+${summary.added} −${summary.removed}`);
   if (summary.tokensLabel) parts.push(summary.tokensLabel);
   return parts.join(" · ");
+}
+
+/** "✓ Worked · 38s · 3 tools · +34 −3 · 12.3k tokens" (parts omitted when unknown). */
+export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
+  const metrics = turnSummaryMetrics(summary);
+  const label = summary.failed ? "Stopped" : "Worked";
+  return metrics ? `${label} · ${metrics}` : label;
 }
 
 /**
@@ -52,17 +59,20 @@ export function TaskChatTurn({ item, renderChild }: TaskChatTurnProps) {
           type="button"
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
-          className="group flex items-center gap-1.5 px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          className="group flex items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
           data-testid="task-chat-turn-summary"
         >
           <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
-          <span>{turnSummaryText(item.summary)}</span>
-          <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-180" : null)} />
+          <span>{item.summary.failed ? "Stopped" : "Worked"}</span>
+          {turnSummaryMetrics(item.summary) ? (
+            <span className="font-mono text-(length:--text-micro)">{turnSummaryMetrics(item.summary)}</span>
+          ) : null}
+          <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} />
         </button>
       ) : null}
       <div className="tc-turn-fold" data-folded={folded ? "true" : "false"} aria-hidden={folded}>
         <div>
-          <div className="flex flex-col gap-3 pt-1">
+          <div className="flex flex-col gap-2 pt-1">
             {item.items.map((child) => (
               <div key={child.id}>{renderChild(child)}</div>
             ))}

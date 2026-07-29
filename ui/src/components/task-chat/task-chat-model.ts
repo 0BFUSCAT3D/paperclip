@@ -89,7 +89,7 @@ export interface TaskChatThinkingItem {
   summaryLabel?: string;
 }
 
-/** A tool invocation card (ACP tool_call / tool_call_update). */
+/** A tool invocation row (ACP tool_call / tool_call_update). */
 export interface TaskChatToolItem {
   id: string;
   kind: "tool";
@@ -97,6 +97,11 @@ export interface TaskChatToolItem {
   /** ACP ToolKind. */
   toolKind?: string;
   status: TaskChatToolStatus;
+  /**
+   * Summarized primary argument (file path, command, pattern…) rendered mono
+   * next to the tool name — the v7 toolrow "target".
+   */
+  target?: string;
   detail?: string;
   diff?: TaskChatDiff;
   /** Resolved permission decision badge, when one applied. */

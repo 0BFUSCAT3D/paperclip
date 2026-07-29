@@ -25,13 +25,38 @@ interface TaskChatStatusPillProps {
 
 /**
  * Lifecycle state as a status affordance (never a bubble), with a defined
- * enter transition. Awaiting-approval elevates with an attention pulse and
+ * enter transition. Live running/working states render the v7 flat statusline
+ * (pulse dot + shimmering label + mono meta); Tier-B attention states keep
+ * card chrome — awaiting-approval elevates with an attention pulse and
  * exposes the ACP permission options as actions.
  */
 export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusPillProps) {
   const { Icon, spin, tone } = CONFIG[item.status];
   const awaiting = item.status === "awaiting_approval";
   const elapsed = elapsedLabel(item.elapsedMs);
+
+  if (item.status === "running" || item.status === "working") {
+    return (
+      <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
+        <span
+          aria-hidden
+          className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-(--status-agent-running)"
+        />
+        <span className="shimmer-text shimmer-text-muted font-medium">{item.label}…</span>
+        {item.detail ? (
+          <span className="min-w-0 truncate font-mono text-(length:--text-micro)">{item.detail}</span>
+        ) : null}
+        <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-(length:--text-micro)">
+          {elapsed ? <span>{elapsed}</span> : null}
+          {item.tokens ? (
+            <span>
+              {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
+            </span>
+          ) : null}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div

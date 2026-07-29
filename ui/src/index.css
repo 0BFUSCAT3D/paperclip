@@ -248,6 +248,14 @@
   --tc-mode-agent: var(--status-task-backlog);
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
+
+  /* Agent-comment bubble fill (v7 grammar): quiet gray card, no border. */
+  --bubble-agent: oklch(0.955 0 0);
+
+  /* Redesigned thread viewport bound: lets the thread own its scroll (auto-
+     follow + pinned composer) inside the page flow. 21rem ≈ chrome above the
+     thread (topbar + title row + tabs) plus page padding. */
+  --tc-thread-max-h: calc(100dvh - 21rem);
 }
 
 .dark {
@@ -259,6 +267,7 @@
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
+  --bubble-agent: oklch(0.24 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -712,6 +721,14 @@
   background-clip: text;
   -webkit-text-fill-color: transparent;
   animation: shimmer-text-slide 2.5s linear infinite;
+}
+
+/* Muted variant (task-chat v7 activity rows): the sweep runs over the
+   muted-foreground tier so live "Thinking…"/"Working…" labels stay subordinate
+   to real content. */
+.shimmer-text-muted {
+  --shimmer-base: var(--muted-foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

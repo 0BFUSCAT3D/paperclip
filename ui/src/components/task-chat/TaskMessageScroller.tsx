@@ -140,7 +140,10 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
       <div
         ref={ref}
         onScroll={handleScroll}
-        className={cn("h-full overflow-y-auto", className)}
+        // absolute inset-0 (not h-full): the viewport must equal the flex-sized
+        // wrapper exactly — percentage heights don't reliably resolve against
+        // flex-determined block heights, which let the thread overflow the page.
+        className={cn("absolute inset-0 overflow-y-auto", className)}
         data-testid="task-chat-scroller"
       >
         {children}

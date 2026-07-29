@@ -7,7 +7,7 @@ import {
   type DragEvent as ReactDragEvent,
 } from "react";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, Check, ChevronDown, Loader2, Plus, Send } from "lucide-react";
+import { AlertTriangle, ArrowUp, Check, ChevronDown, Loader2, Plus } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -58,6 +58,18 @@ const MODE_DESCRIPTION: Partial<Record<IssueWorkMode, string>> = {
   ask: "Answer questions only, no changes",
 };
 
+/** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
+function modePlaceholder(mode: IssueWorkMode, agentName: string): string {
+  switch (mode) {
+    case "planning":
+      return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
+    case "ask":
+      return `Ask ${agentName} a question — read-only, nothing runs…`;
+    default:
+      return `Message ${agentName} — describe what you want done…`;
+  }
+}
+
 type ComposerAttachment = {
   id: string;
   name: string;
@@ -101,7 +113,7 @@ export function TaskChatComposer({
   onWorkModeChange,
   disabled = false,
   disabledReason,
-  placeholder = "Reply",
+  placeholder,
   onAttachImage,
   onImageUpload,
   enableReassign = false,
@@ -124,6 +136,8 @@ export function TaskChatComposer({
   const assigneeValue = pendingAssignee ?? currentAssigneeValue;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
+  const assigneeName = assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
+  const effectivePlaceholder = placeholder ?? modePlaceholder(pendingMode, assigneeName);
 
   function insertReference(name: string, url: string, asImage: boolean) {
     const safeName = name.replace(/[[\]]/g, "\\$&");
@@ -246,7 +260,7 @@ export function TaskChatComposer({
   return (
     <div
       className={cn(
-        "rounded-xl border border-border bg-card p-2 shadow-(--shadow-extract-7)",
+        "rounded-xl border border-input bg-card p-2 shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
         isDragOver && "ring-2 ring-primary/40",
       )}
       onDragEnter={handleFileDragEnter}
@@ -270,7 +284,7 @@ export function TaskChatComposer({
         }}
         onPaste={handlePaste}
         disabled={disabled}
-        placeholder={disabled ? (disabledReason ?? "Composer disabled") : placeholder}
+        placeholder={disabled ? (disabledReason ?? "Composer disabled") : effectivePlaceholder}
         rows={2}
         className="w-full resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-60"
         data-testid="task-chat-composer-input"
@@ -325,7 +339,7 @@ export function TaskChatComposer({
               disabled={disabled}
               title="Attach file"
               aria-label="Attach file"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               data-testid="task-chat-composer-attach"
             >
               <Plus className="h-4 w-4" aria-hidden />
@@ -343,7 +357,7 @@ export function TaskChatComposer({
               data-testid="task-chat-composer-mode"
               data-pending-work-mode={pendingMode}
             >
-              {modeMeta.shortLabel}
+              {modeMeta.label}
               <ChevronDown className="h-3 w-3" aria-hidden />
             </button>
           </DropdownMenuTrigger>
@@ -403,11 +417,16 @@ export function TaskChatComposer({
           type="button"
           onClick={() => void submit()}
           disabled={disabled || submitting || body.trim().length === 0}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+          title="Send"
+          aria-label="Send"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-transform hover:scale-105 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground"
           data-testid="task-chat-composer-send"
         >
-          <Send className="h-3.5 w-3.5" aria-hidden />
-          {submitting ? "Sending…" : "Send"}
+          {submitting ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          ) : (
+            <ArrowUp className="h-4 w-4" aria-hidden />
+          )}
         </button>
       </div>
     </div>

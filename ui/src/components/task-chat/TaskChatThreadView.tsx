@@ -67,7 +67,7 @@ export function TaskChatThreadView({
   scroll = true,
 }: TaskChatThreadViewProps) {
   const body = (
-    <div className={cn("flex flex-col gap-3 px-3 py-4", className)}>
+    <div className={cn("mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-4", className)}>
       {items.map((item) => (
         <div key={item.id}>{renderItem(item, onApprovalDecision)}</div>
       ))}

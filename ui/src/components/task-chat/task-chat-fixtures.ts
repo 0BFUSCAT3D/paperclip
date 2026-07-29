@@ -73,7 +73,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
       return {
         surface: "thread",
         items: [
-          { id: "tool-1", kind: "tool", name: "read server/src/routes/auth.ts", toolKind: "read", status: "in_progress" },
+          { id: "tool-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "in_progress" },
         ],
       };
     case "diff":
@@ -81,7 +81,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           {
-            id: "tool-diff", kind: "tool", name: "edit server/src/routes/auth.ts", toolKind: "edit", status: "completed", decision: "allowed",
+            id: "tool-diff", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", decision: "allowed",
             diff: {
               path: "server/src/routes/auth.ts", added: 3, removed: 1,
               lines: [
@@ -121,8 +121,8 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             summary: { durationLabel: "38s", toolCount: 3, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
             items: [
               { id: "th-done", kind: "thinking", lines: ["Read auth.ts", "Added rate-limiter util", "Wired into POST /login"] },
-              { id: "tool-done-1", kind: "tool", name: "read server/src/routes/auth.ts", toolKind: "read", status: "completed" },
-              { id: "tool-done-2", kind: "tool", name: "edit server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
+              { id: "tool-done-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+              { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
             ],
           },
           { id: "m-done", kind: "message", author: "agent", authorName: AGENT, agentGradient: 3, modeLabel: "Agent mode", text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.", timestamp: "2:34 PM" },

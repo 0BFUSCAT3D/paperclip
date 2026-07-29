@@ -31,6 +31,84 @@ function diffKind(changeType: string): "add" | "remove" | "context" {
   return "context";
 }
 
+/** Param keys probed (in order) for a tool call's one-line mono "target". */
+const TARGET_KEYS = [
+  "file_path",
+  "path",
+  "notebook_path",
+  "command",
+  "pattern",
+  "query",
+  "url",
+  "prompt",
+  "description",
+  "skill",
+  "subject",
+] as const;
+
+const TARGET_MAX = 96;
+
+function clip(text: string, max: number): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
+/**
+ * Summarize a tool call's input into the v7 toolrow target: the most
+ * identifying parameter when the input is a keyed object, else a clipped
+ * rendering of the raw input. Returns undefined when there is nothing useful.
+ */
+export function summarizeToolInput(input: unknown): string | undefined {
+  if (input == null) return undefined;
+  if (typeof input === "string") return input.trim() ? clip(input, TARGET_MAX) : undefined;
+  if (typeof input !== "object") return clip(String(input), TARGET_MAX);
+  const record = input as Record<string, unknown>;
+  for (const key of TARGET_KEYS) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return clip(value, TARGET_MAX);
+  }
+  const entries = Object.entries(record).filter(
+    ([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+  );
+  if (entries.length === 0) return undefined;
+  return clip(entries.map(([k, v]) => `${k}: ${String(v)}`).join(", "), TARGET_MAX);
+}
+
+/**
+ * Display name for a tool call. Live acpx `tool_call` events carry real names
+ * ("Read", "Bash", mcp__server__tool); legacy stored logs may not — those fall
+ * back to a generic "Tool" row. MCP names collapse to their tool segment.
+ */
+export function toolDisplayName(name: string | undefined | null): string {
+  const raw = (name ?? "").trim();
+  if (!raw || raw === "tool") return "Tool";
+  const mcp = raw.match(/^mcp__[^_]+(?:_[^_]+)*__(.+)$/);
+  const base = mcp?.[1] ?? raw;
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+/** "Thought for Ns" once a coalesced thinking group spans ≥1s. */
+function thoughtDurationLabel(startTs: string | undefined, endTs: string): string | undefined {
+  if (!startTs) return undefined;
+  const start = Date.parse(startTs);
+  const end = Date.parse(endTs);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return undefined;
+  const secs = Math.round((end - start) / 1000);
+  if (secs < 1) return undefined;
+  return secs < 60 ? `Thought for ${secs}s` : `Thought for ${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
+const DETAIL_MAX = 600;
+
+/** Result content → the expandable mono detail block (clipped, trimmed). */
+function formatToolResultDetail(content: unknown): string | undefined {
+  if (content == null) return undefined;
+  const text = typeof content === "string" ? content : String(content);
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > DETAIL_MAX ? `${trimmed.slice(0, DETAIL_MAX)}\n…` : trimmed;
+}
+
 interface TranscriptAdapterOptions {
   runId: string;
   agentName?: string;
@@ -49,6 +127,7 @@ export function transcriptToTaskChatItems(
 ): TaskChatItem[] {
   const items: TaskChatItem[] = [];
   const toolIndexById = new Map<string, number>();
+  const thinkingStartTs = new Map<number, string>();
   let lastToolIndex = -1;
   let thinkingIndex = -1;
   let messageIndex = -1;
@@ -64,16 +143,24 @@ export function transcriptToTaskChatItems(
         if (!entry.text) break;
         if (thinkingIndex >= 0) {
           const it = items[thinkingIndex];
-          if (it.kind === "thinking") it.lines.push(...entry.text.split("\n"));
+          if (it.kind === "thinking") {
+            it.lines.push(...entry.text.split("\n"));
+            const startTs = thinkingStartTs.get(thinkingIndex);
+            const label = thoughtDurationLabel(startTs, entry.ts);
+            if (label) it.summaryLabel = label;
+          }
         } else {
           items.push({
             id: `${runId}:think:${i}`,
             kind: "thinking",
             lines: entry.text.split("\n"),
             streaming: running,
-            collapsed: false,
+            // Settled history folds its thinking behind the header (v7);
+            // the in-flight run streams it expanded.
+            collapsed: !running,
           });
           thinkingIndex = items.length - 1;
+          thinkingStartTs.set(thinkingIndex, entry.ts);
           messageIndex = -1;
         }
         break;
@@ -102,7 +189,8 @@ export function transcriptToTaskChatItems(
         const item: TaskChatToolItem = {
           id: `${runId}:tool:${toolCallId}`,
           kind: "tool",
-          name: entry.name || "tool",
+          name: toolDisplayName(entry.name),
+          target: summarizeToolInput(entry.input),
           status: "in_progress",
         };
         if (toolIndexById.has(toolCallId)) {
@@ -123,8 +211,12 @@ export function transcriptToTaskChatItems(
           const existing = items[idx];
           if (existing.kind === "tool") {
             existing.status = entry.isError ? "failed" : "completed";
-            if (entry.content && !existing.detail) {
-              existing.detail = String(entry.content).slice(0, 400);
+            if (existing.name === "Tool" && entry.toolName) {
+              existing.name = toolDisplayName(entry.toolName);
+            }
+            if (!existing.detail) {
+              const detail = formatToolResultDetail(entry.content);
+              if (detail) existing.detail = detail;
             }
           }
         }
@@ -145,7 +237,7 @@ export function transcriptToTaskChatItems(
           items.push({
             id: `${runId}:diff:${i}`,
             kind: "tool",
-            name: "edit",
+            name: "Edit",
             status: "completed",
             diff: {
               added: line.kind === "add" ? 1 : 0,
@@ -230,7 +322,7 @@ export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.kind === "tool_call") {
-      return { label: "Working", detail: `Using ${entry.name || "tool"}` };
+      return { label: "Working", detail: toolDisplayName(entry.name) };
     }
     if (entry.kind === "tool_result") break;
     if (entry.kind === "assistant") return { label: "Responding" };

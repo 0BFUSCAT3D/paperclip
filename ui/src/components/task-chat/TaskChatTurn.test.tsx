@@ -83,7 +83,9 @@ describe("TaskChatTurn", () => {
 
   it("renders a settled turn folded with its summary line", () => {
     renderTurn(SETTLED);
-    expect(summaryBtn()?.textContent).toContain("Worked · 38s");
+    // Label and mono metrics are adjacent spans (v7 runsum grammar).
+    expect(summaryBtn()?.textContent).toContain("Worked");
+    expect(summaryBtn()?.textContent).toContain("38s · 3 tools · +34 −3 · 12.3k tokens");
     expect(fold()?.getAttribute("data-folded")).toBe("true");
   });
 

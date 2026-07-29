@@ -15,6 +15,7 @@ import type {
 } from "@/components/task-chat/task-chat-model";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { workModeMetaFor } from "@/lib/work-mode-meta";
 
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 
@@ -66,9 +67,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     issueStatus,
   } = props;
 
+  const agentModeLabel = workModeMetaFor(issueWorkMode).label;
   const commentItems = useMemo(
-    () => commentsToTaskChatItems(comments, { agentMap, userLabelMap, currentUserId }),
-    [comments, agentMap, userLabelMap, currentUserId],
+    () => commentsToTaskChatItems(comments, { agentMap, userLabelMap, currentUserId, agentModeLabel }),
+    [comments, agentMap, userLabelMap, currentUserId, agentModeLabel],
   );
 
   // Every run we might need a transcript for (history + live), deduped by id.
@@ -244,8 +246,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [commentItems, runs, liveRun, transcriptByRun, linkedRunMetaById, firstCommentIdByRun, tick]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-testid="task-chat-thread">
-      <div className="min-h-0 flex-1">
+    <div
+      className="flex h-(--tc-thread-max-h) min-h-0 flex-1 flex-col"
+      data-testid="task-chat-thread"
+    >
+      <div className="flex min-h-0 flex-1 flex-col">
         {items.length === 0 ? (
           <div className="px-3 py-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
         ) : (
@@ -253,7 +258,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         )}
       </div>
       {showComposer ? (
-        <div className="sticky bottom-0 z-10 flex flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="sticky bottom-0 z-10 mx-auto flex w-full max-w-3xl flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60">
           {composerAccessory}
           <TaskChatComposer
             onAdd={onAdd}

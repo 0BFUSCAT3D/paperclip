@@ -152,13 +152,13 @@ export function TaskChatLab() {
             <span className="ml-auto font-mono text-(length:--text-micro) text-muted-foreground">{meta.protocol}</span>
           </div>
 
-          <div ref={targetRef} className="min-h-0 flex-1" data-testid="task-chat-stage">
+          <div ref={targetRef} className="flex min-h-0 flex-1 flex-col" data-testid="task-chat-stage">
             {scenario.surface === "plan" && scenario.plan ? (
               <div className="mx-auto max-w-2xl px-4">
                 <TaskChatPlanView plan={scenario.plan} />
               </div>
             ) : (
-              <div className="mx-auto h-full max-w-2xl">
+              <div className="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col">
                 <TaskChatThreadView items={items} />
               </div>
             )}
