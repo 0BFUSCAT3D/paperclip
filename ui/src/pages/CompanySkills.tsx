@@ -10,11 +10,13 @@ import type {
   CompanySkillCompatibility,
   CompanySkillCreateRequest,
   CompanySkillDetail,
+  CompanySkillUsageDetail,
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
   CompanySkillListItem,
   CompanySkillProjectScanResult,
   CompanySkillSharingScope,
+  SkillUsageWindow,
   CompanySkillSourceBadge,
   CompanySkillTrustLevel,
   CompanySkillUpdateRequest,
@@ -87,10 +89,14 @@ import {
 } from "../lib/skill-create";
 import { SkillCardIcon } from "../components/SkillCardIcon";
 import { ImportSkillsFromProjectDialog } from "./skills/ImportSkillsFromProjectDialog";
+import { MetricCard } from "../components/MetricCard";
+import { QuotaBar } from "../components/QuotaBar";
+import { ChartCard, SkillUsageChart } from "../components/ActivityCharts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { useSkillUsageAnalyticsEnabled } from "@/hooks/useSkillUsageAnalyticsEnabled";
 import {
   AllUnfiledBanner,
   BulkBar,
@@ -133,6 +139,7 @@ import {
   Folder,
   FolderInput,
   FolderOpen,
+  LineChart,
   FolderSearch,
   GitFork,
   Github,
@@ -587,9 +594,10 @@ export function skillDetailBreadcrumbs(
   ];
 }
 
-type DiscoverySort = "agents" | "stars" | "forks" | "recent" | "alphabetical";
+export type DiscoverySort = "used" | "agents" | "stars" | "forks" | "recent" | "alphabetical";
 
 const DISCOVERY_SORT_LABELS: Record<DiscoverySort, string> = {
+  used: "Most used",
   agents: "Most agents",
   stars: "Most stars",
   forks: "Most forks",
@@ -597,7 +605,7 @@ const DISCOVERY_SORT_LABELS: Record<DiscoverySort, string> = {
   alphabetical: "Alphabetical",
 };
 
-const DISCOVERY_SORTS: DiscoverySort[] = ["agents", "stars", "forks", "recent", "alphabetical"];
+const DISCOVERY_SORTS: DiscoverySort[] = ["used", "agents", "stars", "forks", "recent", "alphabetical"];
 
 export type DiscoveryCard = {
   key: string;
@@ -616,6 +624,7 @@ export type DiscoveryCard = {
   starCount: number;
   agentCount: number;
   forkCount: number;
+  usageCount?: number;
   installed: boolean;
   required: boolean;
   forkedFrom: boolean;
@@ -664,6 +673,7 @@ function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "
 function buildDiscoveryCards(
   installed: CompanySkillListItem[],
   catalog: CatalogSkill[],
+  usageCountsByLookup: Map<string, number>,
 ): DiscoveryCard[] {
   const catalogByKey = new Map(catalog.map((entry) => [entry.key, entry]));
   const cards: DiscoveryCard[] = [];
@@ -672,6 +682,7 @@ function buildDiscoveryCards(
   for (const skill of installed) {
     installedKeys.add(skill.key);
     const catalogMatch = catalogByKey.get(skill.key) ?? null;
+    const usageCount = usageCountsByLookup.get(skill.id) ?? usageCountsByLookup.get(skill.key);
     const required = skill.catalogKind === "bundled" || catalogMatch?.kind === "bundled";
     cards.push({
       key: skill.key,
@@ -690,6 +701,7 @@ function buildDiscoveryCards(
       starCount: skill.starCount ?? 0,
       agentCount: skill.attachedAgentCount ?? 0,
       forkCount: skill.forkCount ?? 0,
+      usageCount,
       installed: true,
       required,
       forkedFrom: Boolean(skill.forkedFromSkillId),
@@ -702,6 +714,7 @@ function buildDiscoveryCards(
   for (const entry of catalog) {
     if (installedKeys.has(entry.key)) continue;
     const required = entry.kind === "bundled";
+    const usageCount = usageCountsByLookup.get(entry.key);
     cards.push({
       key: entry.key,
       skillId: null,
@@ -719,6 +732,7 @@ function buildDiscoveryCards(
       starCount: 0,
       agentCount: 0,
       forkCount: 0,
+      usageCount,
       installed: false,
       required,
       forkedFrom: false,
@@ -752,6 +766,8 @@ function sortDiscoveryCards(cards: DiscoveryCard[], sort: DiscoverySort, demoteR
     // the Bundled tab, where they are the whole point).
     if (demoteRequired && a.required !== b.required) return a.required ? 1 : -1;
     switch (sort) {
+      case "used":
+        return (b.usageCount ?? 0) - (a.usageCount ?? 0) || byName(a, b);
       case "stars":
         return b.starCount - a.starCount || byName(a, b);
       case "forks":
@@ -809,6 +825,7 @@ function SkillCard({
   onMove,
   onCreateFolderAndMove,
   onOpenMove,
+  usageAnalyticsEnabled = false,
 }: {
   card: DiscoveryCard;
   folders?: FolderListItem[];
@@ -821,6 +838,7 @@ function SkillCard({
   onMove?: (card: DiscoveryCard, folderId: string | null) => void;
   onCreateFolderAndMove?: (card: DiscoveryCard) => void;
   onOpenMove?: (card: DiscoveryCard) => void;
+  usageAnalyticsEnabled?: boolean;
 }) {
   const badgeFolder = showFolderBadge && card.installed
     ? (card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null)
@@ -934,13 +952,19 @@ function SkillCard({
       </p>
 
       <div className="mt-auto pt-3">
-        {/* Stats: installed agents · stars · forks — stars/forks only when > 0. */}
+        {/* Stats: installed agents · stars · forks · usage — stars/forks/usage only when applicable. */}
         <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
           <span>{card.agentCount} {card.agentCount === 1 ? "agent" : "agents"}</span>
           {card.starCount > 0 ? (
             <>
               <span aria-hidden="true">·</span>
               <SkillStat icon={Star} value={String(card.starCount)} />
+            </>
+          ) : null}
+          {usageAnalyticsEnabled ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <SkillStat icon={LineChart} value={`${card.usageCount ?? 0} ${card.usageCount === 1 ? "use" : "uses"}`} />
             </>
           ) : null}
           {card.forkCount > 0 ? (
@@ -1027,6 +1051,9 @@ export function DiscoveryGrid({
   onSearchChange,
   sort,
   onSortChange,
+  usageAnalyticsEnabled = false,
+  usageWindow = "7d",
+  onUsageWindowChange,
   cards,
   onOpenCard,
   loading,
@@ -1074,6 +1101,9 @@ export function DiscoveryGrid({
   onSearchChange: (value: string) => void;
   sort: DiscoverySort;
   onSortChange: (sort: DiscoverySort) => void;
+  usageAnalyticsEnabled?: boolean;
+  usageWindow?: SkillUsageWindow;
+  onUsageWindowChange?: (window: SkillUsageWindow) => void;
   cards: DiscoveryCard[];
   onOpenCard: (card: DiscoveryCard) => void;
   loading: boolean;
@@ -1138,6 +1168,8 @@ export function DiscoveryGrid({
   // The nested folder tree owns the left rail whenever folders (reserved roots
   // or user folders) exist for the installed view.
   const showFolderRail = Boolean(folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady);
+  const availableSorts = usageAnalyticsEnabled ? DISCOVERY_SORTS : DISCOVERY_SORTS.filter((option) => option !== "used");
+  const visibleSort = usageAnalyticsEnabled || sort !== "used" ? sort : "agents";
 
   return (
     // On desktop the store is bounded to the viewport so the category sidebar
@@ -1199,13 +1231,13 @@ export function DiscoveryGrid({
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm">
                 <span className="text-muted-foreground">Sort</span>
-                <span className="ml-1.5">{DISCOVERY_SORT_LABELS[sort]}</span>
+                <span className="ml-1.5">{DISCOVERY_SORT_LABELS[visibleSort]}</span>
                 <ChevronDown className="ml-1 h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuRadioGroup value={sort} onValueChange={(value) => onSortChange(value as DiscoverySort)}>
-                {DISCOVERY_SORTS.map((option) => (
+              <DropdownMenuRadioGroup value={visibleSort} onValueChange={(value) => onSortChange(value as DiscoverySort)}>
+                {availableSorts.map((option) => (
                   <DropdownMenuRadioItem key={option} value={option}>
                     {DISCOVERY_SORT_LABELS[option]}
                   </DropdownMenuRadioItem>
@@ -1213,6 +1245,29 @@ export function DiscoveryGrid({
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+          {usageAnalyticsEnabled ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <span className="text-muted-foreground">Usage window</span>
+                  <span className="ml-1.5">{usageWindow}</span>
+                  <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuRadioGroup
+                  value={usageWindow}
+                  onValueChange={(value) => onUsageWindowChange?.(value as SkillUsageWindow)}
+                >
+                  {(["7d", "30d", "90d"] as SkillUsageWindow[]).map((option) => (
+                    <DropdownMenuRadioItem key={option} value={option}>
+                      {option}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
           {availableSources.length > 1 ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1440,6 +1495,7 @@ export function DiscoveryGrid({
                     onMove={onMoveCard}
                     onCreateFolderAndMove={onCreateFolderAndMoveCard}
                     onOpenMove={onOpenMoveCard}
+                    usageAnalyticsEnabled={usageAnalyticsEnabled}
                   />
                 ))}
               </div>
@@ -2463,13 +2519,14 @@ function SkillList({
   );
 }
 
-type SkillDetailTab = "overview" | "files" | "versions" | "agents";
+export type SkillDetailTab = "overview" | "files" | "versions" | "agents" | "analytics";
 
 const SKILL_DETAIL_TABS: Array<{ value: SkillDetailTab; label: string; icon: typeof FileText }> = [
   { value: "overview", label: "Overview", icon: FileText },
   { value: "files", label: "Files", icon: FolderOpen },
   { value: "versions", label: "Versions", icon: History },
   { value: "agents", label: "Agents", icon: Users },
+  { value: "analytics", label: "Analytics", icon: LineChart },
 ];
 
 function currentVersionSelection(detail: CompanySkillDetail | null | undefined) {
@@ -2793,6 +2850,10 @@ export function SkillDetailPage({
   onDelete,
   deletePending,
   studioHref,
+  usageAnalyticsEnabled = false,
+  usageWindow: usageWindowProp = "7d",
+  usageData = null,
+  usageLoading = false,
 }: {
   detail: CompanySkillDetail | null | undefined;
   folderDisplayPath?: string | null;
@@ -2836,6 +2897,10 @@ export function SkillDetailPage({
   onDelete: () => void;
   deletePending: boolean;
   studioHref?: string;
+  usageAnalyticsEnabled?: boolean;
+  usageWindow?: SkillUsageWindow;
+  usageData?: CompanySkillUsageDetail | null;
+  usageLoading?: boolean;
 }) {
   const [diffOpen, setDiffOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2846,6 +2911,7 @@ export function SkillDetailPage({
   const descriptionRef = useRef<HTMLParagraphElement | null>(null);
   const [descExpanded, setDescExpanded] = useState(false);
   const [descClamped, setDescClamped] = useState(false);
+  const effectiveActiveTab = usageAnalyticsEnabled ? activeTab : activeTab === "analytics" ? "overview" : activeTab;
   useEffect(() => {
     const el = descriptionRef.current;
     if (!el || descExpanded) return;
@@ -2901,6 +2967,23 @@ export function SkillDetailPage({
   const settingsCategoriesDirty = categorySetKey(settingsCategories) !== categorySetKey(skill.categories);
   const settingsSharingDirty = settingsSharingScope !== (skill.sharingScope === "public_link" ? "company" : skill.sharingScope);
   const settingsDirty = settingsCategoriesDirty || settingsSharingDirty;
+  const usage = usageData;
+  const usageWindow = usage?.window ?? usageWindowProp;
+  const usageLoadingState = usageLoading;
+  const hasUsageData = usage !== null && usage !== undefined;
+  const invocationTrackingDataPresent = hasUsageData
+    ? (usage.totals.invocationCount > 0 || usage.daily.some((day) => day.invocationCount > 0))
+    : false;
+  const lastUsedLabel = hasUsageData && usage.lastUsedAt
+    ? relativeTime(usage.lastUsedAt)
+    : "Never";
+  const totalInvoked = hasUsageData ? usage.totals.invocationCount : 0;
+  const totalLoaded = hasUsageData ? usage.totals.loadCount : 0;
+  const nonInvokedLoadCount = Math.max(totalLoaded - totalInvoked, 0);
+  const invocationRate = totalLoaded > 0 ? Math.round((totalInvoked / totalLoaded) * 100) : 0;
+  const uniqueAgentCount = hasUsageData ? usage.topAgents.length : 0;
+
+  const topAgents = hasUsageData ? usage.topAgents.slice(0, 5) : [];
   // Look up the richer agent record (icon, paused) for agents using this skill.
   const attachAgentMetaById = new Map(attachAgents.map((agent) => [agent.id, agent]));
 
@@ -3124,6 +3207,85 @@ export function SkillDetailPage({
     );
   }
 
+  function renderAnalyticsBody() {
+    if (usageLoadingState) {
+      return <PageSkeleton variant="detail" />;
+    }
+
+    if (!hasUsageData) {
+      return <p className="text-sm text-muted-foreground">No usage data yet.</p>;
+    }
+
+    return (
+      <div className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            icon={LineChart}
+            label="Total uses"
+            value={totalLoaded}
+            description={`Last ${usageWindow} period`}
+          />
+          <MetricCard
+            icon={FlaskConical}
+            label="Invoked"
+            value={totalInvoked}
+            description={invocationTrackingDataPresent ? `Loaded only: ${nonInvokedLoadCount}` : "Invocation tracking coming soon"}
+          />
+          <MetricCard
+            icon={Users}
+            label="Unique agents"
+            value={uniqueAgentCount}
+          />
+          <MetricCard
+            icon={History}
+            label="Last used"
+            value={lastUsedLabel}
+          />
+        </div>
+        <div className="grid gap-3 xl:grid-cols-(--gtc-20)">
+          <ChartCard title="Usage trend" subtitle={`Window: ${usageWindow}`}>
+            <SkillUsageChart buckets={usage?.daily ?? []} />
+          </ChartCard>
+          <div className="space-y-3">
+            <section className="space-y-2 rounded-lg border border-border p-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Top agents</div>
+              <div className="space-y-2 border-t border-border pt-2 text-sm">
+                {topAgents.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">No agent activity yet.</div>
+                ) : (
+                  topAgents.map((agent) => (
+                    <div key={agent.agentId} className="flex justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-foreground">{agent.agentName}</div>
+                        <div className="text-xs text-muted-foreground">{relativeTime(agent.lastUsedAt)}</div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">{agent.totals.loadCount} loads</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+            <section className="rounded-lg border border-border p-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Load → Invoke</div>
+              <div className="mt-2">
+                <QuotaBar
+                  label="Invocations"
+                  percentUsed={invocationTrackingDataPresent ? invocationRate : 0}
+                  leftLabel={`${totalInvoked} / ${totalLoaded}`}
+                  rightLabel={invocationTrackingDataPresent ? `${invocationRate}%` : "Invocation tracking coming soon"}
+                  showDeficitNotch={invocationTrackingDataPresent}
+                />
+              </div>
+              {!invocationTrackingDataPresent ? (
+                <p className="mt-2 text-xs text-muted-foreground">Invocation tracking coming soon.</p>
+              ) : null}
+            </section>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderAgentsBody() {
     // Only the agents actually using this skill are listed (PAP-10907); the
     // multi-selector behind "Add to agent" is where you attach more.
@@ -3182,13 +3344,15 @@ export function SkillDetailPage({
     );
   }
 
-  const tabBody = activeTab === "files"
+  const tabBody = effectiveActiveTab === "files"
     ? renderFilesBody()
-    : activeTab === "versions"
+    : effectiveActiveTab === "versions"
       ? renderVersionsBody()
-      : activeTab === "agents"
+      : effectiveActiveTab === "agents"
         ? renderAgentsBody()
-        : renderOverviewBody();
+        : effectiveActiveTab === "analytics"
+          ? renderAnalyticsBody()
+          : renderOverviewBody();
 
   return (
     <div className="min-h-(--sz-calc-30)">
@@ -3308,11 +3472,11 @@ export function SkillDetailPage({
 
       <div className="grid gap-6 px-4 py-4 xl:grid-cols-(--gtc-29)">
         <main className="min-w-0">
-          <Tabs value={activeTab} onValueChange={(value) => onTabChange(value as SkillDetailTab)}>
+      <Tabs value={effectiveActiveTab} onValueChange={(value) => onTabChange(value as SkillDetailTab)}>
             {/* Underlined tab strip: the bottom padding keeps the active-tab
                 underline inside the horizontal-scroll clip box (PAP-10907). */}
             <TabsList variant="line" className="mb-5 w-full max-w-full justify-start overflow-x-auto border-b border-border p-0 pb-1.5 [scrollbar-width:none]">
-              {SKILL_DETAIL_TABS.map((tab) => {
+              {SKILL_DETAIL_TABS.filter((tab) => usageAnalyticsEnabled || tab.value !== "analytics").map((tab) => {
                 const Icon = tab.icon;
                 return (
                   <TabsTrigger key={tab.value} value={tab.value} className="px-3">
@@ -3988,11 +4152,26 @@ export function CompanySkills() {
   const selectedCatalogRef = searchParams.get("catalog");
   const tabParam = searchParams.get("tab");
   const discoveryTab = resolveDiscoveryTab(tabParam);
-  const detailTab: SkillDetailTab = (["overview", "files", "versions", "agents"] as SkillDetailTab[]).includes(tabParam as SkillDetailTab)
-    ? (tabParam as SkillDetailTab)
-    : parsedRoute.hasExplicitFilePath || selectedPath !== "SKILL.md"
-      ? "files"
-      : "overview";
+  const usageAnalytics = useSkillUsageAnalyticsEnabled();
+  const usageWindow: SkillUsageWindow = "7d";
+  const usageAnalyticsEnabled = usageAnalytics.enabled && usageAnalytics.loaded;
+  const [discoveryUsageWindow, setDiscoveryUsageWindow] = useState<SkillUsageWindow>(usageWindow);
+  const detailTab: SkillDetailTab = usageAnalyticsEnabled && tabParam === "analytics"
+    ? "analytics"
+    : (["overview", "files", "versions", "agents"] as SkillDetailTab[]).includes(tabParam as SkillDetailTab)
+      ? (tabParam as SkillDetailTab)
+      : parsedRoute.hasExplicitFilePath || selectedPath !== "SKILL.md"
+        ? "files"
+        : "overview";
+  useEffect(() => {
+    if (!usageAnalyticsEnabled && discoverySort === "used") {
+      setDiscoverySort("agents");
+      return;
+    }
+    if (usageAnalyticsEnabled && discoverySort === "agents") {
+      setDiscoverySort("used");
+    }
+  }, [usageAnalyticsEnabled, discoverySort]);
   const discoveryCategory = searchParams.get("category");
   const studioForkFromId = isStudioNew ? searchParams.get("forkFrom")?.trim() || null : null;
   const studioNewFolderId = isStudioNew ? searchParams.get("folderId")?.trim() || null : null;
@@ -4119,6 +4298,29 @@ export function CompanySkills() {
     queryFn: () => companySkillsApi.versions(selectedCompanyId!, selectedSkillId!),
     enabled: Boolean(selectedCompanyId && selectedSkillId),
   });
+
+  const usageQuery = useQuery({
+    queryKey: queryKeys.companySkills.usage(selectedCompanyId ?? "", selectedSkillId ?? "", usageWindow),
+    queryFn: () => companySkillsApi.usage(selectedCompanyId!, selectedSkillId!, usageWindow),
+    enabled: Boolean(usageAnalyticsEnabled && selectedCompanyId && selectedSkillId && detailTab === "analytics"),
+  });
+
+  const discoveryTopUsedQuery = useQuery({
+    queryKey: queryKeys.companySkills.topUsed(selectedCompanyId ?? "", discoveryUsageWindow),
+    queryFn: () => companySkillsApi.topUsed(selectedCompanyId!, discoveryUsageWindow),
+    enabled: Boolean(usageAnalyticsEnabled && selectedCompanyId && isDiscovery),
+  });
+
+  const discoveryUsageCountsByLookup = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const item of discoveryTopUsedQuery.data ?? []) {
+      if (item.skillId) {
+        map.set(item.skillId, item.totals.loadCount);
+      }
+      map.set(item.skillKey, item.totals.loadCount);
+    }
+    return map;
+  }, [discoveryTopUsedQuery.data]);
 
   const studioForkDetailQuery = useQuery({
     queryKey: queryKeys.companySkills.detail(selectedCompanyId ?? "", studioForkFromId ?? ""),
@@ -4469,8 +4671,8 @@ export function CompanySkills() {
 
   // --- Discovery grid derived data (PAP-10879) ---
   const discoveryCards = useMemo(
-    () => buildDiscoveryCards(installedSkills, catalogListQuery.data ?? []),
-    [installedSkills, catalogListQuery.data],
+    () => buildDiscoveryCards(installedSkills, catalogListQuery.data ?? [], discoveryUsageCountsByLookup),
+    [installedSkills, catalogListQuery.data, discoveryUsageCountsByLookup],
   );
   const discoveryTabCounts = useMemo(() => ({
     all: discoveryCards.length,
@@ -5296,6 +5498,9 @@ export function CompanySkills() {
           onSearchChange={setDiscoverySearch}
           sort={discoverySort}
           onSortChange={setDiscoverySort}
+          usageAnalyticsEnabled={usageAnalyticsEnabled}
+          usageWindow={discoveryUsageWindow}
+          onUsageWindowChange={setDiscoveryUsageWindow}
           cards={visibleDiscoveryCards}
           onOpenCard={openDiscoveryCard}
           loading={skillsQuery.isLoading || catalogListQuery.isLoading}
@@ -5421,17 +5626,21 @@ export function CompanySkills() {
           starPending={toggleStar.isPending}
           onFork={() => activeDetail && navigate(skillStudioNewRoute(activeDetail.id))}
           onUpdateSettings={(updates) => activeDetail && updateSkillSettings.mutate({ skillId: activeDetail.id, updates })}
-          onMoveToFolder={activeDetail ? () => setMoveDialog({
-            skillIds: [activeDetail.id],
-            title: `Move "${activeDetail.name}"`,
-            subtitle: "Choose a destination folder.",
-            currentFolderId: activeDetail.folderId ?? null,
-          }) : undefined}
-          updateSettingsPending={updateSkillSettings.isPending}
-          onDelete={openDeleteDialog}
-          deletePending={deleteSkill.isPending}
-          studioHref={skillStudioRoute(selectedSkillId)}
-        />
+        onMoveToFolder={activeDetail ? () => setMoveDialog({
+          skillIds: [activeDetail.id],
+          title: `Move "${activeDetail.name}"`,
+          subtitle: "Choose a destination folder.",
+          currentFolderId: activeDetail.folderId ?? null,
+        }) : undefined}
+        updateSettingsPending={updateSkillSettings.isPending}
+        onDelete={openDeleteDialog}
+        deletePending={deleteSkill.isPending}
+        studioHref={skillStudioRoute(selectedSkillId)}
+        usageAnalyticsEnabled={usageAnalyticsEnabled}
+        usageWindow={usageWindow}
+        usageData={usageQuery.data ?? null}
+        usageLoading={usageQuery.isLoading}
+      />
       ) : selectedCatalogRef ? (
         // Catalog / optional / bundled skills open as a regular full page in the
         // new store — no modal, no legacy split view (PAP-10907).
