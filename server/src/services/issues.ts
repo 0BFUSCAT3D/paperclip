@@ -6617,6 +6617,8 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const assigneeWillChange =
+        nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -6708,10 +6710,7 @@ export function issueService(db: Db) {
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
-      if (
-        (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
-        (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
-      ) {
+      if (assigneeWillChange) {
         patch.checkoutRunId = null;
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
@@ -6719,6 +6718,22 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        // Self-watchdog dispatch takes this row lock across wake creation and
+        // the reviewed-fingerprint claim. Taking it before changing the issue
+        // assignee closes the read/dispatch race in both directions.
+        const lockedSelfWatchdog = assigneeWillChange
+          ? await tx
+            .select({ id: issueWatchdogs.id })
+            .from(issueWatchdogs)
+            .where(and(
+              eq(issueWatchdogs.companyId, existing.companyId),
+              eq(issueWatchdogs.issueId, existing.id),
+              eq(issueWatchdogs.status, "active"),
+              eq(issueWatchdogs.mode, "self"),
+            ))
+            .for("update")
+            .then((rows: Array<{ id: string }>) => rows[0] ?? null)
+          : null;
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -6745,6 +6760,17 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (lockedSelfWatchdog) {
+          await tx
+            .update(issueWatchdogs)
+            .set({
+              ...(nextAssigneeAgentId ? { watchdogAgentId: nextAssigneeAgentId } : {}),
+              lastReviewedFingerprint: null,
+              lastReviewedStopSnapshot: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(issueWatchdogs.id, lockedSelfWatchdog.id));
+        }
         if (existing.status !== updated.status) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);

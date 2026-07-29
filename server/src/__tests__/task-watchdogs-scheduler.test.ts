@@ -22,6 +22,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { issueService } from "../services/issues.ts";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -426,6 +427,57 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes[0]?.agentId).toBe(currentAssigneeId);
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.watchdogAgentId).toBe(currentAssigneeId);
+  });
+
+  it("re-wakes the current assignee when reassignment overlaps self-review dispatch", async () => {
+    const companyId = await seedCompany();
+    const formerAssigneeId = await seedAgent(companyId, { name: "Former Assignee" });
+    const currentAssigneeId = await seedAgent(companyId, { name: "Current Assignee" });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-REASSIGN-RACE",
+      status: "done",
+      assigneeAgentId: formerAssigneeId,
+    });
+    await seedWatchdog(companyId, sourceId, formerAssigneeId, { mode: "self" });
+
+    let signalWakeStarted!: () => void;
+    const wakeStarted = new Promise<void>((resolve) => {
+      signalWakeStarted = resolve;
+    });
+    let releaseWake!: () => void;
+    const wakeCanFinish = new Promise<void>((resolve) => {
+      releaseWake = resolve;
+    });
+    const firstWakes: string[] = [];
+    const firstService = taskWatchdogService(db, {
+      enqueueWakeup: async (agentId) => {
+        firstWakes.push(agentId);
+        signalWakeStarted();
+        await wakeCanFinish;
+        return { id: randomUUID() };
+      },
+    });
+
+    const firstReconcile = firstService.reconcileTaskWatchdogs({ companyId });
+    await wakeStarted;
+    const reassignment = issueService(db).update(sourceId, { assigneeAgentId: currentAssigneeId });
+    releaseWake();
+    await Promise.all([firstReconcile, reassignment]);
+
+    expect(firstWakes).toEqual([formerAssigneeId]);
+    const [retargeted] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(retargeted).toMatchObject({
+      watchdogAgentId: currentAssigneeId,
+      lastReviewedFingerprint: null,
+    });
+
+    const { service, wakes } = createService();
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(second).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.agentId).toBe(currentAssigneeId);
+    expect(wakes[0]?.opts?.idempotencyKey).toContain(currentAssigneeId);
   });
 
   it("retries a self review when the wake was not queued", async () => {
