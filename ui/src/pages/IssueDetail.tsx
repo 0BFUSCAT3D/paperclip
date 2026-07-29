@@ -1543,6 +1543,12 @@ export function IssueDetail() {
   // (plan lives in the properties-pane Plan tab). Flag OFF renders the legacy
   // page byte-identically.
   const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
+  // Flag ON the page wrapper spans the full center pane so the thread's scroll
+  // viewport (and its scrollbar) reaches the properties-pane border; every
+  // non-thread section re-centers itself at the 60rem shell cap instead.
+  const shellSectionClass = taskChatShellEnabled
+    ? "mx-auto w-full max-w-(--tc-shell-max-w)"
+    : undefined;
   const { openNewIssue } = useDialogActions();
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
@@ -4083,13 +4089,13 @@ export function IssueDetail() {
     <div
       className={
         taskChatShellEnabled
-          ? "mx-auto w-full max-w-(--tc-shell-max-w) space-y-6"
+          ? "w-full space-y-6"
           : "max-w-3xl space-y-6"
       }
     >
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
-        <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
+        <nav className={cn("flex items-center gap-1 text-xs text-muted-foreground flex-wrap", shellSectionClass)}>
           {[...ancestors].reverse().map((ancestor, i) => (
             <span key={ancestor.id} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3 w-3 shrink-0" />}
@@ -4115,13 +4121,13 @@ export function IssueDetail() {
       )}
 
       {issue.hiddenAt && (
-        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className={cn("flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive", shellSectionClass)}>
           <EyeOff className="h-4 w-4 shrink-0" />
           This task is hidden
         </div>
       )}
       {activePauseHold && (
-        <div className="rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200">
+        <div className={cn("rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200", shellSectionClass)}>
           {activePauseHold.isRoot ? (
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -4196,7 +4202,7 @@ export function IssueDetail() {
         </div>
       )}
 
-      <div className="space-y-3">
+      <div className={cn("space-y-3", shellSectionClass)}>
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -4557,7 +4563,7 @@ export function IssueDetail() {
           entityId: issue.id,
           entityType: "issue",
         }}
-        className="flex flex-wrap gap-2"
+        className={cn("flex flex-wrap gap-2", shellSectionClass)}
         itemClassName="inline-flex"
         missingBehavior="placeholder"
       />
@@ -4571,7 +4577,7 @@ export function IssueDetail() {
           entityId: issue.id,
           entityType: "issue",
         }}
-        className="flex flex-wrap gap-2"
+        className={cn("flex flex-wrap gap-2", shellSectionClass)}
         itemClassName="inline-flex"
       />
 
@@ -4584,7 +4590,7 @@ export function IssueDetail() {
           entityId: issue.id,
           entityType: "issue",
         }}
-        className="space-y-3"
+        className={cn("space-y-3", shellSectionClass)}
         itemClassName="rounded-lg border border-border p-3"
         missingBehavior="placeholder"
       />
@@ -4754,10 +4760,10 @@ export function IssueDetail() {
         );
       })()}
 
-      <Separator />
+      <Separator className={shellSectionClass} />
 
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-        <TabsList variant="line" className="w-full justify-start gap-1">
+        <TabsList variant="line" className={cn("w-full justify-start gap-1", shellSectionClass)}>
           <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
             Chat
@@ -4777,7 +4783,10 @@ export function IssueDetail() {
           ))}
         </TabsList>
 
-        <TabsContent value="chat">
+        {/* Flag ON the thread viewport extends under main's horizontal padding
+            (symmetric, so the centered column keeps the same axis) and the
+            scrollbar sits flush against the properties-pane border. */}
+        <TabsContent value="chat" className={taskChatShellEnabled ? "-mx-4 md:-mx-6" : undefined}>
           {detailTab === "chat" ? (
             <IssueDetailChatTab
               issueId={issue.id}
@@ -4878,7 +4887,7 @@ export function IssueDetail() {
           ) : null}
         </TabsContent>
 
-        <TabsContent value="activity">
+        <TabsContent value="activity" className={shellSectionClass}>
           {detailTab === "activity" ? (
             <IssueDetailActivityTab
               issue={issue}
@@ -4900,7 +4909,7 @@ export function IssueDetail() {
           ) : null}
         </TabsContent>
 
-        <TabsContent value="related-work">
+        <TabsContent value="related-work" className={shellSectionClass}>
           <IssueRelatedWorkPanel
             relatedWork={issue.relatedWork}
             externalObjectsEnabled={externalObjectsState.isEnabled}
@@ -4912,7 +4921,7 @@ export function IssueDetail() {
         </TabsContent>
 
         {activePluginTab && (
-          <TabsContent value={activePluginTab.value}>
+          <TabsContent value={activePluginTab.value} className={shellSectionClass}>
             <PluginSlotMount
               slot={activePluginTab.slot}
               context={{

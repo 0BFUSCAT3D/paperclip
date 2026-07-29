@@ -62,9 +62,6 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
         <MarkdownBody softBreaks linkIssueReferences>
           {item.text}
         </MarkdownBody>
-        {item.streaming ? (
-          <span className="tc-cursor ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 bg-current align-baseline" />
-        ) : null}
       </div>
       {item.optimistic ? (
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">

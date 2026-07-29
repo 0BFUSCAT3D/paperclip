@@ -340,8 +340,9 @@ function ResizablePropertiesPanel({
           className={cn("flex-1 flex flex-col min-h-0", isFixed && "w-full")}
           style={isFixed ? undefined : { width, minWidth: width }}
         >
-          <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-            <span className="text-sm font-medium">Properties</span>
+          {/* No pane title: the tab strip below (Properties/…) already names the
+              surface — this row is just the window controls. */}
+          <div className="flex items-center justify-end px-4 py-2 border-b border-border">
             <div className="flex items-center gap-1">
               <Button
                 variant="ghost"
