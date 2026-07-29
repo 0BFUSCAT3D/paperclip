@@ -9,6 +9,7 @@ import {
   companies,
   createDb,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -23,6 +24,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.ts";
+import { heartbeatService } from "../services/heartbeat.ts";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -52,6 +54,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issueComments);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueWatchdogs);
@@ -347,7 +350,9 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes).toHaveLength(1);
     expect(wakes[0]?.agentId).toBe(agentId);
     expect(wakes[0]?.opts?.reason).toBe("task_watchdog_self_review");
-    expect(wakes[0]?.opts?.idempotencyKey).toMatch(/^task_watchdog_self:[^:]+:task_watchdog_stop:/);
+    expect(wakes[0]?.opts?.idempotencyKey).toMatch(
+      new RegExp(`^task_watchdog_self:[^:]+:${agentId}:task_watchdog_stop:`),
+    );
     expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
       issueId: sourceId,
       taskId: sourceId,
@@ -461,7 +466,8 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
             triggerDetail: opts?.triggerDetail,
             reason: opts?.reason,
             payload: opts?.payload,
-            status: "queued",
+            status: "running",
+            startedAt: new Date(),
             idempotencyKey: opts?.idempotencyKey,
           })
           .returning();
@@ -472,7 +478,8 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
             agentId,
             invocationSource: opts?.source ?? "automation",
             triggerDetail: opts?.triggerDetail,
-            status: "queued",
+            status: "running",
+            startedAt: new Date(),
             wakeupRequestId: wakeupRequest!.id,
             contextSnapshot: opts?.contextSnapshot,
           })
@@ -489,7 +496,10 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     const firstReconcile = firstService.reconcileTaskWatchdogs({ companyId });
     await wakeStarted;
-    const reassignment = issueService(db).update(sourceId, { assigneeAgentId: currentAssigneeId });
+    const heartbeat = heartbeatService(db);
+    const reassignment = issueService(db, {
+      cancelHeartbeatRun: heartbeat.cancelRun,
+    }).update(sourceId, { assigneeAgentId: currentAssigneeId });
     releaseWake();
     await Promise.all([firstReconcile, reassignment]);
 

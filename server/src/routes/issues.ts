@@ -2588,10 +2588,12 @@ export function issueRoutes(
   } = {},
 ) {
   const router = Router();
-  const svc = issueService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
+  });
+  const svc = issueService(db, {
+    cancelHeartbeatRun: heartbeat.cancelRun,
   });
   const enqueueRecoveryActionWakeup = opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);
