@@ -13192,7 +13192,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .filter((skillKey): skillKey is string => Boolean(skillKey?.trim())),
         ),
       );
-      if (runSkillKeys.length === 0) return;
+      if (runSkillKeys.length === 0) {
+        paperclipSkillUsageEventsForRun.length = 0;
+        return;
+      }
 
       const skillRows = await db
         .select({
@@ -13215,6 +13218,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (eventRows.length > 0) {
         await db.insert(companySkillUsageEvents).values(eventRows);
       }
+      // Multiple finalization paths may flush; clearing after a successful
+      // insert keeps a second call from double-counting the same events.
+      paperclipSkillUsageEventsForRun.length = 0;
     };
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
@@ -14003,6 +14009,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "skipping late run finalization because the run already left running state",
         );
+        // An external cancel/interrupt already finalized the run status, but
+        // the usage events buffered during this run are only held here.
+        try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: run.id }, "failed to persist paperclip skill usage events");
+        }
         return;
       }
 
@@ -14234,6 +14247,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           "skipping late adapter failure finalization because the run already left running state",
         );
+        // An external cancel/interrupt already finalized the run status, but
+        // the usage events buffered during this run are only held here.
+        try {
+          await persistSkillUsageEvents();
+        } catch (err) {
+          logger.warn({ err, runId: run.id }, "failed to persist paperclip skill usage events");
+        }
         return;
       }
 

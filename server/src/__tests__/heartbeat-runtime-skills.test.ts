@@ -10,6 +10,7 @@ import {
   companySkillUsageEvents,
   companySkills,
   createDb,
+  heartbeatRuns,
   toolApplications,
   toolConnectionInstalls,
   toolConnections,
@@ -84,6 +85,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
         const typedConfig = ctx.config as {
           emitPaperclipSkillUsageEvents?: boolean;
           paperclipSkillUsageEmitList?: PaperclipSkillEntry[];
+          markRunCancelledBeforeExit?: boolean;
         };
         const serializedRuntimeInput = JSON.stringify({
           config: ctx.config,
@@ -109,6 +111,15 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
               },
             });
           }
+        }
+        if (typedConfig.markRunCancelledBeforeExit) {
+          // Simulate an external cancel/interrupt landing while the adapter is
+          // still draining: the run leaves `running` before finalization, so
+          // `setRunStatusIfRunning` misses and the late-finalization path runs.
+          await db
+            .update(heartbeatRuns)
+            .set({ status: "cancelled", finishedAt: new Date() })
+            .where(eq(heartbeatRuns.id, ctx.runId));
         }
         capturedRuns.push({
           agentId: ctx.agent.id,
@@ -534,5 +545,84 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
     expect(unknown?.skillId).toBeNull();
     expect(known?.eventKind).toBe("loaded");
     expect(unknown?.eventKind).toBe("loaded");
+  });
+
+  it("persists buffered skill usage events when the run leaves running state before finalization", async () => {
+    const companyId = randomUUID();
+    const companySkillId = randomUUID();
+    const skillKey = `company/${companyId}/late-final`;
+    const agentId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-usage-late-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Late\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Runtime Skill Capture",
+      issuePrefix: `L${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companySkills).values({
+      id: companySkillId,
+      companyId,
+      key: skillKey,
+      slug: "late-final",
+      name: "Late Final",
+      description: null,
+      markdown: "# Late\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runtime Skill Capture",
+      role: "engineer",
+      status: "idle",
+      adapterType: TEST_ADAPTER_TYPE,
+      adapterConfig: {
+        emitPaperclipSkillUsageEvents: true,
+        markRunCancelledBeforeExit: true,
+        paperclipSkillUsageEmitList: [
+          {
+            key: skillKey,
+            runtimeName: "late-final",
+            source: skillDir,
+          },
+        ],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    expect((await waitForRunToFinish(heartbeat, run!.id))?.status).toBe("cancelled");
+
+    // The late-finalization flush happens after the adapter returns; poll
+    // instead of asserting immediately.
+    const deadline = Date.now() + 5_000;
+    let rows: Array<typeof companySkillUsageEvents.$inferSelect> = [];
+    while (Date.now() < deadline) {
+      rows = await db
+        .select()
+        .from(companySkillUsageEvents)
+        .where(eq(companySkillUsageEvents.runId, run!.id));
+      if (rows.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      skillKey,
+      skillId: companySkillId,
+      eventKind: "loaded",
+    });
   });
 });
