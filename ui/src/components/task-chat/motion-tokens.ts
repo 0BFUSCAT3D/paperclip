@@ -27,6 +27,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-ease-out-expo", group: "Easing", kind: "easing" },
   { name: "--motion-ease-standard", group: "Easing", kind: "easing" },
   { name: "--motion-ease-out", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-scroll-pill-in", group: "Easing", kind: "easing" },
+  { name: "--motion-ease-scroll-pill-out", group: "Easing", kind: "easing" },
 
   // Duration primitives
   { name: "--motion-duration-instant", group: "Durations", kind: "time", min: 0, max: 1000, step: 10 },
@@ -49,6 +51,10 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-plan-check", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-streaming-cursor-blink", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
+  { name: "--motion-turn-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-scroll-pill-enter", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-scroll-pill-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-pane-glide", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
 ];
 
 /** Common easing presets offered by the tweak panel's easing picker. */

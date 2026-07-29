@@ -21,6 +21,16 @@ function effectiveAgentId(comment: IssueChatComment): string | null {
   return comment.authorAgentId ?? comment.derivedAuthorAgentId ?? null;
 }
 
+/**
+ * Deterministic agent-id → brand gradient index (1–10) for the capsule avatar,
+ * so a given agent always renders the same capsule colors.
+ */
+export function agentGradientIndex(agentId: string): number {
+  let hash = 0;
+  for (let i = 0; i < agentId.length; i++) hash = (hash * 31 + agentId.charCodeAt(i)) | 0;
+  return (Math.abs(hash) % 10) + 1;
+}
+
 function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
   if (effectiveAgentId(comment)) return "agent";
   if (comment.authorType === "user") return "human";
@@ -44,9 +54,11 @@ export function commentsToTaskChatItems(
     if (comment.deletedAt) continue;
     const kind = authorKind(comment);
     let authorName: string | undefined;
+    let agentGradient: number | undefined;
     if (kind === "agent") {
       const agentId = effectiveAgentId(comment);
       authorName = (agentId && ctx.agentMap?.get(agentId)?.name) || "Agent";
+      agentGradient = agentId ? agentGradientIndex(agentId) : undefined;
     } else if (kind === "human") {
       authorName =
         (comment.authorUserId && ctx.userLabelMap?.get(comment.authorUserId)) || undefined;
@@ -65,6 +77,7 @@ export function commentsToTaskChatItems(
       text: comment.body,
       timestamp: formatTimestamp(comment.createdAt),
       optimistic,
+      agentGradient,
     });
   }
   return items;

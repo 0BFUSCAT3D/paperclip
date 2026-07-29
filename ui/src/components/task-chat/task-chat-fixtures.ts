@@ -50,7 +50,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
+          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, agentGradient: 3, modeLabel: "Agent mode", text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
         ],
       };
     case "thinking":
@@ -113,8 +113,19 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
       return {
         surface: "thread",
         items: [
-          { id: "th-done", kind: "thinking", collapsed: true, summaryLabel: "Worked for 38s · 3 tools · +34 −3", lines: ["Read auth.ts", "Added rate-limiter util", "Wired into POST /login"] },
-          { id: "m-done", kind: "message", author: "agent", authorName: AGENT, text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.", timestamp: "2:34 PM" },
+          ...exchangePrefix(),
+          {
+            id: "turn-done",
+            kind: "turn",
+            settled: true,
+            summary: { durationLabel: "38s", toolCount: 3, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
+            items: [
+              { id: "th-done", kind: "thinking", lines: ["Read auth.ts", "Added rate-limiter util", "Wired into POST /login"] },
+              { id: "tool-done-1", kind: "tool", name: "read server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+              { id: "tool-done-2", kind: "tool", name: "edit server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
+            ],
+          },
+          { id: "m-done", kind: "message", author: "agent", authorName: AGENT, agentGradient: 3, modeLabel: "Agent mode", text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.", timestamp: "2:34 PM" },
         ],
       };
     case "awaiting-approval":

@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { TaskChatItem } from "./task-chat-model";
+import { TaskChatTurn } from "./TaskChatTurn";
 import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
@@ -38,6 +39,13 @@ function renderItem(
       );
     case "usage":
       return <TaskChatUsageReadout item={item} />;
+    case "turn":
+      return (
+        <TaskChatTurn
+          item={item}
+          renderChild={(child) => renderItem(child, onApprovalDecision)}
+        />
+      );
     default: {
       // Exhaustiveness guard: a new item kind must add a branch above.
       const _never: never = item;
@@ -70,12 +78,16 @@ export function TaskChatThreadView({
 
   // Include a cheap content signature so streaming growth (text lengthening
   // without the item count changing) still advances the auto-follow key.
-  const contentKey = items.reduce((acc, it) => {
-    if (it.kind === "message") return acc + it.text.length;
-    if (it.kind === "thinking") return acc + it.lines.reduce((n, l) => n + l.length, 0);
-    if (it.kind === "tool") return acc + (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
-    return acc + 1;
-  }, items.length);
+  const signatureOf = (it: TaskChatItem): number => {
+    if (it.kind === "message") return it.text.length;
+    if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);
+    if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
+    if (it.kind === "turn") {
+      return it.settled ? 1 : it.items.reduce((n, child) => n + signatureOf(child), it.items.length);
+    }
+    return 1;
+  };
+  const contentKey = items.reduce((acc, it) => acc + signatureOf(it), items.length);
 
   return <TaskMessageScroller contentKey={contentKey}>{body}</TaskMessageScroller>;
 }

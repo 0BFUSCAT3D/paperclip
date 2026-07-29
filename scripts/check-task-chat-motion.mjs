@@ -27,6 +27,7 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCAN_DIRS = ["ui/src/components/task-chat"];
 const SCAN_FILES = [
   "ui/src/components/TaskChatThread.tsx",
+  "ui/src/components/PropertiesPanel.tsx",
   "ui/src/components/TaskChatRedesignGate.tsx",
   "ui/src/pages/TaskChatLab.tsx",
   "ui/src/components/issue-properties/IssuePropertiesPlansTab.tsx",

@@ -10,6 +10,7 @@ import type {
   TaskChatDiff,
   TaskChatItem,
   TaskChatToolItem,
+  TaskChatTurnItem,
 } from "./task-chat-model";
 
 const TERMINAL_STATUSES = new Set([
@@ -165,6 +166,60 @@ export function transcriptToTaskChatItems(
   }
 
   return items;
+}
+
+function formatDurationLabel(ms: number): string | undefined {
+  if (!Number.isFinite(ms) || ms <= 0) return undefined;
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 1) return "1s";
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return sec === 0 ? `${min}m` : `${min}m ${sec}s`;
+}
+
+function formatTokensLabel(tokens: number): string | undefined {
+  if (!Number.isFinite(tokens) || tokens <= 0) return undefined;
+  const label = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+  return `${label} tokens`;
+}
+
+/**
+ * Aggregate a turn's transcript into the folded one-line summary
+ * ("✓ Worked · 38s · 3 tools · +34 −3 · 12.3k tokens"). Duration prefers the
+ * caller-supplied run duration and falls back to the transcript's ts span.
+ */
+export function buildTurnSummary(
+  entries: readonly TranscriptEntry[],
+  opts: { durationMs?: number; failed?: boolean } = {},
+): TaskChatTurnItem["summary"] {
+  let toolCount = 0;
+  let added = 0;
+  let removed = 0;
+  let tokens = 0;
+  for (const entry of entries) {
+    if (entry.kind === "tool_call") toolCount += 1;
+    else if (entry.kind === "diff") {
+      if (entry.changeType === "add") added += 1;
+      else if (entry.changeType === "remove") removed += 1;
+    } else if (entry.kind === "result") {
+      tokens += (entry.inputTokens || 0) + (entry.outputTokens || 0);
+    }
+  }
+  let durationMs = opts.durationMs;
+  if (durationMs == null && entries.length >= 2) {
+    const first = Date.parse(entries[0].ts);
+    const last = Date.parse(entries[entries.length - 1].ts);
+    if (Number.isFinite(first) && Number.isFinite(last)) durationMs = last - first;
+  }
+  return {
+    durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
+    toolCount,
+    added,
+    removed,
+    tokensLabel: formatTokensLabel(tokens),
+    failed: opts.failed || undefined,
+  };
 }
 
 /** Human-readable label for the live status pill from the tail of a transcript. */

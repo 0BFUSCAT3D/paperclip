@@ -5,10 +5,21 @@ interface TaskChatBubbleProps {
   item: TaskChatMessageItem;
 }
 
+/** Brand agent-gradient count (mirrors AgentCapsule's token pairs in index.css). */
+const GRADIENT_COUNT = 10;
+
+function capsuleGradient(index: number | undefined): string {
+  const n = Math.trunc(index ?? 1);
+  const idx = ((((n - 1) % GRADIENT_COUNT) + GRADIENT_COUNT) % GRADIENT_COUNT) + 1;
+  return `linear-gradient(to bottom, var(--agent-${idx}a), var(--agent-${idx}b))`;
+}
+
 /**
  * Author-typed message row — the primary legibility signal. Human messages sit
  * right in a solid accent bubble; agent messages sit left in a neutral card
- * bubble with an author header; system notices are centered and recede.
+ * bubble with a capsule-avatar author header (textless vertical brand-gradient
+ * capsule + name · mode chip, per the v3/v6 prototype decisions); system
+ * notices are centered and recede.
  */
 export function TaskChatBubble({ item }: TaskChatBubbleProps) {
   if (item.author === "system") {
@@ -23,7 +34,16 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
   return (
     <div className={cn("tc-enter-bubble flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
       {!isHuman && item.authorName ? (
-        <span className="px-1 text-xs font-medium text-muted-foreground">{item.authorName}</span>
+        <span className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
+          <span
+            aria-hidden="true"
+            data-testid="task-chat-agent-capsule"
+            className="inline-block h-5 w-2.5 shrink-0 rounded-full"
+            style={{ background: capsuleGradient(item.agentGradient) }}
+          />
+          <span className="font-medium">{item.authorName}</span>
+          {item.modeLabel ? <span className="font-normal">· {item.modeLabel}</span> : null}
+        </span>
       ) : null}
       <div
         className={cn(

@@ -2456,14 +2456,14 @@ export function IssueProperties({
   // Flag OFF (or non-redesign hosts): today's stacked pane, byte-for-byte.
   if (!taskChatRedesignEnabled) return propertiesBody;
 
-  // Flag ON: wrap the same body in a Properties | Plans | Artifacts tab shell.
-  // Plans/Artifacts get their real content in a later step; the shell itself is
-  // the deliverable here, and the Properties tab is unchanged.
+  // Flag ON: wrap the same body in a Properties | Plan | Artifacts tab shell
+  // (v5 decision: singular "Plan", Docs merged into Artifacts). The Properties
+  // tab is unchanged.
   return (
     <Tabs defaultValue="properties" className="flex min-h-0 flex-col gap-3">
       <TabsList variant="line" className="w-full justify-start gap-1">
         <TabsTrigger value="properties">Properties</TabsTrigger>
-        <TabsTrigger value="plans">Plans</TabsTrigger>
+        <TabsTrigger value="plans">Plan</TabsTrigger>
         <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
       </TabsList>
       <TabsContent value="properties">{propertiesBody}</TabsContent>

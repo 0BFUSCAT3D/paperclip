@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState, type ComponentProps } from "react";
+import { useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { IssueChatThread } from "@/components/IssueChatThread";
 import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
+  buildTurnSummary,
   deriveRunStatusLabel,
   isTerminalRunStatus,
   transcriptToTaskChatItems,
 } from "@/components/task-chat/transcript-adapter";
-import type { TaskChatItem } from "@/components/task-chat/task-chat-model";
+import type {
+  TaskChatItem,
+  TaskChatTurnChildItem,
+  TaskChatTurnItem,
+} from "@/components/task-chat/task-chat-model";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 
@@ -25,8 +30,15 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  *   - the live run transcript (useLiveRunTranscripts, the same poll+websocket
  *     source the current thread uses) → the in-flight turn streams
  *     thinking → tool → diff → responding, capped by a live "running" status
- *     pill. Only the non-terminal run streams; once it finishes its output
- *     lands as a comment. flag-OFF remains byte-for-byte IssueChatThread.
+ *     pill.
+ *
+ * Run activity is grouped into TaskChatTurnItem: the in-flight run renders as
+ * an unsettled (expanded) turn; when it terminates the same turn id flips
+ * settled, so TaskChatTurn plays the ~--motion-turn-fold collapse down to the
+ * one-line "✓ Worked · …" summary (runs already terminal at mount collapse
+ * instantly). Settled turns interleave before the run's first comment
+ * (comment.runId linkage) — activity above, the agent's reply bubble below.
+ * flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
   const {
@@ -46,6 +58,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     linkedRuns,
     liveRuns,
     activeRun,
+    onAttachImage,
+    imageUploadHandler,
+    enableReassign,
+    reassignOptions,
+    currentAssigneeValue,
+    issueStatus,
   } = props;
 
   const commentItems = useMemo(
@@ -104,30 +122,126 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return () => window.clearInterval(id);
   }, [liveRun]);
 
+  // Runs observed non-terminal while mounted: their turns ANIMATE the fold when
+  // they settle. Runs already terminal at mount collapse instantly.
+  const liveSeenRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (liveRun) liveSeenRef.current.add(liveRun.id);
+  }, [liveRun]);
+
+  // Each terminal run's turn anchors immediately before the run's first
+  // comment (its reply bubble), via the comment.runId linkage.
+  const firstCommentIdByRun = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const comment of comments) {
+      if (comment.deletedAt || !comment.runId || !comment.id) continue;
+      if (!map.has(comment.runId)) map.set(comment.runId, comment.id);
+    }
+    return map;
+  }, [comments]);
+
+  const linkedRunMetaById = useMemo(() => {
+    const map = new Map<string, NonNullable<TaskChatThreadProps["linkedRuns"]>[number]>();
+    for (const run of linkedRuns ?? []) map.set(run.runId, run);
+    return map;
+  }, [linkedRuns]);
+
   const items = useMemo<TaskChatItem[]>(() => {
-    if (!liveRun) return commentItems;
-    const entries = transcriptByRun.get(liveRun.id) ?? [];
-    const turn = transcriptToTaskChatItems(entries, {
-      runId: liveRun.id,
-      agentName: liveRun.agentName,
-      running: true,
-    });
-    const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
-    const elapsedMs = startedAt != null ? Math.max(0, Date.now() - startedAt) : undefined;
-    const queued = liveRun.status === "queued";
-    const status = queued ? { label: "Queued", detail: "Waiting to start" } : deriveRunStatusLabel(entries);
-    const statusItem: TaskChatItem = {
-      id: `${liveRun.id}:status`,
-      kind: "status",
-      status: "running",
-      label: status.label,
-      detail: status.detail,
-      elapsedMs,
-    };
-    return [...commentItems, ...turn, statusItem];
+    // Settled turns for every terminal run whose transcript we have. The
+    // transcript's assistant text is excluded — it already landed as the run's
+    // comment bubble; the turn holds the activity (thinking/tools/diffs).
+    const settledTurns: { turn: TaskChatTurnItem; anchorCommentId: string | null; order: number }[] = [];
+    for (const source of runs) {
+      if (!isTerminalRunStatus(source.status)) continue;
+      if (liveRun && source.id === liveRun.id) continue;
+      const entries = transcriptByRun.get(source.id) ?? [];
+      if (entries.length === 0) continue;
+      const meta = linkedRunMetaById.get(source.id);
+      const started = meta?.startedAt ? new Date(meta.startedAt).getTime() : NaN;
+      const finished = meta?.finishedAt ? new Date(meta.finishedAt).getTime() : NaN;
+      const durationMs =
+        Number.isFinite(started) && Number.isFinite(finished)
+          ? Math.max(0, finished - started)
+          : undefined;
+      const children = transcriptToTaskChatItems(entries, {
+        runId: source.id,
+        agentName: meta?.agentName,
+        running: false,
+      }).filter((it): it is TaskChatTurnChildItem => it.kind !== "turn" && it.kind !== "message");
+      if (children.length === 0) continue;
+      settledTurns.push({
+        turn: {
+          id: `${source.id}:turn`,
+          kind: "turn",
+          settled: true,
+          animateFold: liveSeenRef.current.has(source.id),
+          items: children,
+          summary: buildTurnSummary(entries, {
+            durationMs,
+            failed: source.status !== "succeeded",
+          }),
+        },
+        anchorCommentId: firstCommentIdByRun.get(source.id) ?? null,
+        order: meta?.createdAt ? new Date(meta.createdAt).getTime() : 0,
+      });
+    }
+    settledTurns.sort((a, b) => a.order - b.order);
+
+    const turnsByAnchor = new Map<string, TaskChatTurnItem[]>();
+    const unanchored: TaskChatTurnItem[] = [];
+    for (const { turn, anchorCommentId } of settledTurns) {
+      if (anchorCommentId) {
+        const list = turnsByAnchor.get(anchorCommentId) ?? [];
+        list.push(turn);
+        turnsByAnchor.set(anchorCommentId, list);
+      } else {
+        unanchored.push(turn);
+      }
+    }
+
+    const out: TaskChatItem[] = [];
+    for (const item of commentItems) {
+      const preceding = turnsByAnchor.get(item.id);
+      if (preceding) out.push(...preceding);
+      out.push(item);
+    }
+    out.push(...unanchored);
+
+    if (liveRun) {
+      const entries = transcriptByRun.get(liveRun.id) ?? [];
+      const children = transcriptToTaskChatItems(entries, {
+        runId: liveRun.id,
+        agentName: liveRun.agentName,
+        running: true,
+      }).filter((it): it is TaskChatTurnChildItem => it.kind !== "turn");
+      if (children.length > 0) {
+        out.push({
+          id: `${liveRun.id}:turn`,
+          kind: "turn",
+          settled: false,
+          items: children,
+          summary: buildTurnSummary(entries),
+        });
+      }
+      const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
+      const elapsedMs = startedAt != null ? Math.max(0, Date.now() - startedAt) : undefined;
+      const queued = liveRun.status === "queued";
+      const status = queued
+        ? { label: "Queued", detail: "Waiting to start" }
+        : deriveRunStatusLabel(entries);
+      out.push({
+        id: `${liveRun.id}:status`,
+        kind: "status",
+        status: "running",
+        label: status.label,
+        detail: status.detail,
+        elapsedMs,
+      });
+    }
+    return out;
     // `tick` is intentionally a dependency so elapsed advances each second.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commentItems, liveRun, transcriptByRun, tick]);
+  }, [commentItems, runs, liveRun, transcriptByRun, linkedRunMetaById, firstCommentIdByRun, tick]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="task-chat-thread">
@@ -147,6 +261,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             onWorkModeChange={onWorkModeChange}
             disabled={Boolean(composerDisabledReason)}
             disabledReason={composerDisabledReason}
+            onAttachImage={onAttachImage}
+            onImageUpload={imageUploadHandler}
+            enableReassign={enableReassign}
+            reassignOptions={reassignOptions}
+            currentAssigneeValue={currentAssigneeValue}
+            issueStatus={issueStatus}
           />
           {footer}
         </div>

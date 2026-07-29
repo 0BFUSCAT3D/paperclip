@@ -68,6 +68,13 @@ export interface TaskChatMessageItem {
   streaming?: boolean;
   /** Optimistic local echo state (matches IssueChatComment.clientStatus). */
   optimistic?: "pending" | "queued";
+  /**
+   * Per-message mode tag ("Agent mode" / "Plan mode" / "Ask mode"). Shown as a
+   * chip in the agent header and under a sent human bubble (v6 decision).
+   */
+  modeLabel?: string;
+  /** Brand agent-gradient index (1–10) for the capsule avatar header. */
+  agentGradient?: number;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */
@@ -135,13 +142,50 @@ export interface TaskChatUsageItem {
   usage: TaskChatTokenUsage;
 }
 
-export type TaskChatItem =
+/** Items a turn can group — everything except another turn. */
+export type TaskChatTurnChildItem =
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem
   | TaskChatStatusItem
   | TaskChatMarkerItem
   | TaskChatUsageItem;
+
+/**
+ * One agent turn's activity (thinking/tools/diffs) grouped so a finished turn
+ * can fold into a one-line expandable summary ("✓ Worked · 38s · 3 tools ·
+ * +34 −3"). While `settled` is false the children render fully interleaved;
+ * on the live → settled transition the fold animates (~ --motion-turn-fold),
+ * while turns that load already-settled collapse instantly.
+ */
+export interface TaskChatTurnItem {
+  id: string;
+  kind: "turn";
+  items: TaskChatTurnChildItem[];
+  settled: boolean;
+  /** Animate the fold when settling (false = collapse instantly, e.g. history). */
+  animateFold?: boolean;
+  summary: {
+    /** e.g. "38s" — omitted when unknown. */
+    durationLabel?: string;
+    toolCount: number;
+    added: number;
+    removed: number;
+    /** e.g. "12.3k tokens" — omitted when unknown. */
+    tokensLabel?: string;
+    /** Failed/interrupted turns get a ✗ affordance instead of ✓. */
+    failed?: boolean;
+  };
+}
+
+export type TaskChatItem =
+  | TaskChatMessageItem
+  | TaskChatThinkingItem
+  | TaskChatToolItem
+  | TaskChatStatusItem
+  | TaskChatMarkerItem
+  | TaskChatUsageItem
+  | TaskChatTurnItem;
 
 /** A structured plan entry (ACP PlanEntry) for the Plans tab. */
 export interface TaskChatPlanEntry {
