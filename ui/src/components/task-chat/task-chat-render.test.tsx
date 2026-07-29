@@ -7,7 +7,6 @@ import { TASK_CHAT_STATES } from "./task-chat-states";
 import { buildScenario } from "./task-chat-fixtures";
 import { TaskChatThreadView } from "./TaskChatThreadView";
 import { TaskChatPlanView } from "./TaskChatPlanView";
-import { ThemeProvider } from "@/context/ThemeContext";
 
 /**
  * Finish-line clause C: every state id in the inventory renders without error.
@@ -33,15 +32,11 @@ describe("Task chat state inventory renders", () => {
       expect(() => {
         flushSync(() => {
           root.render(
-            // ThemeProvider: bubbles render markdown via MarkdownBody, which
-            // reads the theme — mirror the real app's provider tree.
-            <ThemeProvider>
-              {scenario.surface === "plan" && scenario.plan ? (
-                <TaskChatPlanView plan={scenario.plan} />
-              ) : (
-                <TaskChatThreadView items={scenario.items} scroll={false} />
-              )}
-            </ThemeProvider>,
+            scenario.surface === "plan" && scenario.plan ? (
+              <TaskChatPlanView plan={scenario.plan} />
+            ) : (
+              <TaskChatThreadView items={scenario.items} scroll={false} />
+            ),
           );
         });
       }).not.toThrow();

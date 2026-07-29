@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { copyTextToClipboard } from "@/lib/clipboard";
 import { Copy, GripHorizontal, Minus, Plus, RotateCcw } from "lucide-react";
 import {
   EASING_PRESETS,
@@ -221,7 +220,7 @@ export function TweakPanel() {
               value={exportText}
               onFocus={(e) => {
                 e.currentTarget.select();
-                void copyTextToClipboard(exportText).catch(() => {});
+                void navigator.clipboard?.writeText(exportText).catch(() => {});
               }}
             />
           ) : null}
