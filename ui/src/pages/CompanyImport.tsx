@@ -941,11 +941,13 @@ export function CompanyImport() {
   // Any change to the import configuration supersedes the request a settled
   // progress/error panel describes, so it clears settled mutation state. A
   // pending request is never detached: its panel keeps reporting it (and the
-  // action buttons stay disabled) until it settles. The new-company name and
-  // pause toggle are set against a rendered preview, so they reset only the
-  // panels; structural changes also discard the preview itself. Structural
-  // controls are locked while an import runs, so this can never unmount the
-  // preview section that hosts a running import's status panels.
+  // action buttons stay disabled) until it settles. Payload edits made
+  // against a rendered preview (new-company name, pause toggle, file
+  // selection, conflict choices, adapter overrides, dropping attachments)
+  // reset only the panels; structural changes also discard the preview
+  // itself. Structural controls are locked while an import runs, so this can
+  // never unmount the preview section that hosts a running import's status
+  // panels.
   function resetMutationState() {
     if (!previewMutation.isPending) previewMutation.reset();
     if (!importMutation.isPending) importMutation.reset();
@@ -1022,6 +1024,7 @@ export function CompanyImport() {
 
   function handleToggleCheck(path: string, kind: "file" | "dir") {
     if (!importPreview) return;
+    resetMutationState();
     setCheckedFiles((prev) => {
       const next = new Set(prev);
       if (kind === "file") {
@@ -1054,6 +1057,7 @@ export function CompanyImport() {
   }
 
   function handleConflictRename(slug: string, newName: string) {
+    resetMutationState();
     setNameOverrides((prev) => ({ ...prev, [slug]: newName }));
     // Editing the name un-confirms
     setConfirmedSlugs((prev) => {
@@ -1065,6 +1069,7 @@ export function CompanyImport() {
   }
 
   function handleConflictToggleConfirm(slug: string) {
+    resetMutationState();
     setConfirmedSlugs((prev) => {
       const next = new Set(prev);
       if (next.has(slug)) next.delete(slug);
@@ -1074,6 +1079,7 @@ export function CompanyImport() {
   }
 
   function handleConflictToggleSkip(slug: string, filePath: string | null) {
+    resetMutationState();
     setSkippedSlugs((prev) => {
       const next = new Set(prev);
       const wasSkipped = next.has(slug);
@@ -1101,6 +1107,7 @@ export function CompanyImport() {
   }
 
   function handleAdapterChange(slug: string, adapterType: string) {
+    resetMutationState();
     setAdapterOverrides((prev) => ({ ...prev, [slug]: adapterType }));
     // Reset config values when adapter type changes
     setAdapterConfigValues((prev) => {
@@ -1120,6 +1127,7 @@ export function CompanyImport() {
   }
 
   function handleAdapterConfigChange(slug: string, patch: Partial<CreateConfigValues>) {
+    resetMutationState();
     setAdapterConfigValues((prev) => ({
       ...prev,
       [slug]: { ...(prev[slug] ?? { ...defaultCreateValues, adapterType: adapterOverrides[slug] ?? "claude_local" }), ...patch },
@@ -1207,6 +1215,7 @@ export function CompanyImport() {
 
   function handleContinueWithoutAttachments() {
     if (!localPackage) return;
+    resetMutationState();
     setLocalPackage({ ...localPackage, files: stripBlobFiles(localPackage.files) });
     setCheckedFiles((prev) => new Set([...prev].filter((filePath) => !isBlobStoreFilePath(filePath))));
   }

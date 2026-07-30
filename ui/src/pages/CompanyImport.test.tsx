@@ -479,6 +479,26 @@ describe("CompanyImport", () => {
 
     expect(container.textContent).not.toContain("Import failed:");
 
+    // File-selection edits feed the payload too and supersede a failure.
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await act(async () => {
+      rejectImport(new Error("third failure"));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Import failed: third failure");
+
+    const fileCheckbox = Array.from(
+      container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+    ).find((input) => !input.closest("label")?.textContent?.includes("Start imported agents"));
+    expect(fileCheckbox).toBeTruthy();
+    await act(async () => {
+      fileCheckbox!.click();
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Import failed:");
+
     // Changing the package supersedes the failed import: previewing a fresh
     // package must not resurface the stale import error panel.
     await enterGithubUrl("https://github.com/acme/other-starter/tree/main/company");
