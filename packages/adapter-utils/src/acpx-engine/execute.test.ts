@@ -700,6 +700,39 @@ describe("shared ACPX engine runtime behavior", () => {
     ]);
   });
 
+  it("does not emit invoked usage events for Claude skills that fail to materialize", async () => {
+    const root = await makeTempRoot();
+    const good = await createSkill(root, "coach");
+    const brokenSource = path.join(root, "broken-source");
+    await fs.writeFile(brokenSource, "not a skill directory", "utf8");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { events } = await runExecutor({
+      agent: "claude",
+      stateDir: path.join(root, "state"),
+      paperclipRuntimeSkills: [good, broken],
+      paperclipSkillSync: { desiredSkills: [good.key, broken.key] },
+    }, {
+      runtimeEvents: [{
+        type: "tool_call",
+        text: "Using skill",
+        title: "Skill",
+        rawInput: { skill: broken.runtimeName },
+      }],
+    });
+
+    const usageEvents = events.filter((event) => event.eventType === "paperclip.skill.usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      payload: { adapter: "claude", skillKey: good.key, eventKind: "loaded" },
+    });
+  });
+
   it("emits paperclip skill usage loaded events for selected Codex runtime skills", async () => {
     const root = await makeTempRoot();
     const codexHome = path.join(root, "codex-home");

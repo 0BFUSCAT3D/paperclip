@@ -801,8 +801,10 @@ async function prepareClaudeSkillRuntime(input: {
     commandNotes: selectedSkills.length > 0
       ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
-    invocationContext: selectedSkills.length > 0
-      ? { skillRoot: skillsHome, entries: selectedSkills }
+    // Like `loaded` above, invoked detection may only resolve skills the
+    // session can actually read, so the context excludes failed copies.
+    invocationContext: materializedSkills.length > 0
+      ? { skillRoot: skillsHome, entries: materializedSkills }
       : null,
   };
 }
