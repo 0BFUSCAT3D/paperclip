@@ -191,7 +191,7 @@ describe("CompanyImport", () => {
     await flushReact();
   }
 
-  async function renderPageAndImport() {
+  async function renderPage() {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const currentRoot = root;
@@ -204,7 +204,9 @@ describe("CompanyImport", () => {
       );
     });
     await flushReact();
+  }
 
+  async function enterGithubUrl() {
     const urlInput = container.querySelector<HTMLInputElement>(
       'input[placeholder="https://github.com/owner/repo/tree/main/company"]',
     );
@@ -215,6 +217,11 @@ describe("CompanyImport", () => {
       urlInput!.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushReact();
+  }
+
+  async function renderPageAndImport() {
+    await renderPage();
+    await enterGithubUrl();
 
     await clickButton((text) => text === "Preview import");
 
@@ -276,17 +283,7 @@ describe("CompanyImport", () => {
       },
     });
 
-    root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const currentRoot = root;
-    await act(async () => {
-      currentRoot.render(
-        <QueryClientProvider client={queryClient}>
-          <CompanyImport />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
+    await renderPage();
 
     await clickButton((text) => text.includes("Local zip"));
 
@@ -301,11 +298,13 @@ describe("CompanyImport", () => {
     await flushReact();
 
     expect(container.textContent).toContain("CLI folder import");
+    expect(container.textContent).toContain("Package too large for browser import");
     expect(findButton((text) => text === "Preview import")?.disabled).toBe(true);
 
     await clickButton((text) => text === "Continue without attachments");
 
     expect(container.textContent).not.toContain("CLI folder import");
+    expect(container.textContent).not.toContain("Package too large for browser import");
     expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
 
     await clickButton((text) => text === "Preview import");
@@ -317,5 +316,72 @@ describe("CompanyImport", () => {
     };
     expect(request.source.type).toBe("inline");
     expect(Object.keys(request.source.files).sort()).toEqual([".paperclip.yaml", "COMPANY.md"]);
+  });
+
+  it("explains the disabled preview button until a package is chosen", async () => {
+    await renderPage();
+
+    expect(findButton((text) => text === "Preview import")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Choose a package above to enable the preview.");
+
+    await enterGithubUrl();
+
+    expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
+    expect(container.textContent).not.toContain("Choose a package above to enable the preview.");
+  });
+
+  it("shows a progress panel while the preview runs and a durable error panel when it fails", async () => {
+    let rejectPreview!: (err: Error) => void;
+    mockCompaniesApi.importPreview.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectPreview = reject;
+        }),
+    );
+    await renderPage();
+    await enterGithubUrl();
+
+    await clickButton((text) => text === "Preview import");
+
+    expect(container.textContent).toContain("Uploading and analyzing your package");
+    expect(container.textContent).toContain("Keep this page open.");
+
+    await act(async () => {
+      rejectPreview(new Error("stream disconnected"));
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Uploading and analyzing your package");
+    expect(container.textContent).toContain("Preview failed: stream disconnected");
+    expect(container.textContent).toContain("Retry, or use the CLI folder import");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("shows a progress panel while the import runs and a durable error panel when it fails", async () => {
+    let rejectImport!: (err: Error) => void;
+    mockCompaniesApi.importBundle.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectImport = reject;
+        }),
+    );
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+
+    expect(container.textContent).toContain("Uploading and importing");
+    expect(container.textContent).toContain("Keep this page open.");
+
+    await act(async () => {
+      rejectImport(new Error("connection reset"));
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Uploading and importing");
+    expect(container.textContent).toContain("Import failed: connection reset");
+    expect(container.textContent).toContain("check the target company before retrying.");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
   });
 });
