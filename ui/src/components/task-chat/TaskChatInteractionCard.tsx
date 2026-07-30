@@ -38,7 +38,7 @@ export function TaskChatInteractionCard({ item, ...cardProps }: TaskChatInteract
       className="tc-enter-bubble w-full"
       data-testid="task-chat-interaction"
     >
-      <IssueThreadInteractionCard interaction={interaction} {...cardProps} />
+      <IssueThreadInteractionCard interaction={interaction} primaryActionOnRight {...cardProps} />
     </div>
   );
 }
