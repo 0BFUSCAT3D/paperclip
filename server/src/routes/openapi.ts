@@ -704,7 +704,6 @@ const PUBLIC_OPERATIONS = new Set([
 const BOARD_ONLY_PREFIXES = [
   "/api/auth/",
   "/api/admin/",
-  "/api/cloud-upstreams",
   "/api/plugins",
   "/api/instance/",
 ];
@@ -5232,6 +5231,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/export/fidelity",
+  tags: ["companies"],
+  summary: "Report company data that an export bundle does not include",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/import/preview",
   tags: ["companies"],
@@ -5590,93 +5598,6 @@ for (const route of [
     ...(route[0] === "put" ? { body: updateResourceMembershipSchema } : {}),
   });
 }
-
-const cloudCompanyQuerySchema = z.object({
-  companyId: z.string().min(1),
-});
-const cloudCompanyBodySchema = z.object({
-  companyId: z.string().min(1),
-});
-const cloudConnectStartSchema = z.object({
-  companyId: z.string().min(1),
-  remoteUrl: z.string().min(1),
-  redirectUri: z.string().min(1),
-});
-const cloudConnectFinishSchema = z.object({
-  pendingConnectionId: z.string().min(1),
-  code: z.string().min(1),
-  state: z.string().min(1),
-});
-const cloudPushRunSchema = cloudCompanyBodySchema.extend({
-  retryOfRunId: z.string().optional(),
-});
-const cloudPushRunActivationSchema = cloudCompanyBodySchema.extend({
-  entityType: z.enum(["agents", "routines", "monitors"]),
-});
-
-registerCurrentRoute({
-  method: "get",
-  path: "/api/cloud-upstreams",
-  tags: ["cloud-upstreams"],
-  summary: "List cloud upstream connections",
-  query: cloudCompanyQuerySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/connect/start",
-  tags: ["cloud-upstreams"],
-  summary: "Start a cloud upstream connection",
-  body: cloudConnectStartSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/connect/finish",
-  tags: ["cloud-upstreams"],
-  summary: "Finish a cloud upstream connection",
-  body: cloudConnectFinishSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/preview",
-  tags: ["cloud-upstreams"],
-  summary: "Preview a cloud upstream push run",
-  body: cloudCompanyBodySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs",
-  tags: ["cloud-upstreams"],
-  summary: "Create a cloud upstream push run",
-  body: cloudPushRunSchema,
-});
-
-registerCurrentRoute({
-  method: "get",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}",
-  tags: ["cloud-upstreams"],
-  summary: "Get a cloud upstream push run",
-  query: cloudCompanyQuerySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/cancel",
-  tags: ["cloud-upstreams"],
-  summary: "Cancel a cloud upstream push run",
-  body: cloudCompanyBodySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/activation",
-  tags: ["cloud-upstreams"],
-  summary: "Activate cloud upstream push run entities",
-  body: cloudPushRunActivationSchema,
-});
 
 for (const route of [
   ["get", "/api/companies/{companyId}/secret-providers/health", "Check configured secret providers"],

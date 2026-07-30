@@ -1363,8 +1363,15 @@
     {
       "idx": 196,
       "version": "7",
+      "when": 1785170001001,
+      "tag": "0196_drop_cloud_upstream_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 197,
+      "version": "7",
       "when": 1785170000002,
-      "tag": "0196_company_skill_usage_events",
+      "tag": "0197_company_skill_usage_events",
       "breakpoints": true
     }
   ]

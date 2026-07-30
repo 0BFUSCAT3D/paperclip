@@ -1020,6 +1020,9 @@ export type {
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
   CompanyPortabilitySidebarOrder,
+  CompanyPortabilityLabelManifestEntry,
+  CompanyPortabilityBlobManifestEntry,
+  CompanyPortabilityEmbeddedAssetManifestEntry,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
@@ -1027,6 +1030,10 @@ export type {
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueCommentManifestEntry,
+  CompanyPortabilityIssueDocumentManifestEntry,
+  CompanyPortabilityIssueWorkProductManifestEntry,
+  CompanyPortabilityIssueMonitorManifestEntry,
+  CompanyPortabilityIssueAttachmentManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
@@ -1395,22 +1402,6 @@ export {
   SMOKE_RUN_STEP_STATUSES,
   SMOKE_RUN_TRIGGERS,
 } from "./types/smoke-lab.js";
-
-export type {
-  CloudUpstreamConnectStartResponse,
-  CloudUpstreamActivationDecision,
-  CloudUpstreamActivationEntityType,
-  CloudUpstreamConnection,
-  CloudUpstreamConflict,
-  CloudUpstreamPreview,
-  CloudUpstreamRun,
-  CloudUpstreamRunEvent,
-  CloudUpstreamsState,
-  CloudUpstreamStep,
-  CloudUpstreamSummaryCount,
-  CloudUpstreamTarget,
-  CloudUpstreamWarning,
-} from "./types/cloud-upstream.js";
 
 export type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "./types/server-info.js";
 
