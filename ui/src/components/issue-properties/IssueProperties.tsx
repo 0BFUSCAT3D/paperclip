@@ -12,6 +12,7 @@ import { authApi } from "../../api/auth";
 import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
+import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -184,6 +185,25 @@ export function IssueProperties({
     }
     setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
   }, [taskChatRedesignEnabled, inline]);
+  // Plan/Artifacts only earn a tab when they have content; with neither, the
+  // header bar shows a plain "Properties" title instead of a one-tab strip.
+  // Same query keys as the tab bodies, so these share their cached fetches.
+  const { data: paneTabPlanDocument } = useIssuePlanDocument(
+    taskChatRedesignEnabled ? issue.id : null,
+  );
+  const { data: paneTabAcceptedPlans } = useQuery({
+    queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
+    queryFn: () => issuesApi.listAcceptedPlanDecompositions(issue.id),
+    enabled: taskChatRedesignEnabled,
+  });
+  const { data: paneTabAttachments } = useQuery({
+    queryKey: queryKeys.issues.attachments(issue.id),
+    queryFn: () => issuesApi.listAttachments(issue.id),
+    enabled: taskChatRedesignEnabled,
+  });
+  const hasPlanTab = Boolean(paneTabPlanDocument) || (paneTabAcceptedPlans?.length ?? 0) > 0;
+  const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
+  const [paneTab, setPaneTab] = useState("properties");
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -2470,30 +2490,64 @@ export function IssueProperties({
   // Flag OFF (or non-redesign hosts): today's stacked pane, byte-for-byte.
   if (!taskChatRedesignEnabled) return propertiesBody;
 
+  // Flag ON with nothing to switch between: no tab strip — the header bar
+  // shows a plain title and the pane body is just the properties stack.
+  if (!hasPlanTab && !hasArtifactsTab) {
+    return (
+      <>
+        {paneHeaderSlot
+          ? createPortal(<span className="text-sm font-medium">Properties</span>, paneHeaderSlot)
+          : null}
+        {propertiesBody}
+      </>
+    );
+  }
+
   // Flag ON: wrap the same body in a Properties | Plan | Artifacts tab shell
   // (v5 decision: singular "Plan", Docs merged into Artifacts). The Properties
   // tab is unchanged. Panel hosts portal the strip into the pane header bar;
   // portals keep React context, so the Tabs root still drives it.
+  // Fall back to Properties if the selected tab's content went away (or the
+  // selection was made on another issue).
+  const activePaneTab =
+    (paneTab === "plans" && !hasPlanTab) || (paneTab === "artifacts" && !hasArtifactsTab)
+      ? "properties"
+      : paneTab;
   const tabStrip = (
     <TabsList
       variant="line"
       className={paneHeaderSlot ? "justify-start gap-1" : "w-full justify-start gap-1"}
     >
       <TabsTrigger value="properties">Properties</TabsTrigger>
-      <TabsTrigger value="plans">Plan</TabsTrigger>
-      <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
+      {hasPlanTab ? <TabsTrigger value="plans">Plan</TabsTrigger> : null}
+      {hasArtifactsTab ? <TabsTrigger value="artifacts">Artifacts</TabsTrigger> : null}
     </TabsList>
   );
   return (
-    <Tabs defaultValue="properties" className="flex min-h-0 flex-col gap-3">
-      {paneHeaderSlot ? createPortal(tabStrip, paneHeaderSlot) : tabStrip}
+    <Tabs value={activePaneTab} onValueChange={setPaneTab} className="flex min-h-0 flex-col gap-3">
+      {paneHeaderSlot
+        ? createPortal(
+            // Portals keep React context but break the DOM tree the Tailwind
+            // group-selectors need: the active-tab underline is styled via
+            // `group-data-[orientation=horizontal]/tabs:*`, so restore that
+            // ancestor here (display: contents keeps it out of layout).
+            <div className="group/tabs contents" data-orientation="horizontal">
+              {tabStrip}
+            </div>,
+            paneHeaderSlot,
+          )
+        : tabStrip}
       <TabsContent value="properties">{propertiesBody}</TabsContent>
-      <TabsContent value="plans">
-        <IssuePropertiesPlansTab issue={issue} inline={inline} />
-      </TabsContent>
-      <TabsContent value="artifacts">
-        <IssuePropertiesArtifactsTab issue={issue} />
-      </TabsContent>
+      {hasPlanTab ? (
+        <TabsContent value="plans">
+          <IssuePropertiesPlansTab issue={issue} inline={inline} />
+        </TabsContent>
+      ) : null}
+      {hasArtifactsTab ? (
+        <TabsContent value="artifacts">
+          <IssuePropertiesArtifactsTab issue={issue} />
+        </TabsContent>
+      ) : null}
     </Tabs>
   );
 }

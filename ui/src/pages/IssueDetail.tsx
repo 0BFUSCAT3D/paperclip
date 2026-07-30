@@ -1192,7 +1192,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   ) : null;
 
   return (
-    <div className="space-y-3">
+    <div className={taskChatRedesignEnabled ? "flex min-h-0 flex-1 flex-col" : "space-y-3"}>
       {/* Redesign: the button rides inside the thread's scroll viewport with the
           header so nothing sits above the thread in the page flow. */}
       {taskChatRedesignEnabled ? null : loadOlderButton}
@@ -4549,7 +4549,10 @@ export function IssueDetail() {
     <div
       className={
         taskChatShellEnabled
-          ? "w-full space-y-6"
+          ? // Fill main exactly so the outer page never scrolls — the thread's
+            // own viewport is the only scroll surface (h-full is inert on
+            // mobile, where main has no fixed height and the page scrolls).
+            "flex h-full min-h-0 w-full flex-col gap-6"
           : "max-w-3xl space-y-6"
       }
     >
@@ -4809,7 +4812,11 @@ export function IssueDetail() {
 
       {taskChatShellEnabled ? null : <Separator className={shellSectionClass} />}
 
-      <Tabs value={resolvedDetailTab} onValueChange={setDetailTab} className="space-y-3">
+      <Tabs
+        value={resolvedDetailTab}
+        onValueChange={setDetailTab}
+        className={taskChatShellEnabled ? "min-h-0 flex-1" : "space-y-3"}
+      >
         {/* Redesign: the chat IS the page — the Chat/Activity/Related-work tab
             strip is hidden and the thread renders as the only surface. */}
         {taskChatShellEnabled ? null : (
@@ -4837,7 +4844,10 @@ export function IssueDetail() {
         {/* Flag ON the thread viewport extends under main's horizontal padding
             (symmetric, so the centered column keeps the same axis) and the
             scrollbar sits flush against the properties-pane border. */}
-        <TabsContent value="chat" className={taskChatShellEnabled ? "-mx-4 md:-mx-6" : undefined}>
+        <TabsContent
+          value="chat"
+          className={taskChatShellEnabled ? "-mx-4 md:-mx-6 flex min-h-0 flex-col" : undefined}
+        >
           {resolvedDetailTab === "chat" ? (
             <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
