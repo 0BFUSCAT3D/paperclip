@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { createPortal } from "react-dom";
+import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
 import { Link } from "@/lib/router";
@@ -170,6 +172,18 @@ export function IssueProperties({
   // OFF renders today's stacked sections verbatim (no Tabs wrapper). This pane
   // is always task-scoped, so the flag alone is a sufficient gate.
   const taskChatRedesignEnabled = experimentalSettings?.enableTaskChatRedesign === true;
+  // When hosted by the redesigned PropertiesPanel, the tab strip portals into
+  // the pane's header bar (left of the window controls). The slot only exists
+  // once the panel has committed, hence the effect; inline hosts (mobile sheet)
+  // keep the tab strip in place.
+  const [paneHeaderSlot, setPaneHeaderSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!taskChatRedesignEnabled || inline) {
+      setPaneHeaderSlot(null);
+      return;
+    }
+    setPaneHeaderSlot(document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID));
+  }, [taskChatRedesignEnabled, inline]);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -2458,17 +2472,24 @@ export function IssueProperties({
 
   // Flag ON: wrap the same body in a Properties | Plan | Artifacts tab shell
   // (v5 decision: singular "Plan", Docs merged into Artifacts). The Properties
-  // tab is unchanged.
+  // tab is unchanged. Panel hosts portal the strip into the pane header bar;
+  // portals keep React context, so the Tabs root still drives it.
+  const tabStrip = (
+    <TabsList
+      variant="line"
+      className={paneHeaderSlot ? "justify-start gap-1" : "w-full justify-start gap-1"}
+    >
+      <TabsTrigger value="properties">Properties</TabsTrigger>
+      <TabsTrigger value="plans">Plan</TabsTrigger>
+      <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
+    </TabsList>
+  );
   return (
     <Tabs defaultValue="properties" className="flex min-h-0 flex-col gap-3">
-      <TabsList variant="line" className="w-full justify-start gap-1">
-        <TabsTrigger value="properties">Properties</TabsTrigger>
-        <TabsTrigger value="plans">Plan</TabsTrigger>
-        <TabsTrigger value="artifacts">Artifacts</TabsTrigger>
-      </TabsList>
+      {paneHeaderSlot ? createPortal(tabStrip, paneHeaderSlot) : tabStrip}
       <TabsContent value="properties">{propertiesBody}</TabsContent>
       <TabsContent value="plans">
-        <IssuePropertiesPlansTab issue={issue} />
+        <IssuePropertiesPlansTab issue={issue} inline={inline} />
       </TabsContent>
       <TabsContent value="artifacts">
         <IssuePropertiesArtifactsTab issue={issue} />

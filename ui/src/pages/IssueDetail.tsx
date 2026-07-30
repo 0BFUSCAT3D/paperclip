@@ -903,6 +903,12 @@ type IssueDetailChatTabProps = {
   composerRef: Ref<IssueChatComposerHandle>;
   /** Optional node rendered inline directly above the reply composer (e.g. the monitor strip). */
   composerAccessory?: ReactNode;
+  /**
+   * Issue header (title row, badges, plugin toolbars) that the redesigned
+   * thread renders inside its scroll viewport so it scrolls away with the
+   * messages (flag: enableTaskChatRedesign). Ignored by the legacy thread.
+   */
+  threadHeader?: ReactNode;
   footer?: ReactNode;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference: "allowed" | "not_allowed" | "prompt";
@@ -991,6 +997,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onWorkModeChange,
   composerRef,
   composerAccessory,
+  threadHeader,
   footer,
   feedbackVotes,
   feedbackDataSharingPreference,
@@ -1170,24 +1177,36 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [resolvedActivity],
   );
 
+  const loadOlderButton = hasOlderComments ? (
+    <div className="flex justify-center">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={commentsLoadingOlder}
+        onClick={onLoadOlderComments}
+      >
+        {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+      </Button>
+    </div>
+  ) : null;
+
   return (
     <div className="space-y-3">
-      {hasOlderComments ? (
-        <div className="flex justify-center">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={commentsLoadingOlder}
-            onClick={onLoadOlderComments}
-          >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
-          </Button>
-        </div>
-      ) : null}
+      {/* Redesign: the button rides inside the thread's scroll viewport with the
+          header so nothing sits above the thread in the page flow. */}
+      {taskChatRedesignEnabled ? null : loadOlderButton}
       <ThreadComponent
         composerRef={composerRef}
         composerAccessory={composerAccessory}
+        threadHeader={
+          taskChatRedesignEnabled && (threadHeader || loadOlderButton) ? (
+            <>
+              {threadHeader}
+              {loadOlderButton}
+            </>
+          ) : undefined
+        }
         comments={commentsWithRunMeta}
         interactions={interactions}
         feedbackVotes={feedbackVotes}
@@ -1563,6 +1582,9 @@ export function IssueDetail() {
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
+  // Redesign: the center tab strip is hidden, so chat is the only surface —
+  // deep links that would switch tabs (e.g. #document- hashes) stay on chat.
+  const resolvedDetailTab = taskChatShellEnabled ? "chat" : detailTab;
   const [handoffFocusSignal, setHandoffFocusSignal] = useState(0);
   const [pendingApprovalAction, setPendingApprovalAction] = useState<{
     approvalId: string;
@@ -4084,17 +4106,12 @@ export function IssueDetail() {
     </>
   );
 
-  return (
-    <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
-    <div
-      className={
-        taskChatShellEnabled
-          ? "w-full space-y-6"
-          : "max-w-3xl space-y-6"
-      }
-    >
-      {/* Parent chain breadcrumb */}
-      {ancestors.length > 0 && (
+  // Task Chat Redesign ("not sticky" header): the parent breadcrumb, the
+  // title/badge block, and the plugin toolbars render INSIDE the thread's
+  // scroll viewport, so they scroll away with the messages and the composer
+  // stays near the viewport bottom. Flag OFF renders the same nodes in the
+  // page flow, in their original order relative to the alert banners.
+  const ancestorsNav = ancestors.length > 0 && (
         <nav className={cn("flex items-center gap-1 text-xs text-muted-foreground flex-wrap", shellSectionClass)}>
           {[...ancestors].reverse().map((ancestor, i) => (
             <span key={ancestor.id} className="flex items-center gap-1">
@@ -4118,90 +4135,9 @@ export function IssueDetail() {
           <ChevronRight className="h-3 w-3 shrink-0" />
           <span className="text-foreground/60 truncate max-w-(--sz-200px)">{issue.title}</span>
         </nav>
-      )}
+  );
 
-      {issue.hiddenAt && (
-        <div className={cn("flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive", shellSectionClass)}>
-          <EyeOff className="h-4 w-4 shrink-0" />
-          This task is hidden
-        </div>
-      )}
-      {activePauseHold && (
-        <div className={cn("rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200", shellSectionClass)}>
-          {activePauseHold.isRoot ? (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">
-                  {childIssues.length === 0 ? "Paused by board." : "Subtree pause is active."}
-                </span>
-                <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
-                  {childIssues.length === 0
-                    ? "Task execution is held until resume. Human comments can still wake the assignee for triage."
-                    : "Root and descendant execution is held until resume. Human comments can still wake assignee agents for triage."}
-                </span>
-              </div>
-              <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
-                {childIssues.length === 0
-                  ? "1 task held"
-                  : `${heldDescendantCount} descendant${heldDescendantCount === 1 ? "" : "s"} held`}
-                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
-              </div>
-              {canShowSubtreeControls || canResumeLeafWork ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setTreeControlMode("resume");
-                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
-                      setTreeControlOpen(true);
-                    }}
-                  >
-                    {childIssues.length === 0 ? "Resume work" : "Resume subtree"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setTreeControlMode("resume");
-                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
-                      setTreeControlOpen(true);
-                    }}
-                  >
-                    View affected ({childIssues.length === 0 ? 1 : heldDescendantCount})
-                  </Button>
-                  {canShowSubtreeControls ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => {
-                        setTreeControlMode("cancel");
-                        setTreeControlCancelConfirmed(false);
-                        setTreeControlOpen(true);
-                      }}
-                    >
-                      Cancel subtree...
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="text-xs">
-              This task is paused by ancestor{" "}
-              {activePauseHoldRoot?.identifier ? (
-                <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
-                  {activePauseHoldRoot.identifier}
-                </Link>
-              ) : (
-                activePauseHold.rootIssueId.slice(0, 8)
-              )}
-              . Resume from the root task to deliver deferred work.
-            </div>
-          )}
-        </div>
-      )}
-
+  const issueHeaderBlock = (
       <div className={cn("space-y-3", shellSectionClass)}>
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
@@ -4553,7 +4489,10 @@ export function IssueDetail() {
           />
         )}
       </div>
+  );
 
+  const pluginOutletsBlock = (
+    <>
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}
         entityType="issue"
@@ -4594,6 +4533,114 @@ export function IssueDetail() {
         itemClassName="rounded-lg border border-border p-3"
         missingBehavior="placeholder"
       />
+    </>
+  );
+
+  const taskChatThreadHeader = taskChatShellEnabled ? (
+    <>
+      {ancestorsNav}
+      {issueHeaderBlock}
+      {pluginOutletsBlock}
+    </>
+  ) : undefined;
+
+  return (
+    <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
+    <div
+      className={
+        taskChatShellEnabled
+          ? "w-full space-y-6"
+          : "max-w-3xl space-y-6"
+      }
+    >
+      {/* Parent chain breadcrumb (redesign: rendered inside the thread viewport) */}
+      {taskChatShellEnabled ? null : ancestorsNav}
+
+      {issue.hiddenAt && (
+        <div className={cn("flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive", shellSectionClass)}>
+          <EyeOff className="h-4 w-4 shrink-0" />
+          This task is hidden
+        </div>
+      )}
+      {activePauseHold && (
+        <div className={cn("rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200", shellSectionClass)}>
+          {activePauseHold.isRoot ? (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium">
+                  {childIssues.length === 0 ? "Paused by board." : "Subtree pause is active."}
+                </span>
+                <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
+                  {childIssues.length === 0
+                    ? "Task execution is held until resume. Human comments can still wake the assignee for triage."
+                    : "Root and descendant execution is held until resume. Human comments can still wake assignee agents for triage."}
+                </span>
+              </div>
+              <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
+                {childIssues.length === 0
+                  ? "1 task held"
+                  : `${heldDescendantCount} descendant${heldDescendantCount === 1 ? "" : "s"} held`}
+                {activeRootPauseHold?.createdAt ? ` · started ${relativeTime(activeRootPauseHold.createdAt)}` : ""}
+              </div>
+              {canShowSubtreeControls || canResumeLeafWork ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlOpen(true);
+                    }}
+                  >
+                    {childIssues.length === 0 ? "Resume work" : "Resume subtree"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlOpen(true);
+                    }}
+                  >
+                    View affected ({childIssues.length === 0 ? 1 : heldDescendantCount})
+                  </Button>
+                  {canShowSubtreeControls ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => {
+                        setTreeControlMode("cancel");
+                        setTreeControlCancelConfirmed(false);
+                        setTreeControlOpen(true);
+                      }}
+                    >
+                      Cancel subtree...
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="text-xs">
+              This task is paused by ancestor{" "}
+              {activePauseHoldRoot?.identifier ? (
+                <Link to={createIssueDetailPath(activePauseHoldRoot.identifier)} className="underline">
+                  {activePauseHoldRoot.identifier}
+                </Link>
+              ) : (
+                activePauseHold.rootIssueId.slice(0, 8)
+              )}
+              . Resume from the root task to deliver deferred work.
+            </div>
+          )}
+        </div>
+      )}
+
+      {taskChatShellEnabled ? null : issueHeaderBlock}
+
+      {taskChatShellEnabled ? null : pluginOutletsBlock}
 
       {taskChatShellEnabled ? null : showRichSubIssuesSection ? (
         <div className="space-y-3">
@@ -4760,9 +4807,12 @@ export function IssueDetail() {
         );
       })()}
 
-      <Separator className={shellSectionClass} />
+      {taskChatShellEnabled ? null : <Separator className={shellSectionClass} />}
 
-      <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
+      <Tabs value={resolvedDetailTab} onValueChange={setDetailTab} className="space-y-3">
+        {/* Redesign: the chat IS the page — the Chat/Activity/Related-work tab
+            strip is hidden and the thread renders as the only surface. */}
+        {taskChatShellEnabled ? null : (
         <TabsList variant="line" className={cn("w-full justify-start gap-1", shellSectionClass)}>
           <TabsTrigger value="chat" className="gap-1.5">
             <MessageSquare className="h-3.5 w-3.5" />
@@ -4782,13 +4832,15 @@ export function IssueDetail() {
             </TabsTrigger>
           ))}
         </TabsList>
+        )}
 
         {/* Flag ON the thread viewport extends under main's horizontal padding
             (symmetric, so the centered column keeps the same axis) and the
             scrollbar sits flush against the properties-pane border. */}
         <TabsContent value="chat" className={taskChatShellEnabled ? "-mx-4 md:-mx-6" : undefined}>
-          {detailTab === "chat" ? (
+          {resolvedDetailTab === "chat" ? (
             <IssueDetailChatTab
+              threadHeader={taskChatThreadHeader}
               issueId={issue.id}
               companyId={issue.companyId}
               projectId={issue.projectId ?? null}

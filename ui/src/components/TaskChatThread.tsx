@@ -84,6 +84,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onCancelInteraction,
     onSubmitInteractionVerdicts,
     externalReferences,
+    threadHeader,
   } = props;
 
   const agentModeLabel = workModeMetaFor(issueWorkMode).label;
@@ -359,9 +360,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     >
       <div className="flex min-h-0 flex-1 flex-col">
         {items.length === 0 ? (
-          <div className="px-3 py-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {threadHeader ? (
+              <div
+                className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4 pt-4"
+                data-testid="task-chat-thread-header"
+              >
+                {threadHeader}
+              </div>
+            ) : null}
+            <div className="px-3 py-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
+          </div>
         ) : (
-          <TaskChatThreadView items={items} renderInteraction={renderInteraction} />
+          <TaskChatThreadView items={items} header={threadHeader} renderInteraction={renderInteraction} />
         )}
       </div>
       {showComposer ? (

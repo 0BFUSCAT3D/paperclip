@@ -253,9 +253,11 @@
   --bubble-agent: oklch(0.955 0 0);
 
   /* Redesigned thread viewport bound: lets the thread own its scroll (auto-
-     follow + pinned composer) inside the page flow. 21rem ≈ chrome above the
-     thread (topbar + title row + tabs) plus page padding. */
-  --tc-thread-max-h: calc(100dvh - 21rem);
+     follow + pinned composer) inside the page flow. The issue header lives
+     INSIDE the scroll viewport (it scrolls away with the messages), so the
+     only chrome outside the thread is the top bar plus page padding ≈ 8rem —
+     this is what keeps the composer pinned near the viewport bottom. */
+  --tc-thread-max-h: calc(100dvh - 8rem);
 
   /* Redesigned chat-shell column cap (phase 2c): one token caps the page
      wrapper, thread body, and pinned composer so they widen in lockstep. */

@@ -5,9 +5,13 @@ import { queryKeys } from "@/lib/queryKeys";
 import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecompositionsSection";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { IssuePlanConfirmationActionBar } from "./IssuePlanConfirmationActionBar";
 
 interface IssuePropertiesPlansTabProps {
   issue: Issue;
+  /** True when hosted outside the properties panel (mobile sheet) — the plan
+   * confirmation bar then renders in place instead of the pane footer slot. */
+  inline?: boolean;
 }
 
 /**
@@ -19,7 +23,7 @@ interface IssuePropertiesPlansTabProps {
  * PlanEntry/todo streaming is a flagged protocol dependency (demonstrated in
  * the /dev/task-chat-lab harness).
  */
-export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps) {
+export function IssuePropertiesPlansTab({ issue, inline }: IssuePropertiesPlansTabProps) {
   const { data: planDocument, isLoading: planDocumentLoading } = useIssuePlanDocument(issue.id);
   const { data } = useQuery({
     queryKey: queryKeys.issues.acceptedPlanDecompositions(issue.id),
@@ -39,6 +43,9 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
 
   return (
     <div className="space-y-4 py-2">
+      {/* Pending plan confirmation: its CTAs pin to the pane's footer slot so
+          they stay visible while the plan scrolls. */}
+      {planDocument ? <IssuePlanConfirmationActionBar issue={issue} inline={inline} /> : null}
       {planDocument ? (
         <section data-testid="issue-plan-document" className="space-y-2">
           <div className="text-xs text-muted-foreground">

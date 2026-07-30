@@ -12,6 +12,12 @@ import { TaskMessageScroller } from "./TaskMessageScroller";
 
 interface TaskChatThreadViewProps {
   items: TaskChatItem[];
+  /**
+   * Content rendered above the first message INSIDE the scroll viewport (the
+   * issue header when hosted by the live thread) — it scrolls away with the
+   * messages instead of staying pinned above the thread.
+   */
+  header?: ReactNode;
   onApprovalDecision?: (statusItemId: string, optionId: string) => void;
   /**
    * Renders an interleaved issue-thread interaction (the live thread supplies
@@ -72,6 +78,7 @@ function renderItem(
  */
 export function TaskChatThreadView({
   items,
+  header,
   onApprovalDecision,
   renderInteraction,
   className,
@@ -79,6 +86,11 @@ export function TaskChatThreadView({
 }: TaskChatThreadViewProps) {
   const body = (
     <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4", className)}>
+      {header ? (
+        <div className="flex flex-col gap-6 pb-2" data-testid="task-chat-thread-header">
+          {header}
+        </div>
+      ) : null}
       {items.map((item) => (
         <div key={item.id}>{renderItem(item, onApprovalDecision, renderInteraction)}</div>
       ))}
