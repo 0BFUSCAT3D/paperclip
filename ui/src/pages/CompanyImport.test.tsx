@@ -506,5 +506,38 @@ describe("CompanyImport", () => {
 
     expect(findButton((text) => text.startsWith("Import 3 file"))).toBeTruthy();
     expect(container.textContent).not.toContain("Import failed:");
+
+    // The outcome reports the submitted pause option, not the live checkbox:
+    // a mid-flight toggle must not change what the completed import did.
+    let resolveImport!: (value: CompanyPortabilityImportResult) => void;
+    mockCompaniesApi.importBundle.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveImport = resolve;
+        }),
+    );
+    await clickButton((text) => text.startsWith("Import 3 file"));
+
+    expect(mockCompaniesApi.importBundle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pauseAutomations: false }),
+    );
+
+    const midFlightPauseInput = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Start imported agents and routines paused"))
+      ?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(midFlightPauseInput).toBeTruthy();
+    await act(async () => {
+      midFlightPauseInput!.click();
+    });
+    await flushReact();
+
+    await act(async () => {
+      resolveImport(buildImportResult());
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Import complete");
+    expect(container.textContent).not.toContain("Activate imported agents and routines");
   });
 });

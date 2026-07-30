@@ -883,11 +883,14 @@ export function CompanyImport() {
     return selected.length > 0 ? selected : undefined;
   }
 
-  // Apply mutation. The preview the import was started from rides along as
-  // the mutation variable so the success callback never reads state that a
-  // later preview or configuration change may have replaced.
+  // Apply mutation. The preview the import was started from and the
+  // submitted pause option ride along as the mutation variables so the
+  // request and its callbacks never read state that a later edit replaced.
   const importMutation = useMutation({
-    mutationFn: (_previewForImport: CompanyPortabilityPreviewResult | null) => {
+    mutationFn: (variables: {
+      previewForImport: CompanyPortabilityPreviewResult | null;
+      pauseAutomations: boolean;
+    }) => {
       const source = buildSource();
       if (!source) throw new Error("No source configured.");
       return companiesApi.importBundle({
@@ -901,10 +904,10 @@ export function CompanyImport() {
         nameOverrides: buildFinalNameOverrides(),
         selectedFiles: buildSelectedFiles(),
         adapterOverrides: buildFinalAdapterOverrides(),
-        pauseAutomations,
+        pauseAutomations: variables.pauseAutomations,
       });
     },
-    onSuccess: async (result, previewForImport) => {
+    onSuccess: async (result, { previewForImport, pauseAutomations: submittedPauseAutomations }) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       const importedCompany = await companiesApi.get(result.company.id);
       const refreshedSession = currentUserId
@@ -926,7 +929,7 @@ export function CompanyImport() {
       setImportOutcome({
         result,
         dashboardPath: `/${importedCompany.issuePrefix}/dashboard`,
-        pausedAutomations: pauseAutomations,
+        pausedAutomations: submittedPauseAutomations,
       });
     },
     onError: (err) => {
@@ -1597,7 +1600,7 @@ export function CompanyImport() {
             </label>
             <Button
               size="sm"
-              onClick={() => importMutation.mutate(importPreview)}
+              onClick={() => importMutation.mutate({ previewForImport: importPreview, pauseAutomations })}
               disabled={importMutation.isPending || hasErrors || selectedCount === 0 || inlineImportBlocked}
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
