@@ -396,6 +396,11 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Uploading and importing");
     expect(container.textContent).toContain("Keep this page open.");
 
+    // While the import runs, previewing is locked (and explained) so a
+    // concurrent preview cannot replace the plan the import started from.
+    expect(findButton((text) => text === "Preview import")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Import in progress — previewing unlocks when it finishes.");
+
     // Config edits while the import is in flight must not detach it from
     // the UI: the progress panel keeps reporting it until it settles.
     const midFlightNameInput = container.querySelector<HTMLInputElement>(
@@ -434,6 +439,28 @@ describe("CompanyImport", () => {
 
     expect(container.textContent).not.toContain("Import failed:");
     expect(findButton((text) => text.startsWith("Import 3 file"))).toBeTruthy();
+    expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
+
+    // The pause toggle feeds the request payload too: after another failed
+    // attempt, toggling it also supersedes the request and clears the panel.
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await act(async () => {
+      rejectImport(new Error("second failure"));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Import failed: second failure");
+
+    const pauseInput = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Start imported agents and routines paused"))
+      ?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(pauseInput).toBeTruthy();
+    await act(async () => {
+      pauseInput!.click();
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Import failed:");
 
     // Changing the package supersedes the failed import: previewing a fresh
     // package must not resurface the stale import error panel.

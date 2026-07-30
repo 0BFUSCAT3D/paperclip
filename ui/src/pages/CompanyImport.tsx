@@ -883,9 +883,11 @@ export function CompanyImport() {
     return selected.length > 0 ? selected : undefined;
   }
 
-  // Apply mutation
+  // Apply mutation. The preview the import was started from rides along as
+  // the mutation variable so the success callback never reads state that a
+  // later preview or configuration change may have replaced.
   const importMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (_previewForImport: CompanyPortabilityPreviewResult | null) => {
       const source = buildSource();
       if (!source) throw new Error("No source configured.");
       return companiesApi.importBundle({
@@ -902,7 +904,7 @@ export function CompanyImport() {
         pauseAutomations,
       });
     },
-    onSuccess: async (result) => {
+    onSuccess: async (result, previewForImport) => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       const importedCompany = await companiesApi.get(result.company.id);
       const refreshedSession = currentUserId
@@ -916,7 +918,7 @@ export function CompanyImport() {
         ?? refreshedSession?.user?.id
         ?? refreshedSession?.session?.userId
         ?? null;
-      await applyImportedSidebarOrder(importPreview, result, sidebarOrderUserId);
+      await applyImportedSidebarOrder(previewForImport, result, sidebarOrderUserId);
       setSelectedCompanyId(importedCompany.id);
       setActivationChecked(new Set(buildActivationItems(result).map((item) => item.key)));
       setActivatedKeys(new Set());
@@ -939,9 +941,9 @@ export function CompanyImport() {
   // Any change to the import configuration supersedes the request a settled
   // progress/error panel describes, so it clears settled mutation state. A
   // pending request is never detached: its panel keeps reporting it (and the
-  // action buttons stay disabled) until it settles. The new-company name is
-  // typed against a rendered preview, so it resets only the panels;
-  // structural changes also discard the preview itself.
+  // action buttons stay disabled) until it settles. The new-company name and
+  // pause toggle are set against a rendered preview, so they reset only the
+  // panels; structural changes also discard the preview itself.
   function resetMutationState() {
     if (!previewMutation.isPending) previewMutation.reset();
     if (!importMutation.isPending) importMutation.reset();
@@ -1468,13 +1470,20 @@ export function CompanyImport() {
             size="sm"
             variant="outline"
             onClick={() => previewMutation.mutate(previewGenerationRef.current)}
-            disabled={previewMutation.isPending || !hasSource || inlineImportBlocked}
+            disabled={
+              previewMutation.isPending || importMutation.isPending || !hasSource || inlineImportBlocked
+            }
           >
             {previewMutation.isPending ? "Previewing..." : "Preview import"}
           </Button>
           {!hasSource && !previewMutation.isPending && (
             <span className="text-xs text-muted-foreground">
               Choose a package above to enable the preview.
+            </span>
+          )}
+          {importMutation.isPending && (
+            <span className="text-xs text-muted-foreground">
+              Import in progress — previewing unlocks when it finishes.
             </span>
           )}
           {inlineImportBlocked && (
@@ -1561,14 +1570,17 @@ export function CompanyImport() {
               <input
                 type="checkbox"
                 checked={pauseAutomations}
-                onChange={(e) => setPauseAutomations(e.target.checked)}
+                onChange={(e) => {
+                  setPauseAutomations(e.target.checked);
+                  resetMutationState();
+                }}
                 className="accent-foreground"
               />
               Start imported agents and routines paused
             </label>
             <Button
               size="sm"
-              onClick={() => importMutation.mutate()}
+              onClick={() => importMutation.mutate(importPreview)}
               disabled={importMutation.isPending || hasErrors || selectedCount === 0 || inlineImportBlocked}
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
