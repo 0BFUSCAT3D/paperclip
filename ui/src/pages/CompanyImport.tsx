@@ -29,6 +29,7 @@ import {
   ChevronRight,
   Download,
   Github,
+  Loader2,
   Package,
   Upload,
 } from "lucide-react";
@@ -1442,7 +1443,38 @@ export function CompanyImport() {
           >
             {previewMutation.isPending ? "Previewing..." : "Preview import"}
           </Button>
+          {!hasSource && !previewMutation.isPending && (
+            <span className="text-xs text-muted-foreground">
+              Choose a package above to enable the preview.
+            </span>
+          )}
+          {inlineImportBlocked && (
+            <span className="text-xs text-amber-500">
+              Package too large for browser import — see the notice above.
+            </span>
+          )}
         </div>
+        {previewMutation.isPending && (
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
+            <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+            <p className="text-xs text-muted-foreground">
+              Uploading and analyzing your package
+              {inlinePreflight ? ` (about ${formatMegabytes(inlinePreflight.estimatedBytes)})` : ""} — large
+              packages can take a few minutes. Keep this page open.
+            </p>
+          </div>
+        )}
+        {previewMutation.isError && !previewMutation.isPending && (
+          <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
+            <p className="text-xs text-destructive">
+              Preview failed:{" "}
+              {previewMutation.error instanceof Error
+                ? previewMutation.error.message
+                : "the request did not complete."}{" "}
+              Retry, or use the CLI folder import for very large packages.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Preview results */}
@@ -1514,6 +1546,26 @@ export function CompanyImport() {
                 : `Import ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
             </Button>
           </div>
+          {importMutation.isPending && (
+            <div className="mx-5 mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
+              <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">
+                Uploading and importing — large packages can take several minutes. Keep this page open.
+              </p>
+            </div>
+          )}
+          {importMutation.isError && !importMutation.isPending && (
+            <div className="mx-5 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
+              <p className="text-xs text-destructive">
+                Import failed:{" "}
+                {importMutation.error instanceof Error
+                  ? importMutation.error.message
+                  : "the request did not complete."}{" "}
+                Nothing may have been created, or the import stopped partway — check the target company
+                before retrying.
+              </p>
+            </div>
+          )}
 
           {/* Warnings */}
           {importPreview.warnings.length > 0 && (
