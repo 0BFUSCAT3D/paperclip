@@ -206,14 +206,14 @@ describe("CompanyImport", () => {
     await flushReact();
   }
 
-  async function enterGithubUrl() {
+  async function enterGithubUrl(url = "https://github.com/acme/starter/tree/main/company") {
     const urlInput = container.querySelector<HTMLInputElement>(
       'input[placeholder="https://github.com/owner/repo/tree/main/company"]',
     );
     expect(urlInput).toBeTruthy();
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      setter.call(urlInput!, "https://github.com/acme/starter/tree/main/company");
+      setter.call(urlInput!, url);
       urlInput!.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushReact();
@@ -355,6 +355,11 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Preview failed: stream disconnected");
     expect(container.textContent).toContain("Retry, or use the CLI folder import");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+
+    // Changing the package supersedes the failed request: the error panel resets.
+    await enterGithubUrl("https://github.com/acme/other-starter/tree/main/company");
+
+    expect(container.textContent).not.toContain("Preview failed:");
   });
 
   it("shows a progress panel while the import runs and a durable error panel when it fails", async () => {
@@ -383,5 +388,13 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Import failed: connection reset");
     expect(container.textContent).toContain("check the target company before retrying.");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+
+    // Changing the package supersedes the failed import: previewing a fresh
+    // package must not resurface the stale import error panel.
+    await enterGithubUrl("https://github.com/acme/other-starter/tree/main/company");
+    await clickButton((text) => text === "Preview import");
+
+    expect(findButton((text) => text.startsWith("Import 3 file"))).toBeTruthy();
+    expect(container.textContent).not.toContain("Import failed:");
   });
 });

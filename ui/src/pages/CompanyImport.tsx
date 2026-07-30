@@ -927,13 +927,22 @@ export function CompanyImport() {
     },
   });
 
+  // Any change to the package or import configuration supersedes the last
+  // preview and any settled mutation state, so the persistent progress/error
+  // panels never keep describing a request that no longer applies.
+  function resetImportFlowState() {
+    setImportPreview(null);
+    previewMutation.reset();
+    importMutation.reset();
+  }
+
   async function handleChooseLocalPackage(e: ChangeEvent<HTMLInputElement>) {
     const fileList = e.target.files;
     if (!fileList || fileList.length === 0) return;
     try {
       const pkg = await readLocalPackageZip(fileList[0]!);
       setLocalPackage(pkg);
-      setImportPreview(null);
+      resetImportFlowState();
     } catch (err) {
       pushToast({
         tone: "error",
@@ -1311,7 +1320,7 @@ export function CompanyImport() {
               )}
               onClick={() => {
                 setSourceMode(key);
-                setImportPreview(null);
+                resetImportFlowState();
               }}
             >
               <div className="flex items-center gap-2">
@@ -1379,7 +1388,7 @@ export function CompanyImport() {
               placeholder="https://github.com/owner/repo/tree/main/company"
               onChange={(e) => {
                 setImportUrl(e.target.value);
-                setImportPreview(null);
+                resetImportFlowState();
               }}
             />
           </Field>
@@ -1391,7 +1400,7 @@ export function CompanyImport() {
             value={targetMode}
             onChange={(e) => {
               setTargetMode(e.target.value as "existing" | "new");
-              setImportPreview(null);
+              resetImportFlowState();
             }}
           >
             <option value="new">Create new company</option>
@@ -1425,7 +1434,7 @@ export function CompanyImport() {
             value={collisionStrategy}
             onChange={(e) => {
               setCollisionStrategy(e.target.value as CompanyPortabilityCollisionStrategy);
-              setImportPreview(null);
+              resetImportFlowState();
             }}
           >
             <option value="rename">Rename on conflict</option>
