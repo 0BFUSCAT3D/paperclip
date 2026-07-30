@@ -389,6 +389,20 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("check the target company before retrying.");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
 
+    // The new-company name feeds the request payload too: editing it clears
+    // the stale error panel without discarding the rendered preview.
+    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Imported Company"]');
+    expect(nameInput).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(nameInput!, "Renamed Import");
+      nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Import failed:");
+    expect(findButton((text) => text.startsWith("Import 3 file"))).toBeTruthy();
+
     // Changing the package supersedes the failed import: previewing a fresh
     // package must not resurface the stale import error panel.
     await enterGithubUrl("https://github.com/acme/other-starter/tree/main/company");

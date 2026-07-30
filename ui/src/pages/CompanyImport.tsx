@@ -927,13 +927,18 @@ export function CompanyImport() {
     },
   });
 
-  // Any change to the package or import configuration supersedes the last
-  // preview and any settled mutation state, so the persistent progress/error
-  // panels never keep describing a request that no longer applies.
-  function resetImportFlowState() {
-    setImportPreview(null);
+  // Any change to the import configuration supersedes the request the last
+  // progress/error panel describes, so it resets both mutations. The
+  // new-company name is typed against a rendered preview, so it resets only
+  // the panels; structural changes also discard the preview itself.
+  function resetMutationState() {
     previewMutation.reset();
     importMutation.reset();
+  }
+
+  function resetImportFlowState() {
+    setImportPreview(null);
+    resetMutationState();
   }
 
   async function handleChooseLocalPackage(e: ChangeEvent<HTMLInputElement>) {
@@ -1419,7 +1424,10 @@ export function CompanyImport() {
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
               type="text"
               value={newCompanyName}
-              onChange={(e) => setNewCompanyName(e.target.value)}
+              onChange={(e) => {
+                setNewCompanyName(e.target.value);
+                resetMutationState();
+              }}
               placeholder="Imported Company"
             />
           </Field>
