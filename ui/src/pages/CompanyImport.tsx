@@ -770,9 +770,16 @@ export function CompanyImport() {
     return { type: "github", url };
   }
 
+  // Monotonic id for preview requests. Structural configuration changes bump
+  // it, so an in-flight preview they supersede settles silently instead of
+  // publishing a result or error for a package that is no longer selected.
+  // Imports are not gated this way: they mutate the server, so their outcome
+  // is always published.
+  const previewGenerationRef = useRef(0);
+
   // Preview mutation
   const previewMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: (_generation: number) => {
       const source = buildSource();
       if (!source) throw new Error("No source configured.");
       return companiesApi.importPreview({
@@ -785,7 +792,8 @@ export function CompanyImport() {
         collisionStrategy,
       });
     },
-    onSuccess: (result) => {
+    onSuccess: (result, generation) => {
+      if (generation !== previewGenerationRef.current) return;
       setImportPreview(result);
 
       // Build conflicts and set default name overrides with prefix
@@ -848,7 +856,8 @@ export function CompanyImport() {
       const firstFile = Object.keys(result.files)[0];
       if (firstFile) setSelectedFile(firstFile);
     },
-    onError: (err) => {
+    onError: (err, generation) => {
+      if (generation !== previewGenerationRef.current) return;
       pushToast({
         tone: "error",
         title: "Preview failed",
@@ -939,6 +948,7 @@ export function CompanyImport() {
   }
 
   function resetImportFlowState() {
+    previewGenerationRef.current += 1;
     setImportPreview(null);
     resetMutationState();
   }
@@ -1457,7 +1467,7 @@ export function CompanyImport() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => previewMutation.mutate()}
+            onClick={() => previewMutation.mutate(previewGenerationRef.current)}
             disabled={previewMutation.isPending || !hasSource || inlineImportBlocked}
           >
             {previewMutation.isPending ? "Previewing..." : "Preview import"}
@@ -1483,7 +1493,9 @@ export function CompanyImport() {
             </p>
           </div>
         )}
-        {previewMutation.isError && !previewMutation.isPending && (
+        {previewMutation.isError &&
+          !previewMutation.isPending &&
+          previewMutation.variables === previewGenerationRef.current && (
           <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
             <p className="text-xs text-destructive">
               Preview failed:{" "}

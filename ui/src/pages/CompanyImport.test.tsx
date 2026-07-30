@@ -346,8 +346,9 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Uploading and analyzing your package");
     expect(container.textContent).toContain("Keep this page open.");
 
-    // Config edits while the request is in flight must not detach it from
-    // the UI: the progress panel keeps reporting it until it settles.
+    // A mid-flight config edit keeps the progress panel visible (the request
+    // really is still running) but supersedes the request, so its failure
+    // settles silently instead of describing a package no longer selected.
     await enterGithubUrl("https://github.com/acme/starter-b/tree/main/company");
 
     expect(container.textContent).toContain("Uploading and analyzing your package");
@@ -358,6 +359,16 @@ describe("CompanyImport", () => {
     await flushReact();
 
     expect(container.textContent).not.toContain("Uploading and analyzing your package");
+    expect(container.textContent).not.toContain("Preview failed:");
+    expect(mockPushToast).not.toHaveBeenCalled();
+
+    // A failure of the currently configured request renders a durable panel.
+    await clickButton((text) => text === "Preview import");
+    await act(async () => {
+      rejectPreview(new Error("stream disconnected"));
+    });
+    await flushReact();
+
     expect(container.textContent).toContain("Preview failed: stream disconnected");
     expect(container.textContent).toContain("Retry, or use the CLI folder import");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
