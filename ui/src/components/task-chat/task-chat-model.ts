@@ -74,8 +74,8 @@ export interface TaskChatMessageItem {
    * chip in the agent header and under a sent human bubble (v6 decision).
    */
   modeLabel?: string;
-  /** Brand agent-gradient index (1–10) for the capsule avatar header. */
-  agentGradient?: number;
+  /** Assigned agent icon name (AgentIconName) for the avatar header. */
+  agentIcon?: string | null;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */

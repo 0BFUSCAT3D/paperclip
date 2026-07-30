@@ -1,26 +1,26 @@
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { AgentIcon } from "@/components/AgentIconPicker";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
 interface TaskChatBubbleProps {
   item: TaskChatMessageItem;
 }
 
-/** Brand agent-gradient count (mirrors AgentCapsule's token pairs in index.css). */
-const GRADIENT_COUNT = 10;
-
-function capsuleGradient(index: number | undefined): string {
-  const n = Math.trunc(index ?? 1);
-  const idx = ((((n - 1) % GRADIENT_COUNT) + GRADIENT_COUNT) % GRADIENT_COUNT) + 1;
-  return `linear-gradient(to bottom, var(--agent-${idx}a), var(--agent-${idx}b))`;
+function initialsForName(name: string) {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
 }
 
 /**
  * Author-typed message row — the primary legibility signal. Human messages sit
  * right in a solid accent bubble; agent messages sit left in a neutral card
- * bubble with a capsule-avatar author header (textless vertical brand-gradient
- * capsule + name · mode chip, per the v3/v6 prototype decisions); system
- * notices are centered and recede.
+ * bubble with an avatar author header (the agent's assigned icon + name · mode
+ * chip); system notices are centered and recede.
  */
 export function TaskChatBubble({ item }: TaskChatBubbleProps) {
   if (item.author === "system") {
@@ -36,12 +36,15 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
     <div className={cn("tc-enter-bubble group flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
       {!isHuman && item.authorName ? (
         <span className="flex items-center gap-2 px-1">
-          <span
-            aria-hidden="true"
-            data-testid="task-chat-agent-capsule"
-            className="inline-block h-6 w-2.5 shrink-0 rounded-full"
-            style={{ background: capsuleGradient(item.agentGradient) }}
-          />
+          <Avatar size="sm" className="shrink-0" data-testid="task-chat-agent-avatar">
+            {item.agentIcon ? (
+              <AvatarFallback>
+                <AgentIcon icon={item.agentIcon} className="h-3.5 w-3.5" />
+              </AvatarFallback>
+            ) : (
+              <AvatarFallback>{initialsForName(item.authorName)}</AvatarFallback>
+            )}
+          </Avatar>
           <span className="text-sm font-semibold text-foreground">{item.authorName}</span>
           {item.modeLabel ? (
             <span className="rounded-full border border-border px-2 py-px text-(length:--text-micro) font-medium text-muted-foreground">

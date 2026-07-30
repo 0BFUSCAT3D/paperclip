@@ -50,7 +50,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, agentGradient: 3, modeLabel: "Agent mode", text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
+          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", modeLabel: "Agent mode", text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
         ],
       };
     case "thinking":
@@ -125,7 +125,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
               { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
             ],
           },
-          { id: "m-done", kind: "message", author: "agent", authorName: AGENT, agentGradient: 3, modeLabel: "Agent mode", text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.", timestamp: "2:34 PM" },
+          { id: "m-done", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", modeLabel: "Agent mode", text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.", timestamp: "2:34 PM" },
         ],
       };
     case "awaiting-approval":
