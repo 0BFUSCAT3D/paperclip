@@ -396,10 +396,22 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Uploading and importing");
     expect(container.textContent).toContain("Keep this page open.");
 
-    // While the import runs, previewing is locked (and explained) so a
-    // concurrent preview cannot replace the plan the import started from.
+    // While the import runs, previewing and the structural package/settings
+    // controls are locked (and explained), so nothing can replace or unmount
+    // the plan the import started from.
     expect(findButton((text) => text === "Preview import")?.disabled).toBe(true);
-    expect(container.textContent).toContain("Import in progress — previewing unlocks when it finishes.");
+    expect(container.textContent).toContain(
+      "Import in progress — the package and settings unlock when it finishes.",
+    );
+    const lockedUrlInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="https://github.com/owner/repo/tree/main/company"]',
+    );
+    expect(lockedUrlInput?.disabled).toBe(true);
+    const lockedSelects = Array.from(container.querySelectorAll("select")).filter(
+      (select) => select.value === "new" || select.value === "rename",
+    );
+    expect(lockedSelects).toHaveLength(2);
+    expect(lockedSelects.every((select) => select.disabled)).toBe(true);
 
     // Config edits while the import is in flight must not detach it from
     // the UI: the progress panel keeps reporting it until it settles.
@@ -440,6 +452,11 @@ describe("CompanyImport", () => {
     expect(container.textContent).not.toContain("Import failed:");
     expect(findButton((text) => text.startsWith("Import 3 file"))).toBeTruthy();
     expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
+    expect(
+      container.querySelector<HTMLInputElement>(
+        'input[placeholder="https://github.com/owner/repo/tree/main/company"]',
+      )?.disabled,
+    ).toBe(false);
 
     // The pause toggle feeds the request payload too: after another failed
     // attempt, toggling it also supersedes the request and clears the panel.

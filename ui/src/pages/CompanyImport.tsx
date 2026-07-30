@@ -943,7 +943,9 @@ export function CompanyImport() {
   // pending request is never detached: its panel keeps reporting it (and the
   // action buttons stay disabled) until it settles. The new-company name and
   // pause toggle are set against a rendered preview, so they reset only the
-  // panels; structural changes also discard the preview itself.
+  // panels; structural changes also discard the preview itself. Structural
+  // controls are locked while an import runs, so this can never unmount the
+  // preview section that hosts a running import's status panels.
   function resetMutationState() {
     if (!previewMutation.isPending) previewMutation.reset();
     if (!importMutation.isPending) importMutation.reset();
@@ -1336,7 +1338,9 @@ export function CompanyImport() {
                 sourceMode === key
                   ? "border-foreground bg-accent"
                   : "border-border hover:bg-accent/50",
+                importMutation.isPending && "cursor-not-allowed opacity-50",
               )}
+              disabled={importMutation.isPending}
               onClick={() => {
                 setSourceMode(key);
                 resetImportFlowState();
@@ -1364,6 +1368,7 @@ export function CompanyImport() {
                 size="sm"
                 variant="outline"
                 onClick={() => packageInputRef.current?.click()}
+                disabled={importMutation.isPending}
               >
                 Choose zip
               </Button>
@@ -1405,6 +1410,7 @@ export function CompanyImport() {
               type="text"
               value={importUrl}
               placeholder="https://github.com/owner/repo/tree/main/company"
+              disabled={importMutation.isPending}
               onChange={(e) => {
                 setImportUrl(e.target.value);
                 resetImportFlowState();
@@ -1417,6 +1423,7 @@ export function CompanyImport() {
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={targetMode}
+            disabled={importMutation.isPending}
             onChange={(e) => {
               setTargetMode(e.target.value as "existing" | "new");
               resetImportFlowState();
@@ -1454,6 +1461,7 @@ export function CompanyImport() {
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={collisionStrategy}
+            disabled={importMutation.isPending}
             onChange={(e) => {
               setCollisionStrategy(e.target.value as CompanyPortabilityCollisionStrategy);
               resetImportFlowState();
@@ -1483,7 +1491,7 @@ export function CompanyImport() {
           )}
           {importMutation.isPending && (
             <span className="text-xs text-muted-foreground">
-              Import in progress — previewing unlocks when it finishes.
+              Import in progress — the package and settings unlock when it finishes.
             </span>
           )}
           {inlineImportBlocked && (
