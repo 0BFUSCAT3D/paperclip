@@ -927,13 +927,15 @@ export function CompanyImport() {
     },
   });
 
-  // Any change to the import configuration supersedes the request the last
-  // progress/error panel describes, so it resets both mutations. The
-  // new-company name is typed against a rendered preview, so it resets only
-  // the panels; structural changes also discard the preview itself.
+  // Any change to the import configuration supersedes the request a settled
+  // progress/error panel describes, so it clears settled mutation state. A
+  // pending request is never detached: its panel keeps reporting it (and the
+  // action buttons stay disabled) until it settles. The new-company name is
+  // typed against a rendered preview, so it resets only the panels;
+  // structural changes also discard the preview itself.
   function resetMutationState() {
-    previewMutation.reset();
-    importMutation.reset();
+    if (!previewMutation.isPending) previewMutation.reset();
+    if (!importMutation.isPending) importMutation.reset();
   }
 
   function resetImportFlowState() {

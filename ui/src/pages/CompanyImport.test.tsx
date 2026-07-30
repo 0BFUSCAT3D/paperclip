@@ -346,6 +346,12 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Uploading and analyzing your package");
     expect(container.textContent).toContain("Keep this page open.");
 
+    // Config edits while the request is in flight must not detach it from
+    // the UI: the progress panel keeps reporting it until it settles.
+    await enterGithubUrl("https://github.com/acme/starter-b/tree/main/company");
+
+    expect(container.textContent).toContain("Uploading and analyzing your package");
+
     await act(async () => {
       rejectPreview(new Error("stream disconnected"));
     });
@@ -378,6 +384,21 @@ describe("CompanyImport", () => {
 
     expect(container.textContent).toContain("Uploading and importing");
     expect(container.textContent).toContain("Keep this page open.");
+
+    // Config edits while the import is in flight must not detach it from
+    // the UI: the progress panel keeps reporting it until it settles.
+    const midFlightNameInput = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Imported Company"]',
+    );
+    expect(midFlightNameInput).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(midFlightNameInput!, "Mid Flight");
+      midFlightNameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Uploading and importing");
 
     await act(async () => {
       rejectImport(new Error("connection reset"));
