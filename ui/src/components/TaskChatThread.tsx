@@ -18,7 +18,8 @@ import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteract
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
+import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
+import { workModeInEffectAt } from "@/lib/issue-timeline-events";
 import { workModeMetaFor } from "@/lib/work-mode-meta";
 
 function toMs(value: Date | string | null | undefined): number {
@@ -85,12 +86,30 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onSubmitInteractionVerdicts,
     externalReferences,
     threadHeader,
+    workModeChanges,
   } = props;
 
-  const agentModeLabel = workModeMetaFor(issueWorkMode).label;
+  const linkedRunMetaById = useMemo(() => {
+    const map = new Map<string, NonNullable<TaskChatThreadProps["linkedRuns"]>[number]>();
+    for (const run of linkedRuns ?? []) map.set(run.runId, run);
+    return map;
+  }, [linkedRuns]);
+
+  // Each agent reply is tagged with the mode its request ran under: the
+  // issue's work mode at the reply's run start (comment.runId linkage),
+  // reconstructed from the activity feed's work-mode switch history — not the
+  // issue's current mode, which the user may have changed since.
+  const agentModeLabelFor = useCallback(
+    (comment: IssueChatComment) => {
+      const runMeta = comment.runId ? linkedRunMetaById.get(comment.runId) : undefined;
+      const atMs = toMs(runMeta?.startedAt ?? runMeta?.createdAt ?? comment.createdAt);
+      return workModeMetaFor(workModeInEffectAt(workModeChanges ?? [], atMs, issueWorkMode)).label;
+    },
+    [linkedRunMetaById, workModeChanges, issueWorkMode],
+  );
   const commentItems = useMemo(
-    () => commentsToTaskChatItems(comments, { agentMap, userLabelMap, currentUserId, agentModeLabel }),
-    [comments, agentMap, userLabelMap, currentUserId, agentModeLabel],
+    () => commentsToTaskChatItems(comments, { agentMap, userLabelMap, currentUserId, agentModeLabelFor }),
+    [comments, agentMap, userLabelMap, currentUserId, agentModeLabelFor],
   );
 
   // Every run we might need a transcript for (history + live), deduped by id.
@@ -161,12 +180,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }
     return map;
   }, [comments]);
-
-  const linkedRunMetaById = useMemo(() => {
-    const map = new Map<string, NonNullable<TaskChatThreadProps["linkedRuns"]>[number]>();
-    for (const run of linkedRuns ?? []) map.set(run.runId, run);
-    return map;
-  }, [linkedRuns]);
 
   const { data: planDocument } = useIssuePlanDocument(issueId);
 

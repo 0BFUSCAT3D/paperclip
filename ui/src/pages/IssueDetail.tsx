@@ -26,7 +26,7 @@ import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, formatAssigneeUserLabel, formatUserLabel, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
-import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
+import { extractIssueTimelineEvents, extractIssueWorkModeChanges } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
@@ -1176,6 +1176,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
   );
+  const workModeChanges = useMemo(
+    () => extractIssueWorkModeChanges(resolvedActivity),
+    [resolvedActivity],
+  );
 
   const loadOlderButton = hasOlderComments ? (
     <div className="flex justify-center">
@@ -1214,6 +1218,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         feedbackTermsUrl={feedbackTermsUrl}
         linkedRuns={timelineRuns}
         timelineEvents={timelineEvents}
+        workModeChanges={workModeChanges}
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
         issueId={issueId}
@@ -4197,7 +4202,11 @@ export function IssueDetail() {
             </Badge>
           ) : null}
 
-          {issue.workMode === "ask" || issue.workMode === "planning" ? (() => {
+          {/* Task Chat Redesign: no mode chip in the header — mode is a
+              per-request choice made in the composer, and each agent reply
+              carries its own mode chip; a header chip would misread as a
+              task-global setting. Flag OFF keeps the legacy badge. */}
+          {!taskChatShellEnabled && (issue.workMode === "ask" || issue.workMode === "planning") ? (() => {
             const workModeMeta = workModeMetaFor(issue.workMode);
             const WorkModeIcon = workModeMeta.icon;
             return (
