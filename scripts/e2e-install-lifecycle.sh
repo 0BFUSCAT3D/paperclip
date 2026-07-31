@@ -177,10 +177,11 @@ else
     skip_ "8 service lifecycle" "no systemd user bus at /run/user/$(id -u)/bus"
   else
     note "8. service lifecycle ($(uname -s): systemd/launchd)"
-    if shim service install --json; then
-      pass "8a service install exits 0"
+    # Real quickstart path: onboard with defaults, then install + start the service.
+    if shim onboard --yes --install-service; then
+      pass "8a onboard --yes --install-service exits 0"
     else
-      fail_ "8a service install exits 0"
+      fail_ "8a onboard --yes --install-service exits 0"
     fi
     DEADLINE=$(( $(date +%s) + E2E_SERVICE_TIMEOUT_SECS ))
     ACTIVE=0
@@ -203,9 +204,12 @@ else
 fi
 
 note "9. installer script guardrails (from the bootstrap checkout)"
-if bash "$BOOT/scripts/install.sh" --ref deadbeef 2>&1 | grep -qi "not supported"; then
+# Capture first: under pipefail, install.sh's expected exit 1 would fail the pipeline.
+GUARD_OUT="$(bash "$BOOT/scripts/install.sh" --ref deadbeef 2>&1 || true)"
+if echo "$GUARD_OUT" | grep -qi "not supported"; then
   pass "9a install.sh rejects --ref with guidance to npx path"
 else
+  echo "$GUARD_OUT" | tail -3
   fail_ "9a install.sh rejects --ref"
 fi
 

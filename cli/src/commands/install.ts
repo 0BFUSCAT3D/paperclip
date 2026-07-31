@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -136,8 +137,28 @@ export function resolveGitInstallRequest(options: InstallOptions): { repo: strin
   return { repo, ref, pinned: /^[0-9a-f]{7,40}$/i.test(ref) };
 }
 
+async function runGitHubCurl(
+  args: string[],
+  runCommand: CommandRunner,
+  options?: Parameters<CommandRunner>[2],
+): Promise<{ stdout: string; stderr: string }> {
+  // Anonymous GitHub requests are rate-limited per source IP (CI runners and
+  // corporate NAT exhaust the shared quota); honor an ambient token when present.
+  // The token travels via a curl --config file so it never appears in process args.
+  const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+  if (!token) return runCommand("curl", args, options);
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclipai-gh-"));
+  const configFile = path.join(configDir, "headers");
+  try {
+    fs.writeFileSync(configFile, `header = "Authorization: Bearer ${token}"\n`, { mode: 0o600 });
+    return await runCommand("curl", ["--config", configFile, ...args], options);
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
 export async function resolveGitHubRef(repo: string, ref: string, runCommand: CommandRunner): Promise<string> {
-  const result = await runCommand("curl", ["--fail", "--silent", "--show-error", "--location", "--header", "Accept: application/vnd.github+json", "--header", "User-Agent: paperclipai-install", `https://api.github.com/repos/${repo}/commits/${encodeURIComponent(ref)}`], { maxBuffer: 4 * 1024 * 1024 });
+  const result = await runGitHubCurl(["--fail", "--silent", "--show-error", "--location", "--header", "Accept: application/vnd.github+json", "--header", "User-Agent: paperclipai-install", `https://api.github.com/repos/${repo}/commits/${encodeURIComponent(ref)}`], runCommand, { maxBuffer: 4 * 1024 * 1024 });
   let sha: unknown;
   try { sha = (JSON.parse(result.stdout) as { sha?: unknown }).sha; } catch { throw new Error(`GitHub returned an invalid response while resolving ${repo}@${ref}.`); }
   if (typeof sha !== "string" || !/^[0-9a-f]{40}$/i.test(sha)) throw new Error(`GitHub did not return a full commit SHA for ${repo}@${ref}.`);
@@ -251,7 +272,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
   const buildEnv = (extra: NodeJS.ProcessEnv = {}) =>
     gitBuildEnv({ PATH: [pnpmShimDir, process.env.PATH].filter(Boolean).join(path.delimiter), ...extra });
   try {
-    await runCommand("curl", ["--fail", "--silent", "--show-error", "--location", "--output", archivePath, `https://codeload.github.com/${repo}/tar.gz/${sha}`], { maxBuffer: 4 * 1024 * 1024 });
+    await runGitHubCurl(["--fail", "--silent", "--show-error", "--location", "--output", archivePath, `https://codeload.github.com/${repo}/tar.gz/${sha}`], runCommand, { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("tar", ["-xzf", archivePath, "--strip-components=1", "-C", checkoutPath], { maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["enable", "pnpm", "--install-directory", pnpmShimDir], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 4 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
