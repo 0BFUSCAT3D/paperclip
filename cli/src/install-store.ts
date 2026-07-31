@@ -442,12 +442,14 @@ export function addManagedPathBlock(rcPath: string): boolean {
 
 export function removeManagedPathBlock(rcPath: string): boolean {
   let existing: string;
+  let mode: number;
   try {
     const stat = fs.lstatSync(rcPath);
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error(`Refusing to modify non-regular shell rc file ${rcPath}.`);
     }
     assertOwnedByCurrentUser(stat, rcPath);
+    mode = stat.mode & 0o777;
     existing = fs.readFileSync(rcPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
@@ -457,7 +459,7 @@ export function removeManagedPathBlock(rcPath: string): boolean {
   const escapedEnd = PATH_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const next = existing.replace(new RegExp(`(?:^|\\n)${escapedStart}\\n[\\s\\S]*?${escapedEnd}\\n?`), "\n");
   if (next === existing) return false;
-  writeFileAtomic(rcPath, next.replace(/^\n/, ""), fs.statSync(rcPath).mode & 0o777);
+  writeFileAtomic(rcPath, next.replace(/^\n/, ""), mode);
   return true;
 }
 

@@ -7,6 +7,7 @@ PAPERCLIP_PACKAGE="paperclipai"
 PUBLIC_NPM_REGISTRY="https://registry.npmjs.org"
 HOMEBREW_INSTALL_COMMIT="99e13e96cbbdc1ac1ac09c0a40b450bf219ef3aa"
 HOMEBREW_INSTALL_SHA256="99287f194a8b3c9e6b0203a11a5fa54518be57209343e6bb954dec4635796d9d"
+NODESOURCE_DISTRIBUTIONS_COMMIT="9b431d8ae0f10df272598585855c6eca6c0e1bd2"
 NODESOURCE_DEB_SHA256="575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1"
 NODESOURCE_RPM_SHA256="b0ed2b9b66002e7ee802e8777cf3a92b25f1ecc0129812dc6f59a43a536810cc"
 
@@ -306,7 +307,7 @@ install_node_apt() {
   local nodesource_installer="$TEMP_DIR/nodesource-setup.sh"
   run_privileged env DEBIAN_FRONTEND=noninteractive apt-get update
   run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl
-  download_checked_script "https://deb.nodesource.com/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer" "$NODESOURCE_DEB_SHA256"
+  download_checked_script "https://raw.githubusercontent.com/nodesource/distributions/$NODESOURCE_DISTRIBUTIONS_COMMIT/scripts/deb/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer" "$NODESOURCE_DEB_SHA256"
   run_privileged env DEBIAN_FRONTEND=noninteractive bash "$nodesource_installer"
   run_privileged env DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
 }
@@ -315,7 +316,7 @@ install_node_dnf() {
   ensure_temp_dir
   local nodesource_installer="$TEMP_DIR/nodesource-setup.sh"
   run_privileged dnf install -y ca-certificates curl
-  download_checked_script "https://rpm.nodesource.com/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer" "$NODESOURCE_RPM_SHA256"
+  download_checked_script "https://raw.githubusercontent.com/nodesource/distributions/$NODESOURCE_DISTRIBUTIONS_COMMIT/scripts/rpm/setup_${DEFAULT_NODE_MAJOR}.x" "$nodesource_installer" "$NODESOURCE_RPM_SHA256"
   run_privileged bash "$nodesource_installer"
   run_privileged dnf install -y nodejs
 }

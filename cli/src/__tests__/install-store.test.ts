@@ -115,8 +115,10 @@ describe("managed install store", () => {
     const rcPath = path.join(root, "home", ".bashrc");
     expect(addManagedPathBlock(rcPath)).toBe(true);
     expect(addManagedPathBlock(rcPath)).toBe(false);
+    fs.chmodSync(rcPath, 0o640);
     expect(removeManagedPathBlock(rcPath)).toBe(true);
     expect(fs.readFileSync(rcPath, "utf8")).not.toContain("paperclipai managed PATH");
+    expect(fs.statSync(rcPath).mode & 0o777).toBe(0o640);
   });
 
   it("rejects marker substrings that are not the exact managed shim format", () => {
