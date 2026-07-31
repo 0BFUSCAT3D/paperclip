@@ -602,8 +602,9 @@ When the external task changes category:
 - `backlog -> active`: create or wake per `runMode` (Section 9.3).
 - `active -> backlog` or `active -> blocked`: the connector SHOULD surface this on the issue; under
   `symphony_compatible` it MUST make the issue ineligible for new tracker-driven dispatch and
-  SHOULD request stop of tracker-driven runs (Section 9.3); Paperclip-native obligations
-  (approvals in flight, blockers) are unaffected.
+  SHOULD request stop of tracker-driven runs when the host exposes a public stop capability to the
+  connector (Section 9.3); Paperclip-native obligations (approvals in flight, blockers) are
+  unaffected.
 - `* -> terminal` while the Paperclip issue is active (checked out, running, in review, or carrying
   unresolved blockers/approvals): default is a **conflict**, not silent closure. The issue gets a
   comment naming the external actor and transition; the link enters `conflict` until an agent or
@@ -709,8 +710,11 @@ Host-side equivalents of Symphony's run-attempt machine:
 Profile requirements:
 
 - When the external task leaves `active` during tracker-driven work, the connector MUST mark the
-  link state accordingly and request run stop through host cancel/pause APIs; it MUST NOT kill
-  processes directly.
+  link state accordingly and make the issue ineligible for new tracker-driven dispatch. When the
+  host exposes a public run-stop capability to the connector, the connector MUST request stop
+  through that capability. Otherwise, it MUST surface that the active run continues until the host
+  or an operator stops it. The connector MUST NOT use private host internals or kill processes
+  directly.
 - Failed runs follow host retry/recovery; the connector MUST NOT re-wake an issue in a tight loop
   (wake requests for the same link MUST be debounced, RECOMMENDED minimum 60s).
 - A successful run that ends at `in_review`/handoff is a valid terminal outcome for the
