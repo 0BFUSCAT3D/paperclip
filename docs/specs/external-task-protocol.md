@@ -98,7 +98,7 @@ Important boundary (inherited from OpenAI Symphony, see Section 3.3):
    - Persists the 1:1 association between an external task and a Paperclip issue.
    - Owns sync state: snapshots, fingerprints, cursors, status.
    - MUST be stored in plugin state/entities first; MAY be promoted to core schema once at least
-     two connectors prove the model (see Section 17.3).
+     two connectors prove the model.
 
 3. `Inbound Sync Engine`
    - Consumes webhooks and poll results.
@@ -492,10 +492,10 @@ Engine behavior on adapter errors:
                       v
                 +-----------+   conflict detected    +-----------+
         +-----> |  healthy  | ---------------------> | conflict  |
-        |       +-----+-----+                        +-----+-----+
-        |             | sync failure                       | resolved
-        |             v                                    |
-        |       +-----------+ <--------------------------- +
+        |       +-----+-----+ <--------------------- +-----------+
+        |             | sync failure        resolved
+        |             v
+        |       +-----------+
         |       |   error   |
         |       +-----+-----+
         |             | retry ok
@@ -611,7 +611,9 @@ When the external task changes category:
   pending review/approval, and no blockers exist.
 - `terminal -> active` (reopen): if the linked issue is terminal, policy chooses between creating a
   follow-up Paperclip issue linked to the same external task (RECOMMENDED default) or reopening,
-  subject to host rules for resuming closed issues.
+  subject to host rules for resuming closed issues. Before activating a link for a follow-up issue,
+  the connector MUST transition the original link to `unlinked` so that only one active link maps
+  to the external task.
 
 External transitions MUST NOT directly set Paperclip issue status; they translate into host-level
 requests that respect checkout, approvals, blockers, budget stops, and execution policy.
