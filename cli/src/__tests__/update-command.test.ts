@@ -19,10 +19,6 @@ function createPayload(payloadPath: string, version: string): string {
   fs.writeFileSync(entrypoint, version);
   return entrypoint;
 }
-function markInstanceOnboarded(): void {
-  fs.mkdirSync(path.join(process.env.PAPERCLIP_HOME!, "instances", "default"), { recursive: true });
-}
-
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-update-"));
   previousHome = process.env.HOME;
@@ -66,7 +62,6 @@ describe("update command", () => {
   });
 
   it("re-resolves a moving git branch and activates the new SHA payload", async () => {
-    markInstanceOnboarded();
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const oldSha = "1".repeat(40); const newSha = "2".repeat(40);
     const oldPayload = payloadPathFor(paths, "git", oldSha.slice(0, 12));
@@ -81,7 +76,7 @@ describe("update command", () => {
     const confirm = vi.fn(async () => true);
     const restartActiveService = vi.fn(async () => true);
     const runCommand = vi.fn(async (file: string) => file === "curl" ? { stdout: JSON.stringify({ sha: newSha }), stderr: "" } : { stdout: "0.3.1\n", stderr: "" });
-    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, confirm, restartActiveService, now: () => new Date("2026-07-22T12:00:00Z") });
+    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, confirm, restartActiveService, hasInstanceData: () => true, now: () => new Date("2026-07-22T12:00:00Z") });
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining(`commit ${newSha.slice(0, 12)}`));
     expect(backup).toHaveBeenCalledOnce();
     expect(restartActiveService).toHaveBeenCalledWith("0.3.1");
@@ -136,7 +131,6 @@ describe("update command", () => {
   });
 
   it("backs up, installs side-by-side, flips, and rolls back instantly", async () => {
-    markInstanceOnboarded();
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
@@ -147,7 +141,7 @@ describe("update command", () => {
       if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; createPayload(prefix, "2.0.0"); return { stdout: "", stderr: "" }; }
       return { stdout: "2.0.0\n", stderr: "" };
     });
-    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService, now: () => new Date("2026-07-22T12:00:00Z") });
+    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService, hasInstanceData: () => true, now: () => new Date("2026-07-22T12:00:00Z") });
     expect(backup).toHaveBeenCalledOnce();
     expect(restartActiveService).toHaveBeenCalledWith("2.0.0");
     expect(readInstallManifest(paths)?.version).toBe("2.0.0");
@@ -158,7 +152,6 @@ describe("update command", () => {
   });
 
   it("explains how to recover when the pre-update database is unreachable", async () => {
-    markInstanceOnboarded();
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
@@ -166,7 +159,7 @@ describe("update command", () => {
     const backup = vi.fn(async () => { throw backupError; });
     const runCommand = vi.fn(async () => ({ stdout: '"2.0.0"\n', stderr: "" }));
 
-    await expect(updateCommand({}, { paths, executablePath: executable, runCommand, backup })).rejects.toThrow(
+    await expect(updateCommand({}, { paths, executablePath: executable, runCommand, backup, hasInstanceData: () => true })).rejects.toThrow(
       "Start the service with `paperclipai service start` and retry, or skip the backup with `paperclipai update --no-backup`.",
     );
     expect(backup).toHaveBeenCalledOnce();
@@ -174,9 +167,6 @@ describe("update command", () => {
   });
 
   it("skips the pre-update backup when there is no onboarded instance data", async () => {
-    vi.stubEnv("PAPERCLIP_CONFIG", path.join(root, "missing-config.json"));
-    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
-    vi.stubEnv("DATABASE_URL", "");
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
@@ -188,13 +178,7 @@ describe("update command", () => {
       return { stdout: "2.0.0\n", stderr: "" };
     });
 
-    const previousCwd = process.cwd();
-    process.chdir(root);
-    try {
-      await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService: async () => false });
-    } finally {
-      process.chdir(previousCwd);
-    }
+    await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService: async () => false, hasInstanceData: () => false });
 
     expect(backup).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining("has not been onboarded and has no data to back up"));
