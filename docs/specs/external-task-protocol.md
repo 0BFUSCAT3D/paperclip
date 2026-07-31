@@ -1008,8 +1008,12 @@ on external_state_change(task) where link.runMode == symphony_compatible:
   category = state_mapping(task.state)
   if category == active and issue_dispatchable(link.issueId):
       host.set_status(link.issueId, todo); host.wake_assignee(link.issueId)  # debounced
-  if category in {backlog, blocked, terminal} and tracker_driven_run_active(link):
-      host.request_stop(link.issueId)             # via cancel/pause APIs only
+  if category in {backlog, blocked, terminal}:
+      links.mark_not_dispatchable(link)
+      if tracker_driven_run_active(link) and host.has_public_run_stop_capability():
+          host.request_stop(link.issueId)
+      else if tracker_driven_run_active(link):
+          health.surface_continuing_run(link)
       if category == terminal and issue_active(link.issueId):
           conflicts.open(link, kind=closure)      # Section 7.4
 
@@ -1055,7 +1059,8 @@ every reconcile_interval per connector_instance:
 
 - `runMode=symphony_compatible` honoring Section 9.1 dispatch (wake, never spawn)
 - Checkout-as-claim with no parallel claim registry (Section 9.2)
-- External de-activation stops tracker-driven dispatch via host APIs (Section 9.3)
+- External de-activation stops new tracker-driven dispatch; connectors request run stop through a
+  public host capability when available and otherwise surface the continuing run (Section 9.3)
 - Debounced wake requests (Section 9.3)
 - Task packet rendering with strict variables and untrusted marking (Section 9.5.1)
 - Workflow policy lookup from at least one source with lowest-precedence guarantee (Section 9.5)
