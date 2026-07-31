@@ -1462,6 +1462,15 @@ async function buildRuntime(input: {
       contentSignature: await referencedSourceContentSignature(entry.localPath),
     })),
   );
+  // Referenced-project workspace hints exposed to the agent through PAPERCLIP_WORKSPACES_JSON. The
+  // list joins the anchor project's alternative workspaces with the referenced (mentioned) projects.
+  // On the confined sandbox lane the run repoints each referenced hint at its staged directory after
+  // staging below. Empty unless run prep resolved referenced projects or alternative workspaces.
+  const workspaceHints = Array.isArray(context.paperclipWorkspaces)
+    ? context.paperclipWorkspaces.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
@@ -1947,6 +1956,27 @@ async function buildRuntime(input: {
     remoteManagedHomeTeardown = staged.value.teardown;
     remoteStagingDispose = staged.value.dispose;
     remoteStagingEnvDelta = staged.value.envDelta;
+    // Publish the referenced-project workspace hints to the in-sandbox agent. The staged-directory
+    // map (`project-<projectId>`) is known only after staging above, so this runs here rather than
+    // with the initial workspace shaping. Each referenced hint repoints at its staged directory; a
+    // referenced hint whose project did not stage loses its cwd, so the agent never receives an
+    // unstaged path. Only the confined sandbox lane stages referenced trees, so only it publishes
+    // the hints; the local and runner-less lanes keep their env untouched. The set `env` write wins
+    // over an inherited value in the merged launch env.
+    const stagedProjectDirs = stagedRuntime?.additionalSourceDirs ?? {};
+    if (Object.keys(stagedProjectDirs).length > 0) {
+      const shapedHints = shapePaperclipWorkspaceEnvForExecution({
+        workspaceCwd: effectiveWorkspaceCwd,
+        workspaceWorktreePath,
+        workspaceHints,
+        executionTargetIsRemote,
+        executionCwd: effectiveExecutionCwd,
+        stagedProjectDirs,
+      }).workspaceHints;
+      if (shapedHints.length > 0) {
+        env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedHints);
+      }
+    }
   }
   // Both bridge starts run under one try so a failure at EITHER — including the
   // paperclip callback bridge — fires the same abandon-path cleanup. The
@@ -2976,6 +3006,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       rootSpan.end(true);
       throw err;
     }
+    // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
+    // server on the run result. A referenced project that failed to stage into the sandbox is a
+    // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
+    // list is empty on a local target, on a transport that does not stage referenced projects, or
+    // when every staged referenced project succeeded, so the spread adds the field only when there
+    // is a failure to report.
+    const referencedProjectStagingFailures = (
+      prepared.stagedRuntime?.additionalSourceFailures ?? []
+    ).map((failure) => ({ projectId: failure.projectId }));
+    const referencedProjectStagingFailuresField =
+      referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
     // the acpx stdout log stream carries JSON acpx.* event payloads and must
@@ -3120,6 +3161,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         ...classified,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: { phase: "ensure_session" },
@@ -3139,6 +3181,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: "ACPX did not return a runtime session handle.",
         errorCode: "acpx_runtime_error",
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         resultJson: { phase: "ensure_session" },
         summary: "ACPX did not return a runtime session handle.",
@@ -3182,6 +3225,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         ...classified,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: {
@@ -3395,6 +3439,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
         costUsd: turnUsage.costUsd,
@@ -3451,6 +3496,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession: clearSession || timedOut,
         resultJson: { phase: "turn" },
