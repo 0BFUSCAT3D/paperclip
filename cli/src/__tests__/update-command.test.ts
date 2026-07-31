@@ -19,6 +19,9 @@ function createPayload(payloadPath: string, version: string): string {
   fs.writeFileSync(entrypoint, version);
   return entrypoint;
 }
+function markInstanceOnboarded(): void {
+  fs.mkdirSync(path.join(process.env.PAPERCLIP_HOME!, "instances", "default"), { recursive: true });
+}
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-update-"));
@@ -28,6 +31,7 @@ beforeEach(() => {
   process.env.PAPERCLIP_HOME = path.join(root, "paperclip");
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
   if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousPaperclipHome;
@@ -62,6 +66,7 @@ describe("update command", () => {
   });
 
   it("re-resolves a moving git branch and activates the new SHA payload", async () => {
+    markInstanceOnboarded();
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const oldSha = "1".repeat(40); const newSha = "2".repeat(40);
     const oldPayload = payloadPathFor(paths, "git", oldSha.slice(0, 12));
@@ -131,6 +136,7 @@ describe("update command", () => {
   });
 
   it("backs up, installs side-by-side, flips, and rolls back instantly", async () => {
+    markInstanceOnboarded();
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
@@ -149,6 +155,50 @@ describe("update command", () => {
     const rolledBack = rollbackManagedInstall(paths);
     expect(rolledBack.version).toBe("1.0.0");
     expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(oldPayload));
+  });
+
+  it("explains how to recover when the pre-update database is unreachable", async () => {
+    markInstanceOnboarded();
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
+    writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
+    const backupError = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:54329"), { code: "ECONNREFUSED" });
+    const backup = vi.fn(async () => { throw backupError; });
+    const runCommand = vi.fn(async () => ({ stdout: '"2.0.0"\n', stderr: "" }));
+
+    await expect(updateCommand({}, { paths, executablePath: executable, runCommand, backup })).rejects.toThrow(
+      "Start the service with `paperclipai service start` and retry, or skip the backup with `paperclipai update --no-backup`.",
+    );
+    expect(backup).toHaveBeenCalledOnce();
+    expect(readInstallManifest(paths)?.version).toBe("1.0.0");
+  });
+
+  it("skips the pre-update backup when there is no onboarded instance data", async () => {
+    vi.stubEnv("PAPERCLIP_CONFIG", path.join(root, "missing-config.json"));
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("DATABASE_URL", "");
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
+    writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
+    const backup = vi.fn(async () => undefined);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const runCommand = vi.fn(async (file: string, args: string[]) => {
+      if (args[0] === "view") return { stdout: '"2.0.0"\n', stderr: "" };
+      if (file === "npm" && args[0] === "install") { createPayload(args[args.indexOf("--prefix") + 1], "2.0.0"); return { stdout: "", stderr: "" }; }
+      return { stdout: "2.0.0\n", stderr: "" };
+    });
+
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    try {
+      await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService: async () => false });
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(backup).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("has not been onboarded and has no data to back up"));
+    expect(readInstallManifest(paths)?.version).toBe("2.0.0");
   });
 
   it("does not inherit a managed pin for global npm updates", async () => {

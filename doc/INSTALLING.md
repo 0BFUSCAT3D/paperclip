@@ -184,6 +184,12 @@ Managed updates create a database backup before switching payloads, verify the
 new CLI, atomically flip `current`, and restart an installed service. A failed
 install or verification leaves the previous payload active.
 
+If the service is stopped, start it with `paperclipai service start` before
+updating so Paperclip can take the safety backup. Use
+`paperclipai update --no-backup` only when you intentionally accept updating
+without that rollback safeguard. A never-onboarded instance with no config or
+instance data skips the backup automatically because there is nothing to save.
+
 Roll back to the previous retained payload:
 
 ```sh

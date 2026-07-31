@@ -8,7 +8,8 @@ import pc from "picocolors";
 import { buildNextManifest, flipCurrentAtomic, isManagedExecutable, pruneInstallPayloads, readInstallManifest, resolveInstallStorePaths, withInstallStoreLock, writeInstallManifestAtomic, type InstallChannel, type InstallManifest, type InstallRecord, type InstallStorePaths } from "../install-store.js";
 import { dbBackupCommand } from "./db-backup.js";
 import { installGitPayload, installNpmPayload, PUBLIC_NPM_REGISTRY, resolveGitHubRef, resolvePublishedVersion, type CommandRunner } from "./install.js";
-import { resolvePaperclipInstanceId } from "../config/home.js";
+import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
+import { resolveConfigPath } from "../config/store.js";
 import { detectServiceManager } from "../services/service-manager.js";
 import { restartManagedService } from "./service.js";
 import { packageVersion } from "../version.js";
@@ -17,6 +18,54 @@ const execFileAsync = promisify(execFile);
 export type InstallMode = "managed" | "global-npm" | "npx" | "source" | "unknown";
 export type UpdateOptions = { canary?: boolean; latest?: boolean; version?: string; rollback?: boolean; check?: boolean; dryRun?: boolean; json?: boolean; yes?: boolean; backup?: boolean };
 type Dependencies = { executablePath: string; runCommand: CommandRunner; backup: () => Promise<void>; confirm: (message: string) => Promise<boolean>; now: () => Date; paths: InstallStorePaths; restartActiveService: (expectedVersion: string) => Promise<boolean> };
+
+const DATABASE_UNREACHABLE_CODES = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"]);
+
+function hasPaperclipInstanceData(): boolean {
+  return Boolean(process.env.DATABASE_URL?.trim())
+    || fs.existsSync(resolveConfigPath())
+    || fs.existsSync(resolvePaperclipInstanceRoot());
+}
+
+function isDatabaseUnreachableError(error: unknown): boolean {
+  const pending = [error];
+  const seen = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === null || current === undefined || seen.has(current)) continue;
+    seen.add(current);
+    if (typeof current === "string") {
+      if (/\b(?:ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)\b|connection refused/i.test(current)) return true;
+      continue;
+    }
+    if (typeof current !== "object") continue;
+    const record = current as Record<string, unknown>;
+    if (typeof record.code === "string" && DATABASE_UNREACHABLE_CODES.has(record.code)) return true;
+    if (typeof record.message === "string" && /\b(?:ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)\b|connection refused/i.test(record.message)) return true;
+    if (record.cause !== undefined) pending.push(record.cause);
+    if (Array.isArray(record.errors)) pending.push(...record.errors);
+  }
+  return false;
+}
+
+async function runPreUpdateBackup(options: UpdateOptions, backup: () => Promise<void>): Promise<void> {
+  if (!hasPaperclipInstanceData()) {
+    const message = "Skipping the pre-update backup because this Paperclip instance has not been onboarded and has no data to back up.";
+    if (options.json) console.error(message); else console.log(pc.yellow(message));
+    return;
+  }
+  try {
+    await backup();
+  } catch (error) {
+    if (isDatabaseUnreachableError(error)) {
+      throw new Error(
+        "The Paperclip database is not running or reachable, so the pre-update backup cannot be taken. Start the service with `paperclipai service start` and retry, or skip the backup with `paperclipai update --no-backup`.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
 
 async function restartActiveManagedService(expectedVersion: string): Promise<boolean> {
   const instanceId = resolvePaperclipInstanceId();
@@ -142,7 +191,7 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
       const confirmed = await (overrides.confirm ?? defaultConfirm)(`Update from ${manifest.repo}@${manifest.ref} and execute build scripts from commit ${targetSha.slice(0, 12)}?`);
       if (!confirmed) throw new Error("Git update cancelled. Re-run with --yes to confirm executing build scripts from the updated commit.");
     }
-    if (options.backup !== false) await (overrides.backup ?? (() => dbBackupCommand({})))();
+    if (options.backup !== false) await runPreUpdateBackup(options, overrides.backup ?? (() => dbBackupCommand({})));
     const installed = await withInstallStoreLock(async () => {
       const payload = await installGitPayload(manifest.repo!, targetSha, runCommand, paths);
       const record: InstallRecord = { source: "git", version: payload.version, channel: "pinned", repo: manifest.repo, ref: manifest.ref, sha: targetSha, payloadPath: payload.payloadPath, installedAt: (overrides.now?.() ?? new Date()).toISOString() };
@@ -196,7 +245,7 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
   if (comparison === 0) { emit(options, { mode, currentVersion, targetVersion, changed: false }, `paperclipai ${targetVersion} is already active.`); return; }
   if (comparison < 0 && options.yes !== true) { const confirmed = await (overrides.confirm ?? defaultConfirm)(`Downgrade paperclipai from ${currentVersion} to ${targetVersion}?`); if (!confirmed) throw new Error("Downgrade cancelled. Re-run with --yes to confirm explicitly."); }
   if (options.dryRun) { emit(options, { mode, currentVersion, targetVersion, action: comparison < 0 ? "downgrade" : "update", backup: options.backup !== false, dryRun: true }, `Would ${comparison < 0 ? "downgrade" : "update"} paperclipai ${currentVersion} → ${targetVersion}${options.backup === false ? " without a backup" : " after a database backup"}.`); return; }
-  if (options.backup !== false) await (overrides.backup ?? (() => dbBackupCommand({})))();
+  if (options.backup !== false) await runPreUpdateBackup(options, overrides.backup ?? (() => dbBackupCommand({})));
   const installed = await withInstallStoreLock(async () => {
     const payload = await installNpmPayload(targetVersion, runCommand, paths);
     const record: InstallRecord = { source: "npm", version: targetVersion, channel: request.channel, payloadPath: payload.payloadPath, installedAt: (overrides.now?.() ?? new Date()).toISOString() };
