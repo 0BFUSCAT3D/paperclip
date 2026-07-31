@@ -72,8 +72,17 @@ if bash scripts/build-npm.sh --skip-checks --skip-typecheck > "$HOME/e2e-bootstr
 else
   tail -40 "$HOME/e2e-bootstrap-build.log"; fail_ "1c bootstrap build-npm.sh"; exit 1
 fi
-BOOTSTRAP_CLI="$BOOT/cli/dist/index.js"
-[ -f "$BOOTSTRAP_CLI" ] || { fail_ "1d bootstrap CLI artifact missing"; exit 1; }
+# The in-checkout dist resolves externals against the publishable package.json,
+# so run the bootstrap exactly the way npm users get it: pack + install the tarball.
+TARBALL="$(cd "$BOOT/cli" && npm pack --silent 2>/dev/null | tail -1)"
+mkdir -p "$HOME/e2e-bootstrap-cli"
+if (cd "$HOME/e2e-bootstrap-cli" && npm install --no-fund --no-audit "$BOOT/cli/$TARBALL" > "$HOME/e2e-bootstrap-npm.log" 2>&1); then
+  pass "1d bootstrap CLI packed + npm-installed ($TARBALL)"
+else
+  tail -40 "$HOME/e2e-bootstrap-npm.log"; fail_ "1d bootstrap CLI npm install"; exit 1
+fi
+BOOTSTRAP_CLI="$HOME/e2e-bootstrap-cli/node_modules/paperclipai/dist/index.js"
+node "$BOOTSTRAP_CLI" --version >/dev/null || { fail_ "1e bootstrap CLI smoke"; exit 1; }
 cd "$HOME"
 
 if [ "${E2E_SKIP_CANARY:-0}" != "1" ]; then
