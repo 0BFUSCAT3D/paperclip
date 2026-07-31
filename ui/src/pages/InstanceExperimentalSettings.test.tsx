@@ -88,7 +88,6 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableTaskWatchdogs: false,
     enableSameTaskWatchdogs: false,
     enableWatchdogEverything: false,
-    enableCloudSync: false,
     enableServerInfoDebugView: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
