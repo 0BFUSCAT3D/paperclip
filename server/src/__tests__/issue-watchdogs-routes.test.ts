@@ -26,6 +26,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { taskWatchdogService } from "../services/task-watchdogs.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -218,6 +219,7 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       assigneeAgentId: secondAgentId,
     });
     const app = createApp(companyId);
+    await instanceSettingsService(db).updateExperimental({ enableSameTaskWatchdogs: true });
 
     const created = await request(app)
       .put(`/api/issues/${issueId}/watchdog`)
@@ -303,6 +305,47 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       "issue.watchdog_removed",
     ]);
     expect(actionNames).toContain("issue.task_watchdog_triggered");
+  });
+
+  it("gates switching a watchdog to self mode on the same-task experimental toggles", async () => {
+    const companyId = await seedCompany();
+    const assigneeId = await seedAgent(companyId, { name: "Assignee Watchdog" });
+    const issueId = await seedIssue(companyId, {
+      identifier: "WDOG-GATE",
+      issueNumber: 77,
+      assigneeAgentId: assigneeId,
+    });
+    const app = createApp(companyId);
+    const settings = instanceSettingsService(db);
+    await settings.updateExperimental({ enableSameTaskWatchdogs: false, enableWatchdogEverything: false });
+
+    // Self mode is rejected while both toggles are off; subtask mode stays available.
+    const rejected = await request(app)
+      .put(`/api/issues/${issueId}/watchdog`)
+      .send({ agentId: assigneeId, mode: "self" });
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+
+    const subtask = await request(app)
+      .put(`/api/issues/${issueId}/watchdog`)
+      .send({ agentId: assigneeId, mode: "subtask" });
+    expect(subtask.status, JSON.stringify(subtask.body)).toBe(200);
+    expect(subtask.body).toMatchObject({ mode: "subtask" });
+
+    // Watchdog Everything alone implies the same-task capability.
+    await settings.updateExperimental({ enableWatchdogEverything: true });
+    const allowed = await request(app)
+      .put(`/api/issues/${issueId}/watchdog`)
+      .send({ agentId: assigneeId, mode: "self" });
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    expect(allowed.body).toMatchObject({ mode: "self" });
+
+    // Turning the toggles back off does not brick edits that keep self mode.
+    await settings.updateExperimental({ enableWatchdogEverything: false });
+    const kept = await request(app)
+      .put(`/api/issues/${issueId}/watchdog`)
+      .send({ agentId: assigneeId, instructions: "Still self.", mode: "self" });
+    expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+    expect(kept.body).toMatchObject({ mode: "self", instructions: "Still self." });
   });
 
   it("handles concurrent first-time watchdog upserts without duplicate-key failures", async () => {

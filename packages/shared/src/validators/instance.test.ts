@@ -143,6 +143,19 @@ describe("instance experimental settings validators", () => {
     });
   });
 
+  it("defaults same-task watchdogs off and accepts patches", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+    expect(settings.enableSameTaskWatchdogs).toBe(false);
+
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableSameTaskWatchdogs: true,
+      }),
+    ).toEqual({
+      enableSameTaskWatchdogs: true,
+    });
+  });
+
   it("accepts apps patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({

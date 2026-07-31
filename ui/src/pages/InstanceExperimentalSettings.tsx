@@ -368,6 +368,7 @@ export function InstanceExperimentalSettings() {
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
+  const enableSameTaskWatchdogs = experimentalQuery.data?.enableSameTaskWatchdogs === true;
   const enableWatchdogEverything = experimentalQuery.data?.enableWatchdogEverything === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
@@ -688,8 +689,18 @@ export function InstanceExperimentalSettings() {
       />
 
       <ExperimentalToggleCard
+        title="Same-Task Watchdogs"
+        description="Allow a task's watchdog to run on the task itself: the review posts on the watched task and wakes its assignee directly instead of going through a separate watchdog sub-task. Adds a same-task option to the watchdog editor; nothing is registered automatically."
+        checked={enableSameTaskWatchdogs}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableSameTaskWatchdogs: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableSameTaskWatchdogs}
+        ariaLabel="Toggle same-task watchdogs experimental setting"
+      />
+
+      <ExperimentalToggleCard
         title="Watchdog Everything"
-        description="On new task assignments, instruct the assignee to first decide whether the task needs a completion goal and, if so, register it as a self-mode watchdog on the task itself. The watchdog then wakes the same agent directly on the task to verify the goal passed — no separate watchdog sub-task is created. Simple tasks are allowed to skip the watchdog."
+        description="On new task assignments, instruct the assignee to first decide whether the task needs a completion goal and, if so, register it as a same-task watchdog on itself. The watchdog then wakes the same agent directly on the task to verify the goal passed — no separate watchdog sub-task is created. Simple tasks are allowed to skip the watchdog. Implies same-task watchdog capability even when that toggle is off."
         checked={enableWatchdogEverything}
         onCheckedChange={(checked) => toggleMutation.mutate({ enableWatchdogEverything: checked })}
         disabled={toggleMutation.isPending}

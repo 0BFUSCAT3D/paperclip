@@ -5517,6 +5517,20 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const existingWatchdog = await taskWatchdogsSvc.getActiveForIssue(issue.companyId, issue.id);
+    // Same-task (self mode) watchdogs are experimental: switching a watchdog
+    // to self mode requires the Same-Task Watchdogs toggle (or Watchdog
+    // Everything, which registers self-mode watchdogs automatically). Updates
+    // that keep an already-self watchdog in self mode stay allowed so
+    // disabling the toggles never bricks existing watchdog edits.
+    if (req.body.mode === "self" && existingWatchdog?.mode !== "self") {
+      const experimental = await instanceSettings.getExperimental();
+      if (experimental.enableSameTaskWatchdogs !== true && experimental.enableWatchdogEverything !== true) {
+        throw unprocessable(
+          "Same-task watchdogs are disabled. Enable the Same-Task Watchdogs (or Watchdog Everything) experimental setting to run a watchdog on the task itself.",
+          { issueId: issue.id },
+        );
+      }
+    }
     const { watchdog, created } = await taskWatchdogsSvc.upsertForIssue(issue.companyId, issue.id, {
       agentId: req.body.agentId,
       instructions: req.body.instructions,
