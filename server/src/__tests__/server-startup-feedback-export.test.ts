@@ -206,6 +206,7 @@ vi.mock("../services/index.js", () => ({
   })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
+  applyManagedEnvironments: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
   issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
@@ -218,7 +219,6 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
-  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
     scanned: 0,
     seeded: 0,

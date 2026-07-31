@@ -93,7 +93,9 @@ export {
 } from "./sidebar-preferences.js";
 export {
   resourceMembershipStateSchema,
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  type UpdateDocumentResourceMembership,
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
 export {
@@ -154,6 +156,8 @@ export {
   companySkillForkReassignmentSchema,
   companySkillForkResultSchema,
   companySkillForkPrecheckResultSchema,
+  companySkillRenameSchema,
+  companySkillRenameResultSchema,
   companySkillUpdateSchema,
   companySkillUpdateStatusSchema,
   companySkillAuditFindingSchema,
@@ -205,6 +209,7 @@ export {
   type CompanySkillCommentCreate,
   type CompanySkillCommentUpdate,
   type CompanySkillFork,
+  type CompanySkillRename,
   type CatalogSkillListQuery,
   type CompanySkillInstallCatalog,
   type CompanySkillInstallUpdate,
@@ -419,6 +424,7 @@ export {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   linkIssueApprovalSchema,
@@ -442,6 +448,7 @@ export {
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,
+  type WithdrawIssueThreadInteraction,
   type RespondIssueThreadInteraction,
   type SubmitIssueThreadInteractionVerdicts,
   type LinkIssueApproval,

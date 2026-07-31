@@ -191,6 +191,7 @@ export {
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
+  ISSUE_COMMENT_PRESENTATION_DENSITIES,
   clampIssueRequestDepth,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
@@ -375,6 +376,7 @@ export {
   type IssueCommentMetadataRowType,
   type IssueCommentPresentationKind,
   type IssueCommentPresentationTone,
+  type IssueCommentPresentationDensity,
   type IssueThreadInteractionKind,
   type IssueThreadInteractionStatus,
   type IssueThreadInteractionContinuationPolicy,
@@ -593,6 +595,8 @@ export type {
   CompanySkillForkReassignment,
   CompanySkillForkResult,
   CompanySkillForkPrecheckResult,
+  CompanySkillRenameRequest,
+  CompanySkillRenameResult,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillAuditSeverity,
@@ -1013,6 +1017,9 @@ export type {
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
   CompanyPortabilitySidebarOrder,
+  CompanyPortabilityLabelManifestEntry,
+  CompanyPortabilityBlobManifestEntry,
+  CompanyPortabilityEmbeddedAssetManifestEntry,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
@@ -1020,6 +1027,10 @@ export type {
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueCommentManifestEntry,
+  CompanyPortabilityIssueDocumentManifestEntry,
+  CompanyPortabilityIssueWorkProductManifestEntry,
+  CompanyPortabilityIssueMonitorManifestEntry,
+  CompanyPortabilityIssueAttachmentManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilityManifest,
   CompanyPortabilityExportResult,
@@ -1320,7 +1331,9 @@ export {
 } from "./validators/sidebar-preferences.js";
 export {
   resourceMembershipStateSchema,
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  type UpdateDocumentResourceMembership,
   type UpdateResourceMembership,
 } from "./validators/resource-memberships.js";
 export {
@@ -1386,22 +1399,6 @@ export {
   SMOKE_RUN_STEP_STATUSES,
   SMOKE_RUN_TRIGGERS,
 } from "./types/smoke-lab.js";
-
-export type {
-  CloudUpstreamConnectStartResponse,
-  CloudUpstreamActivationDecision,
-  CloudUpstreamActivationEntityType,
-  CloudUpstreamConnection,
-  CloudUpstreamConflict,
-  CloudUpstreamPreview,
-  CloudUpstreamRun,
-  CloudUpstreamRunEvent,
-  CloudUpstreamsState,
-  CloudUpstreamStep,
-  CloudUpstreamSummaryCount,
-  CloudUpstreamTarget,
-  CloudUpstreamWarning,
-} from "./types/cloud-upstream.js";
 
 export type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "./types/server-info.js";
 
@@ -1615,6 +1612,7 @@ export {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   linkIssueApprovalSchema,
@@ -1677,6 +1675,7 @@ export {
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,
+  type WithdrawIssueThreadInteraction,
   type RespondIssueThreadInteraction,
   type SubmitIssueThreadInteractionVerdicts,
   type LinkIssueApproval,
@@ -1963,6 +1962,8 @@ export {
   companySkillCommentCreateSchema,
   companySkillCommentUpdateSchema,
   companySkillForkSchema,
+  companySkillRenameSchema,
+  companySkillRenameResultSchema,
   companySkillUpdateSchema,
   companySkillUpdateStatusSchema,
   companySkillAuditFindingSchema,

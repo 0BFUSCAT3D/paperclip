@@ -158,6 +158,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
   "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
+  "- After 2 consecutive failures of the same control-plane write, stop retrying that write for the rest of the heartbeat. Continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
@@ -1436,7 +1437,7 @@ export function renderPaperclipWakePrompt(
   const recoveryInstruction = (() => {
     switch (recovery?.cause) {
       case "process_lost":
-        return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps.`;
+        return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps. Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.`;
       case "successful_run_missing_state":
       case "successful_run_missing_issue_disposition":
         return "Your run completed but left no final disposition. Post a comment summarizing the state and set the correct disposition (`done` / `in_review` / `blocked` / `in_progress` with a live path). Do not start new work.";
@@ -1479,12 +1480,16 @@ export function renderPaperclipWakePrompt(
     ? [
         "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
         `Cause-specific instruction: ${recoveryInstruction}`,
+        ...(recovery?.cause === "successful_run_missing_state" ||
+            recovery?.cause === "successful_run_missing_issue_disposition"
+          ? []
+          : ["Record the outcome in the resolve call's `resolutionNote`. Any comment you post on the source issue must be ≤3 lines (cause → what you did → hand-back). No headings, no run-by-run narrative."]),
         `Fallback preference order: (1) send back to ${originalAssigneeLabel} with a retry instruction; (2) fix the runtime/adapter/workspace problem, then send it back; (3) reassign to another agent with the right specialty; (4) convert to an explicit manual-review state for the board.`,
         "",
       ]
     : includeExecutionContract
       ? [
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Immediately before returning, verify that Paperclip records one of those dispositions; a successful process exit or final response is not sufficient. If no valid disposition is recorded, record it now and do not end the run. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Immediately before returning, verify that Paperclip records one of those dispositions; a successful process exit or final response is not sufficient. If no valid disposition is recorded, record it now and do not end the run. After 2 consecutive failures of the same control-plane write, stop retrying it for the rest of the heartbeat, continue useful work, report the failure in the final response, and rely on the adapter/runtime status channel as the sanctioned fallback. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
       ]
       : [];
@@ -1509,6 +1514,9 @@ export function renderPaperclipWakePrompt(
             ? [`- routing fallback: ${recovery.routingFallbackReason}`]
             : []),
         ]
+      : []),
+    ...(normalized.reason === "issue_recovery_action_restored"
+      ? ["- instruction: Do not narrate the recovery in your next comment — at most one short sentence; lead with the work."]
       : []),
   ];
   const lines = resumedSession
