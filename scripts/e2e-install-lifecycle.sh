@@ -2,7 +2,7 @@
 # End-to-end proof of the paperclipai managed install lifecycle on a CLEAN machine.
 #
 # Exercises the real user journey against real GitHub + real npm:
-#   bootstrap build -> install --canary -> install --ref (build-from-source)
+#   bootstrap build -> install (npm latest) -> install --ref (build-from-source)
 #   -> update --check -> update --rollback -> reinstall (payload reuse)
 #   -> bad-ref failure hygiene -> service lifecycle -> uninstall (data preserved)
 #
@@ -12,7 +12,8 @@
 # Env knobs:
 #   E2E_REPO          GitHub repo to install from (default: paperclipai/paperclip)
 #   E2E_REF           branch/tag/sha to install   (default: feat/managed-install-integration)
-#   E2E_SKIP_CANARY=1   skip the npm-channel install step
+#   E2E_SKIP_NPM=1      skip the npm-channel install step (canary is tested separately;
+#                       the npm leg uses the latest channel)
 #   E2E_SKIP_SERVICE=1  skip the service lifecycle step
 #   E2E_SERVICE_TIMEOUT_SECS  how long to wait for the service to go active (default 300)
 set -uo pipefail
@@ -85,12 +86,12 @@ BOOTSTRAP_CLI="$HOME/e2e-bootstrap-cli/node_modules/paperclipai/dist/index.js"
 node "$BOOTSTRAP_CLI" --version >/dev/null || { fail_ "1e bootstrap CLI smoke"; exit 1; }
 cd "$HOME"
 
-if [ "${E2E_SKIP_CANARY:-0}" != "1" ]; then
-  note "2. install --canary (published npm channel; proves the npm install mechanism)"
-  if node "$BOOTSTRAP_CLI" install --canary --yes; then
-    pass "2a install --canary exits 0"
+if [ "${E2E_SKIP_NPM:-0}" != "1" ]; then
+  note "2. install (published npm latest channel; proves the npm install mechanism)"
+  if node "$BOOTSTRAP_CLI" install --yes; then
+    pass "2a install (latest) exits 0"
   else
-    fail_ "2a install --canary exits 0"
+    fail_ "2a install (latest) exits 0"
   fi
   [ -x "$SHIM" ] && pass "2b shim created at ~/.local/bin/paperclipai" || fail_ "2b shim created"
   case "$(current_target)" in
@@ -98,10 +99,10 @@ if [ "${E2E_SKIP_CANARY:-0}" != "1" ]; then
     *) fail_ "2c current -> installs/npm/<version> (got: $(current_target))" ;;
   esac
   [ -f "$STORE/install.json" ] && pass "2d install.json manifest present" || fail_ "2d install.json manifest present"
-  CANARY_VERSION="$("$SHIM" --version 2>/dev/null || true)"
-  [ -n "$CANARY_VERSION" ] && pass "2e shim runs: paperclipai --version = $CANARY_VERSION" || fail_ "2e shim runs paperclipai --version"
+  NPM_VERSION="$("$SHIM" --version 2>/dev/null || true)"
+  [ -n "$NPM_VERSION" ] && pass "2e shim runs: paperclipai --version = $NPM_VERSION" || fail_ "2e shim runs paperclipai --version"
 else
-  skip_ "2 install --canary" "E2E_SKIP_CANARY=1"
+  skip_ "2 install (npm latest)" "E2E_SKIP_NPM=1"
 fi
 
 note "3. install --ref $E2E_REF (real build-from-GitHub-source into the managed store)"
@@ -126,7 +127,7 @@ else
   fail_ "4a update --check exit code (got $CHECK_EXIT)"
 fi
 
-if [ "${E2E_SKIP_CANARY:-0}" != "1" ]; then
+if [ "${E2E_SKIP_NPM:-0}" != "1" ]; then
   note "5. update --rollback (git payload -> previous npm payload)"
   if shim update --rollback; then
     pass "5a update --rollback exits 0"
@@ -138,9 +139,9 @@ if [ "${E2E_SKIP_CANARY:-0}" != "1" ]; then
     *) fail_ "5b rollback restored npm payload (got: $(current_target))" ;;
   esac
   ROLLED_VERSION="$("$SHIM" --version 2>/dev/null || true)"
-  [ "$ROLLED_VERSION" = "$CANARY_VERSION" ] \
-    && pass "5c version after rollback matches canary ($ROLLED_VERSION)" \
-    || fail_ "5c version after rollback ($ROLLED_VERSION != $CANARY_VERSION)"
+  [ "$ROLLED_VERSION" = "$NPM_VERSION" ] \
+    && pass "5c version after rollback matches npm payload ($ROLLED_VERSION)" \
+    || fail_ "5c version after rollback ($ROLLED_VERSION != $NPM_VERSION)"
 
   note "6. reinstall the git ref (payload retained -> reused, no rebuild)"
   REINSTALL_START=$(date +%s)
@@ -155,7 +156,7 @@ if [ "${E2E_SKIP_CANARY:-0}" != "1" ]; then
     *) fail_ "6b back on git payload (got: $(current_target))" ;;
   esac
 else
-  skip_ "5-6 rollback/reinstall" "E2E_SKIP_CANARY=1"
+  skip_ "5-6 rollback/reinstall" "E2E_SKIP_NPM=1"
 fi
 
 note "7. failure hygiene: install --ref <nonexistent> must fail cleanly"
