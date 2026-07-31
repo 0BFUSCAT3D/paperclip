@@ -15245,7 +15245,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
           activeRunExecutions.delete(run.id);
-          await startNextQueuedRunForAgent(run.agentId);
+          // A run the graceful shutdown drain interrupted must not
+          // chain-dispatch the next queued run — usually its own process-loss
+          // retry: shutdown awaits this finalizer via drainActiveRunExecutions
+          // before process.exit, so a fresh dispatch here would either stall
+          // that drain or spawn an adapter that dies with the server. The
+          // queued retry is recovered on the next boot instead.
+          if (latestRun?.errorCode !== "server_shutdown_interrupted") {
+            await startNextQueuedRunForAgent(run.agentId);
+          }
         }
   }
 

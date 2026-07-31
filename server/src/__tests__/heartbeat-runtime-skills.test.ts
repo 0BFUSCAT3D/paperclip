@@ -86,6 +86,7 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
           emitPaperclipSkillUsageEvents?: boolean;
           paperclipSkillUsageEmitList?: PaperclipSkillEntry[];
           markRunCancelledBeforeExit?: boolean;
+          hangUntilRunLeavesRunningMarkerPath?: string;
         };
         const serializedRuntimeInput = JSON.stringify({
           config: ctx.config,
@@ -110,6 +111,24 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
                 eventKind: "loaded",
               },
             });
+          }
+        }
+        if (typedConfig.hangUntilRunLeavesRunningMarkerPath) {
+          // Simulate an adapter still mid-execution when a graceful shutdown
+          // drain lands: signal readiness through the marker file, then stay
+          // in flight until the drain flips the run out of `running`. The
+          // deadline is a safety valve so a broken drain fails assertions
+          // instead of wedging the suite.
+          await fs.writeFile(typedConfig.hangUntilRunLeavesRunningMarkerPath, "ready", "utf8");
+          const hangDeadline = Date.now() + 8_000;
+          while (Date.now() < hangDeadline) {
+            const row = await db
+              .select({ status: heartbeatRuns.status })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, ctx.runId))
+              .then((rows) => rows[0] ?? null);
+            if (!row || row.status !== "running") break;
+            await new Promise((resolve) => setTimeout(resolve, 50));
           }
         }
         if (typedConfig.markRunCancelledBeforeExit) {
@@ -625,4 +644,108 @@ describeEmbeddedPostgres("heartbeat runtime skill version pins", () => {
       eventKind: "loaded",
     });
   });
+
+  it("persists buffered skill usage events when a graceful shutdown drain interrupts the run", async () => {
+    const companyId = randomUUID();
+    const companySkillId = randomUUID();
+    const skillKey = `company/${companyId}/shutdown-drain`;
+    const agentId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-usage-shutdown-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Shutdown\n", "utf8");
+    const hangMarkerPath = path.join(skillDir, "adapter-in-flight.marker");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Runtime Skill Capture",
+      issuePrefix: `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companySkills).values({
+      id: companySkillId,
+      companyId,
+      key: skillKey,
+      slug: "shutdown-drain",
+      name: "Shutdown Drain",
+      description: null,
+      markdown: "# Shutdown\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runtime Skill Capture",
+      role: "engineer",
+      status: "idle",
+      adapterType: TEST_ADAPTER_TYPE,
+      adapterConfig: {
+        emitPaperclipSkillUsageEvents: true,
+        hangUntilRunLeavesRunningMarkerPath: hangMarkerPath,
+        paperclipSkillUsageEmitList: [
+          {
+            key: skillKey,
+            runtimeName: "shutdown-drain",
+            source: skillDir,
+          },
+        ],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    // Wait until the adapter has emitted its usage events and is hanging
+    // mid-execution, so the drain below lands on a genuinely in-flight run.
+    const markerDeadline = Date.now() + 5_000;
+    let markerReady = false;
+    while (Date.now() < markerDeadline) {
+      markerReady = await fs.access(hangMarkerPath).then(() => true, () => false);
+      if (markerReady) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(markerReady).toBe(true);
+
+    const drain = await heartbeat.drainRunningRunsForShutdown("SIGTERM");
+    expect(drain.interruptedRunIds).toContain(run!.id);
+
+    // Mirrors the shutdown sequence in server/src/index.ts: once the run
+    // drain and the finalizer drain both resolve, every late write —
+    // including buffered usage events — must already be persisted, because
+    // process.exit follows immediately in a real shutdown.
+    await heartbeat.drainActiveRunExecutions();
+
+    const rows = await db
+      .select()
+      .from(companySkillUsageEvents)
+      .where(eq(companySkillUsageEvents.runId, run!.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      skillKey,
+      skillId: companySkillId,
+      eventKind: "loaded",
+    });
+
+    expect((await heartbeat.getRun(run!.id))?.status).toBe("interrupted");
+
+    // The shutdown-interrupted run must leave its process-loss retry queued
+    // for boot recovery rather than chain-dispatching it in the exiting
+    // process — that dispatch would stall the finalizer drain until its
+    // timeout and spawn an adapter that dies with the server.
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    expect(retries).toHaveLength(1);
+    expect(retries[0].status).toBe("queued");
+    expect(capturedRuns.filter((entry) => entry.agentId === agentId)).toHaveLength(1);
+  }, 20_000);
 });

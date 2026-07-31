@@ -71,7 +71,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
-import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import { coordinateHeartbeatSchedulerShutdown, drainRunExecutionFinalizersForShutdown } from "./shutdown.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -880,6 +880,7 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+  let drainActiveRunExecutionsForShutdown: (() => Promise<void>) | null = null;
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
@@ -902,6 +903,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    drainActiveRunExecutionsForShutdown = heartbeat.drainActiveRunExecutions;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
@@ -1286,6 +1288,10 @@ export async function startServer(): Promise<StartedServer> {
   });
   
   {
+    // Interrupted-run finalizers are DB writes and normally settle in well
+    // under a second; the bound only guards the rare run that finished
+    // normally mid-shutdown and chain-dispatched a fresh adapter run.
+    const HEARTBEAT_RUN_FINALIZER_DRAIN_TIMEOUT_MS = 15_000;
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
@@ -1323,6 +1329,29 @@ export async function startServer(): Promise<StartedServer> {
           logger.info({ signal, drain }, "graceful heartbeat run drain complete");
         } catch (err) {
           logger.error({ err, signal }, "graceful heartbeat run drain failed");
+        }
+      }
+
+      // The run drain above interrupts adapter processes, but each run's
+      // execution promise still flushes late writes (run rows, buffered
+      // skill-usage events) asynchronously. process.exit below would drop
+      // those writes, so await the finalizers here. The hot-restart path
+      // skips this together with the drain: its executions stay live for the
+      // successor process to adopt.
+      if (!skipHeartbeatDrain) {
+        const finalizerDrain = await drainRunExecutionFinalizersForShutdown({
+          drainActiveRunExecutions: drainActiveRunExecutionsForShutdown,
+          timeoutMs: HEARTBEAT_RUN_FINALIZER_DRAIN_TIMEOUT_MS,
+        });
+        if (finalizerDrain.error) {
+          logger.error({ err: finalizerDrain.error, signal }, "heartbeat run finalizer drain failed");
+        } else if (finalizerDrain.timedOut) {
+          logger.warn(
+            { signal, timeoutMs: HEARTBEAT_RUN_FINALIZER_DRAIN_TIMEOUT_MS },
+            "heartbeat run finalizer drain timed out before all late run writes flushed",
+          );
+        } else if (finalizerDrain.attempted) {
+          logger.info({ signal }, "heartbeat run finalizer drain complete");
         }
       }
 
