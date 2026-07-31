@@ -11,7 +11,7 @@
 #
 # Env knobs:
 #   E2E_REPO          GitHub repo to install from (default: paperclipai/paperclip)
-#   E2E_REF           branch/tag/sha to install   (default: feat/managed-install-integration)
+#   E2E_REF           branch/tag/sha to install   (default: master)
 #   E2E_SKIP_NPM=1      skip the npm-channel install step (canary is tested separately;
 #                       the npm leg uses the latest channel)
 #   E2E_SKIP_SERVICE=1  skip the service lifecycle step
@@ -19,7 +19,7 @@
 set -uo pipefail
 
 E2E_REPO="${E2E_REPO:-paperclipai/paperclip}"
-E2E_REF="${E2E_REF:-feat/managed-install-integration}"
+E2E_REF="${E2E_REF:-master}"
 E2E_SERVICE_TIMEOUT_SECS="${E2E_SERVICE_TIMEOUT_SECS:-300}"
 
 # A clean environment: no inherited Paperclip or build-mode state.
