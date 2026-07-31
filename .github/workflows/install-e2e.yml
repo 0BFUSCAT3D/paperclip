@@ -1,0 +1,38 @@
+name: Install lifecycle e2e (PAP-14994)
+
+on:
+  push:
+    branches: ["test/install-e2e-pap14994"]
+  workflow_dispatch: {}
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # Apple Silicon
+          - os: macos-13 # Intel
+          - os: ubuntu-24.04 # x86_64
+          - os: ubuntu-24.04-arm # arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run install lifecycle e2e
+        env:
+          E2E_REPO: paperclipai/paperclip
+          E2E_REF: feat/managed-install-integration
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/e2e-install-lifecycle.sh
+      - name: Installer refuses piped privileged bootstrap (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if cat scripts/install.sh | sudo bash -s -- --yes; then
+            echo "::error::install.sh executed as piped root — guard failed"
+            exit 1
+          fi
+          echo "guard held: piped privileged bootstrap refused"
