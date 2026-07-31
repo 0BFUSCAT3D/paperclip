@@ -66,7 +66,9 @@ parse_bool() {
   local name="$1"
   local value="${2:-}"
 
-  case "${value,,}" in
+  # ${value,,} requires bash 4; macOS ships bash 3.2, so lowercase portably.
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
     ""|0|false|no|off) printf '0' ;;
     1|true|yes|on) printf '1' ;;
     *) fail "$name must be one of: 1, 0, true, false, yes, no, on, off" ;;
