@@ -4901,7 +4901,7 @@ export function IssueDetail() {
                 ) : null
               }
               footer={
-                siblingNavigation ? (
+                !taskChatShellEnabled && siblingNavigation ? (
                   <IssueSiblingNavigation
                     navigation={siblingNavigation}
                     linkState={resolvedIssueDetailState ?? location.state}
