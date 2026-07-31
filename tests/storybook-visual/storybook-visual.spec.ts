@@ -42,6 +42,11 @@ const MASKED_SELECTORS: Record<string, string> = {
   // paragraph that carries that highlight.
   "product-documents-annotations--integrated-mobile-bottom-sheet":
     'p:has-text("Use a sidecar anchor made from")',
+  // The rotating-reasoning ticker demo animates by design and its interval
+  // keeps advancing between capture attempts, so the two ticker rows never
+  // settle. Mask just the ticker line containers.
+  "ux-labs-converted-test-pages--issue-chat-review-surface":
+    "#rotating-text .relative.h-5",
 };
 
 async function renderStory(page: Page, storyId: string, theme: (typeof THEMES)[number]) {
