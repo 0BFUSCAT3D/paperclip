@@ -2513,14 +2513,33 @@ export function IssueProperties({
     (paneTab === "plans" && !hasPlanTab) || (paneTab === "artifacts" && !hasArtifactsTab)
       ? "properties"
       : paneTab;
+  // In the pane header the strip stretches to the bar's full height and the
+  // active underline drops to bottom-0, so it hugs the header's border line.
+  const paneTabTriggerClass = paneHeaderSlot
+    ? "h-full group-data-[orientation=horizontal]/tabs:after:bottom-0"
+    : undefined;
   const tabStrip = (
     <TabsList
       variant="line"
-      className={paneHeaderSlot ? "justify-start gap-1" : "w-full justify-start gap-1"}
+      className={
+        paneHeaderSlot
+          ? "items-stretch justify-start gap-1 p-0 group-data-[orientation=horizontal]/tabs:h-full"
+          : "w-full justify-start gap-1"
+      }
     >
-      <TabsTrigger value="properties">Properties</TabsTrigger>
-      {hasPlanTab ? <TabsTrigger value="plans">Plan</TabsTrigger> : null}
-      {hasArtifactsTab ? <TabsTrigger value="artifacts">Artifacts</TabsTrigger> : null}
+      <TabsTrigger value="properties" className={paneTabTriggerClass}>
+        Properties
+      </TabsTrigger>
+      {hasPlanTab ? (
+        <TabsTrigger value="plans" className={paneTabTriggerClass}>
+          Plan
+        </TabsTrigger>
+      ) : null}
+      {hasArtifactsTab ? (
+        <TabsTrigger value="artifacts" className={paneTabTriggerClass}>
+          Artifacts
+        </TabsTrigger>
+      ) : null}
     </TabsList>
   );
   return (

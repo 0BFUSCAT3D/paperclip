@@ -355,13 +355,15 @@ function ResizablePropertiesPanel({
         >
           {/* The slot hosts whatever IssueProperties portals in — the tab strip
               when Plan/Artifacts have content, else a plain "Properties" title;
-              window controls sit right. */}
-          <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-border">
+              window controls sit right. Vertical padding lives on the controls
+              cluster, not the bar, so the tab strip can stretch to the border
+              and its active underline hugs the header's bottom line. */}
+          <div className="flex items-center justify-between gap-2 px-4 border-b border-border">
             <div
               id={PROPERTIES_PANE_HEADER_SLOT_ID}
               className="flex min-w-0 flex-1 items-center self-stretch"
             />
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 py-2">
               <Button
                 variant="ghost"
                 size="icon-xs"
