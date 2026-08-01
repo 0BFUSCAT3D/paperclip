@@ -36,16 +36,19 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   });
 }
 
-function pressEnter(textarea: HTMLTextAreaElement, shiftKey = false) {
+function pressEnter(
+  textarea: HTMLTextAreaElement,
+  modifiers: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean } = {},
+) {
   flushSync(() => {
     textarea.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Enter", shiftKey, bubbles: true, cancelable: true }),
+      new KeyboardEvent("keydown", { key: "Enter", ...modifiers, bubbles: true, cancelable: true }),
     );
   });
 }
 
-function pressShiftEnter(textarea: HTMLTextAreaElement) {
-  pressEnter(textarea, true);
+function pressCmdEnter(textarea: HTMLTextAreaElement) {
+  pressEnter(textarea, { metaKey: true });
 }
 
 async function flushAsync() {
@@ -61,7 +64,7 @@ function sendButton() {
 }
 
 describe("TaskChatComposer", () => {
-  it("submits the trimmed body on Shift+Enter and clears the draft", async () => {
+  it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
 
@@ -69,19 +72,31 @@ describe("TaskChatComposer", () => {
     setTextareaValue(input(), "  hello there  ");
     expect(sendButton().disabled).toBe(false);
 
-    pressShiftEnter(input());
+    pressCmdEnter(input());
     await flushAsync();
 
     expect(onAdd).toHaveBeenCalledWith("hello there", undefined, undefined);
     expect(input().value).toBe("");
   });
 
-  it("does not submit on plain Enter (newline stays in the draft)", async () => {
+  it("submits on Ctrl+Enter", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
+
+    setTextareaValue(input(), "hello");
+    pressEnter(input(), { ctrlKey: true });
+    await flushAsync();
+
+    expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined);
+  });
+
+  it("does not submit on plain Enter or Shift+Enter (newline stays in the draft)", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
 
     setTextareaValue(input(), "line one");
     pressEnter(input());
+    pressEnter(input(), { shiftKey: true });
     await flushAsync();
 
     expect(onAdd).not.toHaveBeenCalled();
@@ -108,7 +123,7 @@ describe("TaskChatComposer", () => {
     expect(chip.textContent).toContain("Plan");
 
     setTextareaValue(input(), "do the plan");
-    pressShiftEnter(input());
+    pressCmdEnter(input());
     await flushAsync();
 
     expect(onWorkModeChange).toHaveBeenCalledWith("planning");
@@ -127,7 +142,7 @@ describe("TaskChatComposer", () => {
     );
 
     setTextareaValue(input(), "wake up");
-    pressShiftEnter(input());
+    pressCmdEnter(input());
     await flushAsync();
 
     expect(onAdd).toHaveBeenCalledWith("wake up", true, undefined);
