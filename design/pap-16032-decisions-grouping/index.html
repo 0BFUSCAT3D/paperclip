@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PAP-16032 — Decisions grouping, queues &amp; today's desk</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --panel: #ffffff;
+    --ink: #111111;
+    --muted: #666666;
+    --line: #e5e5e0;
+    --accent: #d33;
+    --maxw: 1200px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 15px/1.55 -apple-system, system-ui, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+
+  .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+
+  .toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow: auto;
+    padding: 24px 16px 24px 24px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    font-size: 13px;
+    z-index: 20;
+  }
+  .toc h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .toc h2 { font-size: 12px; margin: 24px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .toc a { display: block; text-decoration: none; padding: 6px 8px; margin-left: -8px; border-radius: 4px; color: var(--ink); }
+  .toc a:hover { background: var(--bg); }
+  .toc .num { display: inline-block; width: 22px; color: var(--muted); }
+  .toc .toc-summary { display: none; }
+  .toc .toc-body { display: block; }
+
+  main { padding: 48px 56px 96px; max-width: 1300px; min-width: 0; }
+
+  header.hero { max-width: var(--maxw); margin-bottom: 64px; }
+  header.hero .crumb { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  header.hero h1 { font-size: 36px; line-height: 1.15; margin: 8px 0 16px; }
+  header.hero p { color: var(--muted); max-width: 720px; font-size: 16px; }
+  header.hero .pills { margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  header.hero .pill { font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); }
+
+  section { scroll-margin-top: 24px; max-width: var(--maxw); margin-bottom: 96px; }
+  section .lede { color: var(--muted); margin: 0 0 12px; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; font-weight: 700; }
+  section h2 { font-size: 28px; line-height: 1.2; margin: 0 0 8px; }
+  section h2 .step-num { display: inline-block; width: 40px; color: var(--muted); }
+  section h3 { font-size: 16px; margin: 24px 0 8px; }
+  section .desc { color: var(--muted); margin: 0 0 24px; max-width: 760px; }
+
+  .grid {
+    display: grid; gap: 24px;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr);
+    align-items: start;
+  }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; }
+    .toc {
+      position: sticky; top: 0;
+      height: auto; max-height: 60vh;
+      padding: 12px 16px;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .toc .toc-summary {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      list-style: none;
+      padding: 4px 0;
+    }
+    .toc .toc-summary::-webkit-details-marker { display: none; }
+    .toc .toc-summary .title { font-size: 13px; font-weight: 600; }
+    .toc .toc-summary .crumb { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+    .toc .toc-summary .chevron {
+      width: 10px; height: 10px;
+      border-right: 1.5px solid var(--ink);
+      border-bottom: 1.5px solid var(--ink);
+      transform: rotate(45deg);
+      transition: transform 120ms ease;
+      margin-right: 4px;
+    }
+    .toc[open] .toc-summary .chevron { transform: rotate(225deg) translate(-2px, -2px); }
+    .toc .toc-body { display: none; padding-top: 8px; border-top: 1px solid var(--line); margin-top: 8px; }
+    .toc[open] .toc-body { display: block; }
+    main { padding: 24px 20px 64px; }
+    header.hero { margin-bottom: 40px; }
+    header.hero h1 { font-size: 28px; }
+    header.hero p { font-size: 15px; }
+    section { margin-bottom: 64px; scroll-margin-top: 80px; }
+    section h2 { font-size: 24px; }
+    section h2 .step-num { width: 32px; }
+    .flow-section { padding: 20px; margin-bottom: 40px; scroll-margin-top: 80px; }
+  }
+
+  @media (max-width: 560px) {
+    main { padding: 16px 14px 56px; }
+    header.hero { margin-bottom: 32px; }
+    header.hero h1 { font-size: 24px; line-height: 1.2; }
+    header.hero p { font-size: 14px; }
+    section { margin-bottom: 48px; }
+    section h2 { font-size: 20px; line-height: 1.25; }
+    section h2 .step-num { width: 28px; }
+    section h3 { font-size: 15px; margin: 20px 0 6px; }
+    section .desc { font-size: 14px; }
+    .grid { gap: 16px; }
+    .flow-section { padding: 16px; border-radius: 8px; }
+    .wire .label { padding: 8px 10px; font-size: 11px; gap: 8px; }
+    body { font-size: 14px; }
+  }
+
+  .wire {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: zoom-in;
+    transition: transform 80ms ease, box-shadow 80ms ease;
+  }
+  .wire:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
+  .wire .label {
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .wire img { display: block; width: 100%; height: auto; background: #fff; }
+
+  .notes ul { padding-left: 20px; margin: 8px 0; }
+  .notes li { margin-bottom: 6px; }
+  .notes .why {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ink);
+    padding: 14px 18px;
+    border-radius: 4px;
+    margin-top: 12px;
+    font-size: 14px;
+  }
+
+  .flow-section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 32px; margin-bottom: 64px; max-width: var(--maxw); }
+  .flow-section h2 { margin-top: 0; }
+  .flow-section .wire { margin-top: 16px; }
+
+  table.data { border-collapse: collapse; font-size: 13px; margin: 12px 0; background: var(--panel); }
+  table.data th, table.data td { border: 1px solid var(--line); padding: 6px 12px; text-align: left; }
+  table.data th { background: var(--bg); font-weight: 600; }
+
+  .lightbox {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.86);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 100;
+    cursor: zoom-out;
+    padding: 32px;
+  }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 30px 80px rgba(0,0,0,0.4); border-radius: 4px; }
+  .lightbox .close { position: absolute; top: 16px; right: 24px; font-size: 28px; color: #fff; cursor: pointer; }
+  .lightbox .caption { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 13px; opacity: 0.9; }
+
+  @media (max-width: 560px) {
+    .lightbox { padding: 12px; overflow: auto; touch-action: pinch-zoom; }
+    .lightbox.open { display: block; }
+    .lightbox img { display: block; width: 100%; max-width: none; max-height: none; height: auto; margin: 40px auto 56px; box-shadow: none; }
+    .lightbox .close { position: fixed; top: 8px; right: 12px; font-size: 32px; }
+    .lightbox .caption { position: fixed; left: 50%; transform: translateX(-50%); font-size: 12px; bottom: 12px; text-align: center; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 6px 12px; }
+  }
+
+  .footer { color: var(--muted); font-size: 12px; max-width: var(--maxw); border-top: 1px solid var(--line); padding-top: 24px; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <details class="toc">
+      <summary class="toc-summary">
+        <span>
+          <span class="crumb">PAP-16032 · Decisions UX</span><br>
+          <span class="title">Jump to a screen</span>
+        </span>
+        <span class="chevron" aria-hidden="true"></span>
+      </summary>
+      <nav class="toc-body" aria-label="Section navigation">
+        <h1>PAP-16032</h1>
+        <div style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">Decisions grouping, queues &amp; today's desk</div>
+
+        <h2>Context</h2>
+        <a href="#findings"><span class="num">☰</span>What the data says</a>
+        <a href="#flow"><span class="num">⤳</span>Flow diagram</a>
+
+        <h2>Screens</h2>
+        <a href="#s1"><span class="num">1</span>Today's desk (home)</a>
+        <a href="#s2"><span class="num">2</span>Queue detail — PRs</a>
+        <a href="#s3"><span class="num">3</span>Card triage strip</a>
+        <a href="#s4"><span class="num">4</span>Aging shelf</a>
+
+        <h2>Open questions</h2>
+        <a href="#open"><span class="num">?</span>For reviewer</a>
+      </nav>
+    </details>
+
+    <main>
+      <header class="hero">
+        <div class="crumb">PAP-16032 · Wireframes</div>
+        <h1>Decisions: grouping, queues, and a "today's desk"</h1>
+        <p>The /PAP/decisions feed currently shows every pending decision for the whole company in one uncapped list. This proposal reshapes it around three ideas: <b>queues</b> (named, agent-fed groupings that become the quicklinks), <b>date ranges</b> (today / yesterday / last week / custom), and <b>retirement</b> (stale items leave the desk for an aging shelf instead of accumulating forever). Agents get first-class affordances to tag, prioritize, and propose archives.</p>
+        <div class="pills">
+          <span class="pill">4 screens + flow</span>
+          <span class="pill">Desktop 1280×800</span>
+          <span class="pill">Lo-fi · monochrome</span>
+          <span class="pill">Click any wireframe to zoom</span>
+        </div>
+      </header>
+
+      <!-- ========== Findings ========== -->
+      <section id="findings">
+        <div class="lede">Context</div>
+        <h2>What the data says</h2>
+        <p class="desc">Measured against the live dev company on 2026-08-01 (the same data behind the screenshot in the task):</p>
+        <div class="notes">
+          <table class="data">
+            <tr><th>Signal</th><th>Value</th><th>Implication</th></tr>
+            <tr><td>Open in-review items</td><td>290</td><td>Nobody can decide 290 things; the list is write-only.</td></tr>
+            <tr><td>Touched today / yesterday / this week</td><td>8 / 12 / 24</td><td>The real daily decision load is small — a "today's desk" is viable.</td></tr>
+            <tr><td>Idle &gt; 30 days</td><td>146 (oldest: April)</td><td>Retirement policy matters more than any sorting tweak.</td></tr>
+            <tr><td>Priority = "medium"</td><td>261 of 290</td><td>Priority as entered is dead as a ranking signal; importance must be assigned at decision time (by agents or the user).</td></tr>
+            <tr><td>Title-based clustering</td><td>57% land in "other"</td><td>Type/queue must be first-class metadata, not title heuristics.</td></tr>
+          </table>
+          <h3>The common threads in recent decisions</h3>
+          <ul>
+            <li><b>Merge this PR</b> — gardener / land-my-features confirmations, usually CI-green, batchable.</li>
+            <li><b>Approve this plan revision</b> — planning-mode confirmations bound to a plan document rev.</li>
+            <li><b>Verify / accept QA result</b> — sign-off confirmations after a QA pass.</li>
+            <li><b>Answer questions</b> — ask_user_questions forms blocking an agent's next step.</li>
+            <li><b>Pick a subset</b> — checkbox confirmations (e.g. "choose green PRs to merge").</li>
+          </ul>
+          <div class="why"><b>Why queues, not hardcoded types:</b> "PRs" is only a thing because the gardener mints merge confirmations. Another company might have "invoices" or "content". So the general rule: <b>quicklinks = this company's queues, ordered by most recently updated</b>, seeded automatically from structural signals (decision <code>rule_key</code>, interaction kind, plan-document targets, PR work products) and extendable by telling any agent "add this to the foobar queue".</div>
+        </div>
+      </section>
+
+      <!-- ========== Flow diagram ========== -->
+      <section id="flow" class="flow-section">
+        <div class="lede">Flow</div>
+        <h2>Screen flow</h2>
+        <p class="desc">Solid arrows = navigation. Every decide / snooze / queue action returns to the desk. Archive keeps history searchable.</p>
+        <div class="wire" data-zoom data-caption="Flow diagram">
+          <div class="label"><span>flow.svg</span><span>1280×360</span></div>
+          <img src="wireframes/flow.svg" alt="Flow diagram" />
+        </div>
+      </section>
+
+      <!-- ========== Screen 1 ========== -->
+      <section id="s1">
+        <div class="lede">Step 1 · Home</div>
+        <h2><span class="step-num">1.</span>Today's desk</h2>
+        <p class="desc">The default landing view answers "what do I need to decide TODAY, in what order" — not "what exists". Two shelves (Decide now / Can wait) ordered by importance; everything older lives behind the date chips or the aging shelf.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="1 · Today's desk (desktop)">
+            <div class="label"><span>decisions-home.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/decisions-home.svg" alt="Today's desk wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Queue quicklinks, ordered by recently updated; dot = new activity since you last looked. "All" is the only fixed chip.</li>
+                <li><b>2</b> — Date-range chips filter on activity date; Custom opens a range picker. Today is the default.</li>
+                <li><b>3</b> — Backlog health: total, age histogram, and the entry point to the aging shelf — the accumulation is visible instead of silently mixed into the list.</li>
+                <li><b>4</b> — "Decide now" vs "Can wait" split comes from a per-item decide-by/importance field that agents (or you) set — not from the mostly-dead issue priority.</li>
+                <li><b>5</b> — Agent triage panel: agents that tag/prioritize surface their suggestions here as proposals, never silent mutations.</li>
+                <li><b>6</b> — Sections show counts; each row keeps kind icon, origin agent, source task, age, expiry, and queue pill.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> the current page is one uncapped list sorted by newest activity with client-side-only filters, no date range, no queues, and a badge that counts all 290 — so the number is noise. The desk makes "today, by importance" the default query and turns the badge into "decide-now count".</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== Screen 2 ========== -->
+      <section id="s2">
+        <div class="lede">Step 2 · Queues</div>
+        <h2><span class="step-num">2.</span>Queue detail — "PRs"</h2>
+        <p class="desc">A queue is a named, company-scoped list any agent or user can add decisions to ("add this to the PRs queue"). Queue pages support bulk decisions on homogeneous items and carry the queue's membership rules and retention override.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="2 · Queue detail (desktop)">
+            <div class="label"><span>queue-detail.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/queue-detail.svg" alt="Queue detail wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Bulk action bar: accept N selected homogeneous confirmations at once; reject requires a note that goes back to the origin agent.</li>
+                <li><b>2</b> — Queue rules card: who feeds the queue (automatic rules + manual adds), retention override, notification setting.</li>
+                <li><b>3</b> — Items that fail the batch invariant (needs rebase, targets a different branch) auto-deselect with a stated reason.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> today the closest thing is the bundle strip (contiguous same-bundle rows) — it groups one agent run, not a durable stream. Queues persist across runs, so "the gardener's PRs" is one place with one bulk gesture instead of 12 scattered cards.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== Screen 3 ========== -->
+      <section id="s3">
+        <div class="lede">Step 3 · Triage</div>
+        <h2><span class="step-num">3.</span>Expanded card with triage strip</h2>
+        <p class="desc">Every decision card gains a triage strip: queue assignment, decide-by urgency, snooze, and route-to-agent. These are the affordances the "agents alongside" write to via API — and the user can always override.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="3 · Card triage strip (desktop)">
+            <div class="label"><span>triage-card.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/triage-card.svg" alt="Triage card wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Expiry becomes visible and actionable: countdown chip with one-click extend, instead of confirmations silently dying and getting re-minted.</li>
+                <li><b>2</b> — Queue picker (open state): move/add the decision to any queue or create one inline.</li>
+                <li><b>3</b> — "When to decide" segmented control = the importance signal that drives desk ordering; shows which agent set it.</li>
+                <li><b>4</b> — Route to agent: hand the decision to an agent to prepare a recommendation and re-surface it — the delegation affordance for "help me decide".</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> the current card renders the decision body and verbs but no expiry, no priority, no grouping control — there is literally nowhere in the UI to say "this one is for today" or "this belongs with the others".</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== Screen 4 ========== -->
+      <section id="s4">
+        <div class="lede">Step 4 · Retirement</div>
+        <h2><span class="step-num">4.</span>Aging shelf</h2>
+        <p class="desc">Stale items leave the desk automatically and land here. An agent pre-reviews the shelf and proposes a bulk archive with per-item reasoning; archiving notifies the origin agent so the underlying task is re-triaged rather than orphaned. Nothing is deleted.</p>
+        <div class="grid">
+          <div class="wire" data-zoom data-caption="4 · Aging shelf (desktop)">
+            <div class="label"><span>aging-shelf.svg</span><span>1280×800 · desktop</span></div>
+            <img src="wireframes/aging-shelf.svg" alt="Aging shelf wireframe" />
+          </div>
+          <div class="notes-col">
+            <div class="notes">
+              <h3>Annotations</h3>
+              <ul>
+                <li><b>1</b> — Agent proposal banner: one accept gesture retires 87 items, with per-item reasoning inspectable before accepting.</li>
+                <li><b>2</b> — Keep/Archive per row; Keep can set a decide-by date so the item re-enters the desk deliberately.</li>
+                <li><b>3</b> — The retention policy is written on the page — defaults (30d to shelf, 90d auto-archive) with per-queue overrides.</li>
+              </ul>
+              <div class="why"><b>Why this changes:</b> 146 of 290 items are idle for over a month; today they sit in the same list as this morning's PR merge. Decisions v1 already sweeps decisions past their TTL, but interactions, approvals, and in-review issues never expire — this generalizes retirement across all feed sources.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== Open questions ========== -->
+      <section id="open">
+        <div class="lede">For reviewer</div>
+        <h2>Open questions</h2>
+        <div class="notes">
+          <ul>
+            <li><b>Badge semantics</b> — should the sidebar badge become "decide-now count" (proposed) or stay total pending?</li>
+            <li><b>Auto-archive consent</b> — is 90-day auto-archive acceptable as a default, or should archiving always require accepting an agent proposal?</li>
+            <li><b>Queue scope</b> — company-wide queues (proposed, since decisions are company-scoped today) vs per-user queues?</li>
+            <li><b>Seeded queues</b> — proposed starter set: PRs (from merge confirmations / pull_request work products), Plans (plan-doc-bound confirmations), Questions (ask_user_questions). OK to seed these automatically?</li>
+            <li><b>Mobile</b> — desk and queue screens are desktop-first here; a phone pass (375×812) can follow once the desktop structure is agreed.</li>
+          </ul>
+        </div>
+      </section>
+
+      <div class="footer">
+        Wireframes follow the in-tree <code>wireframe</code> skill house style — black on white, 1.5pt strokes, 8px grid, type sizes 12/14/20/28. Red dashed annotations are the call-out layer only and not part of the proposed UI. Source: <code>design/pap-16032-decisions-grouping/</code> on branch <code>PAP-16032-decisions-grouping-and-queues</code>.
+      </div>
+    </main>
+  </div>
+
+  <div class="lightbox" id="lb" aria-hidden="true">
+    <span class="close" id="lbClose">×</span>
+    <img id="lbImg" alt="" />
+    <div class="caption" id="lbCap"></div>
+  </div>
+
+<script>
+  const lb = document.getElementById('lb');
+  const lbImg = document.getElementById('lbImg');
+  const lbCap = document.getElementById('lbCap');
+  const lbClose = document.getElementById('lbClose');
+
+  document.querySelectorAll('[data-zoom]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const target = el.tagName === 'IMG' ? el : el.querySelector('img');
+      if (!target) return;
+      lbImg.src = target.src;
+      lbImg.alt = target.alt;
+      lbCap.textContent = el.dataset.caption || target.alt || '';
+      lb.classList.add('open');
+    });
+  });
+
+  function close() { lb.classList.remove('open'); }
+  lb.addEventListener('click', close);
+  lbClose.addEventListener('click', close);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+
+  const toc = document.querySelector('details.toc');
+  if (toc) {
+    const mq = window.matchMedia('(max-width: 900px)');
+    const apply = () => { toc.open = !mq.matches; };
+    apply();
+    mq.addEventListener('change', apply);
+    toc.querySelectorAll('.toc-body a').forEach((a) => {
+      a.addEventListener('click', () => { if (mq.matches) toc.open = false; });
+    });
+  }
+</script>
+</body>
+</html>
