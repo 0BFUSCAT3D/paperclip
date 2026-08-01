@@ -224,6 +224,9 @@ describeEmbeddedPostgres("decision queue routes", () => {
       "issue_thread_interaction",
       "review",
     ]);
+    await request(app(agentActor(companyId, agentId)))
+      .delete(`/api/companies/${companyId}/decision-queues/triage/items/approval/${approvalId}`)
+      .expect(404);
 
     await request(app(board))
       .delete(`/api/companies/${companyId}/decision-queues/triage/items/review/${issueId}`)
@@ -236,7 +239,11 @@ describeEmbeddedPostgres("decision queue routes", () => {
     await db.delete(approvals).where(eq(approvals.id, approvalId));
     await request(app(board))
       .delete(`/api/companies/${companyId}/decision-queues/triage/items/approval/${approvalId}`)
-      .expect(404);
+      .expect(200);
+    expect(await db.select().from(decisionQueueItems).where(and(
+      eq(decisionQueueItems.companyId, companyId),
+      eq(decisionQueueItems.sourceKind, "approval"),
+    ))).toHaveLength(0);
   });
 
   it("materializes data-backed starter queues from plan, question, and pull-request signals", async () => {

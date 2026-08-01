@@ -539,7 +539,19 @@ export function decisionQueueService(db: Db) {
     }) => {
       const queue = await getQueue(input.companyId, input.key);
       if (!queue) throw notFound("Decision queue not found");
-      await requireSourceRead(db, input.authActor, input.companyId, input.sourceKind, input.sourceId);
+      const sourceReadable = await canReadDecisionSource(
+        db,
+        input.authActor,
+        input.companyId,
+        input.sourceKind,
+        input.sourceId,
+      );
+      // Board operators may clean up an existing sidecar after its source has
+      // disappeared. Agents still need source-level read authority so removal
+      // cannot be used to probe hidden membership.
+      if (!sourceReadable && input.authActor.type !== "board") {
+        throw notFound("Attention source not found");
+      }
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const removed = await txDb.delete(decisionQueueItems).where(and(
