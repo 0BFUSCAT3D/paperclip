@@ -99,14 +99,14 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
       return {
         surface: "thread",
         items: [
-          { id: "st-working", kind: "status", status: "working", label: "Using edit", detail: "server/src/routes/auth.ts", elapsedMs: 4200 },
+          { id: "st-working", kind: "status", status: "working", label: "Using edit", detail: "server/src/routes/auth.ts", startedAtMs: Date.now() - 4200 },
         ],
       };
     case "running":
       return {
         surface: "thread",
         items: [
-          { id: "st-running", kind: "status", status: "running", label: "Running", detail: "no output for 3s — still running", elapsedMs: 12000, tokens: { used: 18240, size: 200000 } },
+          { id: "st-running", kind: "status", status: "running", label: "Running", detail: "no output for 3s — still running", startedAtMs: Date.now() - 12000, tokens: { used: 18240, size: 200000 } },
         ],
       };
     case "completed":

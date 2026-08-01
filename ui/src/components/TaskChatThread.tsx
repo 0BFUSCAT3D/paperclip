@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ComponentProps } from "react";
 import { IssueChatThread } from "@/components/IssueChatThread";
 import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
@@ -154,15 +154,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return (liveRuns ?? []).find((r) => !isTerminalRunStatus(r.status)) ?? null;
   }, [activeRun, liveRuns]);
 
-  // Re-render on a 1s cadence while live so the status pill's elapsed advances
-  // even between transcript chunks.
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!liveRun) return;
-    const id = window.setInterval(() => setTick((t) => t + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [liveRun]);
-
   // Runs observed non-terminal while mounted: their turns ANIMATE the fold when
   // they settle. Runs already terminal at mount collapse instantly.
   const liveSeenRef = useRef<Set<string>>(new Set());
@@ -317,7 +308,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         });
       }
       const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
-      const elapsedMs = startedAt != null ? Math.max(0, Date.now() - startedAt) : undefined;
       const queued = liveRun.status === "queued";
       const status = queued
         ? { label: "Queued", detail: "Waiting to start" }
@@ -328,13 +318,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         status: "running",
         label: status.label,
         detail: status.detail,
-        elapsedMs,
+        startedAtMs: startedAt ?? undefined,
       });
     }
     return out;
-    // `tick` is intentionally a dependency so elapsed advances each second.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, firstCommentIdByRun, tick]);
+  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, firstCommentIdByRun]);
 
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (

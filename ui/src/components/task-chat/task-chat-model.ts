@@ -127,6 +127,8 @@ export interface TaskChatStatusItem {
   label: string;
   detail?: string;
   elapsedMs?: number;
+  /** Run start epoch ms; live states tick their own elapsed from this. */
+  startedAtMs?: number;
   tokens?: TaskChatTokenUsage;
   /** Present for awaiting_approval (ACP RequestPermissionRequest). */
   approval?: { toolName: string; options: TaskChatApprovalOption[] };

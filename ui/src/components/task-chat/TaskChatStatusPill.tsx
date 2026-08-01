@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
@@ -7,6 +8,25 @@ function elapsedLabel(ms?: number): string | null {
   const s = Math.round(ms / 1000);
   if (s < 60) return `${s}s`;
   return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+/** Tenths-precision elapsed ("24.3s", "1m 24.3s") so the readout visibly moves. */
+function liveElapsedLabel(ms?: number): string | null {
+  if (ms == null) return null;
+  const s = Math.max(0, ms) / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  return `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s`;
+}
+
+/** Elapsed ms since `startedAtMs`, ticking every 100ms while `live`. */
+function useLiveElapsedMs(startedAtMs: number | undefined, live: boolean): number | undefined {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAtMs == null || !live) return;
+    const id = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [startedAtMs, live]);
+  return startedAtMs == null ? undefined : Math.max(0, now - startedAtMs);
 }
 
 const CONFIG = {
@@ -33,9 +53,12 @@ interface TaskChatStatusPillProps {
 export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusPillProps) {
   const { Icon, spin, tone } = CONFIG[item.status];
   const awaiting = item.status === "awaiting_approval";
+  const live = item.status === "running" || item.status === "working";
+  const liveElapsedMs = useLiveElapsedMs(item.startedAtMs, live);
   const elapsed = elapsedLabel(item.elapsedMs);
 
-  if (item.status === "running" || item.status === "working") {
+  if (live) {
+    const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
     return (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
         <span
@@ -43,17 +66,19 @@ export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusP
           className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-(--status-agent-running)"
         />
         <span className="shimmer-text shimmer-text-muted font-medium">{item.label}…</span>
+        {liveElapsed ? (
+          <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
+            {liveElapsed}
+          </span>
+        ) : null}
         {item.detail ? (
           <span className="min-w-0 truncate font-mono text-(length:--text-micro)">{item.detail}</span>
         ) : null}
-        <span className="ml-auto flex shrink-0 items-center gap-2 font-mono text-(length:--text-micro)">
-          {elapsed ? <span>{elapsed}</span> : null}
-          {item.tokens ? (
-            <span>
-              {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
-            </span>
-          ) : null}
-        </span>
+        {item.tokens ? (
+          <span className="ml-auto shrink-0 font-mono text-(length:--text-micro)">
+            {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
+          </span>
+        ) : null}
       </div>
     );
   }
