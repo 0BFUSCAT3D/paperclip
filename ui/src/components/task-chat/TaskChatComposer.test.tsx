@@ -13,6 +13,9 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  // jsdom has no object-URL support; the composer uses it for image previews.
+  URL.createObjectURL = vi.fn(() => "blob:mock-preview");
+  URL.revokeObjectURL = vi.fn();
 });
 
 afterEach(() => {
@@ -181,6 +184,56 @@ describe("TaskChatComposer", () => {
     expect(input().value).toContain("![shot.png](/attachments/shot.png)");
     const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
     expect(chips?.textContent).toContain("shot.png");
+  });
+
+  it("shows an object-URL thumbnail for a pasted image attachment", async () => {
+    const onAttachImage = vi.fn().mockResolvedValue({
+      contentPath: "/attachments/shot.png",
+      originalFilename: "shot.png",
+    });
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+
+    const file = new File(["png-bytes"], "shot.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [file] } });
+    flushSync(() => {
+      input().dispatchEvent(paste);
+    });
+    await flushAsync();
+
+    expect(URL.createObjectURL).toHaveBeenCalledWith(file);
+    const thumb = container.querySelector<HTMLImageElement>(
+      '[data-testid="task-chat-composer-attachments"] img',
+    );
+    expect(thumb?.src).toBe("blob:mock-preview");
+    expect(thumb?.alt).toBe("");
+  });
+
+  it("renders no thumbnail for non-image attachments and revokes previews on unmount", async () => {
+    const onAttachImage = vi.fn().mockResolvedValue({
+      contentPath: "/attachments/notes.txt",
+      originalFilename: "notes.txt",
+    });
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+
+    const image = new File(["png-bytes"], "shot.png", { type: "image/png" });
+    const text = new File(["plain"], "notes.txt", { type: "text/plain" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [image, text] } });
+    flushSync(() => {
+      input().dispatchEvent(paste);
+    });
+    await flushAsync();
+
+    // Only the image chip carries a thumbnail; the text chip stays text-only.
+    const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]')!;
+    expect(chips.textContent).toContain("notes.txt");
+    expect(chips.querySelectorAll("img")).toHaveLength(1);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+
+    flushSync(() => root!.unmount());
+    root = null;
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:mock-preview");
   });
 
   it("shows the assignee combobox only when reassign is enabled, with the current label", () => {

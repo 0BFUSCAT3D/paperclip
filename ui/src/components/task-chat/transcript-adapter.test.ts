@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
 import {
+  buildTurnSummary,
   deriveRunStatusLabel,
   toolDisplayName,
   transcriptToTaskChatItems,
@@ -146,6 +147,39 @@ describe("transcriptToTaskChatItems tool_call updates", () => {
     expect(items).toHaveLength(1);
     if (items[0].kind !== "tool") return;
     expect(items[0].name).toBe("Read");
+  });
+});
+
+describe("buildTurnSummary tool counting", () => {
+  function statusEntry(toolUseId: string | undefined, status: string): TranscriptEntry {
+    return {
+      kind: "tool_call",
+      ts: TS,
+      name: "Bash",
+      toolUseId,
+      input: { text: `tool call (${status})`, status },
+    } as TranscriptEntry;
+  }
+
+  it("counts unique tool calls, not per-status transcript entries", () => {
+    // 4 real calls × 4 status changes each = 16 entries; the summary must
+    // match the 4 rows the expanded list renders.
+    const entries = ["tc-1", "tc-2", "tc-3", "tc-4"].flatMap((id) =>
+      ["pending", "in_progress", "in_progress", "completed"].map((status) =>
+        statusEntry(id, status),
+      ),
+    );
+    expect(entries).toHaveLength(16);
+    expect(buildTurnSummary(entries).toolCount).toBe(4);
+  });
+
+  it("counts id-less legacy entries once each", () => {
+    const entries = [
+      statusEntry(undefined, "completed"),
+      statusEntry(undefined, "completed"),
+      toolCall("Read"),
+    ];
+    expect(buildTurnSummary(entries).toolCount).toBe(3);
   });
 });
 

@@ -306,12 +306,15 @@ export function buildTurnSummary(
   entries: readonly TranscriptEntry[],
   opts: { durationMs?: number; failed?: boolean } = {},
 ): TaskChatTurnItem["summary"] {
-  let toolCount = 0;
+  const toolIds = new Set<string>();
   let added = 0;
   let removed = 0;
   let tokens = 0;
-  for (const entry of entries) {
-    if (entry.kind === "tool_call") toolCount += 1;
+  for (const [i, entry] of entries.entries()) {
+    // Each status change of a call logs its own tool_call entry sharing the
+    // toolUseId; count unique calls so the folded summary matches the rows the
+    // expanded list renders (same `tool-${i}` fallback as the parser above).
+    if (entry.kind === "tool_call") toolIds.add(entry.toolUseId || `tool-${i}`);
     else if (entry.kind === "diff") {
       if (entry.changeType === "add") added += 1;
       else if (entry.changeType === "remove") removed += 1;
@@ -327,7 +330,7 @@ export function buildTurnSummary(
   }
   return {
     durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
-    toolCount,
+    toolCount: toolIds.size,
     added,
     removed,
     tokensLabel: formatTokensLabel(tokens),

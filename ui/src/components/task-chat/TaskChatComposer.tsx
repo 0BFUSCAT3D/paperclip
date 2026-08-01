@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -75,6 +76,9 @@ type ComposerAttachment = {
   name: string;
   status: "uploading" | "attached" | "error";
   error?: string;
+  /** Object URL for an immediate thumbnail while (and after) uploading. */
+  previewUrl?: string;
+  isImage?: boolean;
 };
 
 /** Local duplicate of IssueChatThread's module-private helper (same rule). */
@@ -129,6 +133,23 @@ export function TaskChatComposer({
   const [isDragOver, setIsDragOver] = useState(false);
   const dragDepthRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const previewUrlsRef = useRef<Set<string>>(new Set());
+
+  // Object URLs created for image previews must be revoked or they leak the
+  // underlying blobs for the page's lifetime.
+  useEffect(() => {
+    const urls = previewUrlsRef.current;
+    return () => {
+      for (const url of urls) URL.revokeObjectURL(url);
+      urls.clear();
+    };
+  }, []);
+
+  function releasePreview(url: string | undefined) {
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    previewUrlsRef.current.delete(url);
+  }
 
   const modeMeta = workModeMetaFor(pendingMode);
   const canAcceptFiles = Boolean(onAttachImage || onImageUpload);
@@ -147,7 +168,15 @@ export function TaskChatComposer({
 
   async function attachFile(file: File) {
     const id = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
-    setAttachments((prev) => [...prev, { id, name: file.name, status: "uploading" }]);
+    const isImage = file.type.startsWith("image/");
+    // Create the preview up front so the thumbnail appears while uploading.
+    const previewUrl =
+      isImage && typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : undefined;
+    if (previewUrl) previewUrlsRef.current.add(previewUrl);
+    setAttachments((prev) => [
+      ...prev,
+      { id, name: file.name, status: "uploading", previewUrl, isImage: isImage || undefined },
+    ]);
     try {
       if (onAttachImage) {
         const attachment = await onAttachImage(file);
@@ -248,7 +277,10 @@ export function TaskChatComposer({
         await onWorkModeChange(pendingMode);
       }
       await onAdd(trimmed, reopen, reassignment);
-      setAttachments([]);
+      setAttachments((prev) => {
+        for (const item of prev) releasePreview(item.previewUrl);
+        return [];
+      });
       setPendingAssignee(null);
     } catch {
       setBody(trimmed); // restore on failure
@@ -304,6 +336,13 @@ export function TaskChatComposer({
                   : "border-border bg-muted/30 text-muted-foreground",
               )}
             >
+              {attachment.isImage && attachment.previewUrl ? (
+                <img
+                  src={attachment.previewUrl}
+                  alt=""
+                  className="size-10 shrink-0 rounded object-cover"
+                />
+              ) : null}
               {attachment.status === "uploading" ? (
                 <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
               ) : attachment.status === "error" ? (
