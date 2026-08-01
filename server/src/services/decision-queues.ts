@@ -93,15 +93,24 @@ const SYSTEM_ACTOR: DecisionMutationActor = {
   responsibleUserId: null,
 };
 
-function actorColumns(actor: DecisionMutationActor, prefix: "added" | "set" | "created") {
-  const values = {
-    [`${prefix}ByType`]: actor.actorType,
-    [`${prefix}ByAgentId`]: actor.agentId,
-    [`${prefix}ByUserId`]: actor.userId,
-    [`${prefix}ByRunId`]: actor.runId,
-    [`${prefix}ByAgentApiKeyId`]: actor.agentApiKeyId,
+function creatorColumns(actor: DecisionMutationActor) {
+  return {
+    createdByType: actor.actorType,
+    createdByAgentId: actor.agentId,
+    createdByUserId: actor.userId,
+    createdByRunId: actor.runId,
+    createdByAgentApiKeyId: actor.agentApiKeyId,
   };
-  return values as Record<string, string | null>;
+}
+
+function addedByColumns(actor: DecisionMutationActor) {
+  return {
+    addedByType: actor.actorType,
+    addedByAgentId: actor.agentId,
+    addedByUserId: actor.userId,
+    addedByRunId: actor.runId,
+    addedByAgentApiKeyId: actor.agentApiKeyId,
+  };
 }
 
 function eventActorColumns(actor: DecisionMutationActor) {
@@ -387,7 +396,7 @@ export function decisionQueueService(db: Db) {
           title: input.title,
           description: input.description ?? null,
           retentionDays: input.retentionDays ?? null,
-          ...(actorColumns(input.actor, "created") as typeof decisionQueues.$inferInsert),
+          ...creatorColumns(input.actor),
         }).onConflictDoNothing({ target: [decisionQueues.companyId, decisionQueues.key] }).returning();
         const row = inserted[0] ?? await txDb.select().from(decisionQueues)
           .where(and(eq(decisionQueues.companyId, input.companyId), eq(decisionQueues.key, input.key)))
@@ -482,7 +491,7 @@ export function decisionQueueService(db: Db) {
           sourceKind: input.sourceKind,
           sourceId: input.sourceId,
           responsibleUserId: input.actor.responsibleUserId,
-          ...(actorColumns(input.actor, "added") as typeof decisionQueueItems.$inferInsert),
+          ...addedByColumns(input.actor),
         }).onConflictDoNothing({
           target: [decisionQueueItems.queueId, decisionQueueItems.sourceKind, decisionQueueItems.sourceId],
         }).returning();
