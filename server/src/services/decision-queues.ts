@@ -597,6 +597,8 @@ export function decisionQueueService(db: Db) {
       await requireSourceRead(db, input.authActor, input.companyId, input.sourceKind, input.sourceId);
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        const lockKey = `decision-triage:${input.companyId}:${input.sourceKind}:${input.sourceId}`;
+        await txDb.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
         const current = await txDb.select().from(decisionTriage).where(and(
           eq(decisionTriage.companyId, input.companyId),
           eq(decisionTriage.sourceKind, input.sourceKind),

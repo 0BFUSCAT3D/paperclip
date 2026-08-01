@@ -183,6 +183,8 @@ The decisions desk stores queue membership and decide-by/snooze state in `decisi
 
 `decision_triage_events` is append-only history for queue and triage changes. Current rows and history both carry server-derived user/agent, heartbeat run, API-key, and responsible-user attribution where applicable. Queue reads must resolve and authorize their source rows at read time; a sidecar row is never a visibility grant.
 
+Triage writes serialize on the company and attention-source identity so concurrent partial updates preserve both fields and produce monotonic history versions.
+
 ## Plugin database namespaces
 
 The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
