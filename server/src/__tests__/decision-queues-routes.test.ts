@@ -159,6 +159,7 @@ describeEmbeddedPostgres("decision queue routes", () => {
 
     expect(repeated.body.id).toBe(first.body.id);
     expect(repeated.body.title).toBe("Launches");
+    expect(repeated.body.itemCount).toBe(0);
 
     const patched = await request(app(board))
       .patch(`/api/companies/${companyId}/decision-queues/launches`)
@@ -206,6 +207,11 @@ describeEmbeddedPostgres("decision queue routes", () => {
       .get(`/api/companies/${companyId}/decision-queues/triage/items`)
       .expect(200);
     expect(items.body).toHaveLength(3);
+    const repeated = await request(app(board)).post(`/api/companies/${companyId}/decision-queues`).send({
+      key: "triage",
+      title: "Ignored duplicate title",
+    }).expect(200);
+    expect(repeated.body.itemCount).toBe(3);
 
     const agentList = await request(app(agentActor(companyId, agentId)))
       .get(`/api/companies/${companyId}/decision-queues`)
@@ -226,6 +232,11 @@ describeEmbeddedPostgres("decision queue routes", () => {
       eq(decisionQueueItems.companyId, companyId),
       eq(decisionQueueItems.sourceKind, "review"),
     ))).toHaveLength(0);
+
+    await db.delete(approvals).where(eq(approvals.id, approvalId));
+    await request(app(board))
+      .delete(`/api/companies/${companyId}/decision-queues/triage/items/approval/${approvalId}`)
+      .expect(404);
   });
 
   it("materializes data-backed starter queues from plan, question, and pull-request signals", async () => {
@@ -396,6 +407,15 @@ describeEmbeddedPostgres("decision queue routes", () => {
     await request(app(bridge)).post(`/api/companies/${companyId}/decision-queues`).send({
       key: "blocked",
       title: "Blocked",
+    }).expect(403);
+    const skillTest = {
+      ...agentActor(companyId, agentId),
+      source: "agent_jwt",
+      keyScope: { kind: "skill_test", issueId: randomUUID() },
+    };
+    await request(app(skillTest)).post(`/api/companies/${companyId}/decision-queues`).send({
+      key: "skill-test-blocked",
+      title: "Skill test blocked",
     }).expect(403);
 
     await request(app(boardActor(companyId))).post(`/api/companies/${companyId}/decision-queues`).send({

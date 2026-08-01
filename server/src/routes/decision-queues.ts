@@ -79,7 +79,12 @@ export function decisionQueueRoutes(db: Db) {
   router.post("/companies/:companyId/decision-queues", validate(createDecisionQueueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertDecisionAccess(db, req, companyId, "decision_queue:manage");
-    const result = await svc.create({ companyId, actor: mutationActor(req), ...req.body });
+    const result = await svc.create({
+      companyId,
+      authActor: req.actor,
+      actor: mutationActor(req),
+      ...req.body,
+    });
     res.status(result.created ? 201 : 200).json(result.queue);
   });
 

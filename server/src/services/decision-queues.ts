@@ -386,9 +386,10 @@ export function decisionQueueService(db: Db) {
       title: string;
       description?: string | null;
       retentionDays?: number | null;
+      authActor: AuthorizationActor;
       actor: DecisionMutationActor;
     }) => {
-      return db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const inserted = await txDb.insert(decisionQueues).values({
           companyId: input.companyId,
@@ -418,8 +419,12 @@ export function decisionQueueService(db: Db) {
             details: { key: row.key },
           });
         }
-        return { queue: toQueue(row, 0), created: Boolean(inserted[0]) };
+        return { row, created: Boolean(inserted[0]) };
       });
+      const itemCount = result.created
+        ? 0
+        : (await visibleItems(input.companyId, result.row.id, input.authActor)).length;
+      return { queue: toQueue(result.row, itemCount), created: result.created };
     },
 
     list: async (companyId: string, authActor: AuthorizationActor) => {
@@ -534,9 +539,7 @@ export function decisionQueueService(db: Db) {
     }) => {
       const queue = await getQueue(input.companyId, input.key);
       if (!queue) throw notFound("Decision queue not found");
-      if (input.authActor.type !== "board") {
-        await requireSourceRead(db, input.authActor, input.companyId, input.sourceKind, input.sourceId);
-      }
+      await requireSourceRead(db, input.authActor, input.companyId, input.sourceKind, input.sourceId);
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const removed = await txDb.delete(decisionQueueItems).where(and(
