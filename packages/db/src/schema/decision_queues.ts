@@ -10,6 +10,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -41,7 +42,7 @@ export const decisionQueues = pgTable(
   (table) => ({
     companyKeyUq: uniqueIndex("decision_queues_company_key_uq").on(table.companyId, table.key),
     companyUpdatedIdx: index("decision_queues_company_updated_idx").on(table.companyId, table.updatedAt),
-    idCompanyUq: uniqueIndex("decision_queues_id_company_uq").on(table.id, table.companyId),
+    idCompanyUq: unique("decision_queues_id_company_uq").on(table.id, table.companyId),
     creatorCheck: check(
       "decision_queues_creator_check",
       sql`(
