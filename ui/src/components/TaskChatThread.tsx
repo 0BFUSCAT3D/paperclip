@@ -48,9 +48,10 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  * an unsettled (expanded) turn; when it terminates the same turn id flips
  * settled, so TaskChatTurn plays the ~--motion-turn-fold collapse down to the
  * one-line "✓ Worked · …" summary (runs already terminal at mount collapse
- * instantly). Settled turns interleave before the run's first comment
- * (comment.runId linkage) — activity above, the agent's reply bubble below.
- * flag-OFF remains byte-for-byte IssueChatThread.
+ * instantly). Settled turns interleave after the run's last comment
+ * (comment.runId linkage) — the agent's reply bubble above, the folded activity
+ * summary below, so the live "Running…" pill reads as being replaced by the
+ * summary in place. flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
   const {
@@ -161,13 +162,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     if (liveRun) liveSeenRef.current.add(liveRun.id);
   }, [liveRun]);
 
-  // Each terminal run's turn anchors immediately before the run's first
-  // comment (its reply bubble), via the comment.runId linkage.
-  const firstCommentIdByRun = useMemo(() => {
+  // Each terminal run's turn anchors immediately after the run's last comment
+  // (its reply bubble), via the comment.runId linkage — the summary line lands
+  // below the bubble, where the live "Running…" pill sat.
+  const lastCommentIdByRun = useMemo(() => {
     const map = new Map<string, string>();
     for (const comment of comments) {
       if (comment.deletedAt || !comment.runId || !comment.id) continue;
-      if (!map.has(comment.runId)) map.set(comment.runId, comment.id);
+      map.set(comment.runId, comment.id);
     }
     return map;
   }, [comments]);
@@ -265,7 +267,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             failed: source.status !== "succeeded",
           }),
         },
-        anchorCommentId: firstCommentIdByRun.get(source.id) ?? null,
+        anchorCommentId: lastCommentIdByRun.get(source.id) ?? null,
         order: meta?.createdAt ? new Date(meta.createdAt).getTime() : 0,
       });
     }
@@ -285,9 +287,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
     const out: TaskChatItem[] = [];
     for (const entry of orderedEntries) {
-      const preceding = turnsByAnchor.get(entry.id);
-      if (preceding) out.push(...preceding);
       out.push(entry.item);
+      const following = turnsByAnchor.get(entry.id);
+      if (following) out.push(...following);
     }
     out.push(...unanchored);
 
@@ -323,7 +325,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
     }
     return out;
-  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, firstCommentIdByRun]);
+  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
 
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
