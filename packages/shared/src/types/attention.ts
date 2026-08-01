@@ -1,17 +1,20 @@
 import type { InboxDismissalKind } from "./inbox-dismissal.js";
 
-export type AttentionSourceKind =
-  | "approval"
-  | "decision"
-  | "issue_thread_interaction"
-  | "join_request"
-  | "recovery_action"
-  | "productivity_review"
-  | "blocker_attention"
-  | "review"
-  | "failed_run"
-  | "budget_alert"
-  | "agent_error_alert";
+export const ATTENTION_SOURCE_KINDS = [
+  "approval",
+  "decision",
+  "issue_thread_interaction",
+  "join_request",
+  "recovery_action",
+  "productivity_review",
+  "blocker_attention",
+  "review",
+  "failed_run",
+  "budget_alert",
+  "agent_error_alert",
+] as const;
+
+export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
 
 export type AttentionSubjectKind =
   | "approval"

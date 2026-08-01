@@ -42,6 +42,7 @@ import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
+import { decisionQueueService } from "./decision-queues.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -1386,6 +1387,7 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
       const items = [...deduped.values()]
         .sort(compareAttentionItems)
         .map((item, index) => ({ ...item, rank: index + 1 }));
+      await decisionQueueService(db).materializeSeededQueues(companyId, items);
       if (options.userId) {
         const trainable: Array<{ sourceKind: "approval" | "interaction"; sourceId: string }> = [];
         for (const item of items) {
