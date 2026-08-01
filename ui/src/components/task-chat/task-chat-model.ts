@@ -95,6 +95,8 @@ export interface TaskChatToolItem {
   id: string;
   kind: "tool";
   name: string;
+  /** Raw ACP tool name pre-collapse ("mcp__server__tool") for taxonomy lookup. */
+  rawName?: string;
   /** ACP ToolKind. */
   toolKind?: string;
   status: TaskChatToolStatus;
@@ -126,6 +128,8 @@ export interface TaskChatStatusItem {
     | "truncated";
   label: string;
   detail?: string;
+  /** Raw tool name of the in-flight tail tool_call (drives the pill's icon). */
+  toolName?: string;
   elapsedMs?: number;
   /** Run start epoch ms; live states tick their own elapsed from this. */
   startedAtMs?: number;

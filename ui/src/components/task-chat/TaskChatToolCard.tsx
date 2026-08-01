@@ -3,19 +3,13 @@ import { cn } from "@/lib/utils";
 import {
   Check,
   ChevronRight,
-  FileSearch,
-  Globe,
   Loader2,
-  Pencil,
   ShieldCheck,
   ShieldX,
-  SquareTerminal,
-  BookOpen,
-  Wrench,
   X,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 import type { TaskChatToolItem } from "./task-chat-model";
+import { toolTaxonomy } from "./tool-taxonomy";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -23,17 +17,6 @@ const STATUS_ICON = {
   completed: { Icon: Check, spin: false, tone: "text-muted-foreground" },
   failed: { Icon: X, spin: false, tone: "text-destructive" },
 } as const;
-
-/** Tool name → row glyph (v7 grammar: read/search/terminal/edit families). */
-function toolIcon(name: string): LucideIcon {
-  const n = name.toLowerCase();
-  if (n === "read" || n === "notebookread") return BookOpen;
-  if (n === "grep" || n === "glob" || n === "search" || n.includes("search")) return FileSearch;
-  if (n === "bash" || n === "shell" || n.includes("terminal") || n === "run") return SquareTerminal;
-  if (n === "edit" || n === "write" || n === "notebookedit" || n === "multiedit") return Pencil;
-  if (n.includes("fetch") || n.includes("web") || n.includes("http")) return Globe;
-  return Wrench;
-}
 
 /**
  * Tool invocation as a flat activity row (v7): [glyph] [name] [mono target] …
@@ -43,7 +26,7 @@ function toolIcon(name: string): LucideIcon {
  */
 export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
   const { Icon, spin, tone } = STATUS_ICON[item.status];
-  const RowIcon = toolIcon(item.name);
+  const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
   const [showDetail, setShowDetail] = useState(false);
   const expandable = Boolean(item.detail);
 

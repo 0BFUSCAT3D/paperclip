@@ -272,7 +272,9 @@ export function TaskChatComposer({
         value={body}
         onChange={(e) => setBody(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
+          // Shift+Enter posts; plain Enter inserts a newline (Enter alone was
+          // too easy to trip while drafting).
+          if (e.key === "Enter" && e.shiftKey) {
             e.preventDefault();
             void submit();
             return;
@@ -417,7 +419,7 @@ export function TaskChatComposer({
           type="button"
           onClick={() => void submit()}
           disabled={disabled || submitting || body.trim().length === 0}
-          title="Send"
+          title="Send (Shift+Enter)"
           aria-label="Send"
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-transform hover:scale-105 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground"
           data-testid="task-chat-composer-send"

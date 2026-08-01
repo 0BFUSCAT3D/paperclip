@@ -99,7 +99,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
       return {
         surface: "thread",
         items: [
-          { id: "st-working", kind: "status", status: "working", label: "Using edit", detail: "server/src/routes/auth.ts", startedAtMs: Date.now() - 4200 },
+          { id: "st-working", kind: "status", status: "working", label: "Editing files", detail: "Edit · server/src/routes/auth.ts", toolName: "Edit", startedAtMs: Date.now() - 4200 },
         ],
       };
     case "running":

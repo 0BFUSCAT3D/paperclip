@@ -12,6 +12,7 @@ import type {
   TaskChatToolItem,
   TaskChatTurnItem,
 } from "./task-chat-model";
+import { mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
 
 const TERMINAL_STATUSES = new Set([
   "failed",
@@ -82,9 +83,9 @@ export function summarizeToolInput(input: unknown): string | undefined {
 export function toolDisplayName(name: string | undefined | null): string {
   const raw = (name ?? "").trim();
   if (!raw || raw === "tool") return "Tool";
-  const mcp = raw.match(/^mcp__[^_]+(?:_[^_]+)*__(.+)$/);
-  const base = mcp?.[1] ?? raw;
-  return base.charAt(0).toUpperCase() + base.slice(1);
+  const mcp = mcpToolSegment(raw);
+  if (mcp) return mcp;
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 /** "Thought for Ns" once a coalesced thinking group spans ≥1s. */
@@ -190,6 +191,7 @@ export function transcriptToTaskChatItems(
           id: `${runId}:tool:${toolCallId}`,
           kind: "tool",
           name: toolDisplayName(entry.name),
+          rawName: entry.name ?? undefined,
           target: summarizeToolInput(entry.input),
           status: "in_progress",
         };
@@ -213,6 +215,7 @@ export function transcriptToTaskChatItems(
             existing.status = entry.isError ? "failed" : "completed";
             if (existing.name === "Tool" && entry.toolName) {
               existing.name = toolDisplayName(entry.toolName);
+              existing.rawName = entry.toolName;
             }
             if (!existing.detail) {
               const detail = formatToolResultDetail(entry.content);
@@ -314,15 +317,26 @@ export function buildTurnSummary(
   };
 }
 
-/** Human-readable label for the live status pill from the tail of a transcript. */
+/**
+ * Human-readable label for the live status pill from the tail of a transcript.
+ * A tail tool_call yields the taxonomy verb ("Searching", "Running a command")
+ * with tool + target as detail; `toolName` lets the pill show the family icon.
+ */
 export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
   label: string;
   detail?: string;
+  toolName?: string;
 } {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.kind === "tool_call") {
-      return { label: "Working", detail: toolDisplayName(entry.name) };
+      const target = summarizeToolInput(entry.input);
+      const display = toolDisplayName(entry.name);
+      return {
+        label: toolTaxonomy(entry.name).verbLabel,
+        detail: target ? `${display} · ${target}` : display,
+        toolName: entry.name ?? undefined,
+      };
     }
     if (entry.kind === "tool_result") break;
     if (entry.kind === "assistant") return { label: "Responding" };

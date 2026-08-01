@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
+import { toolTaxonomy } from "./tool-taxonomy";
 
 function elapsedLabel(ms?: number): string | null {
   if (ms == null) return null;
@@ -59,26 +60,32 @@ export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusP
 
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
+    const ToolIcon = item.toolName ? toolTaxonomy(item.toolName).icon : null;
     return (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
         <span
           aria-hidden
           className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-(--status-agent-running)"
         />
-        <span className="shimmer-text shimmer-text-muted font-medium">{item.label}…</span>
-        {liveElapsed ? (
-          <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
-            {liveElapsed}
-          </span>
-        ) : null}
-        {item.detail ? (
-          <span className="min-w-0 truncate font-mono text-(length:--text-micro)">{item.detail}</span>
-        ) : null}
-        {item.tokens ? (
-          <span className="ml-auto shrink-0 font-mono text-(length:--text-micro)">
-            {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
-          </span>
-        ) : null}
+        {ToolIcon ? <ToolIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+        {/* Text cells share a baseline row so the smaller mono readouts don't
+            float above the label's baseline. */}
+        <span className="flex min-w-0 flex-1 items-baseline gap-2">
+          <span className="shimmer-text shimmer-text-muted shrink-0 font-medium">{item.label}…</span>
+          {liveElapsed ? (
+            <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
+              {liveElapsed}
+            </span>
+          ) : null}
+          {item.detail ? (
+            <span className="min-w-0 truncate font-mono text-(length:--text-micro)">{item.detail}</span>
+          ) : null}
+          {item.tokens ? (
+            <span className="ml-auto shrink-0 font-mono text-(length:--text-micro)">
+              {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
+            </span>
+          ) : null}
+        </span>
       </div>
     );
   }

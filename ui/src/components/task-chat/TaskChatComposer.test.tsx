@@ -36,12 +36,16 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   });
 }
 
-function pressEnter(textarea: HTMLTextAreaElement) {
+function pressEnter(textarea: HTMLTextAreaElement, shiftKey = false) {
   flushSync(() => {
     textarea.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      new KeyboardEvent("keydown", { key: "Enter", shiftKey, bubbles: true, cancelable: true }),
     );
   });
+}
+
+function pressShiftEnter(textarea: HTMLTextAreaElement) {
+  pressEnter(textarea, true);
 }
 
 async function flushAsync() {
@@ -57,7 +61,7 @@ function sendButton() {
 }
 
 describe("TaskChatComposer", () => {
-  it("submits the trimmed body on Enter and clears the draft", async () => {
+  it("submits the trimmed body on Shift+Enter and clears the draft", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
 
@@ -65,11 +69,23 @@ describe("TaskChatComposer", () => {
     setTextareaValue(input(), "  hello there  ");
     expect(sendButton().disabled).toBe(false);
 
-    pressEnter(input());
+    pressShiftEnter(input());
     await flushAsync();
 
     expect(onAdd).toHaveBeenCalledWith("hello there", undefined, undefined);
     expect(input().value).toBe("");
+  });
+
+  it("does not submit on plain Enter (newline stays in the draft)", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
+
+    setTextareaValue(input(), "line one");
+    pressEnter(input());
+    await flushAsync();
+
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(input().value).toBe("line one");
   });
 
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
@@ -92,7 +108,7 @@ describe("TaskChatComposer", () => {
     expect(chip.textContent).toContain("Plan");
 
     setTextareaValue(input(), "do the plan");
-    pressEnter(input());
+    pressShiftEnter(input());
     await flushAsync();
 
     expect(onWorkModeChange).toHaveBeenCalledWith("planning");
@@ -111,7 +127,7 @@ describe("TaskChatComposer", () => {
     );
 
     setTextareaValue(input(), "wake up");
-    pressEnter(input());
+    pressShiftEnter(input());
     await flushAsync();
 
     expect(onAdd).toHaveBeenCalledWith("wake up", true, undefined);

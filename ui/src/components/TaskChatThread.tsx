@@ -310,7 +310,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
       const queued = liveRun.status === "queued";
       const status = queued
-        ? { label: "Queued", detail: "Waiting to start" }
+        ? { label: "Queued", detail: "Waiting to start", toolName: undefined }
         : deriveRunStatusLabel(entries);
       out.push({
         id: `${liveRun.id}:status`,
@@ -318,6 +318,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         status: "running",
         label: status.label,
         detail: status.detail,
+        toolName: status.toolName,
         startedAtMs: startedAt ?? undefined,
       });
     }
