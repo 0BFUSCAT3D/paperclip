@@ -396,6 +396,38 @@ describeEmbeddedPostgres("decision queue routes", () => {
     expect(current[0]?.setByUserId).toBe("override-user");
   });
 
+  it("serializes concurrent partial triage updates without losing state or reusing a version", async () => {
+    const { companyId, issueId } = await seed();
+    const board = boardActor(companyId);
+    const [decideByResult, snoozeResult] = await Promise.all([
+      request(app(board))
+        .put(`/api/companies/${companyId}/decision-triage/review/${issueId}`)
+        .send({ decideBy: "today" }),
+      request(app(board))
+        .put(`/api/companies/${companyId}/decision-triage/review/${issueId}`)
+        .send({ snoozedUntil: "2026-08-03T12:00:00.000Z" }),
+    ]);
+
+    expect(decideByResult.status).toBe(200);
+    expect(snoozeResult.status).toBe(200);
+    expect([decideByResult.body.version, snoozeResult.body.version].sort()).toEqual([1, 2]);
+
+    const current = await request(app(board))
+      .get(`/api/companies/${companyId}/decision-triage/review/${issueId}`)
+      .expect(200);
+    expect(current.body).toMatchObject({
+      decideBy: "today",
+      snoozedUntil: "2026-08-03T12:00:00.000Z",
+      version: 2,
+    });
+    const events = await db.select().from(decisionTriageEvents).where(and(
+      eq(decisionTriageEvents.companyId, companyId),
+      eq(decisionTriageEvents.sourceKind, "review"),
+      eq(decisionTriageEvents.sourceId, issueId),
+    ));
+    expect(events.map((event) => event.details.version).sort()).toEqual([1, 2]);
+  });
+
   it("rejects task-bridge JWTs and returns the same 404 for missing and unauthorized sources", async () => {
     const { companyId, agentId, approvalId } = await seed();
     const bridge = {
