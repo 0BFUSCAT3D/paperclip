@@ -12,7 +12,7 @@ import type {
   TaskChatToolItem,
   TaskChatTurnItem,
 } from "./task-chat-model";
-import { mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
+import { isGenericToolName, mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
 
 const TERMINAL_STATUSES = new Set([
   "failed",
@@ -68,8 +68,13 @@ export function summarizeToolInput(input: unknown): string | undefined {
     const value = record[key];
     if (typeof value === "string" && value.trim()) return clip(value, TARGET_MAX);
   }
+  // The acpx log parser synthesizes { text, status } onto tool inputs from the
+  // event's summary line — presentation noise, not call parameters.
   const entries = Object.entries(record).filter(
-    ([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean",
+    ([k, v]) =>
+      (typeof v === "string" || typeof v === "number" || typeof v === "boolean") &&
+      k !== "text" &&
+      k !== "status",
   );
   if (entries.length === 0) return undefined;
   return clip(entries.map(([k, v]) => `${k}: ${String(v)}`).join(", "), TARGET_MAX);
@@ -82,7 +87,7 @@ export function summarizeToolInput(input: unknown): string | undefined {
  */
 export function toolDisplayName(name: string | undefined | null): string {
   const raw = (name ?? "").trim();
-  if (!raw || raw === "tool") return "Tool";
+  if (isGenericToolName(raw)) return "Tool";
   const mcp = mcpToolSegment(raw);
   if (mcp) return mcp;
   return raw.charAt(0).toUpperCase() + raw.slice(1);
@@ -187,19 +192,32 @@ export function transcriptToTaskChatItems(
       }
       case "tool_call": {
         const toolCallId = entry.toolUseId || `tool-${i}`;
-        const item: TaskChatToolItem = {
-          id: `${runId}:tool:${toolCallId}`,
-          kind: "tool",
-          name: toolDisplayName(entry.name),
-          rawName: entry.name ?? undefined,
-          target: summarizeToolInput(entry.input),
-          status: "in_progress",
-        };
-        if (toolIndexById.has(toolCallId)) {
-          items[toolIndexById.get(toolCallId)!] = item;
-          lastToolIndex = toolIndexById.get(toolCallId)!;
+        const existingIndex = toolIndexById.get(toolCallId);
+        const existing = existingIndex != null ? items[existingIndex] : undefined;
+        if (existing?.kind === "tool") {
+          // tool_call_update for a call already in the list: merge. Updates
+          // often omit the title (acpx fills in a literal "tool call"), so a
+          // generic name must never displace the initial call's real one. ACP
+          // also retitles a call to its invocation once known ("Terminal" →
+          // "ls -la"); that is detail for the target slot, not a new identity.
+          if (!isGenericToolName(entry.name)) {
+            if (isGenericToolName(existing.rawName)) {
+              existing.name = toolDisplayName(entry.name);
+              existing.rawName = entry.name ?? undefined;
+            } else if (!existing.target && entry.name !== existing.rawName) {
+              existing.target = clip(entry.name!, TARGET_MAX);
+            }
+          }
+          lastToolIndex = existingIndex!;
         } else {
-          items.push(item);
+          items.push({
+            id: `${runId}:tool:${toolCallId}`,
+            kind: "tool",
+            name: toolDisplayName(entry.name),
+            rawName: entry.name ?? undefined,
+            target: summarizeToolInput(entry.input),
+            status: "in_progress",
+          });
           toolIndexById.set(toolCallId, items.length - 1);
           lastToolIndex = items.length - 1;
         }
@@ -213,7 +231,7 @@ export function transcriptToTaskChatItems(
           const existing = items[idx];
           if (existing.kind === "tool") {
             existing.status = entry.isError ? "failed" : "completed";
-            if (existing.name === "Tool" && entry.toolName) {
+            if (isGenericToolName(existing.rawName) && !isGenericToolName(entry.toolName)) {
               existing.name = toolDisplayName(entry.toolName);
               existing.rawName = entry.toolName;
             }
@@ -330,12 +348,34 @@ export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.kind === "tool_call") {
-      const target = summarizeToolInput(entry.input);
-      const display = toolDisplayName(entry.name);
+      // A tail update may carry the generic placeholder name or a retitle to
+      // the invocation ("Terminal" → "ls -la"): the call's FIRST real name is
+      // its identity, and a differing later title is the invocation detail.
+      let name = entry.name;
+      let invocation: string | undefined;
+      if (entry.toolUseId) {
+        for (const prev of entries) {
+          if (prev === entry) break;
+          if (
+            prev.kind === "tool_call" &&
+            prev.toolUseId === entry.toolUseId &&
+            !isGenericToolName(prev.name)
+          ) {
+            if (!isGenericToolName(entry.name) && entry.name !== prev.name) {
+              invocation = entry.name;
+            }
+            name = prev.name;
+            break;
+          }
+        }
+      }
+      const target =
+        summarizeToolInput(entry.input) ?? (invocation ? clip(invocation, TARGET_MAX) : undefined);
+      const display = toolDisplayName(name);
       return {
-        label: toolTaxonomy(entry.name).verbLabel,
+        label: toolTaxonomy(name).verbLabel,
         detail: target ? `${display} · ${target}` : display,
-        toolName: entry.name ?? undefined,
+        toolName: name ?? undefined,
       };
     }
     if (entry.kind === "tool_result") break;

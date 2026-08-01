@@ -35,6 +35,22 @@ export interface ToolTaxonomyEntry {
 }
 
 /**
+ * Placeholder names that carry no tool identity. acpx fills a tool_call_update
+ * whose ACP payload omits `title` with the literal "tool call", and older
+ * stored logs carry "tool call (completed)" / "acp_tool" variants — none of
+ * these should ever displace a real name like "Terminal" or "Read".
+ */
+const GENERIC_TOOL_NAMES = new Set(["tool", "tool call", "tool_call", "acp_tool"]);
+
+export function isGenericToolName(name: string | undefined | null): boolean {
+  const raw = (name ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\((?:pending|in_progress|completed|failed|cancelled)\)$/, "");
+  return !raw || GENERIC_TOOL_NAMES.has(raw);
+}
+
+/**
  * Collapse an MCP tool name ("mcp__server__tool") to its tool segment,
  * capitalized — the same rule toolDisplayName() applies. Returns null for
  * non-MCP names.
@@ -57,12 +73,19 @@ const FAMILY_META: Record<Exclude<ToolFamily, "mcp">, Omit<ToolTaxonomyEntry, "f
 };
 
 function classify(n: string): Exclude<ToolFamily, "mcp"> {
-  if (n === "read" || n === "notebookread") return "read";
-  if (n === "edit" || n === "write" || n === "multiedit" || n === "notebookedit") return "edit";
-  if (n === "bash" || n === "shell" || n === "run" || n.includes("terminal")) return "terminal";
-  if (n === "grep" || n === "glob" || n.includes("search")) return "search";
+  // ACP titles are often multi-word ("Read File", "Edit File") — the first
+  // word carries the family.
+  const first = n.split(/[\s_:-]+/, 1)[0] ?? "";
+  if (first === "read" || n === "notebookread") return "read";
+  if (first === "edit" || first === "write" || n === "multiedit" || n === "notebookedit") {
+    return "edit";
+  }
+  if (first === "bash" || first === "shell" || first === "run" || n.includes("terminal")) {
+    return "terminal";
+  }
+  if (first === "grep" || first === "glob" || n.includes("search")) return "search";
   if (n.includes("fetch") || n.includes("web") || n.includes("http")) return "web";
-  if (n === "task" || n === "agent") return "agent";
+  if (first === "task" || first === "agent") return "agent";
   return "other";
 }
 

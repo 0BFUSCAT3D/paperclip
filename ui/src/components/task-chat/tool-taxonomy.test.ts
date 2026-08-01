@@ -9,7 +9,7 @@ import {
   SquareTerminal,
   Wrench,
 } from "lucide-react";
-import { mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
+import { isGenericToolName, mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
 
 describe("toolTaxonomy", () => {
   it("maps each family to its icon and verb", () => {
@@ -74,6 +74,33 @@ describe("toolTaxonomy", () => {
     expect(toolTaxonomy("")).toEqual({ family: "other", icon: Wrench, verbLabel: "Working" });
     expect(toolTaxonomy(undefined).icon).toBe(Wrench);
     expect(toolTaxonomy(null).icon).toBe(Wrench);
+  });
+});
+
+describe("toolTaxonomy multi-word ACP titles", () => {
+  it("classifies by the first word", () => {
+    expect(toolTaxonomy("Read File").icon).toBe(BookOpen);
+    expect(toolTaxonomy("Edit File").icon).toBe(Pencil);
+    expect(toolTaxonomy("Write File").icon).toBe(Pencil);
+    expect(toolTaxonomy("Terminal").icon).toBe(SquareTerminal);
+  });
+});
+
+describe("isGenericToolName", () => {
+  it("flags acpx placeholder names, including status-suffixed variants", () => {
+    expect(isGenericToolName("tool call")).toBe(true);
+    expect(isGenericToolName("tool call (completed)")).toBe(true);
+    expect(isGenericToolName("Tool Call (failed)")).toBe(true);
+    expect(isGenericToolName("acp_tool")).toBe(true);
+    expect(isGenericToolName("tool")).toBe(true);
+    expect(isGenericToolName("")).toBe(true);
+    expect(isGenericToolName(undefined)).toBe(true);
+  });
+
+  it("keeps real names", () => {
+    expect(isGenericToolName("Terminal")).toBe(false);
+    expect(isGenericToolName("Read")).toBe(false);
+    expect(isGenericToolName("mcp__linear__search_issues")).toBe(false);
   });
 });
 
