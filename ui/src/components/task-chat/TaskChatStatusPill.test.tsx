@@ -32,6 +32,7 @@ describe("TaskChatStatusPill whimsy", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    document.documentElement.style.removeProperty("--motion-interstitial-dwell");
     vi.useRealTimers();
   });
 
@@ -131,24 +132,112 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(line?.firstElementChild?.className).toContain("tc-line-scroll-inner");
   });
 
-  it("slides the text out but keeps the reserved row once the interstitial completes", () => {
+  it("holds the finished update — static, ellipsized, never fading — until superseded (PAP-368)", () => {
     const item = liveStatus({ tokens: { used: 18240, size: 200000 } });
     render(liveStatus({ label: "Responding", selfTalk: "Almost there." }));
     expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).not.toBeNull();
     render(item);
-    // selfTalk gone → the text is briefly held for its slide-out…
-    const held = container.querySelector('[data-testid="task-chat-interstitial-row"]');
-    expect(held?.textContent).toContain("Almost there.");
-    // …then the TEXT unmounts after the motion-token hold (0ms in jsdom — no
-    // computed token value) while the reserved row stays in layout (round 9:
-    // no jump); gerund + dot carry on below.
+    // selfTalk gone → the text STAYS as a held single-line readout: no
+    // slide-out, no fade, even a minute later; the reserved row keeps its
+    // place and the gerund + dot carry on below.
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line?.textContent).toBe("Almost there.");
+    expect(line?.getAttribute("data-streaming")).toBeNull();
+    expect(line?.firstElementChild?.className).toContain("truncate");
+    expect(container.textContent).toContain(`${whimsyWord(item.id, 60_000)}…`);
+    expect(container.querySelector(".animate-pulse")).not.toBeNull();
+  });
+
+  it("streams the tail line without a transition once the enter slide settles", () => {
+    render(liveStatus({ label: "Responding", selfTalk: "Streaming along nicely." }));
     act(() => {
       vi.advanceTimersByTime(50);
     });
-    expect(container.querySelector('[data-testid="task-chat-interstitial-row"]')).not.toBeNull();
+    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line?.getAttribute("data-streaming")).toBe("true");
+    // Post-enter (--motion-line-scroll reads 0ms in jsdom) the inline
+    // transition is disabled: mid-stream wraps snap instead of gliding.
+    const inner = line?.firstElementChild as HTMLElement;
+    expect(inner.style.transition).toBe("none");
+    expect(inner.className).not.toContain("truncate");
+  });
+
+  it("respects the minimum dwell between swaps and collapses bursts latest-wins", () => {
+    document.documentElement.style.setProperty("--motion-interstitial-dwell", "4000ms");
+    // Update A streams and finishes → held.
+    render(liveStatus({ label: "Responding", selfTalk: "Update A." }));
+    render(liveStatus({}));
+    const innerBefore = container.querySelector(".tc-line-scroll-inner");
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    // Update B arrives 1s after A swapped in: inside the dwell → queued.
+    render(liveStatus({ label: "Responding", selfTalk: "Update B." }));
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(container.textContent).toContain("Update A.");
+    // Update C supersedes B while still queued (latest-wins queue of one).
+    render(liveStatus({ label: "Responding", selfTalk: "Update C." }));
+    act(() => {
+      vi.advanceTimersByTime(900);
+    });
+    // 3.9s since A swapped in — still inside the dwell.
+    expect(container.textContent).toContain("Update A.");
+    expect(container.textContent).not.toContain("Update B.");
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    // Dwell expired → only the NEWEST pending update swaps in; B never shows.
+    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line?.textContent).toBe("Update C.");
+    expect(container.textContent).not.toContain("Update A.");
+    expect(container.textContent).not.toContain("Update B.");
+    // The swap remounts the line (new key) so the slide plays exactly then.
+    expect(container.querySelector(".tc-line-scroll-inner")).not.toBe(innerBefore);
+    // C was still streaming at swap time → it keeps tracking the tail.
+    expect(line?.getAttribute("data-streaming")).toBe("true");
+  });
+
+  it("swaps a queued update in as held when its stream already ended", () => {
+    document.documentElement.style.setProperty("--motion-interstitial-dwell", "4000ms");
+    render(liveStatus({ label: "Responding", selfTalk: "Update A." }));
+    render(liveStatus({}));
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    // B streams and ENDS while A's dwell is still running.
+    render(liveStatus({ label: "Responding", selfTalk: "Update B, done already." }));
+    render(liveStatus({}));
+    act(() => {
+      vi.advanceTimersByTime(3100);
+    });
+    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line?.textContent).toBe("Update B, done already.");
+    expect(line?.getAttribute("data-streaming")).toBeNull();
+    expect(line?.firstElementChild?.className).toContain("truncate");
+  });
+
+  it("clears the held line when the turn ends", () => {
+    render(liveStatus({ label: "Responding", selfTalk: "Held across the turn?" }));
+    render(liveStatus({}));
+    expect(container.textContent).toContain("Held across the turn?");
+    // Turn settles into a non-live status: the row (and held text) is gone;
+    // a later live turn must not resurrect the old update.
+    render(liveStatus({ status: "interrupted", label: "Interrupted" }));
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(container.querySelector('[data-testid="task-chat-interstitial-row"]')).toBeNull();
+    render(liveStatus({}));
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(container.textContent).not.toContain("Held across the turn?");
     expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).toBeNull();
-    expect(container.textContent).toContain(`${whimsyWord(item.id, 0)}…`);
-    expect(container.querySelector(".animate-pulse")).not.toBeNull();
   });
 });
 

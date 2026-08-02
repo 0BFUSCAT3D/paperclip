@@ -99,6 +99,36 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
           },
         ],
       };
+    case "responding-burst":
+      // A run emitting several interstitial updates in quick succession
+      // (PAP-368): the lab replay streams each blank-line-separated segment as
+      // its own update with a short gap between. The pill HOLDS each finished
+      // update until the next swaps in, paced by --motion-interstitial-dwell
+      // (latest-wins when updates outpace the dwell).
+      return {
+        surface: "thread",
+        items: [
+          ...exchangePrefix(),
+          {
+            id: "turn-responding-burst",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 2, added: 0, removed: 0 },
+            liveStatus: {
+              id: "st-responding-burst", kind: "status", status: "running", label: "Responding", startedAtMs: Date.now() - 21400, tokens: { used: 18240, size: 200000 },
+              selfTalk:
+                "Found the existing ipRateLimit helper — extending it beats adding a second limiter.\n\n" +
+                "Wiring a per-account token bucket keyed on the email address, refilling at six requests a minute per the auth spec.\n\n" +
+                "Failed attempts drain the bucket twice as fast, so brute-force runs hit the ceiling while a fat-fingered password barely registers.\n\n" +
+                "Now updating the login route to consume from the bucket before the password check and adding tests for the lockout path.",
+            },
+            items: [
+              { id: "burst-read", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+              { id: "burst-grep", kind: "tool", name: "Grep", target: "ipRateLimit", toolKind: "search", status: "completed" },
+            ],
+          },
+        ],
+      };
     case "tool-call":
       return {
         surface: "thread",

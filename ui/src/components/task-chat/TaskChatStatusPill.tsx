@@ -4,6 +4,7 @@ import { ChevronRight, Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "
 import type { TaskChatStatusItem } from "./task-chat-model";
 import { statusLabelIcon, toolTaxonomy } from "./tool-taxonomy";
 import { isGenericStatusLabel, whimsyWord } from "./status-whimsy";
+import { parseCssTimeMs } from "./motion-tokens";
 
 function elapsedLabel(ms?: number): string | null {
   if (ms == null) return null;
@@ -42,21 +43,32 @@ export function lineScrollOffset(scrollHeight: number, lineHeightPx: number): nu
   return Math.max(0, Math.round(scrollHeight / lineHeightPx) - 1);
 }
 
+/** Read a `--motion-*` time token off :root in ms (0 when unset, e.g. jsdom). */
+function motionTokenMs(name: string): number {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name);
+  const ms = parseCssTimeMs(raw);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 /**
- * A streaming interstitial update inside a one-line-height clipped viewport.
- * One transform transition (--motion-line-scroll, transform-only, snaps under
- * reduced motion) does all the y work: the text enters by sliding up from
- * below the 1lh clip; when it wraps, the inner block translates up by whole
- * line-heights so the completed line slides out the top while the stream
- * continues on the fresh line; and when the message ends (`leaving`) it shifts
- * one further line so the last line slides out before the text unmounts (the
- * reserved row itself never leaves layout while the turn is live). Line count
- * is measured from scrollHeight / line-height, re-checked on resize.
+ * The interstitial update inside a one-line-height clipped viewport.
+ *
+ * The `.tc-line-scroll` slide plays ONLY at swap moments (PAP-368): on mount —
+ * i.e. when a new update replaces the previous one, the parent keys this
+ * component by swap — the text slides up from below the 1lh clip, and once
+ * that enter window (--motion-line-scroll) elapses the transition is disabled
+ * inline. While `streaming`, the block is shifted up by whole line-heights so
+ * only the tail line shows, but with the transition off the shift SNAPS — no
+ * per-wrap glide keeping the row in constant motion. Once the update finishes
+ * (`streaming` false) the held text renders single-line ellipsized, static.
+ * Line count is measured from scrollHeight / line-height, re-checked on
+ * resize.
  */
-function LiveSelfTalkLine({ text, leaving }: { text: string; leaving?: boolean }) {
+function LiveSelfTalkLine({ text, streaming }: { text: string; streaming: boolean }) {
   const innerRef = useRef<HTMLSpanElement | null>(null);
   const [offset, setOffset] = useState(0);
   const [entered, setEntered] = useState(false);
+  const [settled, setSettled] = useState(false);
   useLayoutEffect(() => {
     const el = innerRef.current;
     if (!el) return;
@@ -69,18 +81,29 @@ function LiveSelfTalkLine({ text, leaving }: { text: string; leaving?: boolean }
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [text]);
+  }, [text, streaming]);
   useEffect(() => {
     const id = requestAnimationFrame(() => setEntered(true));
-    return () => cancelAnimationFrame(id);
+    const timer = window.setTimeout(() => setSettled(true), motionTokenMs("--motion-line-scroll"));
+    return () => {
+      cancelAnimationFrame(id);
+      window.clearTimeout(timer);
+    };
   }, []);
-  const shift = !entered ? 1 : -offset - (leaving ? 1 : 0);
+  const shift = !entered ? 1 : streaming ? -offset : 0;
   return (
-    <span className="tc-line-scroll min-w-0 flex-1" data-testid="task-chat-live-self-talk">
+    <span
+      className="tc-line-scroll min-w-0 flex-1"
+      data-testid="task-chat-live-self-talk"
+      data-streaming={streaming || undefined}
+    >
       <span
         ref={innerRef}
-        className="tc-line-scroll-inner block"
-        style={shift !== 0 ? { transform: `translateY(calc(${shift} * 1lh))` } : undefined}
+        className={cn("tc-line-scroll-inner block", !streaming && "truncate")}
+        style={{
+          transform: shift !== 0 ? `translateY(calc(${shift} * 1lh))` : undefined,
+          transition: settled ? "none" : undefined,
+        }}
       >
         {text}
       </span>
@@ -88,27 +111,94 @@ function LiveSelfTalkLine({ text, leaving }: { text: string; leaving?: boolean }
   );
 }
 
+interface HeldSelfTalk {
+  text: string;
+  /** The displayed update is the currently-streaming tail message. */
+  streaming: boolean;
+  /** Increments at each swap — keys LiveSelfTalkLine so the slide replays. */
+  swapKey: number;
+}
+
 /**
- * Holds the streaming interstitial text briefly after it clears so it can
- * slide out of the reserved row before unmounting. The hold duration is read
- * from the same motion token the slide transition uses (0 under reduced
- * motion → instant unmount).
+ * Hold-until-superseded interstitial state (PAP-368): a finished update STAYS
+ * visible, static, until the next update replaces it or the turn ends — never
+ * fades. Swaps are paced by --motion-interstitial-dwell (~4s minimum between
+ * swaps) so visibility tracks reading time, not streaming speed. Updates that
+ * arrive inside the dwell window collapse latest-wins (a queue of one: only
+ * the newest pending update swaps in when the dwell expires).
+ *
+ * Message boundaries are the `selfTalk` gaps: the transcript tail clears it
+ * between assistant messages (tool calls / thinking in between), so a
+ * defined→undefined→defined sequence marks a new update.
  */
-function useHeldSelfTalk(selfTalk: string | undefined): { text: string; leaving: boolean } | null {
-  const [held, setHeld] = useState<string | null>(selfTalk ?? null);
+function useHeldSelfTalk(selfTalk: string | undefined, live: boolean): HeldSelfTalk | null {
+  const [line, setLine] = useState<HeldSelfTalk | null>(null);
+  const lineRef = useRef<HeldSelfTalk | null>(line);
+  const pendingRef = useRef<string | null>(null);
+  const tailRef = useRef<string | undefined>(selfTalk);
+  const lastSwapAtRef = useRef(0);
+  const timerRef = useRef<number | null>(null);
+  tailRef.current = selfTalk;
+
   useEffect(() => {
-    if (selfTalk) {
-      setHeld(selfTalk);
+    const show = (next: HeldSelfTalk | null) => {
+      lineRef.current = next;
+      setLine(next);
+    };
+    const swapIn = (text: string, streaming: boolean) => {
+      lastSwapAtRef.current = Date.now();
+      show({ text, streaming, swapKey: (lineRef.current?.swapKey ?? 0) + 1 });
+    };
+    if (!live) {
+      // Turn end clears the row (the reserved slot itself unmounts with it).
+      if (timerRef.current != null) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      pendingRef.current = null;
+      if (lineRef.current) show(null);
       return;
     }
-    if (held == null) return;
-    const raw = getComputedStyle(document.documentElement).getPropertyValue("--motion-line-scroll");
-    const ms = Number.parseFloat(raw);
-    const id = window.setTimeout(() => setHeld(null), Number.isFinite(ms) ? ms : 0);
-    return () => window.clearTimeout(id);
-  }, [selfTalk, held]);
-  if (selfTalk) return { text: selfTalk, leaving: false };
-  return held != null ? { text: held, leaving: true } : null;
+    const cur = lineRef.current;
+    if (selfTalk == null) {
+      // Stream ended: the displayed update becomes held — it does NOT leave.
+      if (cur?.streaming) show({ ...cur, streaming: false });
+      return;
+    }
+    if (cur == null) {
+      swapIn(selfTalk, true);
+      return;
+    }
+    if (cur.streaming) {
+      // Same message growing — update in place, no swap.
+      if (cur.text !== selfTalk) show({ ...cur, text: selfTalk });
+      return;
+    }
+    // A new update while one is held: queue it latest-wins and swap when the
+    // dwell since the last swap has elapsed.
+    pendingRef.current = selfTalk;
+    if (timerRef.current == null) {
+      const dwellMs = motionTokenMs("--motion-interstitial-dwell");
+      const delay = Math.max(0, lastSwapAtRef.current + dwellMs - Date.now());
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        const text = pendingRef.current;
+        pendingRef.current = null;
+        // Still streaming iff the tail message is live at swap time; if so the
+        // next effect pass keeps the text tracking the tail.
+        if (text != null) swapIn(text, tailRef.current != null);
+      }, delay);
+    }
+  }, [selfTalk, live]);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  return line;
 }
 
 const CONFIG = {
@@ -143,7 +233,7 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
   const awaiting = item.status === "awaiting_approval";
   const live = item.status === "running" || item.status === "working";
   const liveElapsedMs = useLiveElapsedMs(item.startedAtMs, live);
-  const heldSelfTalk = useHeldSelfTalk(live ? item.selfTalk : undefined);
+  const heldSelfTalk = useHeldSelfTalk(live ? item.selfTalk : undefined, live);
   const elapsed = elapsedLabel(item.elapsedMs);
 
   if (live) {
@@ -208,10 +298,13 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
     // The interstitial row is PERMANENTLY RESERVED while the turn is live
     // (round 9): the layout above never jumps to make room. A streaming
     // interstitial gets this bubble-less single-line row DIRECTLY ABOVE the
-    // status line — the two never share a line. Text slides into / out of the
-    // 1lh viewport (LiveSelfTalkLine) when a message starts/ends; between
-    // messages the row stays as an empty one-line slot of identical height.
-    // The empty lead slot keeps the text column-aligned with the status label.
+    // status line — the two never share a line. The latest update is held
+    // until superseded (PAP-368): it stays as a static one-line readout after
+    // its stream ends, and the .tc-line-scroll slide plays only when a new
+    // update swaps in (keyed remount), paced by --motion-interstitial-dwell.
+    // Before the first update the row is an empty one-line slot of identical
+    // height; the empty lead slot keeps the text column-aligned with the
+    // status label.
     return (
       <div className="flex flex-col">
         <div
@@ -222,7 +315,11 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
           {heldSelfTalk ? (
             <>
               {SelfTalkIcon ? <SelfTalkIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
-              <LiveSelfTalkLine text={heldSelfTalk.text} leaving={heldSelfTalk.leaving} />
+              <LiveSelfTalkLine
+                key={heldSelfTalk.swapKey}
+                text={heldSelfTalk.text}
+                streaming={heldSelfTalk.streaming}
+              />
             </>
           ) : (
             <span aria-hidden className="tc-line-scroll min-w-0 flex-1" />

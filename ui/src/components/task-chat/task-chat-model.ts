@@ -152,10 +152,11 @@ export interface TaskChatStatusItem {
    * Flattened plain text of the interstitial update currently streaming
    * (PAP-361, round 9): it renders in a dedicated single-line row directly
    * above the status line — a slot PERMANENTLY RESERVED while the turn is
-   * live, so the layout above never jumps — inside a one-line viewport that
-   * scrolls completed lines out the top; the gerund rotation below runs
-   * uninterrupted. Ephemeral — when the message finishes the text slides out
-   * and nothing persists in the thread.
+   * live, so the layout above never jumps — inside a one-line viewport
+   * showing the streaming tail line; the gerund rotation below runs
+   * uninterrupted. When the message finishes the pill HOLDS the text as a
+   * static ellipsized line until the next update supersedes it or the turn
+   * ends (PAP-368) — nothing persists in the settled thread.
    */
   selfTalk?: string;
   elapsedMs?: number;

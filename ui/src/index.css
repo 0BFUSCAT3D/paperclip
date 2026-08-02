@@ -237,6 +237,7 @@
   --motion-streaming-cursor-blink: 1.1s;
   --motion-turn-fold: 380ms;            /* finished-turn activity folding into its summary line */
   --motion-line-scroll: 240ms;          /* completed interstitial line sliding out of the 1lh live-line viewport */
+  --motion-interstitial-dwell: 4000ms;  /* minimum hold on an interstitial update before the next one may swap in */
   --motion-scroll-pill-enter: 200ms;    /* scroll-to-latest pill entry */
   --motion-scroll-pill-exit: 400ms;     /* scroll-to-latest pill exit */
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
@@ -537,6 +538,9 @@
     --motion-streaming-cursor-blink: 0ms;
     --motion-turn-fold: 0ms;
     --motion-line-scroll: 0ms;
+    /* --motion-interstitial-dwell is deliberately NOT zeroed: it is a pacing
+       hold, not a movement — zeroing it would make the interstitial line churn
+       faster under reduced motion. Swaps themselves snap (line-scroll: 0). */
     --motion-scroll-pill-enter: 0ms;
     --motion-scroll-pill-exit: 0ms;
     --motion-pane-glide: 0ms;
