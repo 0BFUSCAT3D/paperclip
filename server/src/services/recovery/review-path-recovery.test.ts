@@ -3,6 +3,7 @@ import {
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
+  isReviewPathRecoveryIdempotencyConflict,
 } from "./review-path-recovery.js";
 
 const stalled = {
@@ -93,5 +94,18 @@ describe("review-path recovery", () => {
     });
 
     expect(decision).toEqual({ kind: "skip", reason: "review issue still has a maintained path" });
+  });
+
+  it("recognizes wrapped atomic deduplication conflicts without swallowing unrelated uniqueness errors", () => {
+    expect(isReviewPathRecoveryIdempotencyConflict({
+      cause: {
+        code: "23505",
+        constraint_name: "agent_wakeup_requests_review_path_recovery_idempotency_uq",
+      },
+    })).toBe(true);
+    expect(isReviewPathRecoveryIdempotencyConflict({
+      code: "23505",
+      constraint_name: "some_other_unique_index",
+    })).toBe(false);
   });
 });

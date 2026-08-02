@@ -219,6 +219,7 @@ import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+  isReviewPathRecoveryIdempotencyConflict,
   REVIEW_PATH_RECOVERY_INSTRUCTION,
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
@@ -603,31 +604,6 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
-const REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX = "agent_wakeup_requests_review_path_recovery_idempotency_uq";
-
-function isReviewPathRecoveryIdempotencyConflict(error: unknown): boolean {
-  let current: unknown = error;
-  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
-    const candidate = current as {
-      code?: unknown;
-      constraint?: unknown;
-      constraint_name?: unknown;
-      message?: unknown;
-      cause?: unknown;
-    };
-    const constraint = candidate.constraint ?? candidate.constraint_name;
-    if (
-      candidate.code === "23505" &&
-      (constraint === REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX ||
-        (typeof candidate.message === "string" && candidate.message.includes(REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX)))
-    ) {
-      return true;
-    }
-    current = candidate.cause;
-  }
-  return false;
-}
-
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
   | "resolveAdapterConfigForRuntime"

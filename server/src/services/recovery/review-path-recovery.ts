@@ -5,6 +5,7 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 export const ISSUE_REVIEW_PATH_LOST_WAKE_REASON = "issue_review_path_lost";
 export const REVIEW_PATH_RECOVERY_INSTRUCTION =
   "This issue is still in review but its last maintained review path was consumed. Restore a reviewer, interaction, approval, monitor, or other durable waiting path, or choose an explicit disposition. This is the only automatic review-path recovery wake for this fingerprint.";
+const REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX = "agent_wakeup_requests_review_path_recovery_idempotency_uq";
 
 function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -33,6 +34,31 @@ export function buildIssueReviewPathLostIdempotencyKey(input: {
   return `${ISSUE_REVIEW_PATH_LOST_WAKE_REASON}:${input.issueId}:${fingerprint}`;
 }
 
+export function isReviewPathRecoveryIdempotencyConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    const constraint = candidate.constraint ?? candidate.constraint_name;
+    if (
+      candidate.code === "23505"
+      && (
+        constraint === REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX
+        || (typeof candidate.message === "string" && candidate.message.includes(REVIEW_PATH_RECOVERY_IDEMPOTENCY_INDEX))
+      )
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
 export type IssueReviewPathRecoveryDecision =
   | {
       kind: "enqueue";
@@ -44,7 +70,7 @@ export type IssueReviewPathRecoveryDecision =
 
 export function decideIssueReviewPathRecovery(input: {
   issueId: string;
-  sourceRunId: string;
+  sourceRunId: string | null;
   assigneeAgentId: string | null;
   contextSnapshot: Record<string, unknown> | null | undefined;
   reviewAttention: IssueReviewAttention;
@@ -64,7 +90,7 @@ export function decideIssueReviewPathRecovery(input: {
   }
 
   const consumedPathRef = reviewPathConsumedRefFromRun({
-    runId: input.sourceRunId,
+    runId: input.sourceRunId ?? input.issueId,
     issueId: input.issueId,
     contextSnapshot: context,
   });
@@ -78,7 +104,7 @@ export function decideIssueReviewPathRecovery(input: {
     issueId: input.issueId,
     taskId: input.issueId,
     sourceIssueId: input.issueId,
-    sourceRunId: input.sourceRunId,
+    ...(input.sourceRunId ? { sourceRunId: input.sourceRunId } : {}),
     reviewPathLost: true,
     reviewPathConsumedRef: consumedPathRef,
     reviewPathRecoveryAttempt: 1,
@@ -93,7 +119,7 @@ export function decideIssueReviewPathRecovery(input: {
     contextSnapshot: withRecoveryModelProfileHint({
       ...payload,
       wakeReason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
-      source: "heartbeat.review_path_disposition",
+      source: readNonEmptyString(context.source) ?? "heartbeat.review_path_disposition",
     }, "normal_model"),
   };
 }

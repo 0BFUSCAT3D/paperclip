@@ -127,7 +127,12 @@ import {
   workProductService,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
-import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
+import {
+  decideIssueReviewPathRecovery,
+  ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+  isReviewPathRecoveryIdempotencyConflict,
+  REVIEW_PATH_RECOVERY_INSTRUCTION,
+} from "../services/recovery/review-path-recovery.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -3334,6 +3339,77 @@ export function issueRoutes(
     }
   }
 
+  async function queueExpiredInteractionReviewPathRecovery(input: {
+    issue: IssueRouteSnapshot;
+    interactions: Array<{ id: string }>;
+    actor: ReturnType<typeof getActorInfo>;
+    source: string;
+  }) {
+    if (
+      input.interactions.length === 0
+      || input.issue.status !== "in_review"
+      || !input.issue.assigneeAgentId
+    ) {
+      return null;
+    }
+
+    const reviewAttention = await svc
+      .listReviewAttention(input.issue.companyId, [input.issue])
+      .then((attention) => attention.get(input.issue.id));
+    if (!reviewAttention || reviewAttention.state !== "stalled") return null;
+
+    const interactionIds = [...new Set(input.interactions.map((interaction) => interaction.id))].sort();
+    const consumedPathRef = interactionIds.length === 1
+      ? interactionIds[0]!
+      : `interactions:${interactionIds.join(",")}`;
+    const decision = decideIssueReviewPathRecovery({
+      issueId: input.issue.id,
+      sourceRunId: input.actor.runId,
+      assigneeAgentId: input.issue.assigneeAgentId,
+      contextSnapshot: {
+        source: input.source,
+        reviewPathConsumedRef: consumedPathRef,
+      },
+      reviewAttention,
+      existingWake: false,
+    });
+    if (decision.kind !== "enqueue") return null;
+
+    const recoveryRun = await heartbeat.wakeup(input.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+      idempotencyKey: decision.idempotencyKey,
+      payload: decision.payload,
+      contextSnapshot: decision.contextSnapshot,
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+    }).catch((error: unknown) => {
+      if (isReviewPathRecoveryIdempotencyConflict(error)) return null;
+      throw error;
+    });
+    if (!recoveryRun) return null;
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "issue_route",
+      agentId: input.issue.assigneeAgentId,
+      runId: input.actor.runId,
+      action: "issue.review_path_recovery_queued",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        source: input.source,
+        recoveryRunId: recoveryRun.id,
+        consumedPathRef,
+        recoveryAttempt: 1,
+        maxRecoveryAttempts: 1,
+      },
+    });
+    return recoveryRun;
+  }
+
   function parseDateQuery(value: unknown, field: string) {
     if (typeof value !== "string" || value.trim().length === 0) return undefined;
     const parsed = new Date(value);
@@ -6326,6 +6402,12 @@ export function issueRoutes(
         actor,
         source: "issue.document_updated",
       });
+      await queueExpiredInteractionReviewPathRecovery({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.document_updated",
+      });
     }
 
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
@@ -6542,6 +6624,12 @@ export function issueRoutes(
         actor,
         source: "issue.document_restored",
       });
+      await queueExpiredInteractionReviewPathRecovery({
+        issue,
+        interactions: expiredInteractions,
+        actor,
+        source: "issue.document_restored",
+      });
 
       await revalidateActiveSourceRecoveryAfterCommittedWrite({
         issue,
@@ -6613,6 +6701,12 @@ export function issueRoutes(
       },
     );
     await logExpiredRequestConfirmations({
+      issue,
+      interactions: expiredInteractions,
+      actor,
+      source: "issue.document_deleted",
+    });
+    await queueExpiredInteractionReviewPathRecovery({
       issue,
       interactions: expiredInteractions,
       actor,
@@ -9439,6 +9533,12 @@ export function issueRoutes(
     const interactionSvc = issueThreadInteractionService(db);
     const supersededInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
     await logExpiredRequestConfirmations({
+      issue,
+      interactions: supersededInteractions,
+      actor,
+      source: "issue.interactions.catchup_superseded_by_comment",
+    });
+    await queueExpiredInteractionReviewPathRecovery({
       issue,
       interactions: supersededInteractions,
       actor,
