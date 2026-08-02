@@ -16,7 +16,7 @@ function toolCall(name: string, input?: unknown): TranscriptEntry {
 describe("deriveRunStatusLabel", () => {
   it("labels a tail tool_call with the taxonomy verb and tool · target detail", () => {
     const status = deriveRunStatusLabel([toolCall("Grep", { pattern: "ui/src/components" })]);
-    expect(status.label).toBe("Searching");
+    expect(status.label).toBe("Grepping");
     expect(status.detail).toBe("Grep · ui/src/components");
     expect(status.toolName).toBe("Grep");
   });

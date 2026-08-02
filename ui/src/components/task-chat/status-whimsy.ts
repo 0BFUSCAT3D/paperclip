@@ -10,7 +10,9 @@
  * ~10s of elapsed run time.
  */
 
-/** Paperclip / analog-office pool — "Clipping" is the guaranteed brand nod. */
+/** Paperclip / analog-office pool — "Clipping" is the guaranteed brand nod.
+ * Board-curated round 2 (PAP-349): dropped Cataloguing / Carbon-copying /
+ * Archiving, added the workshop-and-whiteboard verbs. */
 export const ANALOG_OFFICE_WORDS: readonly string[] = [
   "Clipping",
   "Organizing",
@@ -21,40 +23,31 @@ export const ANALOG_OFFICE_WORDS: readonly string[] = [
   "Collating",
   "Stapling",
   "Indexing",
-  "Archiving",
   "Annotating",
   "Drafting",
   "Proofreading",
-  "Cataloguing",
   "Alphabetizing",
   "Photocopying",
-  "Carbon-copying",
   "Laminating",
   "Hole-punching",
   "Bookmarking",
   "Highlighting",
   "Typing",
+  "Trimming",
+  "Aligning",
+  "Combining",
+  "Whiteboarding",
+  "Diagramming",
+  "Sketching",
+  "Labeling",
+  "Sticky-noting",
 ];
 
-/** Claude-Code-style whimsy pool. */
+/** Claude-Code-style whimsy pool — board-curated round 2 kept only these four. */
 export const CLAUDE_CODE_WORDS: readonly string[] = [
-  "Pondering",
-  "Percolating",
-  "Reticulating",
-  "Conjuring",
-  "Marinating",
-  "Ruminating",
-  "Noodling",
   "Brewing",
-  "Mulling",
-  "Simmering",
   "Tinkering",
-  "Cogitating",
-  "Musing",
-  "Incubating",
   "Distilling",
-  "Untangling",
-  "Puzzling",
   "Deliberating",
 ];
 

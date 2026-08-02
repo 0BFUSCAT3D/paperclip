@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  BookOpen,
-  Bot,
-  FileSearch,
-  Globe,
-  Pencil,
-  Plug,
+  Book,
+  Brain,
+  ChevronsLeftRightEllipsis,
+  MessageSquareReply,
+  Network,
+  Search,
+  SearchCode,
+  SquarePen,
   SquareTerminal,
   Wrench,
 } from "lucide-react";
-import { isGenericToolName, mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
+import { McpIcon } from "./McpIcon";
+import { isGenericToolName, mcpToolSegment, statusLabelIcon, toolTaxonomy } from "./tool-taxonomy";
 
 describe("toolTaxonomy", () => {
   it("maps each family to its icon and verb", () => {
@@ -21,23 +24,28 @@ describe("toolTaxonomy", () => {
     expect(toolTaxonomy("Shell").family).toBe("terminal");
 
     expect(toolTaxonomy("Grep")).toEqual({
+      family: "grep",
+      icon: SearchCode,
+      verbLabel: "Grepping",
+    });
+
+    expect(toolTaxonomy("Glob")).toEqual({
       family: "search",
-      icon: FileSearch,
+      icon: Search,
       verbLabel: "Searching",
     });
-    expect(toolTaxonomy("Glob").family).toBe("search");
     expect(toolTaxonomy("WebSearch").family).toBe("search");
 
     expect(toolTaxonomy("Read")).toEqual({
       family: "read",
-      icon: BookOpen,
+      icon: Book,
       verbLabel: "Reading files",
     });
     expect(toolTaxonomy("NotebookRead").family).toBe("read");
 
     expect(toolTaxonomy("Edit")).toEqual({
       family: "edit",
-      icon: Pencil,
+      icon: SquarePen,
       verbLabel: "Editing files",
     });
     expect(toolTaxonomy("Write").family).toBe("edit");
@@ -46,22 +54,22 @@ describe("toolTaxonomy", () => {
 
     expect(toolTaxonomy("WebFetch")).toEqual({
       family: "web",
-      icon: Globe,
+      icon: ChevronsLeftRightEllipsis,
       verbLabel: "Fetching the web",
     });
 
     expect(toolTaxonomy("Task")).toEqual({
       family: "agent",
-      icon: Bot,
+      icon: Network,
       verbLabel: "Delegating",
     });
     expect(toolTaxonomy("Agent").family).toBe("agent");
   });
 
-  it("collapses mcp__ names to a Plug entry with the tool segment verb", () => {
+  it("collapses mcp__ names to the MCP logo with the tool segment verb", () => {
     const entry = toolTaxonomy("mcp__linear-server__search_issues");
     expect(entry.family).toBe("mcp");
-    expect(entry.icon).toBe(Plug);
+    expect(entry.icon).toBe(McpIcon);
     expect(entry.verbLabel).toBe("Using Search_issues");
   });
 
@@ -79,10 +87,24 @@ describe("toolTaxonomy", () => {
 
 describe("toolTaxonomy multi-word ACP titles", () => {
   it("classifies by the first word", () => {
-    expect(toolTaxonomy("Read File").icon).toBe(BookOpen);
-    expect(toolTaxonomy("Edit File").icon).toBe(Pencil);
-    expect(toolTaxonomy("Write File").icon).toBe(Pencil);
+    expect(toolTaxonomy("Read File").icon).toBe(Book);
+    expect(toolTaxonomy("Edit File").icon).toBe(SquarePen);
+    expect(toolTaxonomy("Write File").icon).toBe(SquarePen);
     expect(toolTaxonomy("Terminal").icon).toBe(SquareTerminal);
+  });
+});
+
+describe("statusLabelIcon", () => {
+  it("gives the tool-free informative statuses their glyphs", () => {
+    expect(statusLabelIcon("Thinking")).toBe(Brain);
+    expect(statusLabelIcon("Responding")).toBe(MessageSquareReply);
+    expect(statusLabelIcon("Responding (streaming)")).toBe(MessageSquareReply);
+  });
+
+  it("leaves whimsified and generic labels glyph-free", () => {
+    for (const label of ["Running", "Working", "Clipping", "Brewing", "Queued", "", undefined, null]) {
+      expect(statusLabelIcon(label)).toBeNull();
+    }
   });
 });
 

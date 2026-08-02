@@ -6,19 +6,26 @@
  * tools.
  */
 import {
-  BookOpen,
-  Bot,
-  FileSearch,
-  Globe,
-  Pencil,
-  Plug,
+  Book,
+  Brain,
+  ChevronsLeftRightEllipsis,
+  MessageSquareReply,
+  Network,
+  Search,
+  SearchCode,
+  SquarePen,
   SquareTerminal,
   Wrench,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import type { ComponentType, SVGProps } from "react";
+import { McpIcon } from "./McpIcon";
+
+/** Lucide icons and hand-rolled SVGs (the MCP logo) share this shape. */
+export type ToolIcon = ComponentType<SVGProps<SVGSVGElement>>;
 
 export type ToolFamily =
   | "terminal"
+  | "grep"
   | "search"
   | "read"
   | "edit"
@@ -29,7 +36,7 @@ export type ToolFamily =
 
 export interface ToolTaxonomyEntry {
   family: ToolFamily;
-  icon: LucideIcon;
+  icon: ToolIcon;
   /** Progressive verb for the status pill, without the trailing ellipsis. */
   verbLabel: string;
 }
@@ -64,11 +71,12 @@ export function mcpToolSegment(name: string): string | null {
 
 const FAMILY_META: Record<Exclude<ToolFamily, "mcp">, Omit<ToolTaxonomyEntry, "family">> = {
   terminal: { icon: SquareTerminal, verbLabel: "Running a command" },
-  search: { icon: FileSearch, verbLabel: "Searching" },
-  read: { icon: BookOpen, verbLabel: "Reading files" },
-  edit: { icon: Pencil, verbLabel: "Editing files" },
-  web: { icon: Globe, verbLabel: "Fetching the web" },
-  agent: { icon: Bot, verbLabel: "Delegating" },
+  grep: { icon: SearchCode, verbLabel: "Grepping" },
+  search: { icon: Search, verbLabel: "Searching" },
+  read: { icon: Book, verbLabel: "Reading files" },
+  edit: { icon: SquarePen, verbLabel: "Editing files" },
+  web: { icon: ChevronsLeftRightEllipsis, verbLabel: "Fetching the web" },
+  agent: { icon: Network, verbLabel: "Delegating" },
   other: { icon: Wrench, verbLabel: "Working" },
 };
 
@@ -83,7 +91,10 @@ function classify(n: string): Exclude<ToolFamily, "mcp"> {
   if (first === "bash" || first === "shell" || first === "run" || n.includes("terminal")) {
     return "terminal";
   }
-  if (first === "grep" || first === "glob" || n.includes("search")) return "search";
+  // Content grep is its own action (search-code glyph); file-name globbing and
+  // generic searches stay under the plain Search family.
+  if (first === "grep") return "grep";
+  if (first === "glob" || n.includes("search")) return "search";
   if (n.includes("fetch") || n.includes("web") || n.includes("http")) return "web";
   if (first === "task" || first === "agent") return "agent";
   return "other";
@@ -94,7 +105,19 @@ export function toolTaxonomy(name: string | undefined | null): ToolTaxonomyEntry
   const raw = (name ?? "").trim();
   if (!raw) return { family: "other", ...FAMILY_META.other };
   const mcpTool = mcpToolSegment(raw);
-  if (mcpTool) return { family: "mcp", icon: Plug, verbLabel: `Using ${mcpTool}` };
+  if (mcpTool) return { family: "mcp", icon: McpIcon, verbLabel: `Using ${mcpTool}` };
   const family = classify(raw.toLowerCase());
   return { family, ...FAMILY_META[family] };
+}
+
+/**
+ * Icons for the tool-free informative statuses ("Thinking", "Responding",
+ * "Responding (streaming)"). Whimsified and generic labels get no glyph — the
+ * pulse dot alone carries those.
+ */
+export function statusLabelIcon(label: string | undefined | null): ToolIcon | null {
+  const raw = (label ?? "").trim().toLowerCase();
+  if (raw === "thinking") return Brain;
+  if (raw === "responding" || raw.startsWith("responding (")) return MessageSquareReply;
+  return null;
 }

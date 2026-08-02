@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
-import { toolTaxonomy } from "./tool-taxonomy";
+import { statusLabelIcon, toolTaxonomy } from "./tool-taxonomy";
 import { isGenericStatusLabel, whimsyWord } from "./status-whimsy";
 
 function elapsedLabel(ms?: number): string | null {
@@ -61,7 +61,9 @@ export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusP
 
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
-    const ToolIcon = item.toolName ? toolTaxonomy(item.toolName).icon : null;
+    const ToolIcon = item.toolName
+      ? toolTaxonomy(item.toolName).icon
+      : statusLabelIcon(item.label);
     // Whimsy fills gaps, never replaces signal: only the generic
     // "Running"/"Working" labels swap for a deterministic whimsical gerund
     // (seeded by the run-scoped item id, rotating ~10s via the live tick).
