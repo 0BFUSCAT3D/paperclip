@@ -358,6 +358,15 @@ function formatTokensLabel(tokens: number): string | undefined {
   return `${label} tokens`;
 }
 
+/** First→last ts span of a transcript, or undefined when unknowable. */
+function transcriptSpanMs(entries: readonly TranscriptEntry[]): number | undefined {
+  if (entries.length < 2) return undefined;
+  const first = Date.parse(entries[0].ts);
+  const last = Date.parse(entries[entries.length - 1].ts);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return undefined;
+  return Math.max(0, last - first);
+}
+
 /**
  * Aggregate a turn's transcript into the folded one-line summary
  * ("✓ Worked · 38s · 3 tools · +34 −3 · 12.3k tokens"). Duration prefers the
@@ -383,12 +392,7 @@ export function buildTurnSummary(
       tokens += (entry.inputTokens || 0) + (entry.outputTokens || 0);
     }
   }
-  let durationMs = opts.durationMs;
-  if (durationMs == null && entries.length >= 2) {
-    const first = Date.parse(entries[0].ts);
-    const last = Date.parse(entries[entries.length - 1].ts);
-    if (Number.isFinite(first) && Number.isFinite(last)) durationMs = last - first;
-  }
+  const durationMs = opts.durationMs ?? transcriptSpanMs(entries);
   return {
     durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
     toolCount: toolIds.size,
@@ -397,6 +401,104 @@ export function buildTurnSummary(
     tokensLabel: formatTokensLabel(tokens),
     failed: opts.failed || undefined,
   };
+}
+
+/** One settled run's raw summary inputs, kept so back-to-back runs can coalesce (PAP-362). */
+export interface TurnSummaryPart {
+  entries: readonly TranscriptEntry[];
+  durationMs?: number;
+  failed?: boolean;
+}
+
+/**
+ * Summary for a turn coalesced from several back-to-back runs (PAP-362).
+ * Tool/diff/token counts re-derive from the concatenated transcripts; duration
+ * is the SUM of the per-run durations (each with its own ts-span fallback) —
+ * never the wall span across the idle gap between runs.
+ */
+export function buildMergedTurnSummary(
+  parts: readonly TurnSummaryPart[],
+): TaskChatTurnItem["summary"] {
+  const all: TranscriptEntry[] = [];
+  let durationMs: number | undefined;
+  let failed = false;
+  for (const part of parts) {
+    all.push(...part.entries);
+    if (part.failed) failed = true;
+    const d = part.durationMs ?? transcriptSpanMs(part.entries);
+    if (d != null && Number.isFinite(d)) durationMs = (durationMs ?? 0) + Math.max(0, d);
+  }
+  // durationMs: 0 suppresses the concatenated-span fallback (which would count
+  // the gap between runs); the summed label is applied over it below.
+  const counts = buildTurnSummary(all, { durationMs: 0, failed });
+  return {
+    ...counts,
+    durationLabel: durationMs != null ? formatDurationLabel(durationMs) : undefined,
+  };
+}
+
+/** Per-turn identity + raw summary inputs for coalescing (keyed by turn item id). */
+export interface SettledTurnMergeMeta {
+  /** Stable agent identity (agentId); empty/unknown turns never merge. */
+  agentKey: string;
+  /** Display name, used to keep another agent's bubble from bridging a merge. */
+  agentName?: string;
+  parts: TurnSummaryPart[];
+}
+
+/**
+ * Final assembly pass (PAP-362): merge runs of settled turns from the SAME
+ * agent that arrive back-to-back — two runs replying consecutively — into one
+ * "Worked" row. The agent's own reply bubbles do not break the run (the merged
+ * row lands below the last bubble, in the last run's slot); a human/system
+ * message, an interaction, a marker, or the live in-flight turn does. Child
+ * items concatenate in order, the summary re-derives via buildMergedTurnSummary,
+ * the merged turn keeps the FIRST run's id (stable across re-renders), and
+ * animateFold survives if any merged run was seen live.
+ */
+export function coalesceSettledTurns(
+  items: readonly TaskChatItem[],
+  metaById: ReadonlyMap<string, SettledTurnMergeMeta>,
+): TaskChatItem[] {
+  const out: TaskChatItem[] = [];
+  // Overlay for merged turns' accumulated parts (metaById stays untouched).
+  const mergedMeta = new Map<string, SettledTurnMergeMeta>();
+  const metaFor = (id: string) => mergedMeta.get(id) ?? metaById.get(id);
+  let heldIdx = -1; // index in `out` of the last mergeable settled turn
+  for (const item of items) {
+    if (item.kind === "turn" && item.settled) {
+      const meta = metaFor(item.id);
+      const held = heldIdx >= 0 ? (out[heldIdx] as TaskChatTurnItem) : null;
+      const heldMeta = held ? metaFor(held.id) : undefined;
+      if (held && meta && heldMeta && meta.agentKey && meta.agentKey === heldMeta.agentKey) {
+        out.splice(heldIdx, 1);
+        const parts = [...heldMeta.parts, ...meta.parts];
+        out.push({
+          ...held,
+          items: [...held.items, ...item.items],
+          animateFold: held.animateFold || item.animateFold || undefined,
+          summary: buildMergedTurnSummary(parts),
+        });
+        mergedMeta.set(held.id, { ...heldMeta, parts });
+      } else {
+        out.push(item);
+      }
+      heldIdx = meta?.agentKey ? out.length - 1 : -1;
+      continue;
+    }
+    out.push(item);
+    if (item.kind === "message" && item.author === "agent") {
+      // The same agent's reply bubble sits between its runs — keep merging
+      // across it. A different agent's bubble ends the run of turns.
+      const heldMeta = heldIdx >= 0 ? metaFor((out[heldIdx] as TaskChatTurnItem).id) : undefined;
+      if (heldMeta?.agentName && item.authorName && item.authorName !== heldMeta.agentName) {
+        heldIdx = -1;
+      }
+    } else {
+      heldIdx = -1;
+    }
+  }
+  return out;
 }
 
 /**

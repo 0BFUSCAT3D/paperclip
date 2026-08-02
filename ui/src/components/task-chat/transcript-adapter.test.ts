@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
 import {
+  buildMergedTurnSummary,
   buildTurnSummary,
+  coalesceSettledTurns,
   deriveRunStatusLabel,
   flattenSelfTalk,
   isNestableLiveChild,
   settledRunChildren,
   toolDisplayName,
   transcriptToTaskChatItems,
+  type SettledTurnMergeMeta,
 } from "./transcript-adapter";
 import type { TaskChatItem } from "./task-chat-model";
 
@@ -376,5 +379,136 @@ describe("settledRunChildren (PAP-361)", () => {
     const children = settledRunChildren(parsed);
     const summary = buildTurnSummary(transcript);
     expect(children.filter((c) => c.kind === "tool")).toHaveLength(summary.toolCount);
+  });
+});
+
+describe("buildMergedTurnSummary (PAP-362)", () => {
+  const runA: TranscriptEntry[] = [
+    { kind: "tool_call", ts: "2026-07-31T12:00:00.000Z", name: "Read", toolUseId: "a-1" } as TranscriptEntry,
+    { kind: "tool_call", ts: "2026-07-31T12:00:05.000Z", name: "Edit", toolUseId: "a-2" } as TranscriptEntry,
+    { kind: "diff", ts: "2026-07-31T12:00:06.000Z", changeType: "add", text: "+x" } as TranscriptEntry,
+    { kind: "result", ts: "2026-07-31T12:00:10.000Z", inputTokens: 500, outputTokens: 300 } as TranscriptEntry,
+  ];
+  const runB: TranscriptEntry[] = [
+    { kind: "tool_call", ts: "2026-07-31T12:30:00.000Z", name: "Bash", toolUseId: "b-1" } as TranscriptEntry,
+    { kind: "result", ts: "2026-07-31T12:30:05.000Z", inputTokens: 300, outputTokens: 100 } as TranscriptEntry,
+  ];
+
+  it("sums tool count, diffs, tokens, and duration across runs", () => {
+    const summary = buildMergedTurnSummary([
+      { entries: runA, durationMs: 30_000 },
+      { entries: runB, durationMs: 15_000 },
+    ]);
+    expect(summary.toolCount).toBe(3);
+    expect(summary.added).toBe(1);
+    expect(summary.tokensLabel).toBe("1.2k tokens");
+    expect(summary.durationLabel).toBe("45s");
+    expect(summary.failed).toBeUndefined();
+  });
+
+  it("sums per-run ts spans — never the idle gap between runs", () => {
+    // runA spans 10s, runB spans 5s, the gap between them is ~30min.
+    const summary = buildMergedTurnSummary([{ entries: runA }, { entries: runB }]);
+    expect(summary.durationLabel).toBe("15s");
+  });
+
+  it("marks the merged turn failed when any run failed", () => {
+    const summary = buildMergedTurnSummary([
+      { entries: runA, durationMs: 1000 },
+      { entries: runB, durationMs: 1000, failed: true },
+    ]);
+    expect(summary.failed).toBe(true);
+  });
+});
+
+describe("coalesceSettledTurns (PAP-362)", () => {
+  const runA: TranscriptEntry[] = [
+    { kind: "tool_call", ts: TS, name: "Read", toolUseId: "a-1" } as TranscriptEntry,
+    { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "a-2" } as TranscriptEntry,
+  ];
+  const runB: TranscriptEntry[] = [
+    { kind: "tool_call", ts: TS, name: "Bash", toolUseId: "b-1" } as TranscriptEntry,
+  ];
+
+  function agentBubble(id: string): TaskChatItem {
+    return { id, kind: "message", author: "agent", authorName: "CEO", text: "Done." };
+  }
+  function turn(id: string, entries: TranscriptEntry[], durationMs: number): TaskChatItem {
+    return {
+      id,
+      kind: "turn",
+      settled: true,
+      items: entries.map((e, i) => ({
+        id: `${id}:tool:${i}`,
+        kind: "tool" as const,
+        name: (e as { name: string }).name,
+        status: "completed" as const,
+      })),
+      summary: buildTurnSummary(entries, { durationMs }),
+    };
+  }
+  const metaById = new Map<string, SettledTurnMergeMeta>([
+    ["run-a:turn", { agentKey: "agent-1", agentName: "CEO", parts: [{ entries: runA, durationMs: 30_000 }] }],
+    ["run-b:turn", { agentKey: "agent-1", agentName: "CEO", parts: [{ entries: runB, durationMs: 15_000 }] }],
+  ]);
+
+  it("merges two back-to-back runs into ONE Worked row summing tools and duration", () => {
+    // Two terminal runs, same agent, consecutive comments, no user message
+    // between → the merged turn sits below the LAST bubble.
+    const items: TaskChatItem[] = [
+      agentBubble("msg-a"),
+      turn("run-a:turn", runA, 30_000),
+      agentBubble("msg-b"),
+      turn("run-b:turn", runB, 15_000),
+    ];
+    const out = coalesceSettledTurns(items, metaById);
+    expect(out.map((i) => i.kind)).toEqual(["message", "message", "turn"]);
+    const merged = out[2] as Extract<TaskChatItem, { kind: "turn" }>;
+    expect(merged.id).toBe("run-a:turn"); // stable: keeps the first run's id
+    expect(merged.summary.toolCount).toBe(3);
+    expect(merged.summary.durationLabel).toBe("45s");
+    expect(merged.items.map((c) => c.id)).toEqual([
+      "run-a:turn:tool:0",
+      "run-a:turn:tool:1",
+      "run-b:turn:tool:0",
+    ]);
+  });
+
+  it("keeps two rows when a user message sits between the runs", () => {
+    const items: TaskChatItem[] = [
+      agentBubble("msg-a"),
+      turn("run-a:turn", runA, 30_000),
+      { id: "msg-u", kind: "message", author: "human", text: "also do X" },
+      agentBubble("msg-b"),
+      turn("run-b:turn", runB, 15_000),
+    ];
+    const out = coalesceSettledTurns(items, metaById);
+    expect(out.filter((i) => i.kind === "turn")).toHaveLength(2);
+    expect(out.map((i) => i.id)).toEqual(["msg-a", "run-a:turn", "msg-u", "msg-b", "run-b:turn"]);
+  });
+
+  it("does not merge across an interaction or into another agent's turn", () => {
+    const withInteraction: TaskChatItem[] = [
+      turn("run-a:turn", runA, 30_000),
+      { id: "int-1", kind: "interaction", interaction: {} } as TaskChatItem,
+      turn("run-b:turn", runB, 15_000),
+    ];
+    expect(coalesceSettledTurns(withInteraction, metaById).filter((i) => i.kind === "turn")).toHaveLength(2);
+
+    const otherAgent = new Map(metaById);
+    otherAgent.set("run-b:turn", { agentKey: "agent-2", agentName: "QA", parts: [{ entries: runB }] });
+    const sameShape: TaskChatItem[] = [turn("run-a:turn", runA, 30_000), turn("run-b:turn", runB, 15_000)];
+    expect(coalesceSettledTurns(sameShape, otherAgent).filter((i) => i.kind === "turn")).toHaveLength(2);
+  });
+
+  it("never merges the live (unsettled) turn and preserves animateFold", () => {
+    const live: TaskChatItem = { id: "run-b:turn", kind: "turn", settled: false, items: [], summary: buildTurnSummary([]) };
+    const out = coalesceSettledTurns([turn("run-a:turn", runA, 30_000), live], metaById);
+    expect(out).toHaveLength(2);
+
+    const seenLive = { ...turn("run-b:turn", runB, 15_000), animateFold: true } as TaskChatItem;
+    const merged = coalesceSettledTurns([turn("run-a:turn", runA, 30_000), seenLive], metaById);
+    expect(merged).toHaveLength(1);
+    expect((merged[0] as Extract<TaskChatItem, { kind: "turn" }>).animateFold).toBe(true);
   });
 });

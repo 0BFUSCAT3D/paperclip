@@ -4,11 +4,13 @@ import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/tr
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
   buildTurnSummary,
+  coalesceSettledTurns,
   deriveRunStatusLabel,
   isNestableLiveChild,
   isTerminalRunStatus,
   settledRunChildren,
   transcriptToTaskChatItems,
+  type SettledTurnMergeMeta,
 } from "@/components/task-chat/transcript-adapter";
 import type {
   TaskChatInteractionItem,
@@ -251,6 +253,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // (live-line only), and thinking stays in the run log / classic
     // transcript — "Worked · N tools" expands to exactly the tool rows.
     const settledTurns: { turn: TaskChatTurnItem; anchorCommentId: string | null; order: number }[] = [];
+    // Raw summary inputs per turn id, so back-to-back same-agent runs can
+    // coalesce into one "Worked" row in the final pass (PAP-362).
+    const turnMergeMetaById = new Map<string, SettledTurnMergeMeta>();
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
       if (liveRun && source.id === liveRun.id) continue;
@@ -270,6 +275,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
       const children = settledRunChildren(parsed);
       if (children.length === 0) continue;
+      const failed = source.status !== "succeeded";
+      turnMergeMetaById.set(`${source.id}:turn`, {
+        agentKey: meta?.agentId ?? "",
+        agentName: meta?.agentName,
+        parts: [{ entries, durationMs, failed }],
+      });
       settledTurns.push({
         turn: {
           id: `${source.id}:turn`,
@@ -277,10 +288,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           settled: true,
           animateFold: liveSeenRef.current.has(source.id),
           items: children,
-          summary: buildTurnSummary(entries, {
-            durationMs,
-            failed: source.status !== "succeeded",
-          }),
+          summary: buildTurnSummary(entries, { durationMs, failed }),
         },
         anchorCommentId: lastCommentIdByRun.get(source.id) ?? null,
         order: meta?.createdAt ? new Date(meta.createdAt).getTime() : 0,
@@ -344,7 +352,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         },
       });
     }
-    return out;
+    // PAP-362: two runs replying back-to-back (same agent, nothing but the
+    // agent's own bubbles between) fold into ONE "Worked" row below the last
+    // reply; a user message, interaction, or the live turn keeps them apart.
+    return coalesceSettledTurns(out, turnMergeMetaById);
   }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
 
   const renderInteraction = useCallback(
