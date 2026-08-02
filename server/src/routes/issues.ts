@@ -127,6 +127,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -1889,9 +1890,10 @@ function buildRequestItemVerdictsWakeIdempotencyKey(args: {
   return `request_item_verdicts:${args.issueId}:${args.interactionId}:${bucket}`;
 }
 
-function queueResolvedInteractionContinuationWakeup(input: {
+async function queueResolvedInteractionContinuationWakeup(input: {
+  db: Db;
   heartbeat: ReturnType<typeof heartbeatService>;
-  issue: { id: string; assigneeAgentId: string | null; status: string };
+  issue: { id: string; companyId: string; assigneeAgentId: string | null; status: string };
   interaction: {
     id: string;
     kind: string;
@@ -1909,16 +1911,34 @@ function queueResolvedInteractionContinuationWakeup(input: {
   newlyResolvedItemIds?: string[];
   idempotencyKey?: string | null;
 }) {
-  if (
-    input.interaction.continuationPolicy !== "wake_assignee"
-    && input.interaction.continuationPolicy !== "wake_assignee_on_accept"
-  ) return;
-  if (
-    input.interaction.continuationPolicy === "wake_assignee_on_accept"
-    && input.interaction.status !== "accepted"
-  ) return;
-  if (input.interaction.status === "expired") return;
   if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
+
+  const reviewPathLost = input.issue.status === "in_review"
+    && (await issueService(input.db)
+      .listReviewAttention(input.issue.companyId, [input.issue])
+      .then((attention) => attention.get(input.issue.id)?.state === "stalled")
+      .catch((err) => {
+        logger.warn(
+          { err, issueId: input.issue.id, interactionId: input.interaction.id },
+          "failed to classify review path after issue interaction resolution",
+        );
+        return false;
+      }));
+  const continuationPolicyAllowsWake =
+    input.interaction.continuationPolicy === "wake_assignee"
+    || (
+      input.interaction.continuationPolicy === "wake_assignee_on_accept"
+      && input.interaction.status === "accepted"
+    );
+  if (!continuationPolicyAllowsWake && !reviewPathLost) return;
+  if (input.interaction.status === "expired" && !reviewPathLost) return;
+  const reviewPathContext = reviewPathLost
+    ? {
+        reviewPathLost: true,
+        reviewPathConsumedRef: input.interaction.id,
+        reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+      }
+    : null;
 
   const forceFreshSession = input.forceFreshSession === true;
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
@@ -1959,6 +1979,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       ...(checkboxSelection ? { checkboxSelection } : {}),
       ...(toolAction ? { toolAction } : {}),
       ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+      ...(reviewPathContext ?? {}),
       mutation: "interaction",
     },
     idempotencyKey: input.idempotencyKey ?? null,
@@ -1976,6 +1997,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       ...(checkboxSelection ? { checkboxSelection } : {}),
       ...(toolAction ? { toolAction } : {}),
       ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+      ...(reviewPathContext ?? {}),
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -2189,6 +2211,7 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.labels ? { labels: issue.labels } : {}),
     ...(issue.blockedBy ? { blockedBy: issue.blockedBy } : {}),
     ...(issue.blockerAttention ? { blockerAttention: issue.blockerAttention } : {}),
+    ...(issue.reviewAttention ? { reviewAttention: issue.reviewAttention } : {}),
     ...(issue.blockedInboxAttention !== undefined ? { blockedInboxAttention: issue.blockedInboxAttention } : {}),
     ...(issue.productivityReview ? { productivityReview: issue.productivityReview } : {}),
     ...(issue.scheduledRetry ? { scheduledRetry: issue.scheduledRetry } : {}),
@@ -5254,6 +5277,7 @@ export function issueRoutes(
       wakeComment,
       relations,
       blockerAttention,
+      reviewAttention,
       productivityReview,
       scheduledRetry,
       attachments,
@@ -5268,6 +5292,7 @@ export function issueRoutes(
         wakeCommentId ? svc.getComment(wakeCommentId) : null,
         svc.getRelationSummaries(issue.id),
         svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+        svc.listReviewAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
         svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
         svc.getCurrentScheduledRetry(issue.id),
         svc.listAttachments(issue.id),
@@ -5318,6 +5343,7 @@ export function issueRoutes(
         status: issue.status,
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
+        ...(reviewAttention ? { reviewAttention } : {}),
         productivityReview,
         scheduledRetry,
         activeRecoveryAction: revalidatedActiveRecoveryAction,
@@ -5524,6 +5550,7 @@ export function issueRoutes(
       documentPayload,
       relations,
       blockerAttention,
+      reviewAttention,
       productivityReview,
       referenceSummary,
       successfulRunHandoffStates,
@@ -5538,6 +5565,7 @@ export function issueRoutes(
       documentsSvc.getIssueDocumentPayload(issue),
       svc.getRelationSummaries(issue.id),
       svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+      svc.listReviewAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
       svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
@@ -5574,6 +5602,7 @@ export function issueRoutes(
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
+      ...(reviewAttention ? { reviewAttention } : {}),
       productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
@@ -8675,6 +8704,7 @@ export function issueRoutes(
     }
 
     let comment = null;
+    let lostReviewPathRef: string | null = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -8748,6 +8778,17 @@ export function issueRoutes(
         actor,
         source: "issue.comment",
       });
+      if (issue.status === "in_review" && expiredInteractions.length > 0) {
+        const reviewAttention = await svc
+          .listReviewAttention(issue.companyId, [issue])
+          .then((map) => map.get(issue.id));
+        if (reviewAttention?.state === "stalled") {
+          const expiredInteractionIds = expiredInteractions.map((interaction) => interaction.id).sort();
+          lostReviewPathRef = expiredInteractionIds.length === 1
+            ? expiredInteractionIds[0]!
+            : `interactions:${expiredInteractionIds.join(",")}`;
+        }
+      }
 
     } else if (updateReferenceSummaryAfter) {
       issueResponse = {
@@ -8929,6 +8970,13 @@ export function issueRoutes(
               ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
+              ...(lostReviewPathRef
+                ? {
+                    reviewPathLost: true,
+                    reviewPathConsumedRef: lostReviewPathRef,
+                    reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+                  }
+                : {}),
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
@@ -8942,6 +8990,13 @@ export function issueRoutes(
               ...(reopened ? { reopenedFrom: reopenFromStatus } : {}),
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
+              ...(lostReviewPathRef
+                ? {
+                    reviewPathLost: true,
+                    reviewPathConsumedRef: lostReviewPathRef,
+                    reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+                  }
+                : {}),
             },
           });
         }
@@ -9582,9 +9637,10 @@ export function issueRoutes(
         interaction.status === "accepted" &&
         acceptedPlanTarget?.issueId === issue.id &&
         acceptedPlanTarget.key === "plan";
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
+        db,
         heartbeat,
-        issue: continuationWakeIssue,
+        issue: { ...continuationWakeIssue, companyId: issue.companyId },
         interaction: continuationInteraction,
         actor,
         source: "issue.interaction.accept",
@@ -9638,7 +9694,8 @@ export function issueRoutes(
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
+        db,
         heartbeat,
         issue,
         interaction,
@@ -9688,7 +9745,8 @@ export function issueRoutes(
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
+        db,
         heartbeat,
         issue,
         interaction,
@@ -9749,7 +9807,8 @@ export function issueRoutes(
       });
 
       if (newlyResolvedItemIds.length > 0) {
-        queueResolvedInteractionContinuationWakeup({
+        await queueResolvedInteractionContinuationWakeup({
+          db,
           heartbeat,
           issue,
           interaction,
@@ -9804,7 +9863,8 @@ export function issueRoutes(
       });
 
       if (actor.agentId !== issue.assigneeAgentId) {
-        queueResolvedInteractionContinuationWakeup({
+        await queueResolvedInteractionContinuationWakeup({
+          db,
           heartbeat,
           issue,
           interaction,
@@ -9854,7 +9914,8 @@ export function issueRoutes(
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
+        db,
         heartbeat,
         issue,
         interaction,
@@ -10487,6 +10548,18 @@ export function issueRoutes(
       actor,
       source: "issue.comment",
     });
+    let lostReviewPathRef: string | null = null;
+    if (currentIssue.status === "in_review" && expiredInteractions.length > 0) {
+      const reviewAttention = await svc
+        .listReviewAttention(currentIssue.companyId, [currentIssue])
+        .then((map) => map.get(currentIssue.id));
+      if (reviewAttention?.state === "stalled") {
+        const expiredInteractionIds = expiredInteractions.map((interaction) => interaction.id).sort();
+        lostReviewPathRef = expiredInteractionIds.length === 1
+          ? expiredInteractionIds[0]!
+          : `interactions:${expiredInteractionIds.join(",")}`;
+      }
+    }
 
     await revalidateActiveSourceRecoveryAfterCommittedWrite({
       issue: currentIssue,
@@ -10607,6 +10680,13 @@ export function issueRoutes(
               mutation: "comment",
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
+              ...(lostReviewPathRef
+                ? {
+                    reviewPathLost: true,
+                    reviewPathConsumedRef: lostReviewPathRef,
+                    reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+                  }
+                : {}),
             },
             requestedByActorType: actor.actorType,
             requestedByActorId: actor.actorId,
@@ -10619,6 +10699,13 @@ export function issueRoutes(
               wakeReason: "issue_commented",
               ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
               ...(interruptedRunId ? { interruptedRunId } : {}),
+              ...(lostReviewPathRef
+                ? {
+                    reviewPathLost: true,
+                    reviewPathConsumedRef: lostReviewPathRef,
+                    reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+                  }
+                : {}),
             },
           });
         }

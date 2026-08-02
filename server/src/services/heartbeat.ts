@@ -215,6 +215,13 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import {
+  buildIssueReviewPathLostIdempotencyKey,
+  decideIssueReviewPathRecovery,
+  ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+  REVIEW_PATH_RECOVERY_INSTRUCTION,
+  reviewPathConsumedRefFromRun,
+} from "./recovery/review-path-recovery.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -7302,6 +7309,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
+    const reviewPathLost = input.claimed.status === "in_review"
+      && (await issuesSvc
+        .listReviewAttention(input.claimed.companyId, [input.claimed])
+        .then((attention) => attention.get(input.claimed.id)?.state === "stalled"));
+    const reviewPathContext = reviewPathLost
+      ? {
+          reviewPathLost: true,
+          reviewPathConsumedRef:
+            `monitor:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
+          reviewPathInstruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+        }
+      : null;
     const details = monitorRecoveryDetails({
       claimed: input.claimed,
       scheduledAtIso: input.scheduledAtIso,
@@ -7412,6 +7431,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         serviceName: input.monitor?.serviceName ?? null,
         timeoutAt: input.monitor?.timeoutAt ?? null,
         maxAttempts: input.monitor?.maxAttempts ?? null,
+        ...(reviewPathContext ?? {}),
       }, "status_only"),
       requestedByActorType: input.actorType,
       requestedByActorId: input.actorId,
@@ -7425,6 +7445,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         serviceName: input.monitor?.serviceName ?? null,
         timeoutAt: input.monitor?.timeoutAt ?? null,
         maxAttempts: input.monitor?.maxAttempts ?? null,
+        ...(reviewPathContext ?? {}),
       }, "status_only"),
     });
 
@@ -9125,6 +9146,89 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         missingDisposition: "clear_next_step",
         detectedProgressSummary,
         issue: issueUiLink(issue),
+      },
+    });
+  }
+
+  async function handleIssueReviewPathDisposition(run: typeof heartbeatRuns.$inferSelect) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId) ?? readNonEmptyString(contextSnapshot.taskId);
+    if (!issueId) return;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.status !== "in_review" || !issue.assigneeAgentId) return;
+
+    const reviewAttention = await issuesSvc
+      .listReviewAttention(issue.companyId, [issue])
+      .then((map) => map.get(issue.id) ?? { state: "none" as const, paths: [], reason: null });
+    if (reviewAttention.state !== "stalled") return;
+
+    const consumedPathRef = reviewPathConsumedRefFromRun({
+      runId: run.id,
+      issueId: issue.id,
+      contextSnapshot,
+    });
+    const idempotencyKey = buildIssueReviewPathLostIdempotencyKey({
+      issueId: issue.id,
+      consumedPathRef,
+    });
+    const existingWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, issue.companyId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const decision = decideIssueReviewPathRecovery({
+      issueId: issue.id,
+      sourceRunId: run.id,
+      assigneeAgentId: issue.assigneeAgentId,
+      contextSnapshot,
+      reviewAttention,
+      existingWake: Boolean(existingWake),
+    });
+    if (decision.kind !== "enqueue") return;
+
+    const recoveryRun = await enqueueWakeup(issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
+      idempotencyKey: decision.idempotencyKey,
+      payload: decision.payload,
+      contextSnapshot: decision.contextSnapshot,
+      requestedByActorType: "system",
+      requestedByActorId: "heartbeat",
+    });
+    if (!recoveryRun) return;
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: issue.assigneeAgentId,
+      runId: run.id,
+      action: "issue.review_path_recovery_queued",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        sourceRunId: run.id,
+        recoveryRunId: recoveryRun.id,
+        consumedPathRef,
+        recoveryAttempt: 1,
+        maxRecoveryAttempts: 1,
       },
     });
   }
@@ -15085,6 +15189,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
+        await handleIssueReviewPathDisposition(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
             ? {
@@ -15257,6 +15362,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
+        await handleIssueReviewPathDisposition(livenessRun);
 
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
@@ -15381,6 +15487,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               logger.error(
                 { err: releaseError, runId },
                 "failed to release issue execution after heartbeat setup failure",
+              );
+            });
+            await handleIssueReviewPathDisposition(livenessRun).catch((reviewPathError) => {
+              logger.error(
+                { err: reviewPathError, runId },
+                "failed to evaluate review-path disposition after heartbeat setup failure",
               );
             });
           }
