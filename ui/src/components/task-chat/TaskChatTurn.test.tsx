@@ -3,10 +3,19 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { TaskChatTurn, turnSummaryText } from "./TaskChatTurn";
+import { TaskChatTurn, liveTurnFoldedIds, turnSummaryText } from "./TaskChatTurn";
 import { buildTurnSummary } from "./transcript-adapter";
 import type { TranscriptEntry } from "@/adapters";
-import type { TaskChatTurnItem } from "./task-chat-model";
+import type { TaskChatToolStatus, TaskChatTurnChildItem, TaskChatTurnItem } from "./task-chat-model";
+
+const tool = (id: string, status: TaskChatToolStatus = "completed"): TaskChatTurnChildItem => ({
+  id,
+  kind: "tool",
+  name: "Read",
+  status,
+});
+
+const thinking = (id: string): TaskChatTurnChildItem => ({ id, kind: "thinking", lines: ["hm"] });
 
 const SETTLED: TaskChatTurnItem = {
   id: "t1",
@@ -53,6 +62,45 @@ describe("buildTurnSummary", () => {
     const summary = buildTurnSummary([], { durationMs: 95_000, failed: true });
     expect(summary.durationLabel).toBe("1m 35s");
     expect(summary.failed).toBe(true);
+  });
+});
+
+describe("liveTurnFoldedIds", () => {
+  it("keeps everything visible while the window fits", () => {
+    // 4 activity rows → only 1 would fold, below the 2-row minimum.
+    expect(liveTurnFoldedIds(["a", "b", "c", "d"].map((id) => tool(id))).size).toBe(0);
+  });
+
+  it("folds finished rows past the 3-row tail window", () => {
+    const ids = liveTurnFoldedIds(["a", "b", "c", "d", "e", "f"].map((id) => tool(id)));
+    expect([...ids]).toEqual(["a", "b", "c"]);
+  });
+
+  it("counts thinking blocks as foldable activity", () => {
+    const ids = liveTurnFoldedIds([thinking("t1"), tool("a"), tool("b"), tool("c"), tool("d"), tool("e")]);
+    expect([...ids]).toEqual(["t1", "a", "b"]);
+  });
+
+  it("keeps the in-flight tool visible even past the window", () => {
+    const items = [tool("a"), tool("b"), tool("c"), tool("d"), tool("e", "in_progress")];
+    expect([...liveTurnFoldedIds(items)]).toEqual(["a", "b"]);
+  });
+
+  it("an early in-flight tool ends the foldable prefix", () => {
+    const items = [tool("a"), tool("b", "in_progress"), tool("c"), tool("d"), tool("e"), tool("f"), tool("g")];
+    // Only "a" precedes the in-flight row — below the fold minimum, nothing folds.
+    expect(liveTurnFoldedIds(items).size).toBe(0);
+  });
+
+  it("non-activity rows end the foldable prefix", () => {
+    const message: TaskChatTurnChildItem = { id: "m", kind: "message", author: "agent", text: "hi" };
+    const items = [tool("a"), tool("b"), message, tool("c"), tool("d"), tool("e"), tool("f"), tool("g")];
+    expect([...liveTurnFoldedIds(items)]).toEqual(["a", "b"]);
+  });
+
+  it("folds failed rows too — terminal is what matters", () => {
+    const ids = liveTurnFoldedIds([tool("a", "failed"), tool("b"), tool("c"), tool("d"), tool("e"), tool("f")]);
+    expect([...ids]).toEqual(["a", "b", "c"]);
   });
 });
 
@@ -105,5 +153,47 @@ describe("TaskChatTurn", () => {
     renderTurn({ ...SETTLED, settled: false });
     renderTurn({ ...SETTLED, animateFold: true });
     expect(fold()?.getAttribute("data-folded")).toBe("true");
+  });
+
+  const liveTurn = (children: TaskChatTurnChildItem[]): TaskChatTurnItem => ({
+    ...SETTLED,
+    settled: false,
+    items: children,
+  });
+  const stepsBtn = () =>
+    container.querySelector<HTMLButtonElement>('[data-testid="task-chat-earlier-steps"]');
+  const foldedRows = () =>
+    container.querySelectorAll('[data-testid="task-chat-live-row"][data-folded="true"]');
+
+  it("shows no earlier-steps line while the live window fits", () => {
+    renderTurn(liveTurn(["a", "b", "c", "d"].map((id) => tool(id))));
+    expect(stepsBtn()).toBeNull();
+    expect(foldedRows().length).toBe(0);
+  });
+
+  it("folds older completed rows behind an earlier-steps line", () => {
+    renderTurn(liveTurn(["a", "b", "c", "d", "e", "f"].map((id) => tool(id))));
+    expect(stepsBtn()?.textContent).toContain("3 earlier steps");
+    expect(foldedRows().length).toBe(3);
+  });
+
+  it("expands the folded group in place on click", () => {
+    renderTurn(liveTurn(["a", "b", "c", "d", "e", "f"].map((id) => tool(id))));
+    flushSync(() => stepsBtn()!.click());
+    expect(stepsBtn()?.getAttribute("aria-expanded")).toBe("true");
+    expect(foldedRows().length).toBe(0);
+  });
+
+  it("a newly arriving row pushes the oldest visible row into the fold", () => {
+    const ids = ["a", "b", "c", "d", "e", "f"];
+    renderTurn(liveTurn(ids.map((id) => tool(id))));
+    expect(foldedRows().length).toBe(3);
+    renderTurn(liveTurn([...ids, "g"].map((id) => tool(id))));
+    expect(foldedRows().length).toBe(4);
+  });
+
+  it("never renders the earlier-steps line on a settled turn", () => {
+    renderTurn({ ...SETTLED, items: ["a", "b", "c", "d", "e", "f"].map((id) => tool(id)) });
+    expect(stepsBtn()).toBeNull();
   });
 });
