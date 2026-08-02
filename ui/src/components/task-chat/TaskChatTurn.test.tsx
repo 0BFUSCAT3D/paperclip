@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -180,6 +181,27 @@ describe("TaskChatTurn", () => {
     expect(fold()?.textContent).toContain("b");
     flushSync(() => liveHeaderBtn()!.click());
     expect(fold()?.getAttribute("data-folded")).toBe("true");
+  });
+
+  it("keeps the interstitial row outside the expand button's hover target (PAP-376)", () => {
+    // act() so the held-line effect state (useHeldSelfTalk) flushes.
+    act(() => {
+      renderTurn(
+        parentRowTurn([tool("a")], { ...LIVE_STATUS, selfTalk: "Streaming an update." }),
+      );
+    });
+    const btn = liveHeaderBtn();
+    expect(btn).not.toBeNull();
+    // The button (hover + click target) wraps ONLY the gerund status line;
+    // the interstitial text renders above it, outside the button.
+    expect(btn?.querySelector('[data-testid="task-chat-interstitial-row"]')).toBeNull();
+    expect(btn?.textContent).not.toContain("Streaming an update.");
+    const row = container.querySelector('[data-testid="task-chat-interstitial-row"]');
+    expect(row?.textContent).toContain("Streaming an update.");
+    // Expanding still works from the status line alone.
+    flushSync(() => btn!.click());
+    expect(liveHeaderBtn()?.getAttribute("aria-expanded")).toBe("true");
+    expect(fold()?.getAttribute("data-folded")).toBe("false");
   });
 
   it("renders the status line without an expand affordance while there is no activity", () => {

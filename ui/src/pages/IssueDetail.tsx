@@ -89,6 +89,7 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
+import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
@@ -909,6 +910,11 @@ type IssueDetailChatTabProps = {
    * messages (flag: enableTaskChatRedesign). Ignored by the legacy thread.
    */
   threadHeader?: ReactNode;
+  /**
+   * The task description rendered as the requester's first chat bubble in the
+   * redesigned thread (PAP-375). Ignored by the legacy thread.
+   */
+  issueBrief?: TaskChatIssueBrief;
   footer?: ReactNode;
   feedbackVotes?: FeedbackVote[];
   feedbackDataSharingPreference: "allowed" | "not_allowed" | "prompt";
@@ -998,6 +1004,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   composerRef,
   composerAccessory,
   threadHeader,
+  issueBrief,
   footer,
   feedbackVotes,
   feedbackDataSharingPreference,
@@ -1211,6 +1218,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             </>
           ) : undefined
         }
+        issueBrief={issueBrief}
         comments={commentsWithRunMeta}
         interactions={interactions}
         feedbackVotes={feedbackVotes}
@@ -4869,6 +4877,33 @@ export function IssueDetail() {
           {resolvedDetailTab === "chat" ? (
             <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
+              issueBrief={
+                taskChatShellEnabled
+                  ? {
+                      description: issue.description ?? "",
+                      author: issue.createdByAgentId ? "agent" : "human",
+                      authorName: issue.createdByAgentId
+                        ? agentMap.get(issue.createdByAgentId)?.name ?? "Agent"
+                        : undefined,
+                      agentIcon: issue.createdByAgentId
+                        ? agentMap.get(issue.createdByAgentId)?.icon
+                        : undefined,
+                      createdAt: issue.createdAt,
+                      onSave: (description) => updateIssue.mutateAsync({ description }),
+                      mentions: mentionOptions,
+                      externalReferences: externalObjectsState.isEnabled
+                        ? externalObjectsState.markdownReferences
+                        : undefined,
+                      imageUploadHandler: async (file) => {
+                        const attachment = await uploadAttachment.mutateAsync(file);
+                        return attachment.contentPath;
+                      },
+                      onDropFile: async (file) => {
+                        await uploadAttachment.mutateAsync(file);
+                      },
+                    }
+                  : undefined
+              }
               issueId={issue.id}
               companyId={issue.companyId}
               projectId={issue.projectId ?? null}

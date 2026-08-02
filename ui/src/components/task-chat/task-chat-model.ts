@@ -184,6 +184,18 @@ export interface TaskChatUsageItem {
 }
 
 /**
+ * The task description rendered as the requester's first chat bubble
+ * (PAP-375). A placeholder kind only — the host supplies the render
+ * (TaskChatThread binds TaskChatDescriptionBubble to the live issue), mirroring
+ * how interaction items defer to renderInteraction. Always prepended AFTER
+ * thread assembly, so no backbone entry or settled turn can sort above it.
+ */
+export interface TaskChatBriefItem {
+  id: string;
+  kind: "brief";
+}
+
+/**
  * An issue-thread interaction (plan confirmation, question card, suggested
  * tasks…) interleaved chronologically into the thread. The payload is the
  * existing control-plane IssueThreadInteraction — the render layer wraps the
@@ -247,7 +259,8 @@ export type TaskChatItem =
   | TaskChatMarkerItem
   | TaskChatUsageItem
   | TaskChatInteractionItem
-  | TaskChatTurnItem;
+  | TaskChatTurnItem
+  | TaskChatBriefItem;
 
 /** A structured plan entry (ACP PlanEntry) for the Plans tab. */
 export interface TaskChatPlanEntry {

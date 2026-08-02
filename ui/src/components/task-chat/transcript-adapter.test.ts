@@ -9,6 +9,8 @@ import {
   deriveRunStatusLabel,
   flattenSelfTalk,
   isNestableLiveChild,
+  ISSUE_BRIEF_ITEM_ID,
+  prependIssueBrief,
   settledRunChildren,
   toolDisplayName,
   transcriptToTaskChatItems,
@@ -650,5 +652,43 @@ describe("assembleThreadItems (PAP-367)", () => {
     const out = attachSettledTurns(coalesceSettledTurns(assembled, metaById), metaById);
     expect(out.map((i) => i.id)).toEqual(["u1", "run-x:turn", "u2"]);
     expect(out.every((i) => i.kind !== "message" || (i as Extract<TaskChatItem, { kind: "message" }>).attachedTurn == null)).toBe(true);
+  });
+});
+
+describe("prependIssueBrief (PAP-375)", () => {
+  function entry(id: string, ms: number): ThreadBackboneEntry {
+    return {
+      ms,
+      id,
+      item: { id, kind: "message", author: "human", text: `msg ${id}` } as TaskChatItem,
+    };
+  }
+  function settledTurn(id: string): TaskChatTurnItem {
+    return {
+      id,
+      kind: "turn",
+      settled: true,
+      items: [{ id: `${id}:tool:0`, kind: "tool", name: "Read", status: "completed" }],
+      summary: buildTurnSummary([toolCall("Read")], { durationMs: 34_000 }),
+    };
+  }
+
+  it("keeps the description bubble above an unanchored turn that predates every backbone entry (F15)", () => {
+    // A stopped run whose startMs (0) is EARLIER than the oldest comment: it
+    // sorts to the very top of the assembled thread — the brief must still
+    // render above it, because the prepend runs after assembly.
+    const backbone = [entry("u1", 1_000), entry("u2", 3_000)];
+    const assembled = assembleThreadItems(backbone, new Map(), [
+      { turn: settledTurn("run-x:turn"), startMs: 0 },
+    ]);
+    const out = prependIssueBrief(assembled, true);
+    expect(out.map((i) => i.id)).toEqual([ISSUE_BRIEF_ITEM_ID, "run-x:turn", "u1", "u2"]);
+    expect(out[0].kind).toBe("brief");
+  });
+
+  it("is the first item of an otherwise empty thread, and a no-op without a brief", () => {
+    expect(prependIssueBrief([], true).map((i) => i.kind)).toEqual(["brief"]);
+    const items = [entry("u1", 1_000).item];
+    expect(prependIssueBrief(items, false)).toBe(items);
   });
 });

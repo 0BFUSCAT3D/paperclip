@@ -474,6 +474,21 @@ export function assembleThreadItems(
   return out;
 }
 
+/** Stable id of the description-as-first-bubble item (PAP-375). */
+export const ISSUE_BRIEF_ITEM_ID = "issue-brief";
+
+/**
+ * Prepend the issue-brief placeholder (PAP-375) to the fully assembled thread.
+ * Running AFTER assembleThreadItems/coalesce/attach makes the ordering
+ * guarantee structural rather than data-dependent: even an unanchored settled
+ * turn whose startMs predates every backbone entry (F15) lands below the
+ * description bubble.
+ */
+export function prependIssueBrief(items: TaskChatItem[], hasBrief: boolean): TaskChatItem[] {
+  if (!hasBrief) return items;
+  return [{ id: ISSUE_BRIEF_ITEM_ID, kind: "brief" }, ...items];
+}
+
 /** Per-turn identity + raw summary inputs for coalescing (keyed by turn item id). */
 export interface SettledTurnMergeMeta {
   /** Stable agent identity (agentId); empty/unknown turns never merge. */

@@ -33,6 +33,7 @@ describe("TaskChatStatusPill whimsy", () => {
     act(() => root.unmount());
     container.remove();
     document.documentElement.style.removeProperty("--motion-interstitial-dwell");
+    document.documentElement.style.removeProperty("--motion-line-scroll");
     vi.useRealTimers();
   });
 
@@ -132,23 +133,63 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(line?.firstElementChild?.className).toContain("tc-line-scroll-inner");
   });
 
-  it("holds the finished update — static, ellipsized, never fading — until superseded (PAP-368)", () => {
-    const item = liveStatus({ tokens: { used: 18240, size: 200000 } });
+  it("holds the finished update through the dwell, then slides it away (PAP-376)", () => {
+    document.documentElement.style.setProperty("--motion-interstitial-dwell", "4000ms");
+    document.documentElement.style.setProperty("--motion-line-scroll", "240ms");
     render(liveStatus({ label: "Responding", selfTalk: "Almost there." }));
-    expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).not.toBeNull();
-    render(item);
-    // selfTalk gone → the text STAYS as a held single-line readout: no
-    // slide-out, no fade, even a minute later; the reserved row keeps its
-    // place and the gerund + dot carry on below.
+    render(liveStatus({}));
+    // selfTalk gone → held as a static single-line readout while the dwell
+    // runs.
     act(() => {
-      vi.advanceTimersByTime(60_000);
+      vi.advanceTimersByTime(3900);
     });
-    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    let line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
     expect(line?.textContent).toBe("Almost there.");
     expect(line?.getAttribute("data-streaming")).toBeNull();
+    expect(line?.getAttribute("data-leaving")).toBeNull();
     expect(line?.firstElementChild?.className).toContain("truncate");
-    expect(container.textContent).toContain(`${whimsyWord(item.id, 60_000)}…`);
+    // Dwell expired with no successor: the line slides up out of the 1lh
+    // viewport with the transition re-enabled…
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line?.getAttribute("data-leaving")).toBe("true");
+    const inner = line?.firstElementChild as HTMLElement;
+    expect(inner.style.transform).toContain("-1");
+    expect(inner.style.transition).toBe("");
+    // …and unmounts back to the reserved empty slot; gerund + dot carry on.
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).toBeNull();
+    const row = container.querySelector('[data-testid="task-chat-interstitial-row"]');
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".tc-line-scroll")).not.toBeNull();
     expect(container.querySelector(".animate-pulse")).not.toBeNull();
+  });
+
+  it("swaps a new update straight in after the held line has slid away", () => {
+    document.documentElement.style.setProperty("--motion-interstitial-dwell", "4000ms");
+    render(liveStatus({ label: "Responding", selfTalk: "First." }));
+    render(liveStatus({}));
+    act(() => {
+      vi.advanceTimersByTime(4100);
+    });
+    expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).toBeNull();
+    render(liveStatus({ label: "Responding", selfTalk: "Second." }));
+    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line?.textContent).toBe("Second.");
+    expect(line?.getAttribute("data-streaming")).toBe("true");
+  });
+
+  it("renders the interstitial text without a leading icon (PAP-376)", () => {
+    render(liveStatus({ label: "Responding", selfTalk: "No icon on this row." }));
+    const row = container.querySelector('[data-testid="task-chat-interstitial-row"]');
+    expect(row?.textContent).toBe("No icon on this row.");
+    expect(row?.querySelector("svg")).toBeNull();
+    // The empty lead slot still column-aligns the text with the status label.
+    expect(row?.firstElementChild?.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("streams the tail line without a transition once the enter slide settles", () => {

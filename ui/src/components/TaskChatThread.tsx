@@ -10,10 +10,12 @@ import {
   deriveRunStatusLabel,
   isNestableLiveChild,
   isTerminalRunStatus,
+  prependIssueBrief,
   settledRunChildren,
   transcriptToTaskChatItems,
   type SettledTurnMergeMeta,
 } from "@/components/task-chat/transcript-adapter";
+import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescriptionBubble";
 import type {
   TaskChatInteractionItem,
   TaskChatItem,
@@ -104,6 +106,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     externalReferences,
     threadHeader,
     workModeChanges,
+    issueBrief,
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -250,6 +253,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     );
   }, [comments, commentItems, interactions, timelineEvents, linkedRuns, liveRuns, planDocument]);
 
+  // Boolean gate (stable across the host's per-render brief objects) so the
+  // heavy assembly memo doesn't recompute on every parent render.
+  const hasBrief = Boolean(issueBrief);
+
   const items = useMemo<TaskChatItem[]>(() => {
     // Settled turns for every terminal run whose transcript we have. Messages
     // and thinking are excluded entirely (PAP-361): the final reply already
@@ -366,8 +373,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // Round 9: a settled turn directly following its own agent's reply bubble
     // then attaches to that bubble — the "Worked · …" summary renders on the
     // bubble's always-visible timestamp line instead of as a standalone row.
-    return attachSettledTurns(coalesceSettledTurns(out, turnMergeMetaById), turnMergeMetaById);
-  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
+    // PAP-375: the description-as-first-bubble placeholder prepends LAST, after
+    // every assembly/merge pass, so nothing can ever sort above it.
+    return prependIssueBrief(
+      attachSettledTurns(coalesceSettledTurns(out, turnMergeMetaById), turnMergeMetaById),
+      hasBrief,
+    );
+  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun, hasBrief]);
 
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
@@ -430,6 +442,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             items={items}
             header={threadHeader}
             renderInteraction={renderInteraction}
+            renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             scroll={!isMobile}
           />
         )}

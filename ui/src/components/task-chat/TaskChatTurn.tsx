@@ -97,20 +97,15 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix }: TaskChatTur
           <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} />
         </button>
       ) : parentRow ? (
-        expandable ? (
-          <button
-            type="button"
-            onClick={() => setOpen((o) => !o)}
-            aria-expanded={open}
-            className="-mx-1.5 block w-full rounded-sm px-1.5 text-left transition-colors hover:bg-muted/60"
-            data-testid="task-chat-live-turn"
-          >
-            <TaskChatStatusPill item={item.liveStatus!} chevronOpen={open} />
-          </button>
-        ) : (
-          // Nothing to expand yet: the status line alone, no chevron/button.
-          <TaskChatStatusPill item={item.liveStatus!} />
-        )
+        // The pill renders the expand button itself, wrapped around only the
+        // gerund status line — the interstitial row above stays outside the
+        // hover/click target (PAP-376). Without activity there is no
+        // chevron/button.
+        <TaskChatStatusPill
+          item={item.liveStatus!}
+          chevronOpen={expandable ? open : undefined}
+          onToggle={expandable ? () => setOpen((o) => !o) : undefined}
+        />
       ) : null}
       <div className="tc-turn-fold" data-folded={folded ? "true" : "false"} aria-hidden={folded}>
         <div>

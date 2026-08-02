@@ -24,6 +24,12 @@ interface TaskChatThreadViewProps {
    * items render nothing without it — the harness has no control plane.
    */
   renderInteraction?: (item: TaskChatInteractionItem) => ReactNode;
+  /**
+   * Renders the description-as-first-bubble placeholder (PAP-375). The live
+   * thread binds TaskChatDescriptionBubble to the issue; brief items render
+   * nothing without it.
+   */
+  renderBrief?: () => ReactNode;
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
@@ -33,6 +39,7 @@ function renderItem(
   item: TaskChatItem,
   onApprovalDecision?: (statusItemId: string, optionId: string) => void,
   renderInteraction?: (item: TaskChatInteractionItem) => ReactNode,
+  renderBrief?: () => ReactNode,
 ) {
   switch (item.kind) {
     case "message":
@@ -71,6 +78,8 @@ function renderItem(
       return <TaskChatUsageReadout item={item} />;
     case "interaction":
       return renderInteraction ? renderInteraction(item) : null;
+    case "brief":
+      return renderBrief ? renderBrief() : null;
     case "turn":
       return (
         <TaskChatTurn
@@ -97,6 +106,7 @@ export function TaskChatThreadView({
   header,
   onApprovalDecision,
   renderInteraction,
+  renderBrief,
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
@@ -108,7 +118,7 @@ export function TaskChatThreadView({
         </div>
       ) : null}
       {items.map((item) => (
-        <div key={item.id}>{renderItem(item, onApprovalDecision, renderInteraction)}</div>
+        <div key={item.id}>{renderItem(item, onApprovalDecision, renderInteraction, renderBrief)}</div>
       ))}
     </div>
   );
