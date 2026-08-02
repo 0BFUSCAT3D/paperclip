@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskChatStatusPill } from "./TaskChatStatusPill";
+import { lineScrollOffset, TaskChatStatusPill } from "./TaskChatStatusPill";
 import { whimsyWord, WHIMSY_ROTATE_MS } from "./status-whimsy";
 import type { TaskChatStatusItem } from "./task-chat-model";
 
@@ -88,5 +88,43 @@ describe("TaskChatStatusPill whimsy", () => {
     });
     expect(container.textContent).toContain("1.2s");
     expect(container.textContent).toContain("18,240/200,000 ctx");
+  });
+
+  it("hands the line to streaming self-talk, keeping elapsed · tokens meta (PAP-356)", () => {
+    const item = liveStatus({
+      label: "Responding",
+      selfTalk: "I'll extend the ipRateLimit helper with a per-account bucket.",
+      tokens: { used: 18240, size: 200000 },
+    });
+    render(item);
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line).not.toBeNull();
+    expect(line?.textContent).toBe("I'll extend the ipRateLimit helper with a per-account bucket.");
+    // The gerund/whimsy label yields the line; the right-side meta stays put.
+    expect(container.textContent).not.toContain("Responding…");
+    expect(container.textContent).not.toContain(`${whimsyWord(item.id, 1200)}…`);
+    expect(container.textContent).toContain("1.2s");
+    expect(container.textContent).toContain("18,240/200,000 ctx");
+    // Viewport + transition classes: 1lh clip outside, transform-only inner.
+    expect(line?.className).toContain("tc-line-scroll");
+    expect(line?.firstElementChild?.className).toContain("tc-line-scroll-inner");
+    expect(line?.firstElementChild?.className).toContain("tc-typewriter-line");
+  });
+});
+
+describe("lineScrollOffset", () => {
+  it("translates up one line-height per wrapped line", () => {
+    expect(lineScrollOffset(16, 16)).toBe(0); // one line — no shift
+    expect(lineScrollOffset(32, 16)).toBe(1);
+    expect(lineScrollOffset(48.5, 16)).toBe(2); // sub-pixel scrollHeight rounds
+  });
+
+  it("never goes negative and guards bad measurements", () => {
+    expect(lineScrollOffset(0, 16)).toBe(0);
+    expect(lineScrollOffset(32, 0)).toBe(0);
+    expect(lineScrollOffset(Number.NaN, 16)).toBe(0);
   });
 });

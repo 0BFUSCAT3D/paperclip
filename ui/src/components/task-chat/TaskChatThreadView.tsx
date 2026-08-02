@@ -110,7 +110,9 @@ export function TaskChatThreadView({
       // The live parent row's header changes (gerund ↔ tool-state flashes)
       // count too, so the collapsed single-line turn still advances the key.
       const headerSig = it.liveStatus
-        ? it.liveStatus.label.length + (it.liveStatus.detail?.length ?? 0)
+        ? it.liveStatus.label.length +
+          (it.liveStatus.detail?.length ?? 0) +
+          (it.liveStatus.selfTalk?.length ?? 0)
         : 0;
       return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
     }

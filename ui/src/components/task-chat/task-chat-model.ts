@@ -83,10 +83,7 @@ export interface TaskChatMessageItem {
    * interstitial. Set for live and settled transcripts alike.
    */
   interstitial?: boolean;
-  /**
-   * Epoch ms of the message's first streamed chunk — the sort key used to
-   * interleave settled-transcript self-talk into the comment backbone.
-   */
+  /** Epoch ms of the message's first streamed chunk. */
   atMs?: number;
 }
 
@@ -142,6 +139,13 @@ export interface TaskChatStatusItem {
   detail?: string;
   /** Raw tool name of the in-flight tail tool_call (drives the pill's icon). */
   toolName?: string;
+  /**
+   * Flattened plain text of the interstitial message currently streaming: the
+   * live parent row's line shows it typing in (replacing the gerund) inside a
+   * one-line viewport that scrolls completed lines out the top. Full markdown
+   * renders in the nested row once the message completes.
+   */
+  selfTalk?: string;
   elapsedMs?: number;
   /** Run start epoch ms; live states tick their own elapsed from this. */
   startedAtMs?: number;

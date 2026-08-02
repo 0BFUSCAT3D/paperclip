@@ -238,6 +238,7 @@
   --motion-turn-fold: 380ms;            /* finished-turn activity folding into its summary line */
   --motion-typewriter-reveal: 450ms;    /* interstitial self-talk chunk typing itself in */
   --motion-typewriter-steps: steps(24, end); /* discrete reveal — the "typed" feel */
+  --motion-line-scroll: 240ms;          /* completed self-talk line sliding out of the 1lh live-line viewport */
   --motion-scroll-pill-enter: 200ms;    /* scroll-to-latest pill entry */
   --motion-scroll-pill-exit: 400ms;     /* scroll-to-latest pill exit */
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
@@ -538,6 +539,7 @@
     --motion-streaming-cursor-blink: 0ms;
     --motion-turn-fold: 0ms;
     --motion-typewriter-reveal: 0ms;
+    --motion-line-scroll: 0ms;
     --motion-scroll-pill-enter: 0ms;
     --motion-scroll-pill-exit: 0ms;
     --motion-pane-glide: 0ms;
@@ -587,11 +589,16 @@
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
-/* Interstitial self-talk: each block-level chunk (a new streamed paragraph /
-   list / code block) wipes in left-to-right in discrete steps as it arrives —
-   CSS-only typewriter, no per-char timers. Text appended to an existing block
-   lands instantly; history omits the class entirely. */
-.tc-typewriter-stream .paperclip-markdown > * { animation: tc-typewriter var(--motion-typewriter-reveal) var(--motion-typewriter-steps) both; }
+/* Streaming self-talk on the live parent row: the text block wipes in
+   left-to-right in discrete steps when it takes over the line — CSS-only
+   typewriter, no per-char timers; appended stream text lands instantly. */
+.tc-typewriter-line { animation: tc-typewriter var(--motion-typewriter-reveal) var(--motion-typewriter-steps) both; }
+/* Live-line viewport: exactly one line-height tall, clipping the wrapped
+   block. On wrap, the inner block translates up whole line-heights (set inline
+   as translateY(-(n−1)·1lh)) so the completed line slides out the top —
+   transform-only, same motion grammar as tool rows animating in. */
+.tc-line-scroll { display: block; height: 1lh; overflow: hidden; }
+.tc-line-scroll-inner { transition: transform var(--motion-line-scroll) var(--motion-ease-standard); will-change: transform; }
 /* Interstitial narration matches the tool rows (text-xs): prose-sm sets its
    own font-size on .paperclip-markdown, so the wrapper's text-xs alone can't
    shrink it — this scoped override wins on specificity. */
@@ -636,8 +643,9 @@
   .tc-scroll-pill-in,
   .tc-scroll-pill-out,
   .tc-enter-plan-entry { animation: none; }
-  .tc-typewriter-stream .paperclip-markdown > * { animation: none; }
+  .tc-typewriter-line { animation: none; }
   .tc-turn-fold,
+  .tc-line-scroll-inner,
   .tc-pane-glide { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
   .tc-scroll-pill-in,

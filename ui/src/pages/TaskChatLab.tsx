@@ -19,13 +19,17 @@ function useStreamingReplay(
 ): TaskChatItem[] {
   const [chars, setChars] = useState<number>(Number.MAX_SAFE_INTEGER);
   const streamingIndex = baseItems.findIndex(
-    (i) => (i.kind === "message" && i.streaming) || (i.kind === "thinking" && i.streaming),
+    (i) =>
+      (i.kind === "message" && i.streaming) ||
+      (i.kind === "thinking" && i.streaming) ||
+      (i.kind === "turn" && !i.settled && i.liveStatus?.selfTalk != null),
   );
   const fullText = useMemo(() => {
     const it = baseItems[streamingIndex];
     if (!it) return "";
     if (it.kind === "message") return it.text;
     if (it.kind === "thinking") return it.lines.join("\n");
+    if (it.kind === "turn") return it.liveStatus?.selfTalk ?? "";
     return "";
   }, [baseItems, streamingIndex]);
 
@@ -52,6 +56,11 @@ function useStreamingReplay(
     const done = chars >= fullText.length;
     if (it.kind === "message") return { ...it, text: shown, streaming: !done };
     if (it.kind === "thinking") return { ...it, lines: shown.split("\n"), streaming: !done };
+    // Parent-row self-talk (PAP-356): reveal the live line's text; the y
+    // line-scroll kicks in as the revealed text wraps past one line.
+    if (it.kind === "turn" && it.liveStatus) {
+      return { ...it, liveStatus: { ...it.liveStatus, selfTalk: shown } };
+    }
     return it;
   });
 }

@@ -3,7 +3,10 @@ import type { TranscriptEntry } from "@/adapters";
 import {
   buildTurnSummary,
   deriveRunStatusLabel,
+  flattenSelfTalk,
   isNestableLiveChild,
+  normalizeCommentBody,
+  settledRunChildren,
   toolDisplayName,
   transcriptToTaskChatItems,
 } from "./transcript-adapter";
@@ -216,25 +219,45 @@ describe("isNestableLiveChild", () => {
     { id: "t", kind: "tool", name: "Read", status: "completed" },
     { id: "th", kind: "thinking", lines: ["hm"] },
     { id: "u", kind: "usage", usage: { used: 1, size: 2 } },
-    { id: "m", kind: "message", author: "agent", text: "self-talk" },
+    { id: "m", kind: "message", author: "agent", text: "finished self-talk", interstitial: true },
     { id: "mk", kind: "marker", variant: "session_start", label: "Session started" },
     { id: "s", kind: "status", status: "running", label: "Running" },
     { id: "i", kind: "interaction", interaction: {} as never },
   ];
 
-  it("nests only tool, thinking and usage rows inside the live parent row", () => {
+  it("nests tool, thinking, usage and finished interstitial rows inside the live parent row", () => {
     expect(items.filter(isNestableLiveChild).map((it) => it.kind)).toEqual([
       "tool",
       "thinking",
       "usage",
+      "message",
     ]);
   });
 
-  it("keeps messages, markers, statuses and interactions in the thread", () => {
-    for (const kind of ["message", "marker", "status", "interaction"]) {
+  it("keeps markers, statuses and interactions in the thread", () => {
+    for (const kind of ["marker", "status", "interaction"]) {
       const item = items.find((it) => it.kind === kind)!;
       expect(isNestableLiveChild(item)).toBe(false);
     }
+  });
+
+  it("keeps the still-streaming interstitial out — it lives on the parent row's line", () => {
+    expect(
+      isNestableLiveChild({
+        id: "m2",
+        kind: "message",
+        author: "agent",
+        text: "typing…",
+        interstitial: true,
+        streaming: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("never nests a non-interstitial message (the final reply keeps its bubble)", () => {
+    expect(
+      isNestableLiveChild({ id: "m3", kind: "message", author: "agent", text: "Final reply." }),
+    ).toBe(false);
   });
 });
 
@@ -253,7 +276,26 @@ describe("interstitial self-talk classification (PAP-355)", () => {
     for (const m of messages) {
       if (m.kind !== "message") continue;
       expect(m.interstitial).toBe(true);
-      expect(m.streaming).toBe(true);
+    }
+  });
+
+  it("marks only the message still open at the tail as streaming", () => {
+    const items = transcriptToTaskChatItems(stream, { runId: "run-1", running: true });
+    const messages = items.filter((it) => it.kind === "message");
+    if (messages[0].kind !== "message" || messages[1].kind !== "message") return;
+    // The first message was closed by the tool call — finished self-talk that
+    // nests as a settled row even while the run continues.
+    expect(messages[0].streaming).toBe(false);
+    expect(messages[1].streaming).toBe(true);
+  });
+
+  it("marks no message streaming when the tail is a tool call", () => {
+    const items = transcriptToTaskChatItems(
+      [...stream, toolCall("Bash", { command: "pnpm test" })],
+      { runId: "run-1", running: true },
+    );
+    for (const m of items) {
+      if (m.kind === "message") expect(m.streaming).toBe(false);
     }
   });
 
@@ -276,5 +318,85 @@ describe("interstitial self-talk classification (PAP-355)", () => {
     if (messages[0].kind !== "message" || messages[1].kind !== "message") return;
     expect(messages[0].atMs).toBe(Date.parse(TS));
     expect(messages[1].atMs).toBe(Date.parse("2026-07-31T12:00:05.000Z"));
+  });
+});
+
+describe("flattenSelfTalk", () => {
+  it("strips markdown markers to one plain line", () => {
+    expect(
+      flattenSelfTalk("## Plan\n\nI'll **extend** the `ipRateLimit` helper:\n- read it\n- patch it"),
+    ).toBe("Plan I'll extend the ipRateLimit helper: read it patch it");
+  });
+
+  it("keeps link text, drops the url, and is stream-safe on unclosed markers", () => {
+    expect(flattenSelfTalk("see [the docs](https://x) for **bol")).toBe("see the docs for bol");
+    expect(flattenSelfTalk("```ts\nconst a = 1;")).toBe("const a = 1;");
+  });
+});
+
+describe("deriveRunStatusLabel streaming self-talk (PAP-356)", () => {
+  it("returns the trailing message's flattened text with the Responding label", () => {
+    const status = deriveRunStatusLabel([
+      { kind: "assistant", ts: TS, text: "I'll **extend** " } as TranscriptEntry,
+      { kind: "assistant", ts: TS, text: "the `ipRateLimit` helper." } as TranscriptEntry,
+    ]);
+    expect(status.label).toBe("Responding");
+    expect(status.selfTalk).toBe("I'll extend the ipRateLimit helper.");
+  });
+
+  it("only accumulates the trailing message, not one closed by a tool call", () => {
+    const status = deriveRunStatusLabel([
+      { kind: "assistant", ts: TS, text: "Earlier note." } as TranscriptEntry,
+      toolCall("Read", { file_path: "a.ts" }),
+      { kind: "assistant", ts: TS, text: "Fresh line." } as TranscriptEntry,
+    ]);
+    expect(status.selfTalk).toBe("Fresh line.");
+  });
+
+  it("carries no selfTalk for tool or thinking tails", () => {
+    expect(deriveRunStatusLabel([toolCall("Read")]).selfTalk).toBeUndefined();
+    expect(
+      deriveRunStatusLabel([{ kind: "thinking", ts: TS, text: "hm" } as TranscriptEntry]).selfTalk,
+    ).toBeUndefined();
+  });
+});
+
+describe("settledRunChildren (PAP-356, accepted §5.4)", () => {
+  const parsed = transcriptToTaskChatItems(
+    [
+      { kind: "assistant", ts: TS, text: "Checking the adapter first." } as TranscriptEntry,
+      toolCall("Read", { file_path: "a.ts" }),
+      { kind: "assistant", ts: TS, text: "Done — the limiter is wired in." } as TranscriptEntry,
+    ],
+    { runId: "run-1", running: false },
+  );
+
+  it("nests self-talk between the tool rows in transcript order", () => {
+    const children = settledRunChildren(parsed, { succeeded: true });
+    expect(children.map((c) => c.kind)).toEqual(["message", "tool", "message"]);
+  });
+
+  it("drops messages matching a posted comment body (dedup preserved)", () => {
+    const children = settledRunChildren(parsed, {
+      commentBodies: new Set([normalizeCommentBody("Done —  the limiter is wired\nin.")]),
+      succeeded: true,
+    });
+    expect(children.map((c) => c.kind)).toEqual(["message", "tool"]);
+  });
+
+  it("drops a succeeded run's trailing message when the run posted any comment", () => {
+    const children = settledRunChildren(parsed, {
+      commentBodies: new Set([normalizeCommentBody("A transformed version of the reply.")]),
+      succeeded: true,
+    });
+    expect(children.map((c) => c.kind)).toEqual(["message", "tool"]);
+  });
+
+  it("keeps the trailing message for failed runs", () => {
+    const children = settledRunChildren(parsed, {
+      commentBodies: new Set(["unrelated"]),
+      succeeded: false,
+    });
+    expect(children.map((c) => c.kind)).toEqual(["message", "tool", "message"]);
   });
 });

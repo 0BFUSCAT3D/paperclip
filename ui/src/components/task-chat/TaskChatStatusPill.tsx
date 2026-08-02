@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronRight, Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
@@ -29,6 +29,55 @@ function useLiveElapsedMs(startedAtMs: number | undefined, live: boolean): numbe
     return () => window.clearInterval(id);
   }, [startedAtMs, live]);
   return startedAtMs == null ? undefined : Math.max(0, now - startedAtMs);
+}
+
+/**
+ * How many line-heights the streaming self-talk block is shifted up so only its
+ * LAST line shows in the 1lh viewport: lines − 1 (never negative).
+ */
+export function lineScrollOffset(scrollHeight: number, lineHeightPx: number): number {
+  if (!Number.isFinite(scrollHeight) || !Number.isFinite(lineHeightPx) || lineHeightPx <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.round(scrollHeight / lineHeightPx) - 1);
+}
+
+/**
+ * Streaming self-talk on the parent row's line: the text types in (typewriter
+ * treatment) inside a one-line-height clipped viewport; when it wraps, the
+ * inner block translates up by whole line-heights (--motion-line-scroll,
+ * transform-only, snaps under reduced motion) so the completed line slides out
+ * the top while typing continues on the fresh line — the same motion grammar
+ * as tool rows animating in. Line count is measured from scrollHeight /
+ * line-height, re-checked on resize.
+ */
+function LiveSelfTalkLine({ text }: { text: string }) {
+  const innerRef = useRef<HTMLSpanElement | null>(null);
+  const [offset, setOffset] = useState(0);
+  useLayoutEffect(() => {
+    const el = innerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const lineHeight = parseFloat(window.getComputedStyle(el).lineHeight);
+      setOffset(lineScrollOffset(el.scrollHeight, lineHeight));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text]);
+  return (
+    <span className="tc-line-scroll min-w-0 flex-1" data-testid="task-chat-live-self-talk">
+      <span
+        ref={innerRef}
+        className="tc-line-scroll-inner tc-typewriter-line block"
+        style={offset > 0 ? { transform: `translateY(calc(${-offset} * 1lh))` } : undefined}
+      >
+        {text}
+      </span>
+    </span>
+  );
 }
 
 const CONFIG = {
@@ -64,6 +113,40 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
   const live = item.status === "running" || item.status === "working";
   const liveElapsedMs = useLiveElapsedMs(item.startedAtMs, live);
   const elapsed = elapsedLabel(item.elapsedMs);
+
+  if (live && item.selfTalk) {
+    // Streaming self-talk takes the line (replacing the gerund) in the muted
+    // tool-row style; right-side meta (elapsed · tokens) stays put. The row
+    // alternates: whimsy gerund ↔ in-flight tool ↔ streaming self-talk.
+    const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
+    const SelfTalkIcon = statusLabelIcon("Responding");
+    return (
+      <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
+        <span
+          aria-hidden
+          className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-(--status-agent-running)"
+        />
+        {SelfTalkIcon ? <SelfTalkIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+        <LiveSelfTalkLine text={item.selfTalk} />
+        {liveElapsed ? (
+          <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
+            {liveElapsed}
+          </span>
+        ) : null}
+        {item.tokens ? (
+          <span className="shrink-0 font-mono text-(length:--text-micro)">
+            {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
+          </span>
+        ) : null}
+        {chevronOpen !== undefined ? (
+          <ChevronRight
+            className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}
+            aria-hidden
+          />
+        ) : null}
+      </div>
+    );
+  }
 
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);

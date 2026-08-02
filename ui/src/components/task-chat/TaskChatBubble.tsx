@@ -1,5 +1,8 @@
+import { useState } from "react";
+import { ChevronRight, MessageSquareReply } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { flattenSelfTalk } from "./transcript-adapter";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import {
@@ -32,25 +35,46 @@ function initialsForName(name: string) {
  * bubble with an avatar author header (the agent's assigned icon + name · mode
  * chip); system notices are centered and recede.
  */
+/**
+ * Finished self-talk as a nested activity row (PAP-356): one muted flattened
+ * line in the exact tool-row interaction grammar — click expands the full
+ * markdown in a left-rail inset, identical to a tool row's detail block.
+ * (While still streaming, the same text lives on the parent row's live line.)
+ */
+function InterstitialRow({ item }: { item: TaskChatMessageItem }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="tc-enter-tool flex flex-col text-xs" data-testid="task-chat-interstitial">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="group/selftalk -mx-1.5 flex min-w-0 cursor-pointer items-center gap-2 rounded-sm px-1.5 py-0.5 text-left text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+      >
+        <MessageSquareReply className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 truncate">{flattenSelfTalk(item.text)}</span>
+        <ChevronRight
+          className={cn(
+            "ml-auto h-3 w-3 shrink-0 opacity-0 transition-[opacity,transform] group-hover/selftalk:opacity-80",
+            open ? "rotate-90" : null,
+          )}
+          aria-hidden
+        />
+      </button>
+      {open ? (
+        <div className="tc-interstitial ml-2.5 mt-0.5 border-l-2 border-border py-1 pl-2.5 text-muted-foreground">
+          <MarkdownBody softBreaks linkIssueReferences>
+            {item.text}
+          </MarkdownBody>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function TaskChatBubble({ item }: TaskChatBubbleProps) {
   if (item.interstitial) {
-    // Mid-run self-talk: no bubble, no avatar header — muted narration that
-    // stays in the thread but never competes with the final reply. While
-    // streaming, block-level chunks type themselves in (tc-typewriter-stream);
-    // history renders instantly.
-    return (
-      <div
-        className={cn(
-          "tc-interstitial w-full text-xs text-muted-foreground",
-          item.streaming && "tc-typewriter-stream",
-        )}
-        data-testid="task-chat-interstitial"
-      >
-        <MarkdownBody softBreaks linkIssueReferences>
-          {item.text}
-        </MarkdownBody>
-      </div>
-    );
+    return <InterstitialRow item={item} />;
   }
 
   if (item.author === "system") {
