@@ -110,14 +110,22 @@ describeEmbeddedPostgres("issue review attention", () => {
     });
     expect(row?.reviewAttention?.reason).toContain("no participant, interaction, approval");
 
-    await db.insert(agentWakeupRequests).values({
+    const recoveryIdempotencyKey = `issue_review_path_lost:${issueId}:fingerprint`;
+    const recoveryWake = {
       companyId,
       agentId,
       source: "automation",
       reason: "issue_review_path_lost",
       status: "queued",
       payload: { issueId },
-      idempotencyKey: `issue_review_path_lost:${issueId}:fingerprint`,
+      idempotencyKey: recoveryIdempotencyKey,
+    };
+    await db.insert(agentWakeupRequests).values(recoveryWake);
+    await expect(db.insert(agentWakeupRequests).values(recoveryWake)).rejects.toMatchObject({
+      cause: {
+        code: "23505",
+        constraint_name: "agent_wakeup_requests_review_path_recovery_idempotency_uq",
+      },
     });
 
     row = (await svc.list(companyId, { status: "in_review" })).find((issue) => issue.id === issueId);
@@ -148,7 +156,7 @@ describeEmbeddedPostgres("issue review attention", () => {
       companyId,
       agentId,
       identifier: "RVA-6",
-      executionState: { currentParticipant: { type: "agent", agentId } },
+      executionState: { status: "pending", currentParticipant: { type: "agent", agentId } },
     });
     const activeRunIssueId = await insertReview({ companyId, agentId, identifier: "RVA-7" });
     const recoveryIssueId = await insertReview({ companyId, agentId, identifier: "RVA-8" });

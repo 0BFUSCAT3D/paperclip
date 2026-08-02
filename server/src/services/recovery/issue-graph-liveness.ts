@@ -227,7 +227,9 @@ export function classifyIssueReviewPaths(
     });
   }
 
-  const participant = issue.executionState?.currentParticipant;
+  const participant = issue.executionState?.status === "pending"
+    ? issue.executionState.currentParticipant
+    : null;
   const participantAgentId = readPrincipalAgentId(participant);
   if (participantAgentId) {
     const participantAgent = agentsById.get(participantAgentId);
@@ -530,7 +532,10 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       includeStalledAssignee: true,
     });
 
-    const participant = reviewIssue.executionState?.currentParticipant;
+    const hasPendingExecutionState = reviewIssue.executionState?.status === "pending";
+    const participant = hasPendingExecutionState
+      ? reviewIssue.executionState?.currentParticipant
+      : null;
     const participantAgentId = readPrincipalAgentId(participant);
     if (participantAgentId) {
       const participantAgent = agentsById.get(participantAgentId);
@@ -554,7 +559,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
     if (principalIsResolvableUser(participant)) return null;
 
-    if (reviewIssue.executionState) {
+    if (hasPendingExecutionState) {
       return finding({
         issue: source,
         state: "invalid_review_participant",
