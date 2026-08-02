@@ -469,7 +469,7 @@ An `in_review` issue is stalled when it has no typed participant, no pending int
 
 When the last review path of an agent-owned `in_review` issue is consumed and nothing restores or replaces it, recovery is bounded and idempotent:
 
-1. Paperclip queues at most one `issue_review_path_lost` recovery wake for the assignee, fingerprinted on the consumed path id (the interaction, approval, monitor, or participant run that evaporated), so repeated evaluation of the same loss cannot fan out into a wake loop. The wake payload tells the assignee it must restore a waiting path or choose a disposition.
+1. Paperclip queues at most one `issue_review_path_lost` recovery wake for the assignee, fingerprinted on the consumed path id (the interaction, approval, monitor, or participant run that evaporated), so repeated evaluation of the same loss cannot fan out into a wake loop. When the issue became pathless without a consumed path — for example, it entered `in_review` and no review path was ever created — the fingerprint is the id of the finalizing run or status-change event that left it pathless, so the recovery key is always stable. The wake payload tells the assignee it must restore a waiting path or choose a disposition.
 2. If that recovery run also finishes with the issue `in_review` and zero paths, no further wakes are queued for that fingerprint. The issue enters a visible stalled-review state: surfaced as needs-attention on the issue page and fed to the decisions desk as a decide-now item, rather than drifting silently.
 3. A new consumed-path fingerprint — a later interaction, approval, or monitor that itself evaporates — may start one new bounded cycle; unchanged evidence must not.
 
@@ -583,7 +583,7 @@ Run finalization must validate the review disposition, not just the run's own ex
 
 Recovery rule:
 
-- Paperclip queues one bounded `issue_review_path_lost` recovery wake for the assignee, fingerprinted on the consumed path id (§8 `in_review`)
+- Paperclip queues one bounded `issue_review_path_lost` recovery wake for the assignee, fingerprinted on the consumed path id or, when no path was consumed, on the id of the finalizing run that left the issue pathless (§8 `in_review`)
 - if that recovery run also finalizes with the issue `in_review` and zero paths, no further wakes are queued for that fingerprint; the issue surfaces as a stalled review on the issue page and the decisions desk
 
 This is a review-handoff continuity recovery. It mirrors §9.1 and §9.2: one bounded wake per fingerprint, then visible escalation instead of a requeue loop.
