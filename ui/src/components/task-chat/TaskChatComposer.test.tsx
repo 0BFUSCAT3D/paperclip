@@ -34,7 +34,7 @@ vi.mock("@mdxeditor/editor", async () => {
   interface MockHandle {
     setMarkdown: (value: string) => void;
     insertMarkdown: (value: string) => void;
-    focus: () => void;
+    focus: (callback?: () => void) => void;
   }
 
   const MDXEditor = React.forwardRef(function MockMDXEditor(
@@ -65,7 +65,10 @@ vi.mock("@mdxeditor/editor", async () => {
         if (editableRef.current) editableRef.current.textContent = next;
         onChangeRef.current?.(next);
       },
-      focus: () => editableRef.current?.focus(),
+      focus: (callback?: () => void) => {
+        editableRef.current?.focus();
+        callback?.();
+      },
     }), []);
 
     React.useEffect(() => {
@@ -355,12 +358,13 @@ describe("TaskChatComposer", () => {
     expect(mdxEditorMockState.imagePluginOptions).toBeNull();
   });
 
-  it("attaches pasted non-image files to the chip row and inserts a link reference", async () => {
+  it("attaches pasted non-image files to the chip row and posts a link reference", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
     const onAttachImage = vi.fn().mockResolvedValue({
       contentPath: "/attachments/notes.txt",
       originalFilename: "notes.txt",
     });
-    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" onAttachImage={onAttachImage} />);
 
     const file = new File(["plain"], "notes.txt", { type: "text/plain" });
     const paste = pasteFiles([file]);
@@ -371,8 +375,74 @@ describe("TaskChatComposer", () => {
     expect(onAttachImage).toHaveBeenCalledWith(file);
     const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
     expect(chips?.textContent).toContain("notes.txt");
-    expect(chips?.textContent).toContain("Attached");
-    expect(editable().textContent).toContain("[notes.txt](/attachments/notes.txt)");
+    // base/attachment chip: kind · size description and a settled state.
+    expect(chips?.textContent).toContain("Text · 5 B");
+    expect(chips?.querySelector('[data-slot="attachment"]')?.getAttribute("data-state")).toBe("done");
+
+    // The editor stays prose-only; the reference rides along at submit time,
+    // and an attached chip alone is enough to enable send.
+    expect(editable().textContent ?? "").not.toContain("notes.txt");
+    const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
+    expect(send.disabled).toBe(false);
+    flushSync(() => send.click());
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith(
+      "[notes.txt](/attachments/notes.txt)",
+      undefined,
+      undefined,
+    );
+    // Chips clear once the message posts.
+    expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')).toBeNull();
+  });
+
+  it("appends file references after typed prose on submit", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const onAttachImage = vi.fn().mockResolvedValue({
+      contentPath: "/attachments/notes.txt",
+      originalFilename: "notes.txt",
+    });
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" onAttachImage={onAttachImage} />);
+
+    typeText("Please review this.");
+    pasteFiles([new File(["plain"], "notes.txt", { type: "text/plain" })]);
+    await flushAsync();
+
+    const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!;
+    flushSync(() => send.click());
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith(
+      "Please review this.\n\n[notes.txt](/attachments/notes.txt)",
+      undefined,
+      undefined,
+    );
+  });
+
+  it("removes an attachment chip via its remove button", async () => {
+    const onAttachImage = vi.fn().mockResolvedValue({
+      contentPath: "/attachments/notes.txt",
+      originalFilename: "notes.txt",
+    });
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+
+    pasteFiles([new File(["plain"], "notes.txt", { type: "text/plain" })]);
+    await flushAsync();
+
+    const remove = container.querySelector<HTMLButtonElement>('button[aria-label="Remove notes.txt"]');
+    expect(remove).not.toBeNull();
+    flushSync(() => remove!.click());
+    expect(container.querySelector('[data-testid="task-chat-composer-attachments"]')).toBeNull();
+  });
+
+  it("shows an error-state chip when a non-image upload fails", async () => {
+    const onAttachImage = vi.fn().mockRejectedValue(new Error("Too large"));
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+
+    pasteFiles([new File(["plain"], "notes.txt", { type: "text/plain" })]);
+    await flushAsync();
+
+    const chips = container.querySelector('[data-testid="task-chat-composer-attachments"]');
+    expect(chips?.querySelector('[data-slot="attachment"]')?.getAttribute("data-state")).toBe("error");
+    expect(chips?.textContent).toContain("Too large");
   });
 
   it("leaves pasted images to the editor's image plugin (no chip, paste not swallowed)", async () => {

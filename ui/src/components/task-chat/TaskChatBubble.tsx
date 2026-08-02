@@ -2,6 +2,16 @@ import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
+import {
+  Attachment,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+  AttachmentTrigger,
+} from "@/components/ui/attachment";
+import { extractAttachmentRefs, fileKindForName } from "./task-chat-attachments";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
 interface TaskChatBubbleProps {
@@ -32,6 +42,9 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
   }
 
   const isHuman = item.author === "human";
+  // Non-image file references ("[name](/api/attachments/…/content)") render as
+  // attachment chips under the bubble; link-only lines leave the body text.
+  const { refs: attachmentRefs, text: bodyText } = extractAttachmentRefs(item.text);
   return (
     <div className={cn("tc-enter-bubble group flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
       {!isHuman && item.authorName ? (
@@ -53,19 +66,47 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
           ) : null}
         </span>
       ) : null}
-      <div
-        className={cn(
-          "max-w-(--pct-85) break-words px-3.5 py-2 text-sm",
-          isHuman
-            ? "rounded-2xl rounded-br-sm bg-(--liveness-blue) text-white"
-            : "rounded-2xl rounded-bl-sm bg-(--bubble-agent) text-foreground",
-          item.optimistic ? "opacity-80" : null,
-        )}
-      >
-        <MarkdownBody softBreaks linkIssueReferences>
-          {item.text}
-        </MarkdownBody>
-      </div>
+      {bodyText.length > 0 ? (
+        <div
+          className={cn(
+            "max-w-(--pct-85) break-words px-3.5 py-2 text-sm",
+            isHuman
+              ? "rounded-2xl rounded-br-sm bg-(--liveness-blue) text-white"
+              : "rounded-2xl rounded-bl-sm bg-(--bubble-agent) text-foreground",
+            item.optimistic ? "opacity-80" : null,
+          )}
+        >
+          <MarkdownBody softBreaks linkIssueReferences>
+            {bodyText}
+          </MarkdownBody>
+        </div>
+      ) : null}
+      {attachmentRefs.length > 0 ? (
+        <AttachmentGroup
+          className="max-w-(--pct-85)"
+          data-testid="task-chat-bubble-attachments"
+        >
+          {attachmentRefs.map((ref) => {
+            const kind = fileKindForName(ref.name);
+            const KindIcon = kind.icon;
+            return (
+              <Attachment key={ref.url} size="sm" className={cn(item.optimistic && "opacity-80")}>
+                <AttachmentMedia>
+                  <KindIcon aria-hidden />
+                </AttachmentMedia>
+                <AttachmentContent>
+                  <AttachmentTitle className="max-w-48">{ref.name}</AttachmentTitle>
+                  <AttachmentDescription className="max-w-48">{kind.label}</AttachmentDescription>
+                </AttachmentContent>
+                <AttachmentTrigger
+                  aria-label={`Open ${ref.name}`}
+                  render={<a href={ref.url} target="_blank" rel="noreferrer" />}
+                />
+              </Attachment>
+            );
+          })}
+        </AttachmentGroup>
+      ) : null}
       {item.optimistic ? (
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
           {item.optimistic === "queued" ? "Queued" : "Sending…"}

@@ -6,13 +6,24 @@ import {
   type CSSProperties,
 } from "react";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, ArrowUp, Check, ChevronDown, Loader2, Plus } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Loader2, Plus, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Attachment,
+  AttachmentAction,
+  AttachmentActions,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+} from "@/components/ui/attachment";
+import { fileKindForName, formatFileSize } from "./task-chat-attachments";
 import { MarkdownEditor, type MarkdownEditorRef } from "@/components/MarkdownEditor";
 import { nextWorkMode, workModeMetaFor, workModeMetaList } from "@/lib/work-mode-meta";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
@@ -76,8 +87,11 @@ function modePlaceholder(mode: IssueWorkMode, agentName: string): string {
 type ComposerAttachment = {
   id: string;
   name: string;
+  size?: number;
   status: "uploading" | "attached" | "error";
   error?: string;
+  /** Set once uploaded; the submit path appends `[name](contentPath)` lines. */
+  contentPath?: string;
 };
 
 /** Local duplicate of IssueChatThread's module-private helper (same rule). */
@@ -111,7 +125,9 @@ function escapeMarkdownLabel(name: string): string {
  * Cmd/Ctrl+Enter posts via the editor's native onSubmit; plain Enter stays a
  * newline / next list item. Pasted or dropped images upload through
  * `onAttachImage` (or the `onImageUpload` fallback) and land inline at the
- * caret via the editor's image plugin; non-image files keep the chip row.
+ * caret via the editor's image plugin; non-image files render as shadcn
+ * base/attachment chips (kind icon · name · size, remove ×, uploading/error
+ * states) between the editor and the comp-bar.
  */
 export function TaskChatComposer({
   onAdd,
@@ -161,7 +177,7 @@ export function TaskChatComposer({
   /** Non-image files: attach to the task and track in the chip row. */
   async function attachNonImageFile(file: File) {
     const id = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
-    setAttachments((prev) => [...prev, { id, name: file.name, status: "uploading" }]);
+    setAttachments((prev) => [...prev, { id, name: file.name, size: file.size, status: "uploading" }]);
     try {
       if (!onAttachImage) {
         setAttachments((prev) =>
@@ -175,11 +191,12 @@ export function TaskChatComposer({
       }
       const attachment = await onAttachImage(file);
       const name = attachment?.originalFilename ?? file.name;
-      if (attachment?.contentPath) {
-        editorRef.current?.insertMarkdown(`[${escapeMarkdownLabel(name)}](${attachment.contentPath}) `);
-      }
       setAttachments((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, name, status: "attached" } : item)),
+        prev.map((item) =>
+          item.id === id
+            ? { ...item, name, status: "attached", contentPath: attachment?.contentPath }
+            : item,
+        ),
       );
     } catch (err) {
       setAttachments((prev) =>
@@ -208,6 +225,7 @@ export function TaskChatComposer({
         {
           id,
           name: file.name,
+          size: file.size,
           status: "error",
           error: err instanceof Error ? err.message : "Upload failed",
         },
@@ -245,10 +263,20 @@ export function TaskChatComposer({
     })();
   }
 
+  // Uploaded file references ride along as trailing `[name](contentPath)`
+  // lines — the bubble renderer folds those link-only lines back into chips.
+  const attachedRefs = attachments.filter(
+    (item) => item.status === "attached" && item.contentPath,
+  );
+
   async function submit() {
     const trimmed = bodyRef.current.trim();
-    if (!trimmed || submitting || disabled) return;
+    if ((!trimmed && attachedRefs.length === 0) || submitting || disabled) return;
 
+    const refLines = attachedRefs
+      .map((item) => `[${escapeMarkdownLabel(item.name)}](${item.contentPath})`)
+      .join("\n");
+    const fullBody = [trimmed, refLines].filter(Boolean).join("\n\n");
     const hasReassignment = showAssignee && assigneeValue !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseAssigneeValue(assigneeValue) : undefined;
     const reopen = shouldImplicitlyReopenComment(issueStatus, assigneeValue) ? true : undefined;
@@ -259,11 +287,11 @@ export function TaskChatComposer({
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
-      await onAdd(trimmed, reopen, reassignment);
+      await onAdd(fullBody, reopen, reassignment);
       setAttachments([]);
       setPendingAssignee(null);
     } catch {
-      setBody(trimmed); // restore on failure
+      setBody(trimmed); // restore on failure (chips stay for retry)
     } finally {
       setSubmitting(false);
     }
@@ -304,36 +332,54 @@ export function TaskChatComposer({
       </div>
 
       {attachments.length > 0 ? (
-        <div className="mb-1 flex flex-wrap gap-1 px-1" data-testid="task-chat-composer-attachments">
-          {attachments.map((attachment) => (
-            <span
-              key={attachment.id}
-              className={cn(
-                "inline-flex min-w-0 items-center gap-1 rounded-md border px-2 py-0.5 text-xs",
-                attachment.status === "error"
-                  ? "border-destructive/50 bg-destructive/10 text-destructive"
-                  : "border-border bg-muted/30 text-muted-foreground",
-              )}
-            >
-              {attachment.status === "uploading" ? (
-                <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden />
-              ) : attachment.status === "error" ? (
-                <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden />
-              ) : (
-                <Check className="h-3 w-3 shrink-0" aria-hidden />
-              )}
-              <span className="max-w-40 truncate font-medium text-foreground">{attachment.name}</span>
-              <span className="shrink-0">
-                ·{" "}
-                {attachment.status === "uploading"
-                  ? "Uploading…"
-                  : attachment.status === "error"
-                    ? (attachment.error ?? "Upload failed")
-                    : "Attached"}
-              </span>
-            </span>
-          ))}
-        </div>
+        <AttachmentGroup className="mb-1 px-1" data-testid="task-chat-composer-attachments">
+          {attachments.map((attachment) => {
+            const kind = fileKindForName(attachment.name);
+            const KindIcon = kind.icon;
+            const sizeLabel = formatFileSize(attachment.size);
+            return (
+              <Attachment
+                key={attachment.id}
+                size="sm"
+                state={
+                  attachment.status === "uploading"
+                    ? "uploading"
+                    : attachment.status === "error"
+                      ? "error"
+                      : "done"
+                }
+              >
+                <AttachmentMedia>
+                  {attachment.status === "uploading" ? (
+                    <Loader2 className="animate-spin" aria-hidden />
+                  ) : (
+                    <KindIcon aria-hidden />
+                  )}
+                </AttachmentMedia>
+                <AttachmentContent>
+                  <AttachmentTitle className="max-w-48">{attachment.name}</AttachmentTitle>
+                  <AttachmentDescription className="max-w-48">
+                    {attachment.status === "uploading"
+                      ? "Uploading…"
+                      : attachment.status === "error"
+                        ? (attachment.error ?? "Upload failed")
+                        : [kind.label, sizeLabel].filter(Boolean).join(" · ")}
+                  </AttachmentDescription>
+                </AttachmentContent>
+                <AttachmentActions>
+                  <AttachmentAction
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() =>
+                      setAttachments((prev) => prev.filter((item) => item.id !== attachment.id))
+                    }
+                  >
+                    <X aria-hidden />
+                  </AttachmentAction>
+                </AttachmentActions>
+              </Attachment>
+            );
+          })}
+        </AttachmentGroup>
       ) : null}
 
       <div className="mt-1 flex items-center gap-2">
@@ -428,7 +474,7 @@ export function TaskChatComposer({
         <button
           type="button"
           onClick={() => void submit()}
-          disabled={disabled || submitting || body.trim().length === 0}
+          disabled={disabled || submitting || (body.trim().length === 0 && attachedRefs.length === 0)}
           title="Send (⌘+Enter)"
           aria-label="Send"
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-transform hover:scale-105 disabled:scale-100 disabled:bg-muted disabled:text-muted-foreground"

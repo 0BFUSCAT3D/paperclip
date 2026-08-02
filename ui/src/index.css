@@ -737,6 +737,44 @@
   --shimmer-highlight: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
 }
 
+/* Utilities expected by shadcn base components (ui/attachment.tsx). Declared
+   with @utility so variant forms (e.g. group-data-[state=uploading]:shimmer)
+   compile under Tailwind v4. */
+@utility shimmer {
+  --shimmer-base: var(--foreground);
+  --shimmer-highlight: color-mix(in oklch, var(--foreground) 35%, transparent);
+  background: linear-gradient(
+    90deg,
+    var(--shimmer-base) 0%,
+    var(--shimmer-base) 40%,
+    var(--shimmer-highlight) 50%,
+    var(--shimmer-base) 60%,
+    var(--shimmer-base) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-text-slide 2.5s linear infinite;
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility scroll-fade-x {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 12px,
+    black calc(100% - 12px),
+    transparent
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .shimmer-text {
     animation: none;
