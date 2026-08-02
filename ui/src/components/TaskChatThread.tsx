@@ -339,6 +339,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         onSubmitInteractionAnswers={onSubmitInteractionAnswers}
         onCancelInteraction={onCancelInteraction}
         onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+        onSubmitOtherResponse={async (_interaction, response) => {
+          await onAdd(response);
+        }}
         onUploadImage={imageUploadHandler}
         externalReferences={externalReferences}
       />
@@ -352,6 +355,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       onSubmitInteractionAnswers,
       onCancelInteraction,
       onSubmitInteractionVerdicts,
+      onAdd,
       imageUploadHandler,
       externalReferences,
     ],
