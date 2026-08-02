@@ -33,6 +33,26 @@ function initialsForName(name: string) {
  * chip); system notices are centered and recede.
  */
 export function TaskChatBubble({ item }: TaskChatBubbleProps) {
+  if (item.interstitial) {
+    // Mid-run self-talk: no bubble, no avatar header — muted narration that
+    // stays in the thread but never competes with the final reply. While
+    // streaming, block-level chunks type themselves in (tc-typewriter-stream);
+    // history renders instantly.
+    return (
+      <div
+        className={cn(
+          "w-full text-sm text-muted-foreground",
+          item.streaming && "tc-typewriter-stream",
+        )}
+        data-testid="task-chat-interstitial"
+      >
+        <MarkdownBody softBreaks linkIssueReferences>
+          {item.text}
+        </MarkdownBody>
+      </div>
+    );
+  }
+
   if (item.author === "system") {
     return (
       <div className="tc-enter-bubble flex justify-center py-1">

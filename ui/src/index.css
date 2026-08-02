@@ -236,6 +236,8 @@
   --motion-count-tween: var(--motion-duration-slow);
   --motion-streaming-cursor-blink: 1.1s;
   --motion-turn-fold: 380ms;            /* finished-turn activity folding into its summary line */
+  --motion-typewriter-reveal: 450ms;    /* interstitial self-talk chunk typing itself in */
+  --motion-typewriter-steps: steps(24, end); /* discrete reveal — the "typed" feel */
   --motion-scroll-pill-enter: 200ms;    /* scroll-to-latest pill entry */
   --motion-scroll-pill-exit: 400ms;     /* scroll-to-latest pill exit */
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
@@ -535,6 +537,7 @@
     --motion-plan-entry-stagger: 0ms;
     --motion-streaming-cursor-blink: 0ms;
     --motion-turn-fold: 0ms;
+    --motion-typewriter-reveal: 0ms;
     --motion-scroll-pill-enter: 0ms;
     --motion-scroll-pill-exit: 0ms;
     --motion-pane-glide: 0ms;
@@ -570,6 +573,10 @@
   0%, 45% { opacity: 1; }
   55%, 100% { opacity: 0; }
 }
+@keyframes tc-typewriter {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
 
 .tc-enter-bubble { animation: tc-fade-rise var(--motion-bubble-enter) var(--motion-ease-out-expo) both; }
 .tc-enter-marker { animation: tc-fade-in var(--motion-marker-enter) var(--motion-ease-out) both; }
@@ -580,6 +587,11 @@
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
+/* Interstitial self-talk: each block-level chunk (a new streamed paragraph /
+   list / code block) wipes in left-to-right in discrete steps as it arrives —
+   CSS-only typewriter, no per-char timers. Text appended to an existing block
+   lands instantly; history omits the class entirely. */
+.tc-typewriter-stream .paperclip-markdown > * { animation: tc-typewriter var(--motion-typewriter-reveal) var(--motion-typewriter-steps) both; }
 
 /* Scroll-to-latest pill (stock shadcn MessageScrollerButton motion, tokenized).
    The pill is centered with translateX(-50%), so the keyframes carry the X
@@ -620,6 +632,7 @@
   .tc-scroll-pill-in,
   .tc-scroll-pill-out,
   .tc-enter-plan-entry { animation: none; }
+  .tc-typewriter-stream .paperclip-markdown > * { animation: none; }
   .tc-turn-fold,
   .tc-pane-glide { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */

@@ -49,7 +49,8 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  * ONE expandable parent row — its status line (whimsy gerund or in-flight
  * tool state + elapsed + tokens) is the turn's single visible line, with the
  * chronological tool/thinking activity nested behind an expand (PAP-354).
- * Mid-run agent text stays outside as bubbles. When the run terminates the
+ * Mid-run agent text stays outside as muted, bubble-less interstitial
+ * narration (PAP-355) — live and settled alike. When the run terminates the
  * same turn id flips settled, so the header morphs in place into the one-line
  * "✓ Worked · …" summary (expand state preserved; runs already terminal at
  * mount collapse instantly). Settled turns interleave after the run's last
@@ -239,9 +240,20 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const items = useMemo<TaskChatItem[]>(() => {
     // Settled turns for every terminal run whose transcript we have. The
-    // transcript's assistant text is excluded — it already landed as the run's
-    // comment bubble; the turn holds the activity (thinking/tools/diffs).
+    // transcript's FINAL reply is excluded — it already landed as the run's
+    // comment bubble — but interstitial self-talk stays in the thread, muted
+    // (PAP-355): it interleaves into the backbone at its streamed timestamp so
+    // live and history agree, and it never nests inside the folded turn.
+    const normalizeBody = (s: string) => s.replace(/\s+/g, " ").trim();
+    const commentBodiesByRun = new Map<string, Set<string>>();
+    for (const comment of comments) {
+      if (comment.deletedAt || !comment.runId) continue;
+      const set = commentBodiesByRun.get(comment.runId) ?? new Set<string>();
+      set.add(normalizeBody(comment.body));
+      commentBodiesByRun.set(comment.runId, set);
+    }
     const settledTurns: { turn: TaskChatTurnItem; anchorCommentId: string | null; order: number }[] = [];
+    const interstitialEntries: { ms: number; order: number; id: string; item: TaskChatItem }[] = [];
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
       if (liveRun && source.id === liveRun.id) continue;
@@ -254,11 +266,39 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         Number.isFinite(started) && Number.isFinite(finished)
           ? Math.max(0, finished - started)
           : undefined;
-      const children = transcriptToTaskChatItems(entries, {
+      const parsed = transcriptToTaskChatItems(entries, {
         runId: source.id,
         agentName: meta?.agentName,
         running: false,
-      }).filter((it): it is TaskChatTurnChildItem => it.kind !== "turn" && it.kind !== "message");
+      });
+      const messages = parsed.filter((it) => it.kind === "message");
+      // The reply that landed as a posted comment must not render twice: drop
+      // messages matching a run comment's body, and — since the harness may
+      // post the reply lightly transformed — a succeeded run's trailing
+      // message when the run has comments at all.
+      const bodies = commentBodiesByRun.get(source.id);
+      let selfTalk = bodies
+        ? messages.filter((m) => !bodies.has(normalizeBody(m.text)))
+        : messages;
+      if (
+        bodies &&
+        source.status === "succeeded" &&
+        selfTalk.length > 0 &&
+        selfTalk[selfTalk.length - 1] === messages[messages.length - 1]
+      ) {
+        selfTalk = selfTalk.slice(0, -1);
+      }
+      for (const m of selfTalk) {
+        interstitialEntries.push({
+          ms: m.atMs ?? (Number.isFinite(started) ? started : 0),
+          order: 1,
+          id: m.id,
+          item: m,
+        });
+      }
+      const children = parsed.filter(
+        (it): it is TaskChatTurnChildItem => it.kind !== "turn" && it.kind !== "message",
+      );
       if (children.length === 0) continue;
       settledTurns.push({
         turn: {
@@ -290,8 +330,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       }
     }
 
+    const merged = interstitialEntries.length
+      ? [...orderedEntries, ...interstitialEntries].sort(
+          (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
+        )
+      : orderedEntries;
+
     const out: TaskChatItem[] = [];
-    for (const entry of orderedEntries) {
+    for (const entry of merged) {
       out.push(entry.item);
       const following = turnsByAnchor.get(entry.id);
       if (following) out.push(...following);
@@ -307,9 +353,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
       // Parent-row model (PAP-354): the run's status line IS the live turn —
       // one expandable row owning the activity. Only tool/thinking/usage rows
-      // nest inside it; mid-run agent text stays in the thread as bubbles
-      // above, so the parent row sits last — the slot its settled summary
-      // takes over in place.
+      // nest inside it; mid-run agent text stays in the thread above as muted
+      // interstitial narration (PAP-355), so the parent row sits last — the
+      // slot its settled summary takes over in place.
       for (const it of parsed) {
         if (it.kind === "message") out.push(it);
       }
@@ -337,7 +383,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
     }
     return out;
-  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
+  }, [comments, orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
 
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (

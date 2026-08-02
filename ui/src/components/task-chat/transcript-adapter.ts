@@ -188,6 +188,7 @@ export function transcriptToTaskChatItems(
           const it = items[messageIndex];
           if (it.kind === "message") it.text += entry.text;
         } else {
+          const atMs = Date.parse(entry.ts);
           items.push({
             id: `${runId}:msg:${i}`,
             kind: "message",
@@ -195,6 +196,10 @@ export function transcriptToTaskChatItems(
             authorName: agentName,
             text: entry.text,
             streaming: running,
+            // Everything the agent says inside a run turn is self-talk until it
+            // lands as the posted comment — live and history tag it alike.
+            interstitial: true,
+            atMs: Number.isFinite(atMs) ? atMs : undefined,
           });
           messageIndex = items.length - 1;
           thinkingIndex = -1;

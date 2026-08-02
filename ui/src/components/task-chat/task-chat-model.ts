@@ -76,6 +76,18 @@ export interface TaskChatMessageItem {
   modeLabel?: string;
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
+  /**
+   * Agent self-talk streamed inside a run turn (interstitial narration between
+   * tool calls). Renders bubble-less and muted so it never competes with the
+   * run's final reply — which arrives as a posted comment and is never
+   * interstitial. Set for live and settled transcripts alike.
+   */
+  interstitial?: boolean;
+  /**
+   * Epoch ms of the message's first streamed chunk — the sort key used to
+   * interleave settled-transcript self-talk into the comment backbone.
+   */
+  atMs?: number;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */

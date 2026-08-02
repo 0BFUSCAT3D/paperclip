@@ -237,3 +237,44 @@ describe("isNestableLiveChild", () => {
     }
   });
 });
+
+describe("interstitial self-talk classification (PAP-355)", () => {
+  const stream: TranscriptEntry[] = [
+    { kind: "assistant", ts: TS, text: "Let me check the adapter." } as TranscriptEntry,
+    toolCall("Read", { file_path: "a.ts" }),
+    { kind: "assistant", ts: "2026-07-31T12:00:05.000Z", text: "Found it — fixing now." } as TranscriptEntry,
+  ];
+
+  it("tags agent messages streamed inside a live run turn as interstitial", () => {
+    const messages = transcriptToTaskChatItems(stream, { runId: "run-1", running: true }).filter(
+      (it) => it.kind === "message",
+    );
+    expect(messages).toHaveLength(2);
+    for (const m of messages) {
+      if (m.kind !== "message") continue;
+      expect(m.interstitial).toBe(true);
+      expect(m.streaming).toBe(true);
+    }
+  });
+
+  it("tags settled-history messages interstitial too, so live and history agree", () => {
+    const messages = transcriptToTaskChatItems(stream, { runId: "run-1", running: false }).filter(
+      (it) => it.kind === "message",
+    );
+    expect(messages).toHaveLength(2);
+    for (const m of messages) {
+      if (m.kind !== "message") continue;
+      expect(m.interstitial).toBe(true);
+      expect(m.streaming).toBe(false);
+    }
+  });
+
+  it("stamps atMs from the first streamed chunk for history interleaving", () => {
+    const messages = transcriptToTaskChatItems(stream, { runId: "run-1", running: false }).filter(
+      (it) => it.kind === "message",
+    );
+    if (messages[0].kind !== "message" || messages[1].kind !== "message") return;
+    expect(messages[0].atMs).toBe(Date.parse(TS));
+    expect(messages[1].atMs).toBe(Date.parse("2026-07-31T12:00:05.000Z"));
+  });
+});
