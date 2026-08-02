@@ -66,7 +66,9 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "m-agent-stream", kind: "message", author: "agent", authorName: AGENT, streaming: true, text: "I found an existing ipRateLimit helper, so I'll extend it with a per-account bucket and" },
+          // Mid-run agent text is interstitial self-talk (PAP-355): muted,
+          // bubble-less, typing itself in — matching the live adapter.
+          { id: "m-agent-stream", kind: "message", author: "agent", authorName: AGENT, streaming: true, interstitial: true, text: "I found an existing ipRateLimit helper, so I'll extend it with a per-account bucket and" },
         ],
       };
     case "tool-call":
