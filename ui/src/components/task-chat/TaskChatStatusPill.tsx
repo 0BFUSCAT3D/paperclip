@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronRight, Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
@@ -29,6 +29,55 @@ function useLiveElapsedMs(startedAtMs: number | undefined, live: boolean): numbe
     return () => window.clearInterval(id);
   }, [startedAtMs, live]);
   return startedAtMs == null ? undefined : Math.max(0, now - startedAtMs);
+}
+
+/**
+ * How many line-heights the streaming interstitial block is shifted up so only
+ * its LAST line shows in the 1lh viewport: lines − 1 (never negative).
+ */
+export function lineScrollOffset(scrollHeight: number, lineHeightPx: number): number {
+  if (!Number.isFinite(scrollHeight) || !Number.isFinite(lineHeightPx) || lineHeightPx <= 0) {
+    return 0;
+  }
+  return Math.max(0, Math.round(scrollHeight / lineHeightPx) - 1);
+}
+
+/**
+ * A streaming interstitial update on the parent row's line: the text streams
+ * inside a one-line-height clipped viewport; when it wraps, the inner block
+ * translates up by whole line-heights (--motion-line-scroll, transform-only,
+ * snaps under reduced motion) so the completed line slides out the top while
+ * the stream continues on the fresh line — the same motion grammar as tool
+ * rows animating in. Line count is measured from scrollHeight / line-height,
+ * re-checked on resize.
+ */
+function LiveSelfTalkLine({ text }: { text: string }) {
+  const innerRef = useRef<HTMLSpanElement | null>(null);
+  const [offset, setOffset] = useState(0);
+  useLayoutEffect(() => {
+    const el = innerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const lineHeight = parseFloat(window.getComputedStyle(el).lineHeight);
+      setOffset(lineScrollOffset(el.scrollHeight, lineHeight));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text]);
+  return (
+    <span className="tc-line-scroll min-w-0 flex-1" data-testid="task-chat-live-self-talk">
+      <span
+        ref={innerRef}
+        className="tc-line-scroll-inner block"
+        style={offset > 0 ? { transform: `translateY(calc(${-offset} * 1lh))` } : undefined}
+      >
+        {text}
+      </span>
+    </span>
+  );
 }
 
 const CONFIG = {
@@ -65,21 +114,51 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
   const liveElapsedMs = useLiveElapsedMs(item.startedAtMs, live);
   const elapsed = elapsedLabel(item.elapsedMs);
 
+  if (live && item.selfTalk) {
+    // A streaming interstitial update takes the line (replacing the gerund) in
+    // the muted tool-row style; right-side meta (elapsed · tokens) stays put.
+    // The row alternates: whimsy gerund ↔ in-flight tool ↔ interstitial text.
+    const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
+    const SelfTalkIcon = statusLabelIcon("Responding");
+    return (
+      <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
+        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+          <span
+            aria-hidden
+            className="h-2 w-2 animate-pulse rounded-full bg-(--status-agent-running)"
+          />
+        </span>
+        {SelfTalkIcon ? <SelfTalkIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+        <LiveSelfTalkLine text={item.selfTalk} />
+        {liveElapsed ? (
+          <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
+            {liveElapsed}
+          </span>
+        ) : null}
+        {item.tokens ? (
+          <span className="shrink-0 font-mono text-(length:--text-micro)">
+            {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
+          </span>
+        ) : null}
+        {chevronOpen !== undefined ? (
+          <ChevronRight
+            className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}
+            aria-hidden
+          />
+        ) : null}
+      </div>
+    );
+  }
+
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
-    // Ambient self-talk (PAP-357/PAP-359): while an interstitial streams,
-    // nothing new appears to read — the gerund holds the line and the word
-    // glints (tc-shimmer-narrate); the pulse dot stays put throughout.
-    const narrating = item.narrating === true;
     const ToolIcon = item.toolName
       ? toolTaxonomy(item.toolName).icon
       : statusLabelIcon(item.label);
     // Whimsy fills gaps, never replaces signal: only the generic
-    // "Running"/"Working" labels — and the narrating state, whose "Responding"
-    // is signalled by the glint instead of copy — swap for a deterministic
-    // whimsical gerund (seeded by the run-scoped item id, rotating ~10s via
-    // the live tick).
-    const label = narrating || isGenericStatusLabel(item.label)
+    // "Running"/"Working" labels swap for a deterministic whimsical gerund
+    // (seeded by the run-scoped item id, rotating ~10s via the live tick).
+    const label = isGenericStatusLabel(item.label)
       ? whimsyWord(item.id, liveElapsedMs ?? item.elapsedMs ?? 0)
       : item.label;
     return (
@@ -92,18 +171,11 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
             className="h-2 w-2 animate-pulse rounded-full bg-(--status-agent-running)"
           />
         </span>
-        {!narrating && ToolIcon ? (
-          <ToolIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        ) : null}
+        {ToolIcon ? <ToolIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
         {/* Text cells share a baseline row so the smaller mono readouts don't
             float above the label's baseline. */}
         <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span
-            className={cn(
-              "shimmer-text shimmer-text-muted shrink-0 font-medium",
-              narrating && "tc-shimmer-narrate",
-            )}
-          >
+          <span className="shimmer-text shimmer-text-muted shrink-0 font-medium">
             {label}…
           </span>
           {liveElapsed ? (

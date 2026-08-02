@@ -3,6 +3,7 @@ import type { TranscriptEntry } from "@/adapters";
 import {
   buildTurnSummary,
   deriveRunStatusLabel,
+  flattenSelfTalk,
   isNestableLiveChild,
   settledRunChildren,
   toolDisplayName,
@@ -223,18 +224,19 @@ describe("isNestableLiveChild", () => {
     { id: "i", kind: "interaction", interaction: {} as never },
   ];
 
-  it("nests only tool, thinking and usage rows inside the live parent row", () => {
+  it("nests only tool and usage rows inside the live parent row (PAP-361)", () => {
     expect(items.filter(isNestableLiveChild).map((it) => it.kind)).toEqual([
       "tool",
-      "thinking",
       "usage",
     ]);
   });
 
-  it("keeps messages, markers, statuses and interactions out (PAP-357)", () => {
-    // Interstitial self-talk — finished or streaming — never nests: it is
-    // ambient signal suppressed in this view. The final reply keeps its bubble.
-    for (const kind of ["message", "marker", "status", "interaction"]) {
+  it("keeps messages, thinking, markers, statuses and interactions out", () => {
+    // Interstitial updates — finished or streaming — never nest: they are
+    // ephemeral, living on the live line only while streaming. Thinking never
+    // nests either (its live signal is the pill's "Thinking…" state), and the
+    // final reply keeps its bubble.
+    for (const kind of ["message", "thinking", "marker", "status", "interaction"]) {
       const item = items.find((it) => it.kind === kind)!;
       expect(isNestableLiveChild(item)).toBe(false);
     }
@@ -313,27 +315,49 @@ describe("interstitial self-talk classification (PAP-355)", () => {
   });
 });
 
-describe("deriveRunStatusLabel narrating flag (PAP-357)", () => {
-  it("flags a tail assistant message as narrating — no streamed text surfaced", () => {
+describe("flattenSelfTalk", () => {
+  it("strips markdown markers to one plain line", () => {
+    expect(
+      flattenSelfTalk("## Plan\n\nI'll **extend** the `ipRateLimit` helper:\n- read it\n- patch it"),
+    ).toBe("Plan I'll extend the ipRateLimit helper: read it patch it");
+  });
+
+  it("keeps link text, drops the url, and is stream-safe on unclosed markers", () => {
+    expect(flattenSelfTalk("see [the docs](https://x) for **bol")).toBe("see the docs for bol");
+    expect(flattenSelfTalk("```ts\nconst a = 1;")).toBe("const a = 1;");
+  });
+});
+
+describe("deriveRunStatusLabel streaming interstitial text (PAP-361)", () => {
+  it("returns the trailing message's flattened text with the Responding label", () => {
     const status = deriveRunStatusLabel([
       { kind: "assistant", ts: TS, text: "I'll **extend** " } as TranscriptEntry,
       { kind: "assistant", ts: TS, text: "the `ipRateLimit` helper." } as TranscriptEntry,
     ]);
     expect(status.label).toBe("Responding");
-    expect(status.narrating).toBe(true);
+    expect(status.selfTalk).toBe("I'll extend the ipRateLimit helper.");
     expect(status.detail).toBeUndefined();
   });
 
-  it("carries no narrating flag for tool or thinking tails", () => {
-    expect(deriveRunStatusLabel([toolCall("Read")]).narrating).toBeUndefined();
+  it("only accumulates the trailing message, not one closed by a tool call", () => {
+    const status = deriveRunStatusLabel([
+      { kind: "assistant", ts: TS, text: "Earlier note." } as TranscriptEntry,
+      toolCall("Read", { file_path: "a.ts" }),
+      { kind: "assistant", ts: TS, text: "Fresh line." } as TranscriptEntry,
+    ]);
+    expect(status.selfTalk).toBe("Fresh line.");
+  });
+
+  it("carries no selfTalk for tool or thinking tails", () => {
+    expect(deriveRunStatusLabel([toolCall("Read")]).selfTalk).toBeUndefined();
     expect(
-      deriveRunStatusLabel([{ kind: "thinking", ts: TS, text: "hm" } as TranscriptEntry]).narrating,
+      deriveRunStatusLabel([{ kind: "thinking", ts: TS, text: "hm" } as TranscriptEntry]).selfTalk,
     ).toBeUndefined();
-    expect(deriveRunStatusLabel([]).narrating).toBeUndefined();
+    expect(deriveRunStatusLabel([]).selfTalk).toBeUndefined();
   });
 });
 
-describe("settledRunChildren (PAP-357)", () => {
+describe("settledRunChildren (PAP-361)", () => {
   const transcript: TranscriptEntry[] = [
     { kind: "assistant", ts: TS, text: "Checking the adapter first." } as TranscriptEntry,
     toolCall("Read", { file_path: "a.ts" }),
@@ -343,9 +367,9 @@ describe("settledRunChildren (PAP-357)", () => {
   ];
   const parsed = transcriptToTaskChatItems(transcript, { runId: "run-1", running: false });
 
-  it("keeps only activity rows — every message is excluded", () => {
+  it("keeps exactly the tool rows — messages AND thinking are excluded", () => {
     const children = settledRunChildren(parsed);
-    expect(children.map((c) => c.kind)).toEqual(["tool", "thinking", "tool"]);
+    expect(children.map((c) => c.kind)).toEqual(["tool", "tool"]);
   });
 
   it("matches the folded summary's tool count exactly (row-count parity)", () => {

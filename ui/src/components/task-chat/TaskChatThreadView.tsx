@@ -6,7 +6,6 @@ import { TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
-import { TaskChatThinkingBlock } from "./TaskChatThinkingBlock";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { TaskMessageScroller } from "./TaskMessageScroller";
 
@@ -41,7 +40,11 @@ function renderItem(
     case "marker":
       return <TaskChatMarker item={item} />;
     case "thinking":
-      return <TaskChatThinkingBlock item={item} />;
+      // Thinking never renders as a row (PAP-361): its live signal is the
+      // pill's "Thinking…" state, and the text stays in the run log / classic
+      // transcript. The kind survives in the model because the transcript
+      // parser still emits it (both nesting rules filter it out).
+      return null;
     case "tool":
       return <TaskChatToolCard item={item} />;
     case "status":
@@ -111,10 +114,13 @@ function signatureOf(it: TaskChatItem): number {
   if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
   if (it.kind === "turn") {
     if (it.settled) return 1;
-    // The live parent row's header changes (gerund ↔ tool-state flashes)
-    // count too, so the collapsed single-line turn still advances the key.
+    // The live parent row's header changes (gerund ↔ tool-state flashes,
+    // streaming interstitial text growing) count too, so the collapsed
+    // single-line turn still advances the key.
     const headerSig = it.liveStatus
-      ? it.liveStatus.label.length + (it.liveStatus.detail?.length ?? 0)
+      ? it.liveStatus.label.length +
+        (it.liveStatus.detail?.length ?? 0) +
+        (it.liveStatus.selfTalk?.length ?? 0)
       : 0;
     return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
   }

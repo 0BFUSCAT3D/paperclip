@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskChatStatusPill } from "./TaskChatStatusPill";
+import { lineScrollOffset, TaskChatStatusPill } from "./TaskChatStatusPill";
 import { whimsyWord, WHIMSY_ROTATE_MS } from "./status-whimsy";
 import type { TaskChatStatusItem } from "./task-chat-model";
 
@@ -90,36 +90,52 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(container.textContent).toContain("18,240/200,000 ctx");
   });
 
-  it("keeps the gerund and glints while self-talk streams (PAP-357)", () => {
+  it("hands the line to streaming interstitial text, keeping elapsed · tokens meta (PAP-361)", () => {
     const item = liveStatus({
       label: "Responding",
-      narrating: true,
+      selfTalk: "I'll extend the ipRateLimit helper with a per-account bucket.",
       tokens: { used: 18240, size: 200000 },
     });
     render(item);
     act(() => {
       vi.advanceTimersByTime(1200);
     });
-    // Nothing new to read: the whimsy gerund holds the line (no streamed text,
-    // no "Responding…" copy) and the right-side meta stays put.
-    expect(container.textContent).toContain(`${whimsyWord(item.id, 1200)}…`);
+    const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
+    expect(line).not.toBeNull();
+    expect(line?.textContent).toBe("I'll extend the ipRateLimit helper with a per-account bucket.");
+    // The gerund/whimsy label yields the line; the right-side meta stays put,
+    // and the pulse dot renders as ever.
     expect(container.textContent).not.toContain("Responding…");
+    expect(container.textContent).not.toContain(`${whimsyWord(item.id, 1200)}…`);
     expect(container.textContent).toContain("1.2s");
     expect(container.textContent).toContain("18,240/200,000 ctx");
-    // The status word glints via the narration shimmer class…
-    const word = container.querySelector(".tc-shimmer-narrate");
-    expect(word).not.toBeNull();
-    expect(word?.textContent).toBe(`${whimsyWord(item.id, 1200)}…`);
-    // …and the pulse dot stays put — the glint is the sole narration signal
-    // (PAP-359: no icon swap).
-    expect(container.querySelector('[data-testid="task-chat-narrating-icon"]')).toBeNull();
     expect(container.querySelector(".animate-pulse")).not.toBeNull();
+    // Viewport + transition classes: 1lh clip outside, transform-only inner.
+    expect(line?.className).toContain("tc-line-scroll");
+    expect(line?.firstElementChild?.className).toContain("tc-line-scroll-inner");
   });
 
-  it("carries no glint when not narrating, dot always present", () => {
-    render(liveStatus({ tokens: { used: 18240, size: 200000 } }));
-    expect(container.querySelector(".tc-shimmer-narrate")).toBeNull();
-    expect(container.querySelector('[data-testid="task-chat-narrating-icon"]')).toBeNull();
+  it("returns the line to the gerund once the interstitial completes", () => {
+    const item = liveStatus({ tokens: { used: 18240, size: 200000 } });
+    render(liveStatus({ label: "Responding", selfTalk: "Almost there." }));
+    render(item);
+    // selfTalk gone → no live line, whimsy gerund back, dot still present.
+    expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).toBeNull();
+    expect(container.textContent).toContain(`${whimsyWord(item.id, 0)}…`);
     expect(container.querySelector(".animate-pulse")).not.toBeNull();
+  });
+});
+
+describe("lineScrollOffset", () => {
+  it("translates up one line-height per wrapped line", () => {
+    expect(lineScrollOffset(16, 16)).toBe(0); // one line — no shift
+    expect(lineScrollOffset(32, 16)).toBe(1);
+    expect(lineScrollOffset(48.5, 16)).toBe(2); // sub-pixel scrollHeight rounds
+  });
+
+  it("never goes negative and guards bad measurements", () => {
+    expect(lineScrollOffset(0, 16)).toBe(0);
+    expect(lineScrollOffset(32, 0)).toBe(0);
+    expect(lineScrollOffset(Number.NaN, 16)).toBe(0);
   });
 });

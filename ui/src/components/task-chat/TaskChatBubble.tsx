@@ -34,9 +34,10 @@ function initialsForName(name: string) {
  */
 export function TaskChatBubble({ item }: TaskChatBubbleProps) {
   if (item.interstitial) {
-    // Mid-run self-talk is ambient signal, not content (PAP-357): the parent
-    // row's status word glints while it streams, and the text stays in the
-    // run log / classic transcript. Never rendered in this view.
+    // Interstitial updates are ephemeral (PAP-361): while streaming the text
+    // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
+    // once finished it renders nowhere — the run log / classic transcript
+    // remain the archive. Never rendered as a bubble.
     return null;
   }
 

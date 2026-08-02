@@ -77,11 +77,11 @@ export interface TaskChatMessageItem {
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
   /**
-   * Agent self-talk streamed inside a run turn (interstitial narration between
-   * tool calls). Suppressed in the redesigned view (PAP-357) — it only
-   * indicates activity via the parent row's narrating glint, and the text
-   * stays in the run log / classic transcript. Tagged for live and settled
-   * transcripts alike.
+   * Agent text streamed inside a run turn (interstitial updates between tool
+   * calls). Ephemeral in the redesigned view (PAP-361): while streaming it
+   * takes the live parent row's line (TaskChatStatusItem.selfTalk); once
+   * finished it renders nowhere — the run log / classic transcript remain the
+   * archive. Tagged for live and settled transcripts alike.
    */
   interstitial?: boolean;
   /** Epoch ms of the message's first streamed chunk. */
@@ -141,12 +141,13 @@ export interface TaskChatStatusItem {
   /** Raw tool name of the in-flight tail tool_call (drives the pill's icon). */
   toolName?: string;
   /**
-   * True while interstitial self-talk streams at the run's tail (PAP-357).
-   * Ambient signal only: the status word keeps its gerund but glints
-   * (--motion-shimmer) and the pulse dot swaps to the Responding icon. The
-   * streamed text is never shown on the line.
+   * Flattened plain text of the interstitial update currently streaming
+   * (PAP-361): it takes over the live parent row's line (replacing the gerund)
+   * inside a one-line viewport that scrolls completed lines out the top.
+   * Ephemeral — when the message finishes the line returns to the gerund/tool
+   * rotation, and nothing persists in the thread.
    */
-  narrating?: boolean;
+  selfTalk?: string;
   elapsedMs?: number;
   /** Run start epoch ms; live states tick their own elapsed from this. */
   startedAtMs?: number;

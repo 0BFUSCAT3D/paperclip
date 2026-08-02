@@ -54,17 +54,30 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         ],
       };
     case "thinking":
+      // The surviving thinking signal (PAP-361): the live line's "Thinking…"
+      // state — Brain icon + shimmer on the pill. Thinking rows no longer
+      // render in the thread or nest under turns.
       return {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "th-1", kind: "thinking", streaming: true, lines: ["The login route is in server/src/routes/auth.ts.", "There's already an ipRateLimit helper I can reuse.", "I'll add a per-account bucket keyed on the email."] },
+          {
+            id: "turn-thinking",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 1, added: 0, removed: 0 },
+            liveStatus: { id: "st-thinking", kind: "status", status: "running", label: "Thinking", startedAtMs: Date.now() - 6100, tokens: { used: 18240, size: 200000 } },
+            items: [
+              { id: "th-grep", kind: "tool", name: "Grep", target: "rateLimit", toolKind: "search", status: "completed" },
+            ],
+          },
         ],
       };
     case "responding":
-      // Ambient self-talk (PAP-357): while narration streams, the parent row
-      // keeps its gerund — the status word glints (--motion-shimmer) and the
-      // pulse dot swaps to the Responding icon. Nothing new to read.
+      // A streaming interstitial update takes the parent row's line (PAP-361):
+      // it streams where the gerund sat and wraps into the 1lh viewport
+      // line-scroll. Ephemeral — when it finishes, the line returns to the
+      // gerund/tool rotation and the text renders nowhere.
       return {
         surface: "thread",
         items: [
@@ -74,7 +87,11 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             kind: "turn",
             settled: false,
             summary: { toolCount: 1, added: 0, removed: 0 },
-            liveStatus: { id: "st-responding", kind: "status", status: "running", label: "Responding", narrating: true, startedAtMs: Date.now() - 9300, tokens: { used: 18240, size: 200000 } },
+            liveStatus: {
+              id: "st-responding", kind: "status", status: "running", label: "Responding", startedAtMs: Date.now() - 9300, tokens: { used: 18240, size: 200000 },
+              selfTalk:
+                "I found an existing ipRateLimit helper, so I'll extend it with a per-account token bucket keyed on the email address instead of adding a second limiter. The bucket refills at six requests a minute, matching the lockout policy the auth spec documents, and failed attempts drain it twice as fast so brute-force runs hit the ceiling quickly while a fat-fingered password barely registers.",
+            },
             items: [
               { id: "resp-read", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
             ],
@@ -140,7 +157,6 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             summary: { toolCount: 1, added: 0, removed: 0 },
             liveStatus: { id: "st-running", kind: "status", status: "running", label: "Running", detail: "no output for 3s — still running", startedAtMs: Date.now() - 12000, tokens: { used: 18240, size: 200000 } },
             items: [
-              { id: "r-think", kind: "thinking", lines: ["The login route is in server/src/routes/auth.ts.", "Check for an existing limiter before writing one."] },
               { id: "r-grep", kind: "tool", name: "Grep", target: "rateLimit", toolKind: "search", status: "completed" },
             ],
           },
@@ -155,10 +171,10 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             id: "turn-done",
             kind: "turn",
             settled: true,
-            // toolCount matches the nested tool rows exactly (PAP-357 parity).
+            // "Worked · N tools" expands to exactly the tool rows (PAP-361):
+            // toolCount matches the nested rows, no thinking row.
             summary: { durationLabel: "38s", toolCount: 2, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
             items: [
-              { id: "th-done", kind: "thinking", lines: ["Read auth.ts", "Added rate-limiter util", "Wired into POST /login"] },
               { id: "tool-done-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
               { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
             ],

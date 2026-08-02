@@ -51,12 +51,12 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  * Run activity is grouped into TaskChatTurnItem: the in-flight run renders as
  * ONE expandable parent row — its status line (whimsy gerund or in-flight
  * tool state + elapsed + tokens) is the turn's single visible line, with the
- * chronological tool/thinking activity nested behind an expand (PAP-354).
- * Mid-run agent text (interstitial self-talk) is ambient signal only
- * (PAP-357): it never renders as text in this view — while it streams the
- * parent row's status word glints (tc-shimmer-narrate) and the pulse dot
- * swaps to the Responding icon; the words themselves stay in the run log and
- * the classic transcript. When the run terminates the
+ * chronological tool activity nested behind an expand (PAP-354). Mid-run
+ * agent text (interstitial updates between tool calls) is ephemeral
+ * (PAP-361): while one streams it takes the parent row's line inside a
+ * one-line line-scroll viewport, and when it finishes the line returns to the
+ * gerund/tool rotation — nothing persists; the run log and the classic
+ * transcript remain the archive. When the run terminates the
  * same turn id flips settled, so the header morphs in place into the one-line
  * "✓ Worked · …" summary (expand state preserved; runs already terminal at
  * mount collapse instantly). Settled turns interleave after the run's last
@@ -246,9 +246,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const items = useMemo<TaskChatItem[]>(() => {
     // Settled turns for every terminal run whose transcript we have. Messages
-    // are excluded entirely (PAP-357): the final reply already landed as the
-    // run's comment bubble, and interstitial self-talk is ambient — it stays
-    // in the run log / classic transcript, never in this thread.
+    // and thinking are excluded entirely (PAP-361): the final reply already
+    // landed as the run's comment bubble, interstitial updates are ephemeral
+    // (live-line only), and thinking stays in the run log / classic
+    // transcript — "Worked · N tools" expands to exactly the tool rows.
     const settledTurns: { turn: TaskChatTurnItem; anchorCommentId: string | null; order: number }[] = [];
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
@@ -315,15 +316,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         running: true,
       });
       // Parent-row model (PAP-354): the run's status line IS the live turn —
-      // one expandable row owning the activity. Only tool/thinking/usage rows
-      // nest inside it; mid-run self-talk is suppressed (PAP-357) and signals
-      // through the header's narrating glint instead. The parent row sits
-      // last — the slot its settled summary takes over in place.
+      // one expandable row owning the activity. Only tool/usage rows nest
+      // inside it; a streaming interstitial update takes the header's own line
+      // (liveStatus.selfTalk, PAP-361) and vanishes when it completes. The
+      // parent row sits last — the slot its settled summary takes over in place.
       const children = parsed.filter(isNestableLiveChild);
       const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
       const queued = liveRun.status === "queued";
       const status = queued
-        ? { label: "Queued", detail: "Waiting to start", toolName: undefined, narrating: undefined }
+        ? { label: "Queued", detail: "Waiting to start", toolName: undefined, selfTalk: undefined }
         : deriveRunStatusLabel(entries);
       out.push({
         id: `${liveRun.id}:turn`,
@@ -338,7 +339,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           label: status.label,
           detail: status.detail,
           toolName: status.toolName,
-          narrating: status.narrating,
+          selfTalk: status.selfTalk,
           startedAtMs: startedAt ?? undefined,
         },
       });
