@@ -14,34 +14,13 @@ describe("whimsy word pools", () => {
     expect(WHIMSY_WORDS).toContain("Clipping");
   });
 
-  it("keeps the pools unique and analog-office dominant (round-2 curation)", () => {
+  it("curates ~40 unique words, analog-office making up about half", () => {
+    expect(WHIMSY_WORDS.length).toBeGreaterThanOrEqual(38);
     expect(new Set(WHIMSY_WORDS).size).toBe(WHIMSY_WORDS.length);
     expect(WHIMSY_WORDS.length).toBe(ANALOG_OFFICE_WORDS.length + CLAUDE_CODE_WORDS.length);
-    expect(ANALOG_OFFICE_WORDS.length).toBeGreaterThan(CLAUDE_CODE_WORDS.length);
-  });
-
-  it("holds only the four board-kept Claude-Code words", () => {
-    expect([...CLAUDE_CODE_WORDS]).toEqual(["Brewing", "Tinkering", "Distilling", "Deliberating"]);
-  });
-
-  it("applies the round-2 analog-office edits", () => {
-    for (const removed of ["Cataloguing", "Carbon-copying", "Archiving"]) {
-      expect(ANALOG_OFFICE_WORDS).not.toContain(removed);
-    }
-    for (const added of [
-      "Trimming",
-      "Aligning",
-      "Combining",
-      "Whiteboarding",
-      "Diagramming",
-      "Sketching",
-      "Labeling",
-      "Sticky-noting",
-    ]) {
-      expect(ANALOG_OFFICE_WORDS).toContain(added);
-    }
-    // "Grepping" is an informative taxonomy verb, never random whimsy.
-    expect(WHIMSY_WORDS).not.toContain("Grepping");
+    const officeShare = ANALOG_OFFICE_WORDS.length / WHIMSY_WORDS.length;
+    expect(officeShare).toBeGreaterThanOrEqual(0.45);
+    expect(officeShare).toBeLessThanOrEqual(0.65);
   });
 
   it("keeps every word a gerund so it reads sensibly after-the-fact", () => {

@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
 import { toolTaxonomy } from "./tool-taxonomy";
+import { isGenericStatusLabel, whimsyWord } from "./status-whimsy";
 
 function elapsedLabel(ms?: number): string | null {
   if (ms == null) return null;
@@ -61,6 +62,12 @@ export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusP
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
     const ToolIcon = item.toolName ? toolTaxonomy(item.toolName).icon : null;
+    // Whimsy fills gaps, never replaces signal: only the generic
+    // "Running"/"Working" labels swap for a deterministic whimsical gerund
+    // (seeded by the run-scoped item id, rotating ~10s via the live tick).
+    const label = isGenericStatusLabel(item.label)
+      ? whimsyWord(item.id, liveElapsedMs ?? item.elapsedMs ?? 0)
+      : item.label;
     return (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
         <span
@@ -71,7 +78,7 @@ export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusP
         {/* Text cells share a baseline row so the smaller mono readouts don't
             float above the label's baseline. */}
         <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="shimmer-text shimmer-text-muted shrink-0 font-medium">{item.label}…</span>
+          <span className="shimmer-text shimmer-text-muted shrink-0 font-medium">{label}…</span>
           {liveElapsed ? (
             <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
               {liveElapsed}
