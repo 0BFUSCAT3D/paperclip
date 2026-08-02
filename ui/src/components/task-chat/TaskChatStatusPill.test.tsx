@@ -110,12 +110,13 @@ describe("TaskChatStatusPill whimsy", () => {
     const word = container.querySelector(".tc-shimmer-narrate");
     expect(word).not.toBeNull();
     expect(word?.textContent).toBe(`${whimsyWord(item.id, 1200)}…`);
-    // …and the pulse dot swaps to the Responding icon for the duration.
-    expect(container.querySelector('[data-testid="task-chat-narrating-icon"]')).not.toBeNull();
-    expect(container.querySelector(".animate-pulse")).toBeNull();
+    // …and the pulse dot stays put — the glint is the sole narration signal
+    // (PAP-359: no icon swap).
+    expect(container.querySelector('[data-testid="task-chat-narrating-icon"]')).toBeNull();
+    expect(container.querySelector(".animate-pulse")).not.toBeNull();
   });
 
-  it("carries no glint or icon swap when not narrating", () => {
+  it("carries no glint when not narrating, dot always present", () => {
     render(liveStatus({ tokens: { used: 18240, size: 200000 } }));
     expect(container.querySelector(".tc-shimmer-narrate")).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-narrating-icon"]')).toBeNull();

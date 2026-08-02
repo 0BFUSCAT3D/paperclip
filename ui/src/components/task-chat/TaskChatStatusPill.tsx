@@ -67,17 +67,16 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
 
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
-    // Ambient self-talk (PAP-357): while an interstitial streams, nothing new
-    // appears to read — the gerund holds the line, the word glints
-    // (tc-shimmer-narrate) and the pulse dot swaps to the Responding icon.
+    // Ambient self-talk (PAP-357/PAP-359): while an interstitial streams,
+    // nothing new appears to read — the gerund holds the line and the word
+    // glints (tc-shimmer-narrate); the pulse dot stays put throughout.
     const narrating = item.narrating === true;
-    const NarrateIcon = statusLabelIcon("Responding");
     const ToolIcon = item.toolName
       ? toolTaxonomy(item.toolName).icon
       : statusLabelIcon(item.label);
     // Whimsy fills gaps, never replaces signal: only the generic
     // "Running"/"Working" labels — and the narrating state, whose "Responding"
-    // is signalled by icon + glint instead of copy — swap for a deterministic
+    // is signalled by the glint instead of copy — swap for a deterministic
     // whimsical gerund (seeded by the run-scoped item id, rotating ~10s via
     // the live tick).
     const label = narrating || isGenericStatusLabel(item.label)
@@ -85,21 +84,13 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
       : item.label;
     return (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
-        {/* Fixed-size lead slot: dot ↔ Responding icon swap without the label
-            moving — no layout shift when narration starts or stops. */}
+        {/* Fixed-size lead slot keeps the label from moving as tool icons
+            come and go; the pulse dot renders unconditionally. */}
         <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-          {narrating && NarrateIcon ? (
-            <NarrateIcon
-              className="h-3.5 w-3.5 text-(--status-agent-running)"
-              aria-hidden
-              data-testid="task-chat-narrating-icon"
-            />
-          ) : (
-            <span
-              aria-hidden
-              className="h-2 w-2 animate-pulse rounded-full bg-(--status-agent-running)"
-            />
-          )}
+          <span
+            aria-hidden
+            className="h-2 w-2 animate-pulse rounded-full bg-(--status-agent-running)"
+          />
         </span>
         {!narrating && ToolIcon ? (
           <ToolIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
