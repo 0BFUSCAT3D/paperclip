@@ -62,9 +62,9 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         ],
       };
     case "responding":
-      // Streaming self-talk takes the parent row's line (PAP-356): it types in
-      // where the gerund sat, wraps into the 1lh viewport line-scroll, and the
-      // already-finished interstitial nests below like a completed tool row.
+      // Ambient self-talk (PAP-357): while narration streams, the parent row
+      // keeps its gerund — the status word glints (--motion-shimmer) and the
+      // pulse dot swaps to the Responding icon. Nothing new to read.
       return {
         surface: "thread",
         items: [
@@ -74,13 +74,8 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             kind: "turn",
             settled: false,
             summary: { toolCount: 1, added: 0, removed: 0 },
-            liveStatus: {
-              id: "st-responding", kind: "status", status: "running", label: "Responding", startedAtMs: Date.now() - 9300,
-              selfTalk:
-                "I found an existing ipRateLimit helper, so I'll extend it with a per-account token bucket keyed on the email address instead of adding a second limiter. The bucket refills at six requests a minute, matching the lockout policy the auth spec documents, and failed attempts drain it twice as fast so brute-force runs hit the ceiling quickly while a fat-fingered password barely registers.",
-            },
+            liveStatus: { id: "st-responding", kind: "status", status: "running", label: "Responding", narrating: true, startedAtMs: Date.now() - 9300, tokens: { used: 18240, size: 200000 } },
             items: [
-              { id: "resp-note", kind: "message", author: "agent", authorName: AGENT, interstitial: true, text: "The login route already imports `ipRateLimit`, so I can reuse its sliding-window store instead of adding a dependency." },
               { id: "resp-read", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
             ],
           },
@@ -160,12 +155,11 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             id: "turn-done",
             kind: "turn",
             settled: true,
-            summary: { durationLabel: "38s", toolCount: 3, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
+            // toolCount matches the nested tool rows exactly (PAP-357 parity).
+            summary: { durationLabel: "38s", toolCount: 2, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
             items: [
               { id: "th-done", kind: "thinking", lines: ["Read auth.ts", "Added rate-limiter util", "Wired into POST /login"] },
               { id: "tool-done-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
-              // Settled self-talk nests with the tool rows (accepted §5.4).
-              { id: "m-done-note", kind: "message", author: "agent", authorName: AGENT, interstitial: true, text: "Reusing the `ipRateLimit` store — adding a per-account bucket beside it." },
               { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
             ],
           },

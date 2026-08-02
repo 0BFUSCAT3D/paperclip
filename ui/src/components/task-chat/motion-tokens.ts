@@ -29,7 +29,6 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-ease-out", group: "Easing", kind: "easing" },
   { name: "--motion-ease-scroll-pill-in", group: "Easing", kind: "easing" },
   { name: "--motion-ease-scroll-pill-out", group: "Easing", kind: "easing" },
-  { name: "--motion-typewriter-steps", group: "Easing", kind: "easing" },
 
   // Duration primitives
   { name: "--motion-duration-instant", group: "Durations", kind: "time", min: 0, max: 1000, step: 10 },
@@ -53,8 +52,7 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-streaming-cursor-blink", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-turn-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
-  { name: "--motion-typewriter-reveal", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
-  { name: "--motion-line-scroll", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-shimmer", group: "States", kind: "time", min: 0, max: 5000, step: 50 },
   { name: "--motion-scroll-pill-enter", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-scroll-pill-exit", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-pane-glide", group: "States", kind: "time", min: 0, max: 1500, step: 10 },

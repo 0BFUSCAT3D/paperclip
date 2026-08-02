@@ -78,9 +78,10 @@ export interface TaskChatMessageItem {
   agentIcon?: string | null;
   /**
    * Agent self-talk streamed inside a run turn (interstitial narration between
-   * tool calls). Renders bubble-less and muted so it never competes with the
-   * run's final reply — which arrives as a posted comment and is never
-   * interstitial. Set for live and settled transcripts alike.
+   * tool calls). Suppressed in the redesigned view (PAP-357) — it only
+   * indicates activity via the parent row's narrating glint, and the text
+   * stays in the run log / classic transcript. Tagged for live and settled
+   * transcripts alike.
    */
   interstitial?: boolean;
   /** Epoch ms of the message's first streamed chunk. */
@@ -140,12 +141,12 @@ export interface TaskChatStatusItem {
   /** Raw tool name of the in-flight tail tool_call (drives the pill's icon). */
   toolName?: string;
   /**
-   * Flattened plain text of the interstitial message currently streaming: the
-   * live parent row's line shows it typing in (replacing the gerund) inside a
-   * one-line viewport that scrolls completed lines out the top. Full markdown
-   * renders in the nested row once the message completes.
+   * True while interstitial self-talk streams at the run's tail (PAP-357).
+   * Ambient signal only: the status word keeps its gerund but glints
+   * (--motion-shimmer) and the pulse dot swaps to the Responding icon. The
+   * streamed text is never shown on the line.
    */
-  selfTalk?: string;
+  narrating?: boolean;
   elapsedMs?: number;
   /** Run start epoch ms; live states tick their own elapsed from this. */
   startedAtMs?: number;

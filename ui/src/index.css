@@ -236,9 +236,7 @@
   --motion-count-tween: var(--motion-duration-slow);
   --motion-streaming-cursor-blink: 1.1s;
   --motion-turn-fold: 380ms;            /* finished-turn activity folding into its summary line */
-  --motion-typewriter-reveal: 450ms;    /* interstitial self-talk chunk typing itself in */
-  --motion-typewriter-steps: steps(24, end); /* discrete reveal — the "typed" feel */
-  --motion-line-scroll: 240ms;          /* completed self-talk line sliding out of the 1lh live-line viewport */
+  --motion-shimmer: 2000ms;             /* narration glint sweeping the status word while self-talk streams */
   --motion-scroll-pill-enter: 200ms;    /* scroll-to-latest pill entry */
   --motion-scroll-pill-exit: 400ms;     /* scroll-to-latest pill exit */
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
@@ -538,8 +536,7 @@
     --motion-plan-entry-stagger: 0ms;
     --motion-streaming-cursor-blink: 0ms;
     --motion-turn-fold: 0ms;
-    --motion-typewriter-reveal: 0ms;
-    --motion-line-scroll: 0ms;
+    --motion-shimmer: 0ms;
     --motion-scroll-pill-enter: 0ms;
     --motion-scroll-pill-exit: 0ms;
     --motion-pane-glide: 0ms;
@@ -575,11 +572,6 @@
   0%, 45% { opacity: 1; }
   55%, 100% { opacity: 0; }
 }
-@keyframes tc-typewriter {
-  from { clip-path: inset(0 100% 0 0); }
-  to { clip-path: inset(0 0 0 0); }
-}
-
 .tc-enter-bubble { animation: tc-fade-rise var(--motion-bubble-enter) var(--motion-ease-out-expo) both; }
 .tc-enter-marker { animation: tc-fade-in var(--motion-marker-enter) var(--motion-ease-out) both; }
 .tc-enter-tool { animation: tc-fade-rise var(--motion-tool-enter) var(--motion-ease-out-expo) both; }
@@ -589,20 +581,6 @@
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
-/* Streaming self-talk on the live parent row: the text block wipes in
-   left-to-right in discrete steps when it takes over the line — CSS-only
-   typewriter, no per-char timers; appended stream text lands instantly. */
-.tc-typewriter-line { animation: tc-typewriter var(--motion-typewriter-reveal) var(--motion-typewriter-steps) both; }
-/* Live-line viewport: exactly one line-height tall, clipping the wrapped
-   block. On wrap, the inner block translates up whole line-heights (set inline
-   as translateY(-(n−1)·1lh)) so the completed line slides out the top —
-   transform-only, same motion grammar as tool rows animating in. */
-.tc-line-scroll { display: block; height: 1lh; overflow: hidden; }
-.tc-line-scroll-inner { transition: transform var(--motion-line-scroll) var(--motion-ease-standard); will-change: transform; }
-/* Interstitial narration matches the tool rows (text-xs): prose-sm sets its
-   own font-size on .paperclip-markdown, so the wrapper's text-xs alone can't
-   shrink it — this scoped override wins on specificity. */
-.tc-interstitial .paperclip-markdown { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
 
 /* Scroll-to-latest pill (stock shadcn MessageScrollerButton motion, tokenized).
    The pill is centered with translateX(-50%), so the keyframes carry the X
@@ -643,9 +621,7 @@
   .tc-scroll-pill-in,
   .tc-scroll-pill-out,
   .tc-enter-plan-entry { animation: none; }
-  .tc-typewriter-line { animation: none; }
   .tc-turn-fold,
-  .tc-line-scroll-inner,
   .tc-pane-glide { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
   .tc-scroll-pill-in,
@@ -760,6 +736,17 @@
 .shimmer-text-muted {
   --shimmer-base: var(--muted-foreground);
   --shimmer-highlight: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+}
+
+/* Narration glint (PAP-357): while interstitial self-talk streams, the status
+   word's sweep brightens and quickens (--motion-shimmer vs the ambient 2.5s)
+   — an activity signal with nothing new to read. Applied on top of
+   .shimmer-text/.shimmer-text-muted; declared after them so the overrides win
+   at equal specificity, and the .shimmer-text reduced-motion rule below
+   already renders it static. */
+.tc-shimmer-narrate {
+  --shimmer-highlight: color-mix(in oklch, var(--muted-foreground) 10%, transparent);
+  animation-duration: var(--motion-shimmer);
 }
 
 /* Utilities expected by shadcn base components (ui/attachment.tsx). Declared

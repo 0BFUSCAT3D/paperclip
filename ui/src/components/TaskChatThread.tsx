@@ -7,7 +7,6 @@ import {
   deriveRunStatusLabel,
   isNestableLiveChild,
   isTerminalRunStatus,
-  normalizeCommentBody,
   settledRunChildren,
   transcriptToTaskChatItems,
 } from "@/components/task-chat/transcript-adapter";
@@ -50,10 +49,11 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  * ONE expandable parent row — its status line (whimsy gerund or in-flight
  * tool state + elapsed + tokens) is the turn's single visible line, with the
  * chronological tool/thinking activity nested behind an expand (PAP-354).
- * Mid-run agent text follows the same grammar (PAP-356): while streaming it
- * takes over the parent row's line (typewriter + line-scroll), and once
- * finished it nests inside the turn as a muted expandable row — live and
- * settled alike (accepted §5.4). When the run terminates the
+ * Mid-run agent text (interstitial self-talk) is ambient signal only
+ * (PAP-357): it never renders as text in this view — while it streams the
+ * parent row's status word glints (tc-shimmer-narrate) and the pulse dot
+ * swaps to the Responding icon; the words themselves stay in the run log and
+ * the classic transcript. When the run terminates the
  * same turn id flips settled, so the header morphs in place into the one-line
  * "✓ Worked · …" summary (expand state preserved; runs already terminal at
  * mount collapse instantly). Settled turns interleave after the run's last
@@ -242,18 +242,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [comments, commentItems, interactions, timelineEvents, linkedRuns, liveRuns, planDocument]);
 
   const items = useMemo<TaskChatItem[]>(() => {
-    // Settled turns for every terminal run whose transcript we have. The
-    // transcript's FINAL reply is excluded — it already landed as the run's
-    // comment bubble — and interstitial self-talk nests INSIDE the folded turn
-    // alongside the tool rows (PAP-356, accepted §5.4), in transcript order,
-    // instead of interleaving in the thread.
-    const commentBodiesByRun = new Map<string, Set<string>>();
-    for (const comment of comments) {
-      if (comment.deletedAt || !comment.runId) continue;
-      const set = commentBodiesByRun.get(comment.runId) ?? new Set<string>();
-      set.add(normalizeCommentBody(comment.body));
-      commentBodiesByRun.set(comment.runId, set);
-    }
+    // Settled turns for every terminal run whose transcript we have. Messages
+    // are excluded entirely (PAP-357): the final reply already landed as the
+    // run's comment bubble, and interstitial self-talk is ambient — it stays
+    // in the run log / classic transcript, never in this thread.
     const settledTurns: { turn: TaskChatTurnItem; anchorCommentId: string | null; order: number }[] = [];
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
@@ -272,10 +264,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         agentName: meta?.agentName,
         running: false,
       });
-      const children = settledRunChildren(parsed, {
-        commentBodies: commentBodiesByRun.get(source.id),
-        succeeded: source.status === "succeeded",
-      });
+      const children = settledRunChildren(parsed);
       if (children.length === 0) continue;
       settledTurns.push({
         turn: {
@@ -322,17 +311,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         agentName: liveRun.agentName,
         running: true,
       });
-      // Parent-row model (PAP-354/356): the run's status line IS the live turn
-      // — one expandable row owning ALL activity. Finished self-talk nests
-      // inside alongside tool/thinking rows; the interstitial still streaming
-      // takes over the parent row's own line (liveStatus.selfTalk) instead of
-      // rendering in the thread. The parent row sits last — the slot its
-      // settled summary takes over in place.
+      // Parent-row model (PAP-354): the run's status line IS the live turn —
+      // one expandable row owning the activity. Only tool/thinking/usage rows
+      // nest inside it; mid-run self-talk is suppressed (PAP-357) and signals
+      // through the header's narrating glint instead. The parent row sits
+      // last — the slot its settled summary takes over in place.
       const children = parsed.filter(isNestableLiveChild);
       const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
       const queued = liveRun.status === "queued";
       const status = queued
-        ? { label: "Queued", detail: "Waiting to start", toolName: undefined, selfTalk: undefined }
+        ? { label: "Queued", detail: "Waiting to start", toolName: undefined, narrating: undefined }
         : deriveRunStatusLabel(entries);
       out.push({
         id: `${liveRun.id}:turn`,
@@ -347,13 +335,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           label: status.label,
           detail: status.detail,
           toolName: status.toolName,
-          selfTalk: status.selfTalk,
+          narrating: status.narrating,
           startedAtMs: startedAt ?? undefined,
         },
       });
     }
     return out;
-  }, [comments, orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
+  }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
 
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (

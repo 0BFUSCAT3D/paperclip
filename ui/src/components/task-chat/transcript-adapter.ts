@@ -9,7 +9,6 @@ import type { TranscriptEntry } from "@/adapters";
 import type {
   TaskChatDiff,
   TaskChatItem,
-  TaskChatMessageItem,
   TaskChatToolItem,
   TaskChatTurnChildItem,
   TaskChatTurnItem,
@@ -29,35 +28,15 @@ export function isTerminalRunStatus(status: string | undefined | null): boolean 
 }
 
 /**
- * The live parent row's nesting rule (PAP-354, extended by PAP-356): activity
- * rows — tool calls, thinking blocks, usage readouts — and FINISHED
- * interstitial self-talk nest inside the expandable live turn, all sharing the
- * tool-row interaction grammar. The interstitial still streaming lives on the
- * parent row's own line (TaskChatStatusItem.selfTalk), not in the nested list;
- * markers, statuses and interaction cards stay in the thread outside.
+ * The live parent row's nesting rule (PAP-354): only activity rows — tool
+ * calls, thinking blocks, usage readouts — nest inside the expandable live
+ * turn. Messages never nest (PAP-357): interstitial self-talk is ambient
+ * signal suppressed in this view (it stays in the run log and the classic
+ * transcript), and the run's final reply lands as its posted comment bubble.
+ * Markers, statuses and interaction cards stay in the thread outside.
  */
 export function isNestableLiveChild(item: TaskChatItem): item is TaskChatTurnChildItem {
-  if (item.kind === "message") return item.interstitial === true && !item.streaming;
   return item.kind === "tool" || item.kind === "thinking" || item.kind === "usage";
-}
-
-/**
- * Flatten markdown-ish self-talk to one plain line — for the live parent row
- * and the collapsed nested row. Full markdown renders only in the expanded
- * nested row. Stream-safe: markers are stripped without requiring pairs.
- */
-export function flattenSelfTalk(text: string): string {
-  return text
-    .replace(/```[a-z]*\n?/gi, " ")
-    .replace(/`/g, "")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/^\s*[-*+]\s+/gm, "")
-    .replace(/^\s*>\s?/gm, "")
-    .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, "$1")
-    .replace(/\*+/g, "")
-    .replace(/__/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function diffKind(changeType: string): "add" | "remove" | "context" {
@@ -328,38 +307,16 @@ export function transcriptToTaskChatItems(
   return items;
 }
 
-/** Normalization used to match transcript self-talk against posted comment bodies. */
-export function normalizeCommentBody(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
 /**
- * A settled run's nested children (PAP-356 / accepted §5.4): activity rows plus
- * interstitial self-talk, in transcript order, under the "✓ Worked ·" summary.
- * The reply that landed as a posted comment must not render twice, so messages
- * matching a run comment's body are dropped — and, since the harness may post
- * the reply lightly transformed, so is the trailing message of a succeeded run
- * that has comments at all.
+ * A settled run's nested children (PAP-357): the activity rows — tools,
+ * thinking, usage — in transcript order, under the "✓ Worked ·" summary.
+ * Messages are excluded entirely: the final reply already landed as the run's
+ * posted comment bubble, and interstitial self-talk is ambient signal that
+ * stays in the run log / classic transcript rather than rendering here.
  */
-export function settledRunChildren(
-  parsed: readonly TaskChatItem[],
-  opts: { commentBodies?: ReadonlySet<string>; succeeded: boolean },
-): TaskChatTurnChildItem[] {
-  const messages = parsed.filter((it): it is TaskChatMessageItem => it.kind === "message");
-  let selfTalk = opts.commentBodies
-    ? messages.filter((m) => !opts.commentBodies!.has(normalizeCommentBody(m.text)))
-    : messages;
-  if (
-    opts.commentBodies &&
-    opts.succeeded &&
-    selfTalk.length > 0 &&
-    selfTalk[selfTalk.length - 1] === messages[messages.length - 1]
-  ) {
-    selfTalk = selfTalk.slice(0, -1);
-  }
-  const keep = new Set<TaskChatItem>(selfTalk);
-  return parsed.filter((it): it is TaskChatTurnChildItem =>
-    it.kind === "message" ? keep.has(it) : it.kind !== "turn",
+export function settledRunChildren(parsed: readonly TaskChatItem[]): TaskChatTurnChildItem[] {
+  return parsed.filter(
+    (it): it is TaskChatTurnChildItem => it.kind !== "turn" && it.kind !== "message",
   );
 }
 
@@ -424,14 +381,15 @@ export function buildTurnSummary(
  * Human-readable label for the live status pill from the tail of a transcript.
  * A tail tool_call yields the taxonomy verb ("Searching", "Running a command")
  * with tool + target as detail; `toolName` lets the pill show the family icon.
- * A tail assistant message yields "Responding" plus `selfTalk` — the flattened
- * text of the message streamed so far, which takes over the parent row's line.
+ * A tail assistant message yields "Responding" plus `narrating` — the ambient
+ * flag the pill turns into a glint on the status word (PAP-357); the streamed
+ * text itself is never surfaced on the line.
  */
 export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
   label: string;
   detail?: string;
   toolName?: string;
-  selfTalk?: string;
+  narrating?: boolean;
 } {
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -467,29 +425,7 @@ export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
       };
     }
     if (entry.kind === "tool_result") break;
-    if (entry.kind === "assistant") {
-      // Accumulate the trailing message's deltas (the same coalescing run the
-      // parser groups into one item: broken by tool/thinking/diff, not by
-      // status-only entries like stdout).
-      const parts: string[] = [];
-      for (let j = i; j >= 0; j--) {
-        const prev = entries[j];
-        if (prev.kind === "assistant") {
-          if (prev.text) parts.unshift(prev.text);
-          continue;
-        }
-        if (
-          prev.kind === "tool_call" ||
-          prev.kind === "tool_result" ||
-          prev.kind === "thinking" ||
-          prev.kind === "diff"
-        ) {
-          break;
-        }
-      }
-      const selfTalk = flattenSelfTalk(parts.join(""));
-      return { label: "Responding", selfTalk: selfTalk || undefined };
-    }
+    if (entry.kind === "assistant") return { label: "Responding", narrating: true };
     if (entry.kind === "thinking") return { label: "Thinking" };
   }
   return { label: "Running" };
