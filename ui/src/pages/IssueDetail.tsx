@@ -4558,10 +4558,13 @@ export function IssueDetail() {
     <div
       className={
         taskChatShellEnabled
-          ? // Fill main exactly so the outer page never scrolls — the thread's
-            // own viewport is the only scroll surface (h-full is inert on
-            // mobile, where main has no fixed height and the page scrolls).
-            "flex h-full min-h-0 w-full flex-col gap-6"
+          ? isMobile
+            ? // Mobile shell scrolls the DOCUMENT (main is overflow-visible,
+              // auto height) — the thread renders in normal flow (PAP-360).
+              "flex w-full flex-col gap-6"
+            : // Fill main exactly so the outer page never scrolls — the
+              // thread's own viewport is the only scroll surface.
+              "flex h-full min-h-0 w-full flex-col gap-6"
           : "max-w-3xl space-y-6"
       }
     >
@@ -4824,7 +4827,7 @@ export function IssueDetail() {
       <Tabs
         value={resolvedDetailTab}
         onValueChange={setDetailTab}
-        className={taskChatShellEnabled ? "min-h-0 flex-1" : "space-y-3"}
+        className={taskChatShellEnabled ? (isMobile ? undefined : "min-h-0 flex-1") : "space-y-3"}
       >
         {/* Redesign: the chat IS the page — the Chat/Activity/Related-work tab
             strip is hidden and the thread renders as the only surface. */}
@@ -4855,7 +4858,13 @@ export function IssueDetail() {
             scrollbar sits flush against the properties-pane border. */}
         <TabsContent
           value="chat"
-          className={taskChatShellEnabled ? "-mx-4 md:-mx-6 flex min-h-0 flex-col" : undefined}
+          className={
+            taskChatShellEnabled
+              ? isMobile
+                ? "-mx-4"
+                : "-mx-4 md:-mx-6 flex min-h-0 flex-col"
+              : undefined
+          }
         >
           {resolvedDetailTab === "chat" ? (
             <IssueDetailChatTab

@@ -53,6 +53,8 @@ interface TaskChatComposerProps {
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
   issueStatus?: string;
+  /** Mobile document-flow host: 16px editor text so iOS doesn't zoom on focus. */
+  mobile?: boolean;
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
@@ -143,6 +145,7 @@ export function TaskChatComposer({
   reassignOptions,
   currentAssigneeValue = "",
   issueStatus,
+  mobile = false,
 }: TaskChatComposerProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -327,7 +330,11 @@ export function TaskChatComposer({
           onDropFile={canAcceptFiles ? attachNonImageFile : undefined}
           bordered={false}
           className={cn(disabled && "opacity-60")}
-          contentClassName="max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
+          contentClassName={
+            mobile
+              ? "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
+              : "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
+          }
         />
       </div>
 

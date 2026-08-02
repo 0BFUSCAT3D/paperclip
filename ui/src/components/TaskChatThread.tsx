@@ -16,8 +16,11 @@ import type {
   TaskChatTurnItem,
 } from "@/components/task-chat/task-chat-model";
 import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
-import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
+import { TaskChatThreadView, taskChatContentKey } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
+import { useSidebar } from "@/context/SidebarContext";
+import { cn } from "@/lib/utils";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
 import { workModeInEffectAt } from "@/lib/issue-timeline-events";
@@ -373,14 +376,22 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  // Mobile (PAP-360): the app shell scrolls the DOCUMENT (Layout's main is
+  // overflow-visible with auto height), so the desktop bounded h-dvh chain
+  // collapses the absolute-inset transcript viewport to 0px. Render the thread
+  // in document flow instead (the same scroll={false} path the previews use)
+  // and track auto-follow against window scroll. Desktop stays byte-identical.
+  const { isMobile } = useSidebar();
+  useWindowAutoFollow(isMobile ? taskChatContentKey(items) : 0, isMobile);
+
   return (
     <div
-      className="flex h-(--tc-thread-max-h) min-h-0 flex-1 flex-col"
+      className={cn("flex flex-col", !isMobile && "h-(--tc-thread-max-h) min-h-0 flex-1")}
       data-testid="task-chat-thread"
     >
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
         {items.length === 0 ? (
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className={isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"}>
             {threadHeader ? (
               <div
                 className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4 pt-4"
@@ -392,11 +403,25 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             <div className="px-3 py-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
           </div>
         ) : (
-          <TaskChatThreadView items={items} header={threadHeader} renderInteraction={renderInteraction} />
+          <TaskChatThreadView
+            items={items}
+            header={threadHeader}
+            renderInteraction={renderInteraction}
+            scroll={!isMobile}
+          />
         )}
       </div>
       {showComposer ? (
-        <div className="sticky bottom-0 z-10 mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div
+          className={cn(
+            "sticky",
+            // Mobile mirrors the flag-off thread's dock: lifted above the
+            // safe-area inset (and clear of the auto-hiding bottom nav), above
+            // page content in the document-flow stacking context.
+            isMobile ? "bottom-(--sz-calc-8) z-20" : "bottom-0 z-10",
+            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+          )}
+        >
           {composerAccessory}
           <TaskChatComposer
             onAdd={onAdd}
@@ -411,6 +436,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             reassignOptions={reassignOptions}
             currentAssigneeValue={currentAssigneeValue}
             issueStatus={issueStatus}
+            mobile={isMobile}
           />
           {footer}
         </div>

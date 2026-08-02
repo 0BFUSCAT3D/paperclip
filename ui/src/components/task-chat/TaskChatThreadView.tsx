@@ -99,24 +99,28 @@ export function TaskChatThreadView({
 
   if (!scroll) return body;
 
-  // Include a cheap content signature so streaming growth (text lengthening
-  // without the item count changing) still advances the auto-follow key.
-  const signatureOf = (it: TaskChatItem): number => {
-    if (it.kind === "message") return it.text.length;
-    if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);
-    if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
-    if (it.kind === "turn") {
-      if (it.settled) return 1;
-      // The live parent row's header changes (gerund ↔ tool-state flashes)
-      // count too, so the collapsed single-line turn still advances the key.
-      const headerSig = it.liveStatus
-        ? it.liveStatus.label.length + (it.liveStatus.detail?.length ?? 0)
-        : 0;
-      return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
-    }
-    return 1;
-  };
-  const contentKey = items.reduce((acc, it) => acc + signatureOf(it), items.length);
+  return <TaskMessageScroller contentKey={taskChatContentKey(items)}>{body}</TaskMessageScroller>;
+}
 
-  return <TaskMessageScroller contentKey={contentKey}>{body}</TaskMessageScroller>;
+// Cheap content signature so streaming growth (text lengthening without the
+// item count changing) still advances the auto-follow key. Shared by the
+// desktop scroller above and the mobile window-scroll follow (TaskChatThread).
+function signatureOf(it: TaskChatItem): number {
+  if (it.kind === "message") return it.text.length;
+  if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);
+  if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
+  if (it.kind === "turn") {
+    if (it.settled) return 1;
+    // The live parent row's header changes (gerund ↔ tool-state flashes)
+    // count too, so the collapsed single-line turn still advances the key.
+    const headerSig = it.liveStatus
+      ? it.liveStatus.label.length + (it.liveStatus.detail?.length ?? 0)
+      : 0;
+    return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
+  }
+  return 1;
+}
+
+export function taskChatContentKey(items: TaskChatItem[]): number {
+  return items.reduce((acc, it) => acc + signatureOf(it), items.length);
 }
