@@ -39,6 +39,6 @@ export const agentWakeupRequests = pgTable(
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
     reviewPathRecoveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_review_path_recovery_idempotency_uq")
       .on(table.companyId, table.idempotencyKey)
-      .where(sql`${table.idempotencyKey} LIKE 'issue_review_path_lost:%'`),
+      .where(sql`${table.idempotencyKey} LIKE 'issue_review_path_lost:%' AND ${table.status} <> 'skipped'`),
   }),
 );

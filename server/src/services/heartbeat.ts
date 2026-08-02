@@ -9212,6 +9212,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(
         eq(agentWakeupRequests.companyId, issue.companyId),
         eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        notInArray(agentWakeupRequests.status, ["skipped"]),
       ))
       .limit(1)
       .then((rows) => rows[0] ?? null);

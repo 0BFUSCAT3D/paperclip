@@ -216,4 +216,28 @@ describeEmbeddedPostgres("issue review attention", () => {
       });
     }
   });
+
+  it("does not let a transiently skipped recovery consume its fingerprint", async () => {
+    const { companyId, agentId } = await seed();
+    const idempotencyKey = `issue_review_path_lost:${randomUUID()}:fingerprint`;
+    const baseWake = {
+      companyId,
+      agentId,
+      source: "automation",
+      reason: "issue_review_path_lost",
+      payload: {},
+      idempotencyKey,
+    };
+
+    await db.insert(agentWakeupRequests).values({
+      ...baseWake,
+      status: "skipped",
+      finishedAt: new Date(),
+    });
+
+    await expect(db.insert(agentWakeupRequests).values({
+      ...baseWake,
+      status: "queued",
+    })).resolves.toBeDefined();
+  });
 });
