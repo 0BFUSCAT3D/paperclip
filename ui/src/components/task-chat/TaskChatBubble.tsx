@@ -41,7 +41,7 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
     return (
       <div
         className={cn(
-          "w-full text-sm text-muted-foreground",
+          "tc-interstitial w-full text-xs text-muted-foreground",
           item.streaming && "tc-typewriter-stream",
         )}
         data-testid="task-chat-interstitial"

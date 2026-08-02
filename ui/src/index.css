@@ -592,6 +592,10 @@
    CSS-only typewriter, no per-char timers. Text appended to an existing block
    lands instantly; history omits the class entirely. */
 .tc-typewriter-stream .paperclip-markdown > * { animation: tc-typewriter var(--motion-typewriter-reveal) var(--motion-typewriter-steps) both; }
+/* Interstitial narration matches the tool rows (text-xs): prose-sm sets its
+   own font-size on .paperclip-markdown, so the wrapper's text-xs alone can't
+   shrink it — this scoped override wins on specificity. */
+.tc-interstitial .paperclip-markdown { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
 
 /* Scroll-to-latest pill (stock shadcn MessageScrollerButton motion, tokenized).
    The pill is centered with translateX(-50%), so the keyframes carry the X

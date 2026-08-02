@@ -6,15 +6,14 @@
  * tools.
  */
 import {
-  Book,
+  BookOpen,
   Brain,
   ChevronsLeftRightEllipsis,
   MessageSquareReply,
   Network,
   Search,
   SearchCode,
-  SquarePen,
-  SquareTerminal,
+  Terminal,
   Wrench,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
@@ -70,11 +69,12 @@ export function mcpToolSegment(name: string): string | null {
 }
 
 const FAMILY_META: Record<Exclude<ToolFamily, "mcp">, Omit<ToolTaxonomyEntry, "family">> = {
-  terminal: { icon: SquareTerminal, verbLabel: "Running a command" },
+  terminal: { icon: Terminal, verbLabel: "Running a command" },
   grep: { icon: SearchCode, verbLabel: "Grepping" },
   search: { icon: Search, verbLabel: "Searching" },
-  read: { icon: Book, verbLabel: "Reading files" },
-  edit: { icon: SquarePen, verbLabel: "Editing files" },
+  read: { icon: BookOpen, verbLabel: "Reading files" },
+  // Board round-4 feedback asked for the terminal glyph on edits as well.
+  edit: { icon: Terminal, verbLabel: "Editing files" },
   web: { icon: ChevronsLeftRightEllipsis, verbLabel: "Fetching the web" },
   agent: { icon: Network, verbLabel: "Delegating" },
   other: { icon: Wrench, verbLabel: "Working" },

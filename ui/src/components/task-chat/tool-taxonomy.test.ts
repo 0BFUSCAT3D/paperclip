@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  Book,
+  BookOpen,
   Brain,
   ChevronsLeftRightEllipsis,
   MessageSquareReply,
   Network,
   Search,
   SearchCode,
-  SquarePen,
-  SquareTerminal,
+  Terminal,
   Wrench,
 } from "lucide-react";
 import { McpIcon } from "./McpIcon";
@@ -18,7 +17,7 @@ describe("toolTaxonomy", () => {
   it("maps each family to its icon and verb", () => {
     expect(toolTaxonomy("Bash")).toEqual({
       family: "terminal",
-      icon: SquareTerminal,
+      icon: Terminal,
       verbLabel: "Running a command",
     });
     expect(toolTaxonomy("Shell").family).toBe("terminal");
@@ -38,14 +37,15 @@ describe("toolTaxonomy", () => {
 
     expect(toolTaxonomy("Read")).toEqual({
       family: "read",
-      icon: Book,
+      icon: BookOpen,
       verbLabel: "Reading files",
     });
     expect(toolTaxonomy("NotebookRead").family).toBe("read");
 
+    // Round-4 board feedback: edits share the terminal glyph.
     expect(toolTaxonomy("Edit")).toEqual({
       family: "edit",
-      icon: SquarePen,
+      icon: Terminal,
       verbLabel: "Editing files",
     });
     expect(toolTaxonomy("Write").family).toBe("edit");
@@ -87,10 +87,10 @@ describe("toolTaxonomy", () => {
 
 describe("toolTaxonomy multi-word ACP titles", () => {
   it("classifies by the first word", () => {
-    expect(toolTaxonomy("Read File").icon).toBe(Book);
-    expect(toolTaxonomy("Edit File").icon).toBe(SquarePen);
-    expect(toolTaxonomy("Write File").icon).toBe(SquarePen);
-    expect(toolTaxonomy("Terminal").icon).toBe(SquareTerminal);
+    expect(toolTaxonomy("Read File").icon).toBe(BookOpen);
+    expect(toolTaxonomy("Edit File").icon).toBe(Terminal);
+    expect(toolTaxonomy("Write File").icon).toBe(Terminal);
+    expect(toolTaxonomy("Terminal").icon).toBe(Terminal);
   });
 });
 
