@@ -3,6 +3,7 @@ import { IssueChatThread } from "@/components/IssueChatThread";
 import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
+  assembleThreadItems,
   attachSettledTurns,
   buildTurnSummary,
   coalesceSettledTurns,
@@ -179,7 +180,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   // Each terminal run's turn anchors immediately after the run's last comment
   // (its reply bubble), via the comment.runId linkage — the summary line lands
-  // below the bubble, where the live "Running…" pill sat.
+  // below the bubble, where the live "Running…" pill sat. A run with no linked
+  // comment (stopped run, or reply not yet fetched) instead slots into the
+  // backbone chronologically at its start time (PAP-367).
   const lastCommentIdByRun = useMemo(() => {
     const map = new Map<string, string>();
     for (const comment of comments) {
@@ -253,7 +256,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // landed as the run's comment bubble, interstitial updates are ephemeral
     // (live-line only), and thinking stays in the run log / classic
     // transcript — "Worked · N tools" expands to exactly the tool rows.
-    const settledTurns: { turn: TaskChatTurnItem; anchorCommentId: string | null; order: number }[] = [];
+    const settledTurns: { turn: TaskChatTurnItem; anchorCommentId: string | null; startMs: number }[] = [];
     // Raw summary inputs per turn id, so back-to-back same-agent runs can
     // coalesce into one "Worked" row in the final pass (PAP-362).
     const turnMergeMetaById = new Map<string, SettledTurnMergeMeta>();
@@ -277,6 +280,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const children = settledRunChildren(parsed);
       if (children.length === 0) continue;
       const failed = source.status !== "succeeded";
+      const startSlotRaw = meta?.startedAt ?? meta?.createdAt;
       turnMergeMetaById.set(`${source.id}:turn`, {
         agentKey: meta?.agentId ?? "",
         agentName: meta?.agentName,
@@ -292,30 +296,32 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           summary: buildTurnSummary(entries, { durationMs, failed }),
         },
         anchorCommentId: lastCommentIdByRun.get(source.id) ?? null,
-        order: meta?.createdAt ? new Date(meta.createdAt).getTime() : 0,
+        // Chronological slot for a turn with no reply comment to anchor to
+        // (PAP-367): the run's start time. A run with no linked meta yet
+        // (just-settled, list not refetched) sits at the thread tail —
+        // where it last rendered as the live turn — until meta arrives.
+        startMs: startSlotRaw ? toMs(startSlotRaw) : Number.POSITIVE_INFINITY,
       });
     }
-    settledTurns.sort((a, b) => a.order - b.order);
+    settledTurns.sort((a, b) => (a.startMs < b.startMs ? -1 : a.startMs > b.startMs ? 1 : 0));
 
     const turnsByAnchor = new Map<string, TaskChatTurnItem[]>();
-    const unanchored: TaskChatTurnItem[] = [];
-    for (const { turn, anchorCommentId } of settledTurns) {
+    const unanchored: { turn: TaskChatTurnItem; startMs: number }[] = [];
+    for (const { turn, anchorCommentId, startMs } of settledTurns) {
       if (anchorCommentId) {
         const list = turnsByAnchor.get(anchorCommentId) ?? [];
         list.push(turn);
         turnsByAnchor.set(anchorCommentId, list);
       } else {
-        unanchored.push(turn);
+        unanchored.push({ turn, startMs });
       }
     }
 
-    const out: TaskChatItem[] = [];
-    for (const entry of orderedEntries) {
-      out.push(entry.item);
-      const following = turnsByAnchor.get(entry.id);
-      if (following) out.push(...following);
-    }
-    out.push(...unanchored);
+    // Anchored turns follow their run's reply comment; comment-less turns
+    // (stopped runs, or a reply not yet fetched) interleave chronologically at
+    // their run's start time instead of piling up under the newest message
+    // (PAP-367).
+    const out = assembleThreadItems(orderedEntries, turnsByAnchor, unanchored);
 
     if (liveRun) {
       const entries = transcriptByRun.get(liveRun.id) ?? [];

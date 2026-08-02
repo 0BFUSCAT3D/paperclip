@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
 import {
+  assembleThreadItems,
   attachSettledTurns,
   buildMergedTurnSummary,
   buildTurnSummary,
@@ -12,8 +13,9 @@ import {
   toolDisplayName,
   transcriptToTaskChatItems,
   type SettledTurnMergeMeta,
+  type ThreadBackboneEntry,
 } from "./transcript-adapter";
-import type { TaskChatItem } from "./task-chat-model";
+import type { TaskChatItem, TaskChatTurnItem } from "./task-chat-model";
 
 const TS = "2026-07-31T12:00:00.000Z";
 
@@ -581,5 +583,72 @@ describe("attachSettledTurns (round 9)", () => {
     );
     expect(twice.map((i) => i.kind)).toEqual(["message", "turn"]);
     expect((twice[0] as Extract<TaskChatItem, { kind: "message" }>).attachedTurn?.id).toBe("run-a:turn");
+  });
+});
+
+describe("assembleThreadItems (PAP-367)", () => {
+  function entry(id: string, ms: number, item?: Partial<TaskChatItem>): ThreadBackboneEntry {
+    return {
+      ms,
+      id,
+      item: { id, kind: "message", author: "human", text: `msg ${id}`, ...item } as TaskChatItem,
+    };
+  }
+  function settledTurn(id: string): TaskChatTurnItem {
+    return {
+      id,
+      kind: "turn",
+      settled: true,
+      items: [{ id: `${id}:tool:0`, kind: "tool", name: "Read", status: "completed" }],
+      summary: buildTurnSummary([toolCall("Read")], { durationMs: 34_000 }),
+    };
+  }
+  const noAnchors = new Map<string, TaskChatTurnItem[]>();
+
+  it("inserts a comment-less settled turn chronologically at its run's start time", () => {
+    const backbone = [entry("u1", 1_000), entry("a1", 2_000, { author: "agent", authorName: "CEO" }), entry("u2", 3_000)];
+    const out = assembleThreadItems(backbone, noAnchors, [{ turn: settledTurn("run-x:turn"), startMs: 2_500 }]);
+    expect(out.map((i) => i.id)).toEqual(["u1", "a1", "run-x:turn", "u2"]);
+  });
+
+  it("does not append a comment-less turn after the newest user message (the P11 bug)", () => {
+    // The screenshot bug: an OLD stopped run (start 1_500) re-pinning its
+    // "Worked · 34s" row under every NEW user bubble (3_000).
+    const backbone = [entry("u1", 1_000), entry("u2", 3_000)];
+    const out = assembleThreadItems(backbone, noAnchors, [{ turn: settledTurn("run-x:turn"), startMs: 1_500 }]);
+    expect(out.map((i) => i.id)).toEqual(["u1", "run-x:turn", "u2"]);
+    expect(out[out.length - 1].id).toBe("u2");
+  });
+
+  it("keeps anchored turns directly after their run's reply comment", () => {
+    const backbone = [entry("u1", 1_000), entry("a1", 2_000, { author: "agent", authorName: "CEO" }), entry("u2", 3_000)];
+    const anchors = new Map([["a1", [settledTurn("run-a:turn")]]]);
+    const out = assembleThreadItems(backbone, anchors, []);
+    expect(out.map((i) => i.id)).toEqual(["u1", "a1", "run-a:turn", "u2"]);
+  });
+
+  it("keeps the tail slot for a turn with unknown start, and puts ties after the entry", () => {
+    const backbone = [entry("u1", 1_000), entry("u2", 3_000)];
+    // Unknown start (no linked meta yet — just-settled run): Infinity → tail.
+    const tail = assembleThreadItems(backbone, noAnchors, [
+      { turn: settledTurn("run-x:turn"), startMs: Number.POSITIVE_INFINITY },
+    ]);
+    expect(tail.map((i) => i.id)).toEqual(["u1", "u2", "run-x:turn"]);
+    // Tie with the trigger comment: comment renders first.
+    const tie = assembleThreadItems(backbone, noAnchors, [{ turn: settledTurn("run-y:turn"), startMs: 1_000 }]);
+    expect(tie.map((i) => i.id)).toEqual(["u1", "run-y:turn", "u2"]);
+  });
+
+  it("chronological insertion after a user message stays a standalone row through coalesce+attach", () => {
+    // Interplay guard: the inserted turn sits below a HUMAN bubble, so the
+    // later passes must neither merge it into anything nor attach it.
+    const backbone = [entry("u1", 1_000), entry("u2", 3_000)];
+    const metaById = new Map<string, SettledTurnMergeMeta>([
+      ["run-x:turn", { agentKey: "agent-1", agentName: "CEO", parts: [{ entries: [toolCall("Read")], durationMs: 34_000 }] }],
+    ]);
+    const assembled = assembleThreadItems(backbone, noAnchors, [{ turn: settledTurn("run-x:turn"), startMs: 1_500 }]);
+    const out = attachSettledTurns(coalesceSettledTurns(assembled, metaById), metaById);
+    expect(out.map((i) => i.id)).toEqual(["u1", "run-x:turn", "u2"]);
+    expect(out.every((i) => i.kind !== "message" || (i as Extract<TaskChatItem, { kind: "message" }>).attachedTurn == null)).toBe(true);
   });
 });

@@ -437,6 +437,43 @@ export function buildMergedTurnSummary(
   };
 }
 
+/** One chronological backbone entry (comment / interaction / marker). */
+export interface ThreadBackboneEntry {
+  /** Chronological sort key in ms (backbone is already sorted by it). */
+  ms: number;
+  /** Stable entry id — the anchor key settled turns attach after. */
+  id: string;
+  item: TaskChatItem;
+}
+
+/**
+ * Assemble the thread body (PAP-367): backbone entries in order, each followed
+ * by the settled turns anchored to it (run → reply-comment linkage), with
+ * comment-less settled turns — stopped runs, or a reply not yet fetched —
+ * interleaved chronologically at their run's start time instead of
+ * bottom-appended under the newest message. Ties go after the backbone entry
+ * (trigger comment first); turns with no known start (startMs = Infinity) keep
+ * the tail slot. `unanchored` must be sorted ascending by startMs.
+ */
+export function assembleThreadItems(
+  entries: readonly ThreadBackboneEntry[],
+  turnsByAnchor: ReadonlyMap<string, readonly TaskChatTurnItem[]>,
+  unanchored: readonly { turn: TaskChatTurnItem; startMs: number }[],
+): TaskChatItem[] {
+  const out: TaskChatItem[] = [];
+  let next = 0;
+  for (const entry of entries) {
+    while (next < unanchored.length && unanchored[next].startMs < entry.ms) {
+      out.push(unanchored[next++].turn);
+    }
+    out.push(entry.item);
+    const following = turnsByAnchor.get(entry.id);
+    if (following) out.push(...following);
+  }
+  while (next < unanchored.length) out.push(unanchored[next++].turn);
+  return out;
+}
+
 /** Per-turn identity + raw summary inputs for coalescing (keyed by turn item id). */
 export interface SettledTurnMergeMeta {
   /** Stable agent identity (agentId); empty/unknown turns never merge. */
