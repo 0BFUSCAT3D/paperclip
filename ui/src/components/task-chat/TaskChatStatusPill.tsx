@@ -43,17 +43,19 @@ export function lineScrollOffset(scrollHeight: number, lineHeightPx: number): nu
 }
 
 /**
- * A streaming interstitial update on the parent row's line: the text streams
- * inside a one-line-height clipped viewport; when it wraps, the inner block
- * translates up by whole line-heights (--motion-line-scroll, transform-only,
- * snaps under reduced motion) so the completed line slides out the top while
- * the stream continues on the fresh line — the same motion grammar as tool
- * rows animating in. Line count is measured from scrollHeight / line-height,
- * re-checked on resize.
+ * A streaming interstitial update inside a one-line-height clipped viewport.
+ * One transform transition (--motion-line-scroll, transform-only, snaps under
+ * reduced motion) does all the y work: the text enters by sliding up from
+ * below the 1lh clip; when it wraps, the inner block translates up by whole
+ * line-heights so the completed line slides out the top while the stream
+ * continues on the fresh line; and when the message ends (`leaving`) it shifts
+ * one further line so the last line slides out before the row unmounts. Line
+ * count is measured from scrollHeight / line-height, re-checked on resize.
  */
-function LiveSelfTalkLine({ text }: { text: string }) {
+function LiveSelfTalkLine({ text, leaving }: { text: string; leaving?: boolean }) {
   const innerRef = useRef<HTMLSpanElement | null>(null);
   const [offset, setOffset] = useState(0);
+  const [entered, setEntered] = useState(false);
   useLayoutEffect(() => {
     const el = innerRef.current;
     if (!el) return;
@@ -67,17 +69,44 @@ function LiveSelfTalkLine({ text }: { text: string }) {
     observer.observe(el);
     return () => observer.disconnect();
   }, [text]);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  const shift = !entered ? 1 : -offset - (leaving ? 1 : 0);
   return (
     <span className="tc-line-scroll min-w-0 flex-1" data-testid="task-chat-live-self-talk">
       <span
         ref={innerRef}
         className="tc-line-scroll-inner block"
-        style={offset > 0 ? { transform: `translateY(calc(${-offset} * 1lh))` } : undefined}
+        style={shift !== 0 ? { transform: `translateY(calc(${shift} * 1lh))` } : undefined}
       >
         {text}
       </span>
     </span>
   );
+}
+
+/**
+ * Holds the streaming interstitial text briefly after it clears so the row can
+ * slide out before unmounting. The hold duration is read from the same motion
+ * token the slide transition uses (0 under reduced motion → instant unmount).
+ */
+function useHeldSelfTalk(selfTalk: string | undefined): { text: string; leaving: boolean } | null {
+  const [held, setHeld] = useState<string | null>(selfTalk ?? null);
+  useEffect(() => {
+    if (selfTalk) {
+      setHeld(selfTalk);
+      return;
+    }
+    if (held == null) return;
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--motion-line-scroll");
+    const ms = Number.parseFloat(raw);
+    const id = window.setTimeout(() => setHeld(null), Number.isFinite(ms) ? ms : 0);
+    return () => window.clearTimeout(id);
+  }, [selfTalk, held]);
+  if (selfTalk) return { text: selfTalk, leaving: false };
+  return held != null ? { text: held, leaving: true } : null;
 }
 
 const CONFIG = {
@@ -112,56 +141,30 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
   const awaiting = item.status === "awaiting_approval";
   const live = item.status === "running" || item.status === "working";
   const liveElapsedMs = useLiveElapsedMs(item.startedAtMs, live);
+  const heldSelfTalk = useHeldSelfTalk(live ? item.selfTalk : undefined);
   const elapsed = elapsedLabel(item.elapsedMs);
-
-  if (live && item.selfTalk) {
-    // A streaming interstitial update takes the line (replacing the gerund) in
-    // the muted tool-row style; right-side meta (elapsed · tokens) stays put.
-    // The row alternates: whimsy gerund ↔ in-flight tool ↔ interstitial text.
-    const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
-    const SelfTalkIcon = statusLabelIcon("Responding");
-    return (
-      <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
-        <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-          <span
-            aria-hidden
-            className="h-2 w-2 animate-pulse rounded-full bg-(--status-agent-running)"
-          />
-        </span>
-        {SelfTalkIcon ? <SelfTalkIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
-        <LiveSelfTalkLine text={item.selfTalk} />
-        {liveElapsed ? (
-          <span className="shrink-0 font-mono tabular-nums text-(length:--text-micro)">
-            {liveElapsed}
-          </span>
-        ) : null}
-        {item.tokens ? (
-          <span className="shrink-0 font-mono text-(length:--text-micro)">
-            {item.tokens.used.toLocaleString()}/{item.tokens.size.toLocaleString()} ctx
-          </span>
-        ) : null}
-        {chevronOpen !== undefined ? (
-          <ChevronRight
-            className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}
-            aria-hidden
-          />
-        ) : null}
-      </div>
-    );
-  }
 
   if (live) {
     const liveElapsed = liveElapsedLabel(liveElapsedMs ?? item.elapsedMs);
+    // While an interstitial streams, its text lives on its OWN row above; the
+    // status line below keeps the uninterrupted gerund rotation ("Responding"
+    // never takes the line, and no Responding icon appears here).
+    const streamingInterstitial = item.selfTalk != null;
     const ToolIcon = item.toolName
       ? toolTaxonomy(item.toolName).icon
-      : statusLabelIcon(item.label);
+      : streamingInterstitial
+        ? null
+        : statusLabelIcon(item.label);
     // Whimsy fills gaps, never replaces signal: only the generic
-    // "Running"/"Working" labels swap for a deterministic whimsical gerund
-    // (seeded by the run-scoped item id, rotating ~10s via the live tick).
-    const label = isGenericStatusLabel(item.label)
+    // "Running"/"Working" labels — and the interstitial-streaming state, whose
+    // text renders on the row above — swap for a deterministic whimsical
+    // gerund (seeded by the run-scoped item id, rotating ~10s via the live
+    // tick).
+    const label = streamingInterstitial || isGenericStatusLabel(item.label)
       ? whimsyWord(item.id, liveElapsedMs ?? item.elapsedMs ?? 0)
       : item.label;
-    return (
+    const SelfTalkIcon = statusLabelIcon("Responding");
+    const statusLine = (
       <div className="tc-enter-status flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
         {/* Fixed-size lead slot keeps the label from moving as tool icons
             come and go; the pulse dot renders unconditionally. */}
@@ -198,6 +201,25 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
             aria-hidden
           />
         ) : null}
+      </div>
+    );
+    if (!heldSelfTalk) return statusLine;
+    // A streaming interstitial gets its own bubble-less single-line row
+    // DIRECTLY ABOVE the status line — the two never share a line. The row
+    // slides into / out of the 1lh viewport (LiveSelfTalkLine) when a message
+    // starts/ends and unmounts after the slide-out; the empty lead slot keeps
+    // its text column-aligned with the status label below.
+    return (
+      <div className="flex flex-col">
+        <div
+          className="flex items-center gap-2 py-0.5 text-xs text-muted-foreground"
+          data-testid="task-chat-interstitial-row"
+        >
+          <span aria-hidden className="h-3.5 w-3.5 shrink-0" />
+          {SelfTalkIcon ? <SelfTalkIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+          <LiveSelfTalkLine text={heldSelfTalk.text} leaving={heldSelfTalk.leaving} />
+        </div>
+        {statusLine}
       </div>
     );
   }

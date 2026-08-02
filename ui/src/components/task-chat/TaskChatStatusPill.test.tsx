@@ -90,7 +90,7 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(container.textContent).toContain("18,240/200,000 ctx");
   });
 
-  it("hands the line to streaming interstitial text, keeping elapsed · tokens meta (PAP-361)", () => {
+  it("mounts a streaming interstitial as its own row above the status line (PAP-361 amended)", () => {
     const item = liveStatus({
       label: "Responding",
       selfTalk: "I'll extend the ipRateLimit helper with a per-account bucket.",
@@ -100,13 +100,16 @@ describe("TaskChatStatusPill whimsy", () => {
     act(() => {
       vi.advanceTimersByTime(1200);
     });
+    const row = container.querySelector('[data-testid="task-chat-interstitial-row"]');
     const line = container.querySelector('[data-testid="task-chat-live-self-talk"]');
-    expect(line).not.toBeNull();
+    expect(row).not.toBeNull();
     expect(line?.textContent).toBe("I'll extend the ipRateLimit helper with a per-account bucket.");
-    // The gerund/whimsy label yields the line; the right-side meta stays put,
-    // and the pulse dot renders as ever.
+    // The row sits DIRECTLY ABOVE the status line — never sharing it: the
+    // gerund rotation runs uninterrupted below (no "Responding…" copy), with
+    // meta and pulse dot in place.
+    expect(row?.nextElementSibling?.textContent).toContain(`${whimsyWord(item.id, 1200)}…`);
+    expect(row?.contains(line)).toBe(true);
     expect(container.textContent).not.toContain("Responding…");
-    expect(container.textContent).not.toContain(`${whimsyWord(item.id, 1200)}…`);
     expect(container.textContent).toContain("1.2s");
     expect(container.textContent).toContain("18,240/200,000 ctx");
     expect(container.querySelector(".animate-pulse")).not.toBeNull();
@@ -115,11 +118,20 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(line?.firstElementChild?.className).toContain("tc-line-scroll-inner");
   });
 
-  it("returns the line to the gerund once the interstitial completes", () => {
+  it("slides the row out and unmounts it once the interstitial completes", () => {
     const item = liveStatus({ tokens: { used: 18240, size: 200000 } });
     render(liveStatus({ label: "Responding", selfTalk: "Almost there." }));
+    expect(container.querySelector('[data-testid="task-chat-interstitial-row"]')).not.toBeNull();
     render(item);
-    // selfTalk gone → no live line, whimsy gerund back, dot still present.
+    // selfTalk gone → the row is briefly held for its slide-out…
+    const held = container.querySelector('[data-testid="task-chat-interstitial-row"]');
+    expect(held?.textContent).toContain("Almost there.");
+    // …then unmounts after the motion-token hold (0ms in jsdom — no computed
+    // token value); gerund + dot carry on.
+    act(() => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(container.querySelector('[data-testid="task-chat-interstitial-row"]')).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).toBeNull();
     expect(container.textContent).toContain(`${whimsyWord(item.id, 0)}…`);
     expect(container.querySelector(".animate-pulse")).not.toBeNull();

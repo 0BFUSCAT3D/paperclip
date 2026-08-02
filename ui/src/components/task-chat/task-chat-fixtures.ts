@@ -74,10 +74,11 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         ],
       };
     case "responding":
-      // A streaming interstitial update takes the parent row's line (PAP-361):
-      // it streams where the gerund sat and wraps into the 1lh viewport
-      // line-scroll. Ephemeral — when it finishes, the line returns to the
-      // gerund/tool rotation and the text renders nowhere.
+      // A streaming interstitial update gets its own row directly above the
+      // status line (PAP-361, amended): it wraps into the 1lh viewport
+      // line-scroll while the gerund rotation below runs uninterrupted.
+      // Ephemeral — when it finishes, the row slides out and the text renders
+      // nowhere.
       return {
         surface: "thread",
         items: [

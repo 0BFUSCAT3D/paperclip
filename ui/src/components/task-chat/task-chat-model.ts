@@ -142,10 +142,11 @@ export interface TaskChatStatusItem {
   toolName?: string;
   /**
    * Flattened plain text of the interstitial update currently streaming
-   * (PAP-361): it takes over the live parent row's line (replacing the gerund)
-   * inside a one-line viewport that scrolls completed lines out the top.
-   * Ephemeral — when the message finishes the line returns to the gerund/tool
-   * rotation, and nothing persists in the thread.
+   * (PAP-361, amended round 8): it renders as a dedicated single-line row
+   * directly above the status line, inside a one-line viewport that scrolls
+   * completed lines out the top; the gerund rotation below runs uninterrupted.
+   * Ephemeral — when the message finishes the row slides out and unmounts,
+   * and nothing persists in the thread.
    */
   selfTalk?: string;
   elapsedMs?: number;
