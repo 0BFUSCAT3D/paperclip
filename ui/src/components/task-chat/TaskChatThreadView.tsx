@@ -36,7 +36,20 @@ function renderItem(
 ) {
   switch (item.kind) {
     case "message":
-      return <TaskChatBubble item={item} />;
+      return (
+        <TaskChatBubble
+          item={item}
+          attachedTurn={
+            item.attachedTurn ? (
+              <TaskChatTurn
+                item={item.attachedTurn}
+                timestampPrefix={item.timestamp}
+                renderChild={(child) => renderItem(child, onApprovalDecision)}
+              />
+            ) : undefined
+          }
+        />
+      );
     case "marker":
       return <TaskChatMarker item={item} />;
     case "thinking":
@@ -109,7 +122,7 @@ export function TaskChatThreadView({
 // item count changing) still advances the auto-follow key. Shared by the
 // desktop scroller above and the mobile window-scroll follow (TaskChatThread).
 function signatureOf(it: TaskChatItem): number {
-  if (it.kind === "message") return it.text.length;
+  if (it.kind === "message") return it.text.length + (it.attachedTurn ? 1 : 0);
   if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);
   if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
   if (it.kind === "turn") {

@@ -168,19 +168,31 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           ...exchangePrefix(),
+          // Round 9: the settled turn attaches to the final reply bubble — the
+          // "✓ Worked · …" summary renders on the bubble's always-visible
+          // timestamp line ("2:34 PM · ✓ Worked · 38s · 2 tools").
           {
-            id: "turn-done",
-            kind: "turn",
-            settled: true,
-            // "Worked · N tools" expands to exactly the tool rows (PAP-361):
-            // toolCount matches the nested rows, no thinking row.
-            summary: { durationLabel: "38s", toolCount: 2, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
-            items: [
-              { id: "tool-done-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
-              { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
-            ],
+            id: "m-done",
+            kind: "message",
+            author: "agent",
+            authorName: AGENT,
+            agentIcon: "bot",
+            modeLabel: "Agent mode",
+            text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.",
+            timestamp: "2:34 PM",
+            attachedTurn: {
+              id: "turn-done",
+              kind: "turn",
+              settled: true,
+              // "Worked · N tools" expands to exactly the tool rows (PAP-361):
+              // toolCount matches the nested rows, no thinking row.
+              summary: { durationLabel: "38s", toolCount: 2, added: 34, removed: 3, tokensLabel: "12.3k tokens" },
+              items: [
+                { id: "tool-done-1", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+                { id: "tool-done-2", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "completed", diff: { path: "server/src/routes/auth.ts", added: 34, removed: 3 } },
+              ],
+            },
           },
-          { id: "m-done", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", modeLabel: "Agent mode", text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.", timestamp: "2:34 PM" },
         ],
       };
     case "awaiting-approval":

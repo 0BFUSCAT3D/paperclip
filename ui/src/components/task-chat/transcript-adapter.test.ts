@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
 import {
+  attachSettledTurns,
   buildMergedTurnSummary,
   buildTurnSummary,
   coalesceSettledTurns,
@@ -510,5 +511,75 @@ describe("coalesceSettledTurns (PAP-362)", () => {
     const merged = coalesceSettledTurns([turn("run-a:turn", runA, 30_000), seenLive], metaById);
     expect(merged).toHaveLength(1);
     expect((merged[0] as Extract<TaskChatItem, { kind: "turn" }>).animateFold).toBe(true);
+  });
+});
+
+describe("attachSettledTurns (round 9)", () => {
+  const runA: TranscriptEntry[] = [
+    { kind: "tool_call", ts: TS, name: "Read", toolUseId: "a-1" } as TranscriptEntry,
+  ];
+
+  function agentBubble(id: string, authorName = "CEO"): TaskChatItem {
+    return { id, kind: "message", author: "agent", authorName, text: "Done." };
+  }
+  function settledTurn(id: string): TaskChatItem {
+    return {
+      id,
+      kind: "turn",
+      settled: true,
+      items: [{ id: `${id}:tool:0`, kind: "tool", name: "Read", status: "completed" }],
+      summary: buildTurnSummary(runA, { durationMs: 30_000 }),
+    };
+  }
+  const metaById = new Map<string, SettledTurnMergeMeta>([
+    ["run-a:turn", { agentKey: "agent-1", agentName: "CEO", parts: [{ entries: runA, durationMs: 30_000 }] }],
+  ]);
+
+  it("folds a settled turn into the agent reply bubble directly above it", () => {
+    const out = attachSettledTurns([agentBubble("msg-a"), settledTurn("run-a:turn")], metaById);
+    expect(out).toHaveLength(1);
+    const bubble = out[0] as Extract<TaskChatItem, { kind: "message" }>;
+    expect(bubble.id).toBe("msg-a");
+    expect(bubble.attachedTurn?.id).toBe("run-a:turn");
+    expect(bubble.attachedTurn?.summary.durationLabel).toBe("30s");
+  });
+
+  it("keeps the standalone row when the preceding item is not that agent's bubble", () => {
+    // Human message directly above.
+    const afterHuman = attachSettledTurns(
+      [{ id: "msg-u", kind: "message", author: "human", text: "hi" }, settledTurn("run-a:turn")],
+      metaById,
+    );
+    expect(afterHuman.map((i) => i.kind)).toEqual(["message", "turn"]);
+    // Another agent's bubble above.
+    const otherAgent = attachSettledTurns([agentBubble("msg-q", "QA"), settledTurn("run-a:turn")], metaById);
+    expect(otherAgent.map((i) => i.kind)).toEqual(["message", "turn"]);
+    // No meta (unknown identity) → conservative standalone fallback.
+    const noMeta = attachSettledTurns([agentBubble("msg-a"), settledTurn("run-x:turn")], metaById);
+    expect(noMeta.map((i) => i.kind)).toEqual(["message", "turn"]);
+    // Nothing above at all.
+    const first = attachSettledTurns([settledTurn("run-a:turn")], metaById);
+    expect(first.map((i) => i.kind)).toEqual(["turn"]);
+  });
+
+  it("never attaches the live (unsettled) turn and attaches at most one turn per bubble", () => {
+    const live: TaskChatItem = {
+      id: "run-live:turn",
+      kind: "turn",
+      settled: false,
+      items: [],
+      summary: buildTurnSummary([]),
+    };
+    const out = attachSettledTurns([agentBubble("msg-a"), live], metaById);
+    expect(out.map((i) => i.kind)).toEqual(["message", "turn"]);
+
+    // A second settled turn behind an already-attached bubble stays standalone
+    // (coalesceSettledTurns runs first, so same-agent turns arrive pre-merged).
+    const twice = attachSettledTurns(
+      [agentBubble("msg-a"), settledTurn("run-a:turn"), settledTurn("run-a:turn")],
+      metaById,
+    );
+    expect(twice.map((i) => i.kind)).toEqual(["message", "turn"]);
+    expect((twice[0] as Extract<TaskChatItem, { kind: "message" }>).attachedTurn?.id).toBe("run-a:turn");
   });
 });

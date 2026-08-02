@@ -86,6 +86,14 @@ export interface TaskChatMessageItem {
   interstitial?: boolean;
   /** Epoch ms of the message's first streamed chunk. */
   atMs?: number;
+  /**
+   * The settled run turn "attached" to this bubble (round 9): when the run's
+   * final reply lands, the live parent row transforms into the "Worked · …"
+   * summary rendered on this bubble's always-visible timestamp line —
+   * "2:34 PM · ✓ Worked · 38s · 3 tools" — instead of a standalone row.
+   * Expanding still nests the tool history beneath the bubble.
+   */
+  attachedTurn?: TaskChatTurnItem;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */
@@ -142,10 +150,11 @@ export interface TaskChatStatusItem {
   toolName?: string;
   /**
    * Flattened plain text of the interstitial update currently streaming
-   * (PAP-361, amended round 8): it renders as a dedicated single-line row
-   * directly above the status line, inside a one-line viewport that scrolls
-   * completed lines out the top; the gerund rotation below runs uninterrupted.
-   * Ephemeral — when the message finishes the row slides out and unmounts,
+   * (PAP-361, round 9): it renders in a dedicated single-line row directly
+   * above the status line — a slot PERMANENTLY RESERVED while the turn is
+   * live, so the layout above never jumps — inside a one-line viewport that
+   * scrolls completed lines out the top; the gerund rotation below runs
+   * uninterrupted. Ephemeral — when the message finishes the text slides out
    * and nothing persists in the thread.
    */
   selfTalk?: string;

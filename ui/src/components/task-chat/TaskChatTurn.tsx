@@ -7,6 +7,12 @@ import { TaskChatStatusPill } from "./TaskChatStatusPill";
 interface TaskChatTurnProps {
   item: TaskChatTurnItem;
   renderChild: (child: TaskChatTurnChildItem) => ReactNode;
+  /**
+   * When the settled turn is attached to its reply bubble (round 9), the
+   * bubble's timestamp leads the summary line — "2:34 PM · ✓ Worked · 38s" —
+   * always visible, in the slot the hover-only timestamp used to occupy.
+   */
+  timestampPrefix?: string;
 }
 
 /** Metric segments after the label: "38s · 3 tools · +34 −3 · 12.3k tokens". */
@@ -44,7 +50,7 @@ export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
  * `liveStatus` (harness fixtures) renders its children expanded with no header
  * and folds when it settles.
  */
-export function TaskChatTurn({ item, renderChild }: TaskChatTurnProps) {
+export function TaskChatTurn({ item, renderChild, timestampPrefix }: TaskChatTurnProps) {
   const parentRow = !item.settled && item.liveStatus != null;
   // Parent-row live turns and settled turns start as their one-line header;
   // only the headerless legacy live turn starts expanded.
@@ -77,6 +83,12 @@ export function TaskChatTurn({ item, renderChild }: TaskChatTurnProps) {
           className="group flex items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
           data-testid="task-chat-turn-summary"
         >
+          {timestampPrefix ? (
+            <>
+              <span className="text-(length:--text-micro)">{timestampPrefix}</span>
+              <span aria-hidden className="text-(length:--text-micro)">·</span>
+            </>
+          ) : null}
           <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
           <span>{item.summary.failed ? "Stopped" : "Worked"}</span>
           {turnSummaryMetrics(item.summary) ? (

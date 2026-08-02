@@ -3,6 +3,7 @@ import { IssueChatThread } from "@/components/IssueChatThread";
 import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
+  attachSettledTurns,
   buildTurnSummary,
   coalesceSettledTurns,
   deriveRunStatusLabel,
@@ -55,16 +56,16 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  * tool state + elapsed + tokens) is the turn's single visible line, with the
  * chronological tool activity nested behind an expand (PAP-354). Mid-run
  * agent text (interstitial updates between tool calls) is ephemeral
- * (PAP-361): while one streams it takes the parent row's line inside a
- * one-line line-scroll viewport, and when it finishes the line returns to the
- * gerund/tool rotation — nothing persists; the run log and the classic
- * transcript remain the archive. When the run terminates the
- * same turn id flips settled, so the header morphs in place into the one-line
- * "✓ Worked · …" summary (expand state preserved; runs already terminal at
- * mount collapse instantly). Settled turns interleave after the run's last
- * comment (comment.runId linkage) — the agent's reply bubble above, the folded
- * activity summary below, in the slot the live parent row occupied. flag-OFF
- * remains byte-for-byte IssueChatThread.
+ * (PAP-361, round 9): while one streams it occupies a dedicated one-line row
+ * PERMANENTLY RESERVED above the status line (so the layout above never
+ * jumps), and when it finishes the text slides out and the slot sits empty —
+ * nothing persists; the run log and the classic transcript remain the
+ * archive. When the run terminates, its settled turn anchors after the run's
+ * last comment (comment.runId linkage) and — when it directly follows that
+ * reply bubble — attaches to it: the "✓ Worked · …" summary renders appended
+ * to the bubble's always-visible timestamp line (round 9), still expandable
+ * to the tool history. Turns without a reply bubble keep the standalone
+ * folded row. flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
   const {
@@ -325,9 +326,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
       // Parent-row model (PAP-354): the run's status line IS the live turn —
       // one expandable row owning the activity. Only tool/usage rows nest
-      // inside it; a streaming interstitial update takes the header's own line
-      // (liveStatus.selfTalk, PAP-361) and vanishes when it completes. The
-      // parent row sits last — the slot its settled summary takes over in place.
+      // inside it; a streaming interstitial update renders in the reserved row
+      // above the status line (liveStatus.selfTalk, PAP-361/round 9) and
+      // vanishes when it completes. The parent row sits last; on settle its
+      // summary attaches to the reply bubble's timestamp line.
       const children = parsed.filter(isNestableLiveChild);
       const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
       const queued = liveRun.status === "queued";
@@ -355,7 +357,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // PAP-362: two runs replying back-to-back (same agent, nothing but the
     // agent's own bubbles between) fold into ONE "Worked" row below the last
     // reply; a user message, interaction, or the live turn keeps them apart.
-    return coalesceSettledTurns(out, turnMergeMetaById);
+    // Round 9: a settled turn directly following its own agent's reply bubble
+    // then attaches to that bubble — the "Worked · …" summary renders on the
+    // bubble's always-visible timestamp line instead of as a standalone row.
+    return attachSettledTurns(coalesceSettledTurns(out, turnMergeMetaById), turnMergeMetaById);
   }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun]);
 
   const renderInteraction = useCallback(

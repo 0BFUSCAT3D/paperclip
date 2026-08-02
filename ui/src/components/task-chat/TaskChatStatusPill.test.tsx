@@ -90,6 +90,19 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(container.textContent).toContain("18,240/200,000 ctx");
   });
 
+  it("permanently reserves the interstitial row while live so layout never jumps (round 9)", () => {
+    const item = liveStatus({ tokens: { used: 18240, size: 200000 } });
+    render(item);
+    // No message streaming: the row is still mounted as an empty one-line
+    // slot (same height as when text occupies it) — nothing above shifts when
+    // a message later appears.
+    const row = container.querySelector('[data-testid="task-chat-interstitial-row"]');
+    expect(row).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).toBeNull();
+    // The empty slot keeps the 1lh viewport height.
+    expect(row?.querySelector(".tc-line-scroll")).not.toBeNull();
+  });
+
   it("mounts a streaming interstitial as its own row above the status line (PAP-361 amended)", () => {
     const item = liveStatus({
       label: "Responding",
@@ -118,20 +131,21 @@ describe("TaskChatStatusPill whimsy", () => {
     expect(line?.firstElementChild?.className).toContain("tc-line-scroll-inner");
   });
 
-  it("slides the row out and unmounts it once the interstitial completes", () => {
+  it("slides the text out but keeps the reserved row once the interstitial completes", () => {
     const item = liveStatus({ tokens: { used: 18240, size: 200000 } });
     render(liveStatus({ label: "Responding", selfTalk: "Almost there." }));
-    expect(container.querySelector('[data-testid="task-chat-interstitial-row"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).not.toBeNull();
     render(item);
-    // selfTalk gone → the row is briefly held for its slide-out…
+    // selfTalk gone → the text is briefly held for its slide-out…
     const held = container.querySelector('[data-testid="task-chat-interstitial-row"]');
     expect(held?.textContent).toContain("Almost there.");
-    // …then unmounts after the motion-token hold (0ms in jsdom — no computed
-    // token value); gerund + dot carry on.
+    // …then the TEXT unmounts after the motion-token hold (0ms in jsdom — no
+    // computed token value) while the reserved row stays in layout (round 9:
+    // no jump); gerund + dot carry on below.
     act(() => {
       vi.advanceTimersByTime(50);
     });
-    expect(container.querySelector('[data-testid="task-chat-interstitial-row"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-interstitial-row"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="task-chat-live-self-talk"]')).toBeNull();
     expect(container.textContent).toContain(`${whimsyWord(item.id, 0)}…`);
     expect(container.querySelector(".animate-pulse")).not.toBeNull();

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -16,6 +17,13 @@ import type { TaskChatMessageItem } from "./task-chat-model";
 
 interface TaskChatBubbleProps {
   item: TaskChatMessageItem;
+  /**
+   * The settled run turn rendered on this bubble's footer line (round 9):
+   * replaces the plain timestamp with "2:34 PM · ✓ Worked · 38s · 3 tools"
+   * (the timestamp leads the summary), expandable to the nested tool history.
+   * Supplied by TaskChatThreadView when `item.attachedTurn` is set.
+   */
+  attachedTurn?: ReactNode;
 }
 
 function initialsForName(name: string) {
@@ -32,7 +40,7 @@ function initialsForName(name: string) {
  * bubble with an avatar author header (the agent's assigned icon + name · mode
  * chip); system notices are centered and recede.
  */
-export function TaskChatBubble({ item }: TaskChatBubbleProps) {
+export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
@@ -54,7 +62,7 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
   // attachment chips under the bubble; link-only lines leave the body text.
   const { refs: attachmentRefs, text: bodyText } = extractAttachmentRefs(item.text);
   return (
-    <div className={cn("tc-enter-bubble group flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
+    <div className={cn("tc-enter-bubble flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
       {!isHuman && item.authorName ? (
         <span className="flex items-center gap-2 px-1">
           <Avatar size="sm" className="shrink-0" data-testid="task-chat-agent-avatar">
@@ -119,8 +127,15 @@ export function TaskChatBubble({ item }: TaskChatBubbleProps) {
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
           {item.optimistic === "queued" ? "Queued" : "Sending…"}
         </span>
+      ) : attachedTurn ? (
+        // The settled turn takes over the footer line: timestamp + "✓ Worked"
+        // summary, always visible; expanding stretches beneath the bubble.
+        <div className="self-stretch" data-testid="task-chat-bubble-attached-turn">
+          {attachedTurn}
+        </div>
       ) : item.timestamp ? (
-        <span className="px-1 text-(length:--text-micro) text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100">
+        // Timestamps are always visible (round 9) — no longer hover-revealed.
+        <span className="px-1 text-(length:--text-micro) text-muted-foreground">
           {item.timestamp}
         </span>
       ) : null}

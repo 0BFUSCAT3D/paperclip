@@ -49,8 +49,9 @@ export function lineScrollOffset(scrollHeight: number, lineHeightPx: number): nu
  * below the 1lh clip; when it wraps, the inner block translates up by whole
  * line-heights so the completed line slides out the top while the stream
  * continues on the fresh line; and when the message ends (`leaving`) it shifts
- * one further line so the last line slides out before the row unmounts. Line
- * count is measured from scrollHeight / line-height, re-checked on resize.
+ * one further line so the last line slides out before the text unmounts (the
+ * reserved row itself never leaves layout while the turn is live). Line count
+ * is measured from scrollHeight / line-height, re-checked on resize.
  */
 function LiveSelfTalkLine({ text, leaving }: { text: string; leaving?: boolean }) {
   const innerRef = useRef<HTMLSpanElement | null>(null);
@@ -88,9 +89,10 @@ function LiveSelfTalkLine({ text, leaving }: { text: string; leaving?: boolean }
 }
 
 /**
- * Holds the streaming interstitial text briefly after it clears so the row can
- * slide out before unmounting. The hold duration is read from the same motion
- * token the slide transition uses (0 under reduced motion → instant unmount).
+ * Holds the streaming interstitial text briefly after it clears so it can
+ * slide out of the reserved row before unmounting. The hold duration is read
+ * from the same motion token the slide transition uses (0 under reduced
+ * motion → instant unmount).
  */
 function useHeldSelfTalk(selfTalk: string | undefined): { text: string; leaving: boolean } | null {
   const [held, setHeld] = useState<string | null>(selfTalk ?? null);
@@ -203,12 +205,13 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
         ) : null}
       </div>
     );
-    if (!heldSelfTalk) return statusLine;
-    // A streaming interstitial gets its own bubble-less single-line row
-    // DIRECTLY ABOVE the status line — the two never share a line. The row
-    // slides into / out of the 1lh viewport (LiveSelfTalkLine) when a message
-    // starts/ends and unmounts after the slide-out; the empty lead slot keeps
-    // its text column-aligned with the status label below.
+    // The interstitial row is PERMANENTLY RESERVED while the turn is live
+    // (round 9): the layout above never jumps to make room. A streaming
+    // interstitial gets this bubble-less single-line row DIRECTLY ABOVE the
+    // status line — the two never share a line. Text slides into / out of the
+    // 1lh viewport (LiveSelfTalkLine) when a message starts/ends; between
+    // messages the row stays as an empty one-line slot of identical height.
+    // The empty lead slot keeps the text column-aligned with the status label.
     return (
       <div className="flex flex-col">
         <div
@@ -216,8 +219,14 @@ export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: Ta
           data-testid="task-chat-interstitial-row"
         >
           <span aria-hidden className="h-3.5 w-3.5 shrink-0" />
-          {SelfTalkIcon ? <SelfTalkIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
-          <LiveSelfTalkLine text={heldSelfTalk.text} leaving={heldSelfTalk.leaving} />
+          {heldSelfTalk ? (
+            <>
+              {SelfTalkIcon ? <SelfTalkIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+              <LiveSelfTalkLine text={heldSelfTalk.text} leaving={heldSelfTalk.leaving} />
+            </>
+          ) : (
+            <span aria-hidden className="tc-line-scroll min-w-0 flex-1" />
+          )}
         </div>
         {statusLine}
       </div>

@@ -203,4 +203,17 @@ describe("TaskChatTurn", () => {
     expect(summaryBtn()?.getAttribute("aria-expanded")).toBe("true");
     expect(fold()?.getAttribute("data-folded")).toBe("false");
   });
+
+  it("leads the settled summary with the bubble timestamp when attached (round 9)", () => {
+    flushSync(() => {
+      root.render(
+        <TaskChatTurn item={SETTLED} timestampPrefix="2:34 PM" renderChild={(c) => <span>{c.id}</span>} />,
+      );
+    });
+    // "2:34 PM · ✓ Worked · …" — timestamp first, always visible, and the
+    // expand affordance still works from the same line.
+    expect(summaryBtn()?.textContent).toMatch(/^2:34 PM·Worked/);
+    flushSync(() => summaryBtn()!.click());
+    expect(fold()?.getAttribute("data-folded")).toBe("false");
+  });
 });

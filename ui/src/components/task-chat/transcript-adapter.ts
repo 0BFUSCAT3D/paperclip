@@ -502,6 +502,44 @@ export function coalesceSettledTurns(
 }
 
 /**
+ * Final assembly pass (round 9, after coalesceSettledTurns): a settled turn
+ * that directly follows its own agent's reply bubble folds INTO that bubble as
+ * `attachedTurn` — the "Worked · …" summary renders appended to the bubble's
+ * always-visible timestamp line instead of as a standalone row. The turn must
+ * belong to the same agent as the bubble (metaById identity); turns without
+ * meta, or preceded by anything other than that agent's non-interstitial
+ * bubble, keep the standalone-row fallback.
+ */
+export function attachSettledTurns(
+  items: readonly TaskChatItem[],
+  metaById: ReadonlyMap<string, SettledTurnMergeMeta>,
+): TaskChatItem[] {
+  const out: TaskChatItem[] = [];
+  for (const item of items) {
+    const prev = out[out.length - 1];
+    if (
+      item.kind === "turn" &&
+      item.settled &&
+      prev?.kind === "message" &&
+      prev.author === "agent" &&
+      !prev.interstitial &&
+      !prev.streaming &&
+      prev.attachedTurn == null
+    ) {
+      const meta = metaById.get(item.id);
+      const sameAgent =
+        meta != null && (meta.agentName == null || prev.authorName == null || meta.agentName === prev.authorName);
+      if (sameAgent) {
+        out[out.length - 1] = { ...prev, attachedTurn: item };
+        continue;
+      }
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+/**
  * Human-readable label for the live status pill from the tail of a transcript.
  * A tail tool_call yields the taxonomy verb ("Searching", "Running a command")
  * with tool + target as detail; `toolName` lets the pill show the family icon.
