@@ -5,6 +5,7 @@ import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapte
 import {
   buildTurnSummary,
   deriveRunStatusLabel,
+  isNestableLiveChild,
   isTerminalRunStatus,
   transcriptToTaskChatItems,
 } from "@/components/task-chat/transcript-adapter";
@@ -45,13 +46,16 @@ export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
  *     pill.
  *
  * Run activity is grouped into TaskChatTurnItem: the in-flight run renders as
- * an unsettled (expanded) turn; when it terminates the same turn id flips
- * settled, so TaskChatTurn plays the ~--motion-turn-fold collapse down to the
- * one-line "✓ Worked · …" summary (runs already terminal at mount collapse
- * instantly). Settled turns interleave after the run's last comment
- * (comment.runId linkage) — the agent's reply bubble above, the folded activity
- * summary below, so the live "Running…" pill reads as being replaced by the
- * summary in place. flag-OFF remains byte-for-byte IssueChatThread.
+ * ONE expandable parent row — its status line (whimsy gerund or in-flight
+ * tool state + elapsed + tokens) is the turn's single visible line, with the
+ * chronological tool/thinking activity nested behind an expand (PAP-354).
+ * Mid-run agent text stays outside as bubbles. When the run terminates the
+ * same turn id flips settled, so the header morphs in place into the one-line
+ * "✓ Worked · …" summary (expand state preserved; runs already terminal at
+ * mount collapse instantly). Settled turns interleave after the run's last
+ * comment (comment.runId linkage) — the agent's reply bubble above, the folded
+ * activity summary below, in the slot the live parent row occupied. flag-OFF
+ * remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
   const {
@@ -296,33 +300,40 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
     if (liveRun) {
       const entries = transcriptByRun.get(liveRun.id) ?? [];
-      const children = transcriptToTaskChatItems(entries, {
+      const parsed = transcriptToTaskChatItems(entries, {
         runId: liveRun.id,
         agentName: liveRun.agentName,
         running: true,
-      }).filter((it): it is TaskChatTurnChildItem => it.kind !== "turn");
-      if (children.length > 0) {
-        out.push({
-          id: `${liveRun.id}:turn`,
-          kind: "turn",
-          settled: false,
-          items: children,
-          summary: buildTurnSummary(entries),
-        });
+      });
+      // Parent-row model (PAP-354): the run's status line IS the live turn —
+      // one expandable row owning the activity. Only tool/thinking/usage rows
+      // nest inside it; mid-run agent text stays in the thread as bubbles
+      // above, so the parent row sits last — the slot its settled summary
+      // takes over in place.
+      for (const it of parsed) {
+        if (it.kind === "message") out.push(it);
       }
+      const children = parsed.filter(isNestableLiveChild);
       const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
       const queued = liveRun.status === "queued";
       const status = queued
         ? { label: "Queued", detail: "Waiting to start", toolName: undefined }
         : deriveRunStatusLabel(entries);
       out.push({
-        id: `${liveRun.id}:status`,
-        kind: "status",
-        status: "running",
-        label: status.label,
-        detail: status.detail,
-        toolName: status.toolName,
-        startedAtMs: startedAt ?? undefined,
+        id: `${liveRun.id}:turn`,
+        kind: "turn",
+        settled: false,
+        items: children,
+        summary: buildTurnSummary(entries),
+        liveStatus: {
+          id: `${liveRun.id}:status`,
+          kind: "status",
+          status: "running",
+          label: status.label,
+          detail: status.detail,
+          toolName: status.toolName,
+          startedAtMs: startedAt ?? undefined,
+        },
       });
     }
     return out;

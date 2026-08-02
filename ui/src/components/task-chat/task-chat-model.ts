@@ -178,15 +178,23 @@ export type TaskChatTurnChildItem =
 /**
  * One agent turn's activity (thinking/tools/diffs) grouped so a finished turn
  * can fold into a one-line expandable summary ("✓ Worked · 38s · 3 tools ·
- * +34 −3"). While `settled` is false the children render fully interleaved;
- * on the live → settled transition the fold animates (~ --motion-turn-fold),
- * while turns that load already-settled collapse instantly.
+ * +34 −3"). A live turn carrying `liveStatus` renders as a single expandable
+ * parent row headed by that status line (gerund/tool-state + elapsed +
+ * tokens); expanding nests the chronological activity underneath, and on
+ * settle the header morphs in place into the summary. The live → settled
+ * fold animates (~ --motion-turn-fold), while turns that load already-settled
+ * collapse instantly.
  */
 export interface TaskChatTurnItem {
   id: string;
   kind: "turn";
   items: TaskChatTurnChildItem[];
   settled: boolean;
+  /**
+   * The in-flight run's status line, hoisted to be THE turn's single visible
+   * row while collapsed (PAP-354 parent-row model). Absent once settled.
+   */
+  liveStatus?: TaskChatStatusItem;
   /** Animate the fold when settling (false = collapse instantly, e.g. history). */
   animateFold?: boolean;
   summary: {

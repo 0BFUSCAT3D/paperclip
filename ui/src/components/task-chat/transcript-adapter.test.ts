@@ -3,9 +3,11 @@ import type { TranscriptEntry } from "@/adapters";
 import {
   buildTurnSummary,
   deriveRunStatusLabel,
+  isNestableLiveChild,
   toolDisplayName,
   transcriptToTaskChatItems,
 } from "./transcript-adapter";
+import type { TaskChatItem } from "./task-chat-model";
 
 const TS = "2026-07-31T12:00:00.000Z";
 
@@ -206,5 +208,32 @@ describe("deriveRunStatusLabel with generic tail updates", () => {
     expect(status.label).toBe("Running a command");
     expect(status.toolName).toBe("Terminal");
     expect(status.detail).toBe("Terminal · pnpm test");
+  });
+});
+
+describe("isNestableLiveChild", () => {
+  const items: TaskChatItem[] = [
+    { id: "t", kind: "tool", name: "Read", status: "completed" },
+    { id: "th", kind: "thinking", lines: ["hm"] },
+    { id: "u", kind: "usage", usage: { used: 1, size: 2 } },
+    { id: "m", kind: "message", author: "agent", text: "self-talk" },
+    { id: "mk", kind: "marker", variant: "session_start", label: "Session started" },
+    { id: "s", kind: "status", status: "running", label: "Running" },
+    { id: "i", kind: "interaction", interaction: {} as never },
+  ];
+
+  it("nests only tool, thinking and usage rows inside the live parent row", () => {
+    expect(items.filter(isNestableLiveChild).map((it) => it.kind)).toEqual([
+      "tool",
+      "thinking",
+      "usage",
+    ]);
+  });
+
+  it("keeps messages, markers, statuses and interactions in the thread", () => {
+    for (const kind of ["message", "marker", "status", "interaction"]) {
+      const item = items.find((it) => it.kind === kind)!;
+      expect(isNestableLiveChild(item)).toBe(false);
+    }
   });
 });

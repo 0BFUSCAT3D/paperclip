@@ -96,17 +96,42 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         ],
       };
     case "working":
+      // Parent-row live turn (PAP-354): the tool-state line owns the activity;
+      // expanding nests the chronological history underneath.
       return {
         surface: "thread",
         items: [
-          { id: "st-working", kind: "status", status: "working", label: "Editing files", detail: "Edit · server/src/routes/auth.ts", toolName: "Edit", startedAtMs: Date.now() - 4200 },
+          ...exchangePrefix(),
+          {
+            id: "turn-working",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 2, added: 0, removed: 0 },
+            liveStatus: { id: "st-working", kind: "status", status: "working", label: "Editing files", detail: "Edit · server/src/routes/auth.ts", toolName: "Edit", startedAtMs: Date.now() - 4200 },
+            items: [
+              { id: "w-read", kind: "tool", name: "Read", target: "server/src/routes/auth.ts", toolKind: "read", status: "completed" },
+              { id: "w-edit", kind: "tool", name: "Edit", target: "server/src/routes/auth.ts", toolKind: "edit", status: "in_progress" },
+            ],
+          },
         ],
       };
     case "running":
+      // Generic label → the parent row header rotates whimsical gerunds.
       return {
         surface: "thread",
         items: [
-          { id: "st-running", kind: "status", status: "running", label: "Running", detail: "no output for 3s — still running", startedAtMs: Date.now() - 12000, tokens: { used: 18240, size: 200000 } },
+          ...exchangePrefix(),
+          {
+            id: "turn-running",
+            kind: "turn",
+            settled: false,
+            summary: { toolCount: 1, added: 0, removed: 0 },
+            liveStatus: { id: "st-running", kind: "status", status: "running", label: "Running", detail: "no output for 3s — still running", startedAtMs: Date.now() - 12000, tokens: { used: 18240, size: 200000 } },
+            items: [
+              { id: "r-think", kind: "thinking", lines: ["The login route is in server/src/routes/auth.ts.", "Check for an existing limiter before writing one."] },
+              { id: "r-grep", kind: "tool", name: "Grep", target: "rateLimit", toolKind: "search", status: "completed" },
+            ],
+          },
         ],
       };
     case "completed":

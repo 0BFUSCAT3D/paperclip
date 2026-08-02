@@ -106,7 +106,13 @@ export function TaskChatThreadView({
     if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);
     if (it.kind === "tool") return (it.diff?.lines?.length ?? 0) + (it.status === "completed" ? 1 : 0);
     if (it.kind === "turn") {
-      return it.settled ? 1 : it.items.reduce((n, child) => n + signatureOf(child), it.items.length);
+      if (it.settled) return 1;
+      // The live parent row's header changes (gerund ↔ tool-state flashes)
+      // count too, so the collapsed single-line turn still advances the key.
+      const headerSig = it.liveStatus
+        ? it.liveStatus.label.length + (it.liveStatus.detail?.length ?? 0)
+        : 0;
+      return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
     }
     return 1;
   };

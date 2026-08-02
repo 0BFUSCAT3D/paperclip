@@ -10,6 +10,7 @@ import type {
   TaskChatDiff,
   TaskChatItem,
   TaskChatToolItem,
+  TaskChatTurnChildItem,
   TaskChatTurnItem,
 } from "./task-chat-model";
 import { isGenericToolName, mcpToolSegment, toolTaxonomy } from "./tool-taxonomy";
@@ -24,6 +25,16 @@ const TERMINAL_STATUSES = new Set([
 
 export function isTerminalRunStatus(status: string | undefined | null): boolean {
   return status != null && TERMINAL_STATUSES.has(status);
+}
+
+/**
+ * The live parent row's nesting rule (PAP-354): only activity rows — tool
+ * calls, thinking blocks, usage readouts — nest inside the expandable live
+ * turn. Messages (mid-run self-talk, the streaming reply), markers, statuses
+ * and interaction cards stay in the thread outside it.
+ */
+export function isNestableLiveChild(item: TaskChatItem): item is TaskChatTurnChildItem {
+  return item.kind === "tool" || item.kind === "thinking" || item.kind === "usage";
 }
 
 function diffKind(changeType: string): "add" | "remove" | "context" {

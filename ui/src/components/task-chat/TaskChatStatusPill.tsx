@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import { Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
+import { ChevronRight, Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
 import { statusLabelIcon, toolTaxonomy } from "./tool-taxonomy";
 import { isGenericStatusLabel, whimsyWord } from "./status-whimsy";
@@ -43,6 +43,12 @@ const CONFIG = {
 interface TaskChatStatusPillProps {
   item: TaskChatStatusItem;
   onApprovalDecision?: (optionId: string) => void;
+  /**
+   * When set, the live line is the header of an expandable parent row
+   * (TaskChatTurn): render a trailing chevron reflecting the open state —
+   * the same expand grammar as tool rows and the settled "Worked ·" line.
+   */
+  chevronOpen?: boolean;
 }
 
 /**
@@ -52,7 +58,7 @@ interface TaskChatStatusPillProps {
  * card chrome — awaiting-approval elevates with an attention pulse and
  * exposes the ACP permission options as actions.
  */
-export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusPillProps) {
+export function TaskChatStatusPill({ item, onApprovalDecision, chevronOpen }: TaskChatStatusPillProps) {
   const { Icon, spin, tone } = CONFIG[item.status];
   const awaiting = item.status === "awaiting_approval";
   const live = item.status === "running" || item.status === "working";
@@ -95,6 +101,12 @@ export function TaskChatStatusPill({ item, onApprovalDecision }: TaskChatStatusP
             </span>
           ) : null}
         </span>
+        {chevronOpen !== undefined ? (
+          <ChevronRight
+            className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}
+            aria-hidden
+          />
+        ) : null}
       </div>
     );
   }
