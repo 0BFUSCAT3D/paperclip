@@ -20,7 +20,7 @@ function liveElapsedLabel(ms?: number): string | null {
   return `${Math.floor(s / 60)}m ${(s % 60).toFixed(1)}s`;
 }
 
-/** Elapsed ms since `startedAtMs`, ticking every 100ms while `live`. */
+/** Elapsed ms since `startedAtMs`, ticking ten times a second while `live`. */
 function useLiveElapsedMs(startedAtMs: number | undefined, live: boolean): number | undefined {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

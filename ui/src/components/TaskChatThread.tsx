@@ -76,6 +76,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     activeRun,
     onAttachImage,
     imageUploadHandler,
+    mentions,
     enableReassign,
     reassignOptions,
     currentAssigneeValue,
@@ -390,6 +391,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             disabledReason={composerDisabledReason}
             onAttachImage={onAttachImage}
             onImageUpload={imageUploadHandler}
+            mentions={mentions}
             enableReassign={enableReassign}
             reassignOptions={reassignOptions}
             currentAssigneeValue={currentAssigneeValue}
