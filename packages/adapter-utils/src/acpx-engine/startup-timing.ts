@@ -432,6 +432,12 @@ export interface StartupStepMeasureOptions {
    * parallel bridges) pass `false`; every other step defaults to `true`.
    */
   criticalPath?: boolean;
+  /**
+   * Report the step wall time (float ms) once the step settles. The executor
+   * accumulates it into the root-span work sum. A throwing reporter never
+   * changes startup control flow.
+   */
+  onWallMs?: (wallMs: number) => void;
 }
 
 function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
@@ -558,11 +564,77 @@ export async function measureStartupStep<T>(
     }
 
     try {
+      options.onWallMs?.(durationMs);
+    } catch {
+      // Observability must not change startup control flow.
+    }
+
+    try {
       await ctx.onEvent?.(buildStepEvent(payload));
     } catch {
       // Observability must not change startup control flow.
     }
   }
+}
+
+/**
+ * The two root-span timing numbers. `wallMs` is the root span's own wall time.
+ * `workMs` is the sum of the step wall times. The difference (`workMs − wallMs`)
+ * is the overlap the parallel steps saved.
+ */
+export interface SandboxRootSpanTimings {
+  wallMs: number;
+  workMs: number;
+}
+
+/**
+ * The low-cardinality root-span context. Each field is optional and omitted
+ * when absent (fail open — never an invented value). The helper below bounds
+ * each value: `provider` through `normalizeProviderFamily`, `region` through a
+ * small allowlist, and each id or image through a non-reversible hash.
+ */
+export interface SandboxRootSpanContext {
+  coldStart?: boolean;
+  provider?: string;
+  region?: string;
+  imageId?: string;
+  sandboxId?: string;
+  leaseId?: string;
+}
+
+/**
+ * Assemble every root-span (`sandbox.startup`) attribute in one place. This is
+ * the single producer-side boundary for the root span: it sets only the closed
+ * `paperclip.sandbox.startup.` allowlist. It records the wall, work, and diff
+ * times, and the bounded context. A raw id, an image reference, or a region
+ * never rides the span un-bounded, and an absent value sets no attribute.
+ */
+export function setSandboxRootSpanAttributes(
+  span: StartupSpan,
+  timings: SandboxRootSpanTimings,
+  context: SandboxRootSpanContext,
+): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  setFiniteNumberAttr(span, A.rootWallMs, timings.wallMs);
+  setFiniteNumberAttr(span, A.rootWorkMs, timings.workMs);
+  setFiniteNumberAttr(span, A.rootDiffMs, timings.workMs - timings.wallMs);
+  if (context.coldStart !== undefined) span.setAttribute(A.coldStart, context.coldStart);
+  if (context.provider !== undefined) {
+    span.setAttribute(A.provider, normalizeProviderFamily(context.provider));
+  }
+  // A region rides only when a value is present; an unknown region maps to
+  // `unknown`, never a free-form string.
+  if (context.region !== undefined) {
+    const region = clampSpanLabel("region", context.region);
+    if (region !== undefined) span.setAttribute(A.region, region);
+  }
+  // The image id and the ids ride only as non-reversible hashes.
+  const imageId = clampSpanLabel("image_id", context.imageId);
+  if (imageId !== undefined) span.setAttribute(A.imageId, imageId);
+  const sandboxId = clampSpanLabel("sandbox_id", context.sandboxId);
+  if (sandboxId !== undefined) span.setAttribute(A.sandboxId, sandboxId);
+  const leaseId = clampSpanLabel("lease_id", context.leaseId);
+  if (leaseId !== undefined) span.setAttribute(A.leaseId, leaseId);
 }
 
 /** The options a skipped step reuses from a measured step: the tracer, the root

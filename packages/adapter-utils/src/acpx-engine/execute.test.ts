@@ -285,9 +285,19 @@ function createRecordingStartupTrace() {
 // `paperclip.sandbox.startup.` prefix from the attribute contract.
 const A = SANDBOX_STARTUP_SPAN_ATTRS;
 const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set<string>([
+  // Step-span keys.
   A.provider,
   A.stepWallMs,
   A.outcome,
+  // Root-span keys.
+  A.rootWallMs,
+  A.rootWorkMs,
+  A.rootDiffMs,
+  A.coldStart,
+  A.region,
+  A.imageId,
+  A.sandboxId,
+  A.leaseId,
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
@@ -3232,6 +3242,50 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       expect(span.parent, `span "${span.name}" must parent to the root`).toBe(rootSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);
     }
+  });
+
+  it("records root wall / work / diff times and the bounded context on the root span", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    // A plugin-backed target with a lease id. The provider clamps to `plugin`
+    // and the lease id rides only as a hash.
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      leaseId: "lease-super-secret-internal-id",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    expect(rootSpan).toBeTruthy();
+    // The three timing numbers are present, finite, and non-negative.
+    for (const key of [A.rootWallMs, A.rootWorkMs, A.rootDiffMs]) {
+      expect(typeof rootSpan!.attributes[key], `attribute ${key}`).toBe("number");
+      expect(Number.isFinite(rootSpan!.attributes[key] as number)).toBe(true);
+    }
+    expect(rootSpan!.attributes[A.rootWorkMs] as number).toBeGreaterThanOrEqual(0);
+    // A cold start (no warm handle) and the clamped provider family.
+    expect(rootSpan!.attributes[A.coldStart]).toBe(true);
+    expect(rootSpan!.attributes[A.provider]).toBe("plugin");
+    // The lease id rides only as a non-reversible hash, never the raw value.
+    expect(rootSpan!.attributes[A.leaseId]).toMatch(/^[0-9a-f]{12}$/);
+    expect(String(rootSpan!.attributes[A.leaseId])).not.toContain("secret");
+    // The absent region, image id, and sandbox id set no attribute (fail open).
+    expect(rootSpan!.attributes).not.toHaveProperty(A.region);
+    expect(rootSpan!.attributes).not.toHaveProperty(A.imageId);
+    expect(rootSpan!.attributes).not.toHaveProperty(A.sandboxId);
   });
 
   it("parents both concurrent bridge spans to the root (neither orphans)", async () => {

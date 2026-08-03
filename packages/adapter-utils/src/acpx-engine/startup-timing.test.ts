@@ -9,6 +9,7 @@ import {
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTR_PREFIX,
   SANDBOX_STARTUP_SPAN_ATTRS,
+  setSandboxRootSpanAttributes,
 } from "./startup-timing.js";
 
 const A = SANDBOX_STARTUP_SPAN_ATTRS;
@@ -457,6 +458,48 @@ describe("measureStartupStep", () => {
     expect(A.roundTripsCount.endsWith(".count")).toBe(true);
     expect(A.providerExecSumMs.endsWith(".sum_ms")).toBe(true);
     expect(A.providerGetSumMs.endsWith(".sum_ms")).toBe(true);
+  });
+});
+
+describe("setSandboxRootSpanAttributes", () => {
+  it("records wall / work / diff and bounds the context, hashing ids and image", () => {
+    const span = new MockSpan("sandbox.startup", undefined);
+    setSandboxRootSpanAttributes(span, { wallMs: 800, workMs: 1000 }, {
+      coldStart: true,
+      provider: "acme-custom-runner",
+      region: "us-east-1",
+      imageId: "registry.internal/team/secret-codename:sha-1234",
+      sandboxId: "sbx-secret-internal-id",
+      leaseId: "lease-secret-internal-id",
+    });
+
+    expect(span.attributes[A.rootWallMs]).toBe(800);
+    expect(span.attributes[A.rootWorkMs]).toBe(1000);
+    expect(span.attributes[A.rootDiffMs]).toBe(200);
+    expect(span.attributes[A.coldStart]).toBe(true);
+    // Provider clamps to the bounded family; region stays a known value.
+    expect(span.attributes[A.provider]).toBe("plugin");
+    expect(span.attributes[A.region]).toBe("us-east-1");
+    // The image id and both ids ride only as non-reversible hashes.
+    for (const key of [A.imageId, A.sandboxId, A.leaseId]) {
+      expect(String(span.attributes[key])).toMatch(/^[0-9a-f]{12}$/);
+    }
+    for (const value of Object.values(span.attributes).map(String)) {
+      expect(value).not.toContain("secret");
+      expect(value).not.toContain("codename");
+      expect(value).not.toContain("registry.internal");
+    }
+  });
+
+  it("maps an unknown region to `unknown` and omits every absent context value", () => {
+    const span = new MockSpan("sandbox.startup", undefined);
+    setSandboxRootSpanAttributes(span, { wallMs: 5, workMs: 5 }, { region: "moon-base-1" });
+    expect(span.attributes[A.region]).toBe("unknown");
+    expect(span.attributes).not.toHaveProperty(A.coldStart);
+    expect(span.attributes).not.toHaveProperty(A.provider);
+    expect(span.attributes).not.toHaveProperty(A.imageId);
+    expect(span.attributes).not.toHaveProperty(A.sandboxId);
+    expect(span.attributes).not.toHaveProperty(A.leaseId);
   });
 });
 
