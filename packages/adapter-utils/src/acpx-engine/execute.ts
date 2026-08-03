@@ -878,13 +878,17 @@ async function prepareClaudeSkillRuntime(input: {
   });
 
   const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
-  const promptInstructions = selectedSkills.length > 0
+  const materializedNames = materializedSkills.map((entry) => entry.runtimeName).sort();
+  // Like `loaded`/`invoked` above, the prompt may only advertise skills whose
+  // copies actually landed on disk — a failed materialization must not
+  // instruct the session to read an absent SKILL.md.
+  const promptInstructions = materializedNames.length > 0
     ? [
         "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
         `Skill root: ${skillsHome}`,
-        selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
+        `Selected skills: ${materializedNames.join(", ")}`,
         "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
-      ].filter(Boolean).join("\n")
+      ].join("\n")
     : "";
 
   return {
@@ -896,8 +900,8 @@ async function prepareClaudeSkillRuntime(input: {
       skillRoot: selectedSkills.length > 0 ? skillsHome : null,
     },
     promptInstructions,
-    commandNotes: selectedSkills.length > 0
-      ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
+    commandNotes: materializedSkills.length > 0
+      ? [`Materialized ${materializedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
     // Like `loaded` above, invoked detection may only resolve skills the
     // session can actually read, so the context excludes failed copies.
@@ -1048,6 +1052,12 @@ async function prepareCodexSkillRuntime(input: {
       );
     }
   }
+  // The manifest tracks which skillsHome paths Paperclip OWNS (reconcile uses
+  // it to revoke on deselect), not which copies succeeded this run. It must
+  // keep listing a skill whose re-copy failed: a prior run's copy may still be
+  // on disk, and dropping the name here would orphan that copy forever. Codex
+  // discovers skills by directory scan, so a failed copy with no prior
+  // materialization is simply absent and never advertised to the runtime.
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
   // Usage analytics only counts skills the session can actually read, so
   // `loaded` skips entries whose materialization failed above.

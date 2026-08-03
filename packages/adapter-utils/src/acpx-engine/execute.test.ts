@@ -135,6 +135,7 @@ function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
   onEnsureSession?: (input: Record<string, unknown>) => void,
   runtimeEvents: AcpRuntimeEvent[] = [],
+  onStartTurn?: (input: Record<string, unknown>) => void,
 ) {
   return {
     ensureSession: async (input: Record<string, unknown>) => {
@@ -145,14 +146,17 @@ function buildRuntime(
       runtimeSessionName: "runtime-session",
       });
     },
-    startTurn: () => ({
-      events: (async function* () {
-        for (const event of runtimeEvents) yield event;
-        yield { type: "done", stopReason: "end_turn" };
-      })(),
-      result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
-      cancel: async () => {},
-    }),
+    startTurn: (input: Record<string, unknown>) => {
+      onStartTurn?.(input);
+      return ({
+        events: (async function* () {
+          for (const event of runtimeEvents) yield event;
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+        cancel: async () => {},
+      });
+    },
     setConfigOption: async (input: { key: string; value: string }) => {
       onSetConfigOption?.(input);
     },
@@ -176,6 +180,7 @@ async function runExecutor(
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
   const sessionInputs: Record<string, unknown>[] = [];
+  const turnInputs: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
@@ -189,6 +194,7 @@ async function runExecutor(
         ({ key, value }) => configOptions.push({ key, value }),
         (input) => sessionInputs.push(input),
         options.runtimeEvents,
+        (input) => turnInputs.push(input),
       ) as never;
     },
   });
@@ -219,7 +225,7 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
+  return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
 }
 
 // A recording span, used only in tests. It captures the span name, the parent
@@ -832,6 +838,31 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(logs.some((log) =>
       log.stream === "stderr" && log.text.includes(`Failed to materialize ACPX Claude skill "${broken.key}"`),
     )).toBe(true);
+  });
+
+  it("does not advertise Claude skills that fail to materialize in the turn prompt", async () => {
+    const root = await makeTempRoot();
+    const good = await createSkill(root, "coach");
+    const brokenSource = path.join(root, "broken-source");
+    await fs.writeFile(brokenSource, "not a skill directory", "utf8");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { turnInputs } = await runExecutor({
+      agent: "claude",
+      stateDir: path.join(root, "state"),
+      paperclipRuntimeSkills: [good, broken],
+      paperclipSkillSync: { desiredSkills: [good.key, broken.key] },
+    });
+
+    expect(turnInputs).toHaveLength(1);
+    const promptText = String(turnInputs[0]!.text ?? "");
+    expect(promptText).toContain(`Selected skills: ${good.runtimeName}`);
+    expect(promptText).not.toContain(broken.runtimeName);
   });
 
   it("emits one invoked event when Claude invokes a selected skill", async () => {
