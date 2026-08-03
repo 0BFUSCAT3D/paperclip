@@ -20,6 +20,8 @@ import type {
   CompanySkillInstallCatalogResult,
   CompanySkillListQuery,
   CompanySkillListItem,
+  CompanySkillProjectBrowseRequest,
+  CompanySkillProjectBrowseResult,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillStarResult,
@@ -231,6 +233,11 @@ export const companySkillsApi = {
     api.post<CompanySkillImportResult>(
       `/companies/${encodeURIComponent(companyId)}/skills/import`,
       { source },
+    ),
+  browseProject: (companyId: string, payload: CompanySkillProjectBrowseRequest) =>
+    api.post<CompanySkillProjectBrowseResult>(
+      `/companies/${encodeURIComponent(companyId)}/skills/browse-project`,
+      payload,
     ),
   scanProjects: (companyId: string, payload: CompanySkillProjectScanRequest = {}) =>
     api.post<CompanySkillProjectScanResult>(
