@@ -3,6 +3,7 @@ import type { AdapterRuntimeEvent } from "../types.js";
 import type { StartupSpan, StartupTracer } from "./startup-timing.js";
 import {
   clampSpanLabel,
+  emitSkippedStartupStep,
   getActiveStepContext,
   measureStartupStep,
   normalizeProviderFamily,
@@ -280,7 +281,7 @@ describe("measureStartupStep", () => {
     expect(spans[0]!.status?.code).toBe(2);
   });
 
-  it("sets the same roundTrips / providerExecMs / providerGetMs deltas on the payload and the span", async () => {
+  it("keeps the roundTrips / providerExecMs / providerGetMs deltas on the payload but off the span", async () => {
     let t = 0;
     const now = () => t;
     let execCount = 5;
@@ -305,15 +306,16 @@ describe("measureStartupStep", () => {
       providerGetMs: () => getMs,
     });
 
+    // The counter deltas still ride the event payload.
     const payload = events[0]!.payload as Record<string, unknown>;
     expect(payload.roundTrips).toBe(3);
     expect(payload.providerExecMs).toBe(600);
     expect(payload.providerGetMs).toBe(15);
-    // The span carries the identical deltas under the type-suffixed keys — one
-    // build block feeds both the payload and the span.
-    expect(spans[0]!.attributes[A.roundTripsCount]).toBe(3);
-    expect(spans[0]!.attributes[A.providerExecSumMs]).toBe(600);
-    expect(spans[0]!.attributes[A.providerGetSumMs]).toBe(15);
+    // The per-execution `sandbox.exec` spans now carry the round-trip detail, so
+    // the step span no longer duplicates it.
+    expect(spans[0]!.attributes).not.toHaveProperty(A.roundTripsCount);
+    expect(spans[0]!.attributes).not.toHaveProperty(A.providerExecSumMs);
+    expect(spans[0]!.attributes).not.toHaveProperty(A.providerGetSumMs);
   });
 
   it("sets no span attribute (and no payload field) when a reader returns undefined", async () => {
@@ -382,13 +384,7 @@ describe("measureStartupStep", () => {
     });
 
     expect(Object.keys(spans[0]!.attributes).sort()).toEqual(
-      [
-        A.provider,
-        A.providerExecSumMs,
-        A.providerGetSumMs,
-        A.roundTripsCount,
-        A.stepWallMs,
-      ].sort(),
+      [A.provider, A.stepWallMs, A.outcome].sort(),
     );
     // extra() keys stay off the span.
     expect(spans[0]!.attributes).not.toHaveProperty("createRuntimeMs");
@@ -422,6 +418,24 @@ describe("measureStartupStep", () => {
     expect(events[0]!.payload).toMatchObject({ step: "stage.sync" });
   });
 
+  it("sets outcome = ok on a settled step and outcome = failed on a throwing step", async () => {
+    const okEvents: AdapterRuntimeEvent[] = [];
+    const ok = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async (e: AdapterRuntimeEvent) => { okEvents.push(e); }) },
+      () => 0, "stage.sync", async () => "ok", { tracer: ok.tracer });
+    expect(ok.spans[0]!.attributes[A.outcome]).toBe("ok");
+    expect((okEvents[0]!.payload as Record<string, unknown>).outcome).toBe("ok");
+
+    const failEvents: AdapterRuntimeEvent[] = [];
+    const fail = makeMockTracer();
+    await expect(
+      measureStartupStep({ onEvent: vi.fn(async (e: AdapterRuntimeEvent) => { failEvents.push(e); }) },
+        () => 0, "acp.handshake", async () => { throw new Error("boom"); }, { tracer: fail.tracer }),
+    ).rejects.toThrow("boom");
+    expect(fail.spans[0]!.attributes[A.outcome]).toBe("failed");
+    expect((failEvents[0]!.payload as Record<string, unknown>).outcome).toBe("failed");
+  });
+
   it("sets each step-span attribute key with the closed prefix and a type suffix", async () => {
     const { tracer, spans } = makeMockTracer();
     await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "stage.sync", async () => "ok", {
@@ -443,6 +457,40 @@ describe("measureStartupStep", () => {
     expect(A.roundTripsCount.endsWith(".count")).toBe(true);
     expect(A.providerExecSumMs.endsWith(".sum_ms")).toBe(true);
     expect(A.providerGetSumMs.endsWith(".sum_ms")).toBe(true);
+  });
+});
+
+describe("emitSkippedStartupStep", () => {
+  it("emits a span and event with outcome = skipped and a zero wall time", async () => {
+    const { tracer, spans } = makeMockTracer();
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+
+    await emitSkippedStartupStep({ onEvent }, "acp.handshake", { tracer });
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.name).toBe("acp.handshake");
+    expect(spans[0]!.attributes[A.stepWallMs]).toBe(0);
+    expect(spans[0]!.attributes[A.outcome]).toBe("skipped");
+    expect(spans[0]!.endCount).toBe(1);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.payload).toMatchObject({
+      step: "acp.handshake",
+      durationMs: 0,
+      outcome: "skipped",
+    });
+  });
+
+  it("emits the event with no injected tracer and does not throw", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    await emitSkippedStartupStep(
+      { onEvent: vi.fn(async (e: AdapterRuntimeEvent) => { events.push(e); }) },
+      "acp.handshake",
+    );
+    expect(events[0]!.payload).toMatchObject({ step: "acp.handshake", outcome: "skipped" });
   });
 });
 

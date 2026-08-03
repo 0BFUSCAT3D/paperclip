@@ -84,6 +84,7 @@ import {
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
 import {
+  emitSkippedStartupStep,
   measureStartupStep,
   NOOP_STARTUP_SPAN,
   NOOP_STARTUP_TRACE_CONTEXT,
@@ -3138,6 +3139,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             }),
           });
         }
+      } else {
+        // Warm-handle hit: a compatible cached handle reuses the running ACP
+        // agent, so the `acp.handshake` step does no work. Emit a step span and
+        // event with `outcome = skipped` and a zero wall time, so the trace and
+        // the run log show the skip as a distinct outcome, never a misleading
+        // zero-work `ok` step.
+        await emitSkippedStartupStep(ctx, "acp.handshake", {
+          tracer: prepared.stepMetrics.tracer,
+          parentContext: prepared.stepMetrics.parentContext,
+        });
       }
       // A compatible warm handle reuses the already-running ACP agent and does
       // not emit another spawn event. Persist its known identity on this run

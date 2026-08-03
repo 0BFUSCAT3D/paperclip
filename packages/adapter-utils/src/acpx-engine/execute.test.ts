@@ -287,9 +287,7 @@ const A = SANDBOX_STARTUP_SPAN_ATTRS;
 const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set<string>([
   A.provider,
   A.stepWallMs,
-  A.roundTripsCount,
-  A.providerExecSumMs,
-  A.providerGetSumMs,
+  A.outcome,
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
@@ -3563,7 +3561,7 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     expect(handshake!.payload?.ensureSessionMs as number).toBeGreaterThanOrEqual(0);
   });
 
-  it("emits no acp.handshake event when a warm-handle hit skips the handshake", async () => {
+  it("emits a skipped acp.handshake event when a warm-handle hit skips the handshake", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const warmHandles = new Map();
@@ -3589,8 +3587,9 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       onMeta: async () => {},
       onEvent: async () => {},
     } as never);
-    // The second run reuses the warm handle, so the whole handshake block is
-    // skipped — it must emit NO acp.handshake event (not a zero-duration one).
+    // The second run reuses the warm handle, so the handshake does no work. It
+    // must emit exactly one acp.handshake event with outcome = skipped and a
+    // zero wall time, not a misleading zero-work `ok` event.
     await execute({
       runId: "run-warm-2",
       agent: { id: "agent-1", companyId: "company-1" },
@@ -3604,10 +3603,12 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       },
     } as never);
 
-    const handshakeEmitted = secondEvents.some(
+    const handshakeEvents = secondEvents.filter(
       (event) => event.eventType === "run.startup.step" && event.payload?.step === "acp.handshake",
     );
-    expect(handshakeEmitted).toBe(false);
+    expect(handshakeEvents).toHaveLength(1);
+    expect(handshakeEvents[0]!.payload?.outcome).toBe("skipped");
+    expect(handshakeEvents[0]!.payload?.durationMs).toBe(0);
   });
 
   it("does not emit startup-step events on a local (non-sandbox) run except workspace.resolve", async () => {

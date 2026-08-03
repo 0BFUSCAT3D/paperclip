@@ -398,8 +398,9 @@ function finiteDelta(
  *   span path changes no runtime behavior until the server injects a real
  *   tracer. The span carries only the closed attribute allowlist from
  *   `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall time,
- *   and the finite counter deltas. The step name rides the span name, not an
- *   attribute.
+ *   and the outcome. The step name rides the span name, not an attribute. The
+ *   round-trip and provider-duration detail stays on the payload and on the
+ *   per-execution `sandbox.exec` child spans.
  * - `parentContext` — an opaque parent-context token from the root span. When
  *   set, the step's span parents to that root. `measureStartupStep` forwards it
  *   to `startSpan` and never inspects it, so parenting stays explicit and does
@@ -458,10 +459,9 @@ function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
  * When `options.tracer` is injected, the helper also opens one span at `start`
  * and ends it in the `finally`. The span carries a closed attribute allowlist
  * from `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall
- * time, and the finite counter deltas (round trips, provider exec sum, provider
- * get sum). The step name rides the span name. A throwing `fn` sets the
- * span error status before the span ends. The span build reuses the same delta
- * values as the event payload, so the two paths never drift. The tracer
+ * time, and the outcome (`ok` or `failed`). The step name rides the span name.
+ * A throwing `fn` sets the span error status before the span ends and the
+ * outcome is `failed`. The counter deltas stay on the event payload. The tracer
  * defaults to a no-op, so a caller with no tracer changes nothing. Every span
  * call sits inside the same error swallow as the event sink, so a throwing
  * tracer never changes startup control flow.
@@ -529,7 +529,13 @@ export async function measureStartupStep<T>(
     const providerExecMs = finiteDelta(options.providerExecMs, providerExecStart);
     const providerGetMs = finiteDelta(options.providerGetMs, providerGetStart);
 
-    const payload: Record<string, unknown> = { step, durationMs };
+    // The step outcome. A throwing `fn` is `failed`; a settled `fn` is `ok`. A
+    // step that a warm cache skips uses `emitSkippedStartupStep` instead.
+    const outcome: SandboxStartupOutcome = stepFailed
+      ? SANDBOX_STARTUP_OUTCOME.failed
+      : SANDBOX_STARTUP_OUTCOME.ok;
+
+    const payload: Record<string, unknown> = { step, durationMs, outcome };
     if (roundTrips !== undefined) payload.roundTrips = roundTrips;
     if (providerExecMs !== undefined) payload.providerExecMs = providerExecMs;
     if (providerGetMs !== undefined) payload.providerGetMs = providerGetMs;
@@ -541,10 +547,11 @@ export async function measureStartupStep<T>(
 
     try {
       if (stepFailed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
+      // The step span carries only the step wall time and the outcome. The
+      // per-execution `sandbox.exec` child spans now carry the round-trip and
+      // provider-duration detail, so the step span no longer duplicates them.
       setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.stepWallMs, durationMs);
-      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.roundTripsCount, roundTrips);
-      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.providerExecSumMs, providerExecMs);
-      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.providerGetSumMs, providerGetMs);
+      span.setAttribute(SANDBOX_STARTUP_SPAN_ATTRS.outcome, outcome);
       span.end();
     } catch {
       // Observability must not change startup control flow.
@@ -555,5 +562,56 @@ export async function measureStartupStep<T>(
     } catch {
       // Observability must not change startup control flow.
     }
+  }
+}
+
+/** The options a skipped step reuses from a measured step: the tracer, the root
+ * parent-context token, and the raw provider key. */
+export type SkippedStartupStepOptions = Pick<
+  StartupStepMeasureOptions,
+  "tracer" | "parentContext" | "provider"
+>;
+
+/**
+ * Emit one `run.startup.step` span and event for a step that a warm cache
+ * skips, with `outcome = skipped` and a zero wall time. A skipped step runs no
+ * work, so this helper opens and ends the span without a body. It shows the
+ * skip as a real, distinct outcome, never a misleading zero-work `ok` step.
+ *
+ * The span and the event carry the closed allowlist: the step name (the span
+ * name), the normalized `provider` (when given), `step.wall_ms = 0`, and
+ * `outcome = skipped`. Every tracer and sink call sits inside an error swallow,
+ * so a throwing tracer or sink never changes startup control flow. The tracer
+ * defaults to a no-op, so a caller with no tracer only emits the event.
+ */
+export async function emitSkippedStartupStep(
+  ctx: Pick<AdapterExecutionContext, "onEvent">,
+  step: string,
+  options: SkippedStartupStepOptions = {},
+): Promise<void> {
+  const tracer = options.tracer ?? NOOP_TRACER;
+  const startAttributes: Record<string, string> = {};
+  if (options.provider !== undefined) {
+    startAttributes[SANDBOX_STARTUP_SPAN_ATTRS.provider] = normalizeProviderFamily(options.provider);
+  }
+  let span: StartupSpan;
+  try {
+    span = tracer.startSpan(step, { attributes: startAttributes }, options.parentContext);
+  } catch {
+    span = NOOP_SPAN;
+  }
+  try {
+    span.setAttribute(SANDBOX_STARTUP_SPAN_ATTRS.stepWallMs, 0);
+    span.setAttribute(SANDBOX_STARTUP_SPAN_ATTRS.outcome, SANDBOX_STARTUP_OUTCOME.skipped);
+    span.end();
+  } catch {
+    // Observability must not change startup control flow.
+  }
+  try {
+    await ctx.onEvent?.(
+      buildStepEvent({ step, durationMs: 0, outcome: SANDBOX_STARTUP_OUTCOME.skipped }),
+    );
+  } catch {
+    // Observability must not change startup control flow.
   }
 }
