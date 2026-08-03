@@ -110,6 +110,12 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   handshakeEnsureSessionWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}handshake.ensure_session.wall_ms`,
   /** A shared low-cardinality tag that marks two steps as one parallel batch. */
   batch: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}batch`,
+  /** The host-local wall time of the pack step (build the tarball). */
+  packWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}pack.wall_ms`,
+  /** The wall time of the transfer step (upload the files to the sandbox). */
+  transferWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.wall_ms`,
+  /** The number of serial guard round trips before one transfer. */
+  transferGuardCount: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}transfer.guard.count`,
 } as const;
 
 /** The closed value set for the `outcome` attribute. */

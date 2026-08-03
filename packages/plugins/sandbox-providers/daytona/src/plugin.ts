@@ -9,8 +9,10 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin, NOOP_PLUGIN_TRACER } from "@paperclipai/plugin-sdk";
 import type {
+  PluginContext,
+  PluginTracer,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentCancelInteractiveSetupResult,
@@ -45,6 +47,33 @@ import { performSyncIn, performSyncOut } from "./file-sync.js";
 // `setDaytonaTimingClockForTest` so the measured `durationMs`/`getDurationMs`
 // are deterministic. The timing path never calls `Date.now()` directly.
 let timingNow: () => number = () => Date.now();
+
+// The plugin context, hoisted to a module variable in `setup(ctx)`. The
+// lifecycle hooks and the file-sync helpers have no closure over `ctx`, so they
+// read the tracer through `getPluginTracer()`. Before `setup` runs (or in a
+// test) the tracer is a no-op, so a span never throws.
+let pluginContext: PluginContext | null = null;
+
+/**
+ * Return the plugin tracer. It is the injected `ctx.tracer` after `setup`, or a
+ * no-op before it. A provider span opened through it records only when tracing
+ * is on and an active host trace context is present.
+ */
+export function getPluginTracer(): PluginTracer {
+  return pluginContext?.tracer ?? NOOP_PLUGIN_TRACER;
+}
+
+/**
+ * Test seam: set the module-level plugin context, and return a restore function.
+ * `plugin.test.ts` uses it to inject a recording tracer without running `setup`.
+ */
+export function __setDaytonaPluginContextForTest(ctx: PluginContext | null): () => void {
+  const previous = pluginContext;
+  pluginContext = ctx;
+  return () => {
+    pluginContext = previous;
+  };
+}
 
 /**
  * Test seam: override the provider-timing clock and return a restore function.
@@ -1507,6 +1536,9 @@ async function executeOneShot(
 
 const plugin = definePlugin({
   async setup(ctx) {
+    // Hoist the context to a module variable so the lifecycle hooks and the
+    // file-sync helpers can read `ctx.tracer` — they have no closure over `ctx`.
+    pluginContext = ctx;
     ctx.logger.info("Daytona sandbox provider plugin ready");
   },
 
