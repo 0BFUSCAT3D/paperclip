@@ -33,8 +33,10 @@ import plugin, {
   setDaytonaHandleFreshnessClockForTest,
   __resetDaytonaSandboxHandleCacheForTest,
   __getDaytonaWritableDirsForTest,
+  __setDaytonaPluginContextForTest,
   buildBwrapCommand,
 } from "./plugin.js";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 
 function createMockSandbox(overrides: {
@@ -2665,6 +2667,117 @@ describe("daytona native file-sync hooks", () => {
     expect(result).toEqual({
       operations: [{ operationId: "sync-op-1", filesTransferred: 2, bytesTransferred: "credential-material".length + "plain".length }],
     });
+  });
+
+  // A recording tracer that captures every provider span the file sync opens.
+  // It satisfies the structural plugin tracer contract.
+  function createRecordingPluginTracer() {
+    const spans: Array<{
+      name: string;
+      attributes: Record<string, unknown>;
+      status: { code: number; message?: string } | null;
+      ended: boolean;
+    }> = [];
+    const tracer = {
+      startSpan(name: string, options?: { attributes?: Record<string, string | number | boolean> }) {
+        const span = {
+          name,
+          attributes: { ...(options?.attributes ?? {}) } as Record<string, unknown>,
+          status: null as { code: number; message?: string } | null,
+          ended: false,
+          setAttribute(key: string, value: unknown) {
+            span.attributes[key] = value;
+          },
+          setStatus(status: { code: number; message?: string }) {
+            span.status = status;
+          },
+          end() {
+            span.ended = true;
+          },
+        };
+        spans.push(span);
+        return span;
+      },
+    };
+    return { tracer, spans };
+  }
+
+  it("opens a transfer span with the guard round-trip count around the bulk file upload", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "config.txt");
+    await fs.writeFile(source, "plain");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-1",
+            files: [{ sourcePath: source, targetPath: `${REMOTE_DIR}/config.txt`, kind: "file" }],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    const transfer = spans.find((span) => span.name === "transfer");
+    expect(transfer).toBeDefined();
+    expect(transfer!.ended).toBe(true);
+    // The two serial guard round trips before the transfer: mkdir + confinement.
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
+    expect(transfer!.attributes["paperclip.sandbox.startup.provider"]).toBe("daytona");
+    expect(typeof transfer!.attributes["paperclip.sandbox.startup.transfer.wall_ms"]).toBe("number");
+    // A bulk file upload builds no host tarball, so it opens no pack span.
+    expect(spans.find((span) => span.name === "pack")).toBeUndefined();
+  });
+
+  it("opens a pack span and a transfer span around a directory mapping sync", async () => {
+    const hostDir = await makeHostDir();
+    const sourceDir = path.join(hostDir, "assets");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "a.txt"), "alpha");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const { tracer, spans } = createRecordingPluginTracer();
+    const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+    try {
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-dir",
+            files: [
+              { sourcePath: sourceDir, targetPath: `${REMOTE_DIR}/.paperclip-runtime/assets`, kind: "directory" },
+            ],
+          },
+        ],
+      });
+    } finally {
+      restore();
+    }
+
+    const pack = spans.find((span) => span.name === "pack");
+    expect(pack).toBeDefined();
+    expect(pack!.ended).toBe(true);
+    expect(typeof pack!.attributes["paperclip.sandbox.startup.pack.wall_ms"]).toBe("number");
+
+    const transfer = spans.find((span) => span.name === "transfer");
+    expect(transfer).toBeDefined();
+    expect(transfer!.attributes["paperclip.sandbox.startup.transfer.guard.count"]).toBe(2);
   });
 
   it("syncIn tars a directory mapping host-side honoring excludes and the followSymlinks flag, then extracts it in-sandbox via a single quoted tar command", async () => {
