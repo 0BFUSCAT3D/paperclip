@@ -35,6 +35,7 @@ import {
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
+import { SANDBOX_STARTUP_SPAN_ATTRS } from "./startup-timing.js";
 
 
 const tempRoots: string[] = [];
@@ -278,15 +279,17 @@ function createRecordingStartupTrace() {
   return { traceContext, spans };
 }
 
-// The closed span-attribute allowlist for a sandbox-start span (Phase 2 + 3).
-// A test asserts every recorded attribute key is in this set, so a command,
-// path, id, or error-text key can never ride a span.
-const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set([
-  "step",
-  "provider",
-  "roundTrips",
-  "providerExecMs",
-  "providerGetMs",
+// The closed span-attribute allowlist for a sandbox-start span. A test asserts
+// every recorded attribute key is in this set, so a command, path, id, or
+// error-text key can never ride a span. Every key uses the closed
+// `paperclip.sandbox.startup.` prefix from the attribute contract.
+const A = SANDBOX_STARTUP_SPAN_ATTRS;
+const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set<string>([
+  A.provider,
+  A.stepWallMs,
+  A.roundTripsCount,
+  A.providerExecSumMs,
+  A.providerGetSumMs,
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {

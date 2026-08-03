@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterRuntimeEvent } from "../types.js";
 import type { StartupSpan, StartupTracer } from "./startup-timing.js";
-import { measureStartupStep, normalizeProviderFamily } from "./startup-timing.js";
+import {
+  clampSpanLabel,
+  measureStartupStep,
+  normalizeProviderFamily,
+  SANDBOX_STARTUP_SPAN_ATTR_PREFIX,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "./startup-timing.js";
+
+const A = SANDBOX_STARTUP_SPAN_ATTRS;
 
 /**
  * A recording span for the mock tracer. It captures the attribute set, the
@@ -247,7 +255,10 @@ describe("measureStartupStep", () => {
 
     expect(spans).toHaveLength(1);
     expect(spans[0]!.name).toBe("stage.sync");
-    expect(spans[0]!.attributes.step).toBe("stage.sync");
+    // The span name carries the step; no redundant `step` attribute rides it.
+    expect(spans[0]!.attributes).not.toHaveProperty("step");
+    // The step wall time rides the closed, type-suffixed attribute key.
+    expect(spans[0]!.attributes[A.stepWallMs]).toBe(0);
     expect(spans[0]!.endCount).toBe(1);
   });
 
@@ -297,10 +308,11 @@ describe("measureStartupStep", () => {
     expect(payload.roundTrips).toBe(3);
     expect(payload.providerExecMs).toBe(600);
     expect(payload.providerGetMs).toBe(15);
-    // The span carries the identical deltas — one build block feeds both.
-    expect(spans[0]!.attributes.roundTrips).toBe(3);
-    expect(spans[0]!.attributes.providerExecMs).toBe(600);
-    expect(spans[0]!.attributes.providerGetMs).toBe(15);
+    // The span carries the identical deltas under the type-suffixed keys — one
+    // build block feeds both the payload and the span.
+    expect(spans[0]!.attributes[A.roundTripsCount]).toBe(3);
+    expect(spans[0]!.attributes[A.providerExecSumMs]).toBe(600);
+    expect(spans[0]!.attributes[A.providerGetSumMs]).toBe(15);
   });
 
   it("sets no span attribute (and no payload field) when a reader returns undefined", async () => {
@@ -318,8 +330,8 @@ describe("measureStartupStep", () => {
       providerExecMs: () => undefined as unknown as number,
     });
 
-    expect(spans[0]!.attributes).not.toHaveProperty("roundTrips");
-    expect(spans[0]!.attributes).not.toHaveProperty("providerExecMs");
+    expect(spans[0]!.attributes).not.toHaveProperty(A.roundTripsCount);
+    expect(spans[0]!.attributes).not.toHaveProperty(A.providerExecSumMs);
     expect(Object.values(spans[0]!.attributes).some((v) => Number.isNaN(v))).toBe(false);
     const payload = events[0]!.payload as Record<string, unknown>;
     expect(payload).not.toHaveProperty("roundTrips");
@@ -334,14 +346,14 @@ describe("measureStartupStep", () => {
       tracer: custom.tracer,
       provider: "acme-cloud-runner",
     });
-    expect(custom.spans[0]!.attributes.provider).toBe("plugin");
+    expect(custom.spans[0]!.attributes[A.provider]).toBe("plugin");
 
     const builtIn = makeMockTracer();
     await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
       tracer: builtIn.tracer,
       provider: "daytona",
     });
-    expect(builtIn.spans[0]!.attributes.provider).toBe("daytona");
+    expect(builtIn.spans[0]!.attributes[A.provider]).toBe("daytona");
   });
 
   it("normalizeProviderFamily maps every non-built-in key to plugin", () => {
@@ -369,16 +381,27 @@ describe("measureStartupStep", () => {
     });
 
     expect(Object.keys(spans[0]!.attributes).sort()).toEqual(
-      ["provider", "providerExecMs", "providerGetMs", "roundTrips", "step"],
+      [
+        A.provider,
+        A.providerExecSumMs,
+        A.providerGetSumMs,
+        A.roundTripsCount,
+        A.stepWallMs,
+      ].sort(),
     );
     // extra() keys stay off the span.
     expect(spans[0]!.attributes).not.toHaveProperty("createRuntimeMs");
     expect(spans[0]!.attributes).not.toHaveProperty("ensureSessionMs");
-    // No free-form identifier / command / path key leaks in. The pattern uses
-    // no `i` flag, so the camelCase `Id` matches `runId` / `userId` but not the
-    // "id" inside the allowlisted `provider`.
+    // Every key uses the closed prefix, so no free-form command / path / id key
+    // can ride the span.
     for (const key of Object.keys(spans[0]!.attributes)) {
-      expect(key).not.toMatch(/command|args|env|stdout|stderr|path|url|repo|ref|branch|Id|_id|error|message/);
+      expect(key.startsWith(SANDBOX_STARTUP_SPAN_ATTR_PREFIX)).toBe(true);
+    }
+    // No forbidden segment (command / arg / env / output / path / raw id) rides
+    // the span key set, even after the prefix.
+    for (const key of Object.keys(spans[0]!.attributes)) {
+      const suffix = key.slice(SANDBOX_STARTUP_SPAN_ATTR_PREFIX.length);
+      expect(suffix).not.toMatch(/command|args|env|stdout|stderr|path|url|repo|ref|branch|error|message/);
     }
   });
 
@@ -396,5 +419,67 @@ describe("measureStartupStep", () => {
 
     expect(result).toBe("ok");
     expect(events[0]!.payload).toMatchObject({ step: "stage.sync" });
+  });
+
+  it("sets each step-span attribute key with the closed prefix and a type suffix", async () => {
+    const { tracer, spans } = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "stage.sync", async () => "ok", {
+      tracer,
+      provider: "daytona",
+      roundTrips: () => 3,
+      providerExecMs: () => 600,
+      providerGetMs: () => 15,
+    });
+
+    const keys = Object.keys(spans[0]!.attributes);
+    expect(keys.length).toBeGreaterThan(0);
+    for (const key of keys) {
+      expect(key.startsWith(SANDBOX_STARTUP_SPAN_ATTR_PREFIX)).toBe(true);
+    }
+    // The step wall time and the counters use their type suffixes.
+    expect(keys).toContain(A.stepWallMs);
+    expect(A.stepWallMs.endsWith(".wall_ms")).toBe(true);
+    expect(A.roundTripsCount.endsWith(".count")).toBe(true);
+    expect(A.providerExecSumMs.endsWith(".sum_ms")).toBe(true);
+    expect(A.providerGetSumMs.endsWith(".sum_ms")).toBe(true);
+  });
+});
+
+describe("clampSpanLabel", () => {
+  it("returns a known command label unchanged and maps an unknown command to `other`", () => {
+    expect(clampSpanLabel("command", "sh")).toBe("sh");
+    expect(clampSpanLabel("command", "git")).toBe("git");
+    // A full command line, a path, or a secret-like argument is not a known
+    // basename, so it maps to the bounded fallback and never leaks.
+    expect(clampSpanLabel("command", "bash -lc 'rm -rf /secret/path'")).toBe("other");
+    expect(clampSpanLabel("command", "/usr/local/bin/node")).toBe("other");
+    expect(clampSpanLabel("command", undefined)).toBe("other");
+  });
+
+  it("returns a known region unchanged and maps an unknown region to `unknown`", () => {
+    expect(clampSpanLabel("region", "us-east-1")).toBe("us-east-1");
+    expect(clampSpanLabel("region", "moon-base-1")).toBe("unknown");
+    expect(clampSpanLabel("region", undefined)).toBe("unknown");
+  });
+
+  it("hashes an id or image label to a non-reversible short digest and never returns the raw value", () => {
+    const raw = "lease-super-secret-internal-codename";
+    for (const label of ["image_id", "sandbox_id", "lease_id"]) {
+      const clamped = clampSpanLabel(label, raw);
+      expect(clamped).toBeTruthy();
+      expect(clamped).not.toBe(raw);
+      expect(clamped).not.toContain("secret");
+      expect(clamped).not.toContain("codename");
+      // A stable 12-hex-character digest prefix.
+      expect(clamped).toMatch(/^[0-9a-f]{12}$/);
+    }
+    // A missing id yields no attribute (fail open — never a raw value).
+    expect(clampSpanLabel("sandbox_id", undefined)).toBeUndefined();
+    expect(clampSpanLabel("sandbox_id", "")).toBeUndefined();
+  });
+
+  it("drops an unknown label name so the caller sets no attribute for it", () => {
+    expect(clampSpanLabel("nonsense", "anything")).toBeUndefined();
+    expect(clampSpanLabel("stdout", "secret output")).toBeUndefined();
   });
 });

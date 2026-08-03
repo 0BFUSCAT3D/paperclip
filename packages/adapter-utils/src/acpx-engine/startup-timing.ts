@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AdapterExecutionContext, AdapterRuntimeEvent } from "../types.js";
 
 /**
@@ -37,6 +38,183 @@ const PLUGIN_PROVIDER_FAMILY = "plugin";
 export function normalizeProviderFamily(key: string | undefined): string {
   if (key && BUILT_IN_PROVIDER_FAMILIES.has(key)) return key;
   return PLUGIN_PROVIDER_FAMILY;
+}
+
+/**
+ * The common prefix for every sandbox-startup span attribute. One prefix keeps
+ * the attribute namespace closed and easy to find in the telemetry backend.
+ */
+export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
+
+/**
+ * The closed attribute-name contract for every sandbox-startup span. This is
+ * the single source of truth for the harness span attributes. Each name uses
+ * the `paperclip.sandbox.startup.` prefix and a type suffix:
+ *
+ * - `*.wall_ms` — one wall-clock time in float milliseconds.
+ * - `*.sum_ms` — a sum of wall-clock times in float milliseconds.
+ * - `*.count` — a count.
+ *
+ * The producer sets only these keys. It never sets a free-form key, so a
+ * command, a path, an argument, or an environment value can never ride a span.
+ */
+export const SANDBOX_STARTUP_SPAN_ATTRS = {
+  /** The low-cardinality provider family (through `normalizeProviderFamily`). */
+  provider: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider`,
+  /** The step or execution outcome: `ok`, `skipped`, or `failed`. */
+  outcome: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}outcome`,
+  /** The wall-clock time of one measured step. */
+  stepWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}step.wall_ms`,
+  /** The number of host-to-sandbox round trips a step made. */
+  roundTripsCount: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}round_trips.count`,
+  /** The sum of provider `executeCommand` wall time a step made. */
+  providerExecSumMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider_exec.sum_ms`,
+  /** The sum of provider handle-refetch wall time a step made. */
+  providerGetSumMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider_get.sum_ms`,
+  /** The clamped `argv[0]` command label of one execution. */
+  execCommand: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.command`,
+  /** The numeric process exit code of one execution. */
+  execExitCode: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.exit_code`,
+  /** The host-measured wall time of one execution. */
+  execWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.wall_ms`,
+  /** The provider handle-fetch wait before one execution ran. */
+  execWaitBeforeMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.wait_before_ms`,
+  /** The in-sandbox run time of one execution. */
+  execSandboxMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.sandbox_ms`,
+  /** The transport time the host adds around one execution. */
+  execNetworkMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.network_ms`,
+  /** Whether one execution sits on the startup critical path. */
+  execCriticalPath: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.critical_path`,
+  /** The root-span wall time of the whole bring-up. */
+  rootWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.wall_ms`,
+  /** The sum of the step wall times of the whole bring-up. */
+  rootWorkMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.work_ms`,
+  /** The difference between the work sum and the wall time (overlap). */
+  rootDiffMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.diff_ms`,
+  /** Whether this bring-up is a cold start (no warm handle). */
+  coldStart: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}cold_start`,
+  /** The clamped region label (through `clampSpanLabel`). */
+  region: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}region`,
+  /** The hashed image-id label (through `clampSpanLabel`). */
+  imageId: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}image_id`,
+  /** The hashed sandbox-id label (through `clampSpanLabel`). */
+  sandboxId: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}sandbox_id`,
+  /** The hashed lease-id label (through `clampSpanLabel`). */
+  leaseId: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}lease_id`,
+  /** The create-runtime sub-time of the `acp.handshake` step. */
+  handshakeCreateRuntimeWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}handshake.create_runtime.wall_ms`,
+  /** The ensure-session sub-time of the `acp.handshake` step. */
+  handshakeEnsureSessionWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}handshake.ensure_session.wall_ms`,
+  /** A shared low-cardinality tag that marks two steps as one parallel batch. */
+  batch: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}batch`,
+} as const;
+
+/** The closed value set for the `outcome` attribute. */
+export const SANDBOX_STARTUP_OUTCOME = {
+  ok: "ok",
+  skipped: "skipped",
+  failed: "failed",
+} as const;
+
+export type SandboxStartupOutcome =
+  (typeof SANDBOX_STARTUP_OUTCOME)[keyof typeof SANDBOX_STARTUP_OUTCOME];
+
+/**
+ * The known command labels. A raw `argv[0]` outside this set maps to `other`,
+ * so a full command line, a path, or an argument never rides a span. Keep this
+ * list closed and small; a new command that is safe to name adds one entry.
+ */
+const KNOWN_COMMAND_LABELS: ReadonlySet<string> = new Set([
+  "sh",
+  "bash",
+  "env",
+  "mkdir",
+  "rm",
+  "mv",
+  "cp",
+  "ln",
+  "cat",
+  "echo",
+  "printf",
+  "test",
+  "chmod",
+  "true",
+  "tar",
+  "git",
+  "node",
+  "npm",
+  "pnpm",
+  "sudo",
+  "bwrap",
+]);
+
+/**
+ * The known region labels. A raw region outside this set maps to `unknown`, so
+ * a free-form region string never widens the attribute cardinality. Keep this
+ * list closed; a new supported region adds one entry.
+ */
+const KNOWN_REGION_LABELS: ReadonlySet<string> = new Set([
+  "us-east-1",
+  "us-east-2",
+  "us-west-1",
+  "us-west-2",
+  "eu-west-1",
+  "eu-central-1",
+  "ap-southeast-1",
+  "ap-southeast-2",
+  "ap-northeast-1",
+]);
+
+/** The fallback value for a raw command outside the known-command allowlist. */
+const OTHER_COMMAND_LABEL = "other";
+/** The fallback value for a raw region outside the known-region allowlist. */
+const UNKNOWN_REGION_LABEL = "unknown";
+
+/**
+ * Map a raw label value to a non-reversible short hash. An id or an image
+ * reference can hold an internal codename or a secret-like string, so the span
+ * carries a hash, never the raw value. The hash is a stable 12-hex-character
+ * prefix of the SHA-256 digest; it is not reversible and it is low-collision
+ * for correlation.
+ */
+function hashLabelValue(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+/**
+ * Bound a span label value to a closed, low-cardinality set. This is the one
+ * boundary function for every free-form label. It is a hard-coded per-label
+ * map, the same pattern as `normalizeProviderFamily`:
+ *
+ * - `command` — a known command basename maps to itself; any other value maps
+ *   to `other`, so a full command line, a path, or an argument never leaks.
+ * - `region` — a known region maps to itself; any other value maps to
+ *   `unknown`.
+ * - `image_id` / `sandbox_id` / `lease_id` — the raw value maps to a
+ *   non-reversible short hash, because it can hold an internal codename or a
+ *   secret-like string, and the telemetry backend may index it.
+ *
+ * An unknown label name returns `undefined`, so the caller drops it. A missing
+ * value for a hashed label returns `undefined` too (fail open — never a raw
+ * value, never an empty attribute).
+ */
+export function clampSpanLabel(name: string, value: string | undefined): string | undefined {
+  switch (name) {
+    case "command":
+      return value !== undefined && KNOWN_COMMAND_LABELS.has(value)
+        ? value
+        : OTHER_COMMAND_LABEL;
+    case "region":
+      return value !== undefined && KNOWN_REGION_LABELS.has(value)
+        ? value
+        : UNKNOWN_REGION_LABEL;
+    case "image_id":
+    case "sandbox_id":
+    case "lease_id":
+      return value && value.length > 0 ? hashLabelValue(value) : undefined;
+    default:
+      return undefined;
+  }
 }
 
 /**
@@ -180,8 +358,10 @@ function finiteDelta(
  *   attributes, so a free-form key cannot widen the closed span allowlist.
  * - `tracer` — an injected structural tracer. It defaults to a no-op, so the
  *   span path changes no runtime behavior until the server injects a real
- *   tracer. The span carries only the closed attribute allowlist (`step`, the
- *   normalized `provider`, and the finite counter deltas).
+ *   tracer. The span carries only the closed attribute allowlist from
+ *   `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall time,
+ *   and the finite counter deltas. The step name rides the span name, not an
+ *   attribute.
  * - `parentContext` — an opaque parent-context token from the root span. When
  *   set, the step's span parents to that root. `measureStartupStep` forwards it
  *   to `startSpan` and never inspects it, so parenting stays explicit and does
@@ -223,9 +403,10 @@ function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
  * calls this helper, so it emits no event (never a zero).
  *
  * When `options.tracer` is injected, the helper also opens one span at `start`
- * and ends it in the `finally`. The span carries a closed attribute allowlist:
- * `step`, the normalized `provider`, and the finite counter deltas
- * (`roundTrips` / `providerExecMs` / `providerGetMs`). A throwing `fn` sets the
+ * and ends it in the `finally`. The span carries a closed attribute allowlist
+ * from `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall
+ * time, and the finite counter deltas (round trips, provider exec sum, provider
+ * get sum). The step name rides the span name. A throwing `fn` sets the
  * span error status before the span ends. The span build reuses the same delta
  * values as the event payload, so the two paths never drift. The tracer
  * defaults to a no-op, so a caller with no tracer changes nothing. Every span
@@ -245,11 +426,12 @@ export async function measureStartupStep<T>(
   const providerGetStart = options.providerGetMs?.();
 
   // Open the span with only the low-cardinality allowlisted attributes known at
-  // the start: the step name and the normalized provider family.
+  // the start: the normalized provider family. The span name already carries
+  // the step name, so no redundant `step` attribute rides the span.
   const tracer = options.tracer ?? NOOP_TRACER;
-  const startAttributes: Record<string, string> = { step };
+  const startAttributes: Record<string, string> = {};
   if (options.provider !== undefined) {
-    startAttributes.provider = normalizeProviderFamily(options.provider);
+    startAttributes[SANDBOX_STARTUP_SPAN_ATTRS.provider] = normalizeProviderFamily(options.provider);
   }
   let span: StartupSpan;
   try {
@@ -287,9 +469,10 @@ export async function measureStartupStep<T>(
 
     try {
       if (stepFailed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
-      setFiniteNumberAttr(span, "roundTrips", roundTrips);
-      setFiniteNumberAttr(span, "providerExecMs", providerExecMs);
-      setFiniteNumberAttr(span, "providerGetMs", providerGetMs);
+      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.stepWallMs, durationMs);
+      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.roundTripsCount, roundTrips);
+      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.providerExecSumMs, providerExecMs);
+      setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.providerGetSumMs, providerGetMs);
       span.end();
     } catch {
       // Observability must not change startup control flow.
