@@ -23,8 +23,17 @@ export const DEFAULT_SANDBOX_REMOTE_CWD = "/tmp";
  * span satisfies it; the no-op tracer's span satisfies it too. */
 type ExecSpan = {
   setAttribute(key: string, value: string | number | boolean): void;
+  setStatus(status: { code: number; message?: string }): void;
   end(): void;
 };
+
+/**
+ * The value of `SpanStatusCode.ERROR` in `@opentelemetry/api`. The server injects
+ * a real OTel span, but this module stays OTel-free, so it uses the numeric value
+ * directly. A failed exec span sets this status, so a trace UI counts and filters
+ * the failure through the native span status, not only the `outcome` attribute.
+ */
+const SPAN_STATUS_CODE_ERROR = 2;
 
 /** The minimal tracer surface the provider-exec seam calls. `getStartupTracer`
  * returns a real or no-op implementation that satisfies it. The optional third
@@ -102,10 +111,15 @@ function setSandboxExecSpanAttributes(span: ExecSpan, input: SandboxExecSpanInpu
     setFiniteNumberAttr(span, A.execNetworkMs, input.wallMs - input.waitBeforeMs - input.sandboxMs);
   }
   span.setAttribute(A.execCriticalPath, input.criticalPath);
+  const failed = input.exitCode !== 0;
   span.setAttribute(
     A.outcome,
-    input.exitCode === 0 ? SANDBOX_STARTUP_OUTCOME.ok : SANDBOX_STARTUP_OUTCOME.failed,
+    failed ? SANDBOX_STARTUP_OUTCOME.failed : SANDBOX_STARTUP_OUTCOME.ok,
   );
+  // A non-zero exit code is a failed execution, so set the native span status to
+  // ERROR too. The success path leaves the status unset, so a successful exec
+  // keeps the default OTel status. A `null` exit code counts as failed here.
+  if (failed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
 }
 
 /**
@@ -126,6 +140,9 @@ function setSandboxExecSpanFailure(
   setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
   span.setAttribute(A.execCriticalPath, input.criticalPath);
   span.setAttribute(A.outcome, SANDBOX_STARTUP_OUTCOME.failed);
+  // A thrown execution is a failed execution, so set the native span status to
+  // ERROR too, not only the `outcome` attribute.
+  span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
 }
 
 export async function resolveEnvironmentExecutionTarget(input: {

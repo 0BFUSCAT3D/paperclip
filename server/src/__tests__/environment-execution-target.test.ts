@@ -469,15 +469,24 @@ describe("resolveEnvironmentExecutionTarget", () => {
   // A recording tracer that captures each provider-exec span's name, attribute
   // map, and end. It satisfies the structural tracer the seam calls.
   function createRecordingExecTracer() {
-    const spans: Array<{ name: string; attributes: Record<string, unknown>; ended: boolean }> = [];
+    const spans: Array<{
+      name: string;
+      attributes: Record<string, unknown>;
+      status: { code: number; message?: string } | null;
+      ended: boolean;
+    }> = [];
     const tracer = {
       startSpan(name: string) {
         const span = {
           name,
           attributes: {} as Record<string, unknown>,
+          status: null as { code: number; message?: string } | null,
           ended: false,
           setAttribute(key: string, value: unknown) {
             span.attributes[key] = value;
+          },
+          setStatus(status: { code: number; message?: string }) {
+            span.status = status;
           },
           end() {
             span.ended = true;
@@ -489,6 +498,10 @@ describe("resolveEnvironmentExecutionTarget", () => {
     };
     return { tracer, spans };
   }
+
+  // The value of `SpanStatusCode.ERROR` in `@opentelemetry/api`. A failed exec
+  // span must carry this native status, not only the `failed` outcome attribute.
+  const SPAN_STATUS_CODE_ERROR = 2;
 
   // The closed span-attribute allowlist for a `sandbox.exec` span. A test
   // asserts every recorded key is in this set, so a command, an argument, a
@@ -577,6 +590,8 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(span.attributes[A.execCommand]).toBe("echo");
     expect(span.attributes[A.execExitCode]).toBe(0);
     expect(span.attributes[A.outcome]).toBe("ok");
+    // A successful exec leaves the native span status unset (default OTel status).
+    expect(span.status).toBeNull();
     expect(span.attributes[A.execCriticalPath]).toBe(true);
     // The wall time is a real, finite, non-negative number.
     expect(typeof span.attributes[A.execWallMs]).toBe("number");
@@ -626,6 +641,8 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(span.attributes[A.execWaitBeforeMs]).toBe(20);
     // A non-zero exit yields `failed`; the exit code rides as a number.
     expect(span.attributes[A.outcome]).toBe("failed");
+    // A failed exec also sets the native span status to ERROR.
+    expect(span.status).toEqual({ code: SPAN_STATUS_CODE_ERROR });
     expect(span.attributes[A.execExitCode]).toBe(124);
     // `sleep` is not in the known-command allowlist, so it clamps to `other`.
     expect(span.attributes[A.execCommand]).toBe("other");
@@ -783,6 +800,8 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(span).toBeTruthy();
     expect(span!.ended).toBe(true);
     expect(span!.attributes[A.outcome]).toBe("failed");
+    // A thrown execution also sets the native span status to ERROR.
+    expect(span!.status).toEqual({ code: SPAN_STATUS_CODE_ERROR });
     expect(span!.attributes[A.provider]).toBe("daytona");
     // `echo` is a known basename, so the clamped command rides the span.
     expect(span!.attributes[A.execCommand]).toBe("echo");
@@ -827,6 +846,8 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(span).toBeTruthy();
     expect(span!.ended).toBe(true);
     expect(span!.attributes[A.outcome]).toBe("ok");
+    // A log-callback rejection never marks the span as ERROR; the status stays unset.
+    expect(span!.status).toBeNull();
     expect(span!.attributes[A.execExitCode]).toBe(0);
     // The seam reached the log callback exactly once (the stdout delivery).
     expect(onLog).toHaveBeenCalledTimes(1);
