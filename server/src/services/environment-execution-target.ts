@@ -5,7 +5,10 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
-import { normalizeProviderFamily } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import {
+  getActiveStepContext,
+  normalizeProviderFamily,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { parseObject } from "../adapters/utils.js";
 import { getStartupTracer } from "../instrumentation.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
@@ -21,8 +24,12 @@ type ExecSpan = {
 };
 
 /** The minimal tracer surface the provider-exec seam calls. `getStartupTracer`
- * returns a real or no-op implementation that satisfies it. */
-type ExecTracer = { startSpan(name: string): ExecSpan };
+ * returns a real or no-op implementation that satisfies it. The optional third
+ * argument is the explicit parent-context token: the seam passes the active
+ * step context, so the exec span parents to its step span. */
+type ExecTracer = {
+  startSpan(name: string, options?: unknown, context?: unknown): ExecSpan;
+};
 
 /**
  * Set a numeric span attribute only when the value is a finite number. A value
@@ -161,7 +168,12 @@ export async function resolveEnvironmentExecutionTarget(input: {
               // env, stdout, and stderr never ride a span — not as an attribute
               // and not as an event. The span name is the fixed operation label.
               try {
-                const span = tracer.startSpan("provider.execute");
+                // Parent the exec span to the active step span, so the trace
+                // shows each host→sandbox exec under the step that made it. A
+                // `null` active step context (no measured step, or tracing off)
+                // opens an unparented span, which is a no-op when tracing is off.
+                const activeStep = getActiveStepContext();
+                const span = tracer.startSpan("provider.execute", undefined, activeStep?.parentContext);
                 try {
                   span.setAttribute("provider", providerFamily);
                   span.setAttribute("exit", result.exitCode === 0 ? "ok" : "error");

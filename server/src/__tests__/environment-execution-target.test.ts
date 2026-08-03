@@ -8,10 +8,50 @@ vi.mock("../services/environment-config.js", () => ({
   resolveEnvironmentDriverConfigForRuntime: mockResolveEnvironmentDriverConfigForRuntime,
 }));
 
+import { measureStartupStep } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
   DEFAULT_SANDBOX_REMOTE_CWD,
   resolveEnvironmentExecutionTarget,
 } from "../services/environment-execution-target.js";
+
+// A recording trace context that models the OTel parenting contract:
+// `startSpan(name, options, context)` reads the parent from the explicit
+// `context` token that `contextWithSpan` built. A test asserts the exact parent
+// of each child span without an OTel package.
+function createRecordingTrace() {
+  const spans: Array<{
+    name: string;
+    attributes: Record<string, unknown>;
+    parent: unknown;
+    ended: boolean;
+    setAttribute(key: string, value: unknown): void;
+    end(): void;
+  }> = [];
+  const tracer = {
+    startSpan(name: string, _options?: unknown, context?: unknown) {
+      const parent =
+        context && typeof context === "object" && "span" in context
+          ? (context as { span: unknown }).span
+          : null;
+      const span = {
+        name,
+        attributes: {} as Record<string, unknown>,
+        parent,
+        ended: false,
+        setAttribute(key: string, value: unknown) {
+          span.attributes[key] = value;
+        },
+        end() {
+          span.ended = true;
+        },
+      };
+      spans.push(span);
+      return span;
+    },
+  };
+  const contextWithSpan = (span: unknown) => ({ span });
+  return { tracer, contextWithSpan, spans };
+}
 
 describe("resolveEnvironmentExecutionTarget", () => {
   beforeEach(() => {
@@ -595,5 +635,45 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
     await builtInRunner.execute({ command: "echo" });
     expect(builtIn.spans[0]!.attributes.provider).toBe("e2b");
+  });
+
+  it("parents the exec span to the active step span when the exec runs inside a measured step", async () => {
+    const { tracer, contextWithSpan, spans } = createRecordingTrace();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer,
+    });
+
+    // The exec seam reads the active step context through `getActiveStepContext`.
+    // Wrap the exec in one measured step and assert the exec span parents to the
+    // step span, not to nothing.
+    await measureStartupStep({}, () => 0, "stage.sync", () => runner.execute({ command: "echo" }), {
+      tracer,
+      contextWithSpan,
+    });
+
+    const stepSpan = spans.find((span) => span.name === "stage.sync");
+    const execSpan = spans.find((span) => span.name === "provider.execute");
+    expect(stepSpan).toBeTruthy();
+    expect(execSpan).toBeTruthy();
+    expect(execSpan!.parent).toBe(stepSpan);
+  });
+
+  it("opens an unparented exec span when the exec runs outside any measured step", async () => {
+    const { tracer, spans } = createRecordingTrace();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer,
+    });
+
+    // No measured step wraps the exec, so the active step context is null and
+    // the exec span opens unparented (a no-op when tracing is off).
+    await runner.execute({ command: "echo" });
+
+    const execSpan = spans.find((span) => span.name === "provider.execute");
+    expect(execSpan).toBeTruthy();
+    expect(execSpan!.parent).toBeNull();
   });
 });

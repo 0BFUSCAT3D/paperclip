@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { AdapterExecutionContext, AdapterRuntimeEvent } from "../types.js";
 
@@ -306,6 +307,43 @@ export const NOOP_STARTUP_TRACE_CONTEXT: StartupTraceContext = {
 };
 
 /**
+ * The active step context that `measureStartupStep` publishes while it runs the
+ * step body `fn`. Inner code (for example the host→sandbox exec seam) reads it
+ * through `getActiveStepContext()` to parent a child span to the step span.
+ *
+ * - `span` — the open step span. A child span may set its status or read it.
+ * - `parentContext` — a parent-context token whose active span is the step span.
+ *   A child span opened with this token parents to the step span. It is opaque
+ *   to `adapter-utils`; the server builds it through `contextWithSpan`.
+ * - `criticalPath` — whether the step sits on the startup critical path. Two
+ *   overlapping steps (the parallel bridges) set it `false`; every other step
+ *   is `true`.
+ */
+export interface ActiveStepContext {
+  readonly span: StartupSpan;
+  readonly parentContext: StartupSpanContext;
+  readonly criticalPath: boolean;
+}
+
+/**
+ * The one storage for the active step context. `measureStartupStep` runs the
+ * step body inside it; inner code reads it with `getActiveStepContext()`. It is
+ * a module-level singleton, so the value propagates across `await` boundaries
+ * and across package boundaries that share this module.
+ */
+const activeStepContextStorage = new AsyncLocalStorage<ActiveStepContext>();
+
+/**
+ * Return the active step context, or `null` when no measured step is running.
+ * Inner code parents a child span to the step span through
+ * `getActiveStepContext()?.parentContext`. A `null` result is a no-op: the
+ * caller opens no child span or opens an unparented span.
+ */
+export function getActiveStepContext(): ActiveStepContext | null {
+  return activeStepContextStorage.getStore() ?? null;
+}
+
+/**
  * Set a numeric span attribute only when the value is a finite number. A reader
  * that returns `undefined` (the counter is unavailable) yields no attribute,
  * never `NaN` and never a misleading `0`. This mirrors the host counter guard
@@ -378,6 +416,21 @@ export interface StartupStepMeasureOptions {
   tracer?: StartupTracer;
   parentContext?: StartupSpanContext;
   provider?: string;
+  /**
+   * Build a parent-context token whose active span is a given span. The server
+   * binds it to `@opentelemetry/api`. `measureStartupStep` uses it once, after
+   * it opens the step span, to publish the step's child context on the active
+   * step context. Inner code reads that context to parent an exec span to the
+   * step span. When absent, the active step context carries no parent token, so
+   * an inner exec span opens unparented (a no-op when tracing is off).
+   */
+  contextWithSpan?: (span: StartupSpan) => StartupSpanContext;
+  /**
+   * Whether the step sits on the startup critical path. It rides the active
+   * step context, so an inner exec span records it. Two overlapping steps (the
+   * parallel bridges) pass `false`; every other step defaults to `true`.
+   */
+  criticalPath?: boolean;
 }
 
 function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
@@ -441,9 +494,28 @@ export async function measureStartupStep<T>(
     span = NOOP_SPAN;
   }
 
+  // Publish the active step context while `fn` runs. Inner code (the host→
+  // sandbox exec seam) reads it to parent an exec span to this step span. The
+  // parent token is the step span's own child context; a missing
+  // `contextWithSpan` (no injected trace context) yields `undefined`, so an
+  // inner exec span opens unparented — a no-op when tracing is off. The
+  // `contextWithSpan` call is guarded, so a throwing helper never changes
+  // startup control flow.
+  let stepChildContext: StartupSpanContext;
+  try {
+    stepChildContext = options.contextWithSpan?.(span);
+  } catch {
+    stepChildContext = undefined;
+  }
+  const activeStep: ActiveStepContext = {
+    span,
+    parentContext: stepChildContext,
+    criticalPath: options.criticalPath ?? true,
+  };
+
   let stepFailed = false;
   try {
-    return await fn();
+    return await activeStepContextStorage.run(activeStep, fn);
   } catch (err) {
     stepFailed = true;
     throw err;

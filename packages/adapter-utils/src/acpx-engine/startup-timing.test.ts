@@ -3,6 +3,7 @@ import type { AdapterRuntimeEvent } from "../types.js";
 import type { StartupSpan, StartupTracer } from "./startup-timing.js";
 import {
   clampSpanLabel,
+  getActiveStepContext,
   measureStartupStep,
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTR_PREFIX,
@@ -442,6 +443,47 @@ describe("measureStartupStep", () => {
     expect(A.roundTripsCount.endsWith(".count")).toBe(true);
     expect(A.providerExecSumMs.endsWith(".sum_ms")).toBe(true);
     expect(A.providerGetSumMs.endsWith(".sum_ms")).toBe(true);
+  });
+});
+
+describe("getActiveStepContext", () => {
+  it("returns null when no measured step runs", () => {
+    expect(getActiveStepContext()).toBeNull();
+  });
+
+  it("exposes the active step context to inner code while fn runs, then clears it", async () => {
+    const { tracer, spans } = makeMockTracer();
+    let seen: ReturnType<typeof getActiveStepContext> = null;
+
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "stage.sync", async () => {
+      // Inner code reads the active step context through the getter.
+      seen = getActiveStepContext();
+      return "ok";
+    }, {
+      tracer,
+      // The server builds a child-context token whose active span is the step
+      // span. Model it as `{ span }`, the same shape the recording tracer reads.
+      contextWithSpan: (span) => ({ span }),
+    });
+
+    expect(seen).not.toBeNull();
+    // The published span is the one open step span.
+    expect(seen!.span).toBe(spans[0]);
+    // The parent token points at the step span, so an inner exec span parents
+    // to it.
+    expect(seen!.parentContext).toEqual({ span: spans[0] });
+    // A regular step is on the critical path by default.
+    expect(seen!.criticalPath).toBe(true);
+    // The context clears once the step body settles.
+    expect(getActiveStepContext()).toBeNull();
+  });
+
+  it("carries criticalPath = false when the step opts out (parallel steps)", async () => {
+    let seen: ReturnType<typeof getActiveStepContext> = null;
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "bridge.paperclip", async () => {
+      seen = getActiveStepContext();
+    }, { criticalPath: false });
+    expect(seen!.criticalPath).toBe(false);
   });
 });
 

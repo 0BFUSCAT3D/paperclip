@@ -1355,10 +1355,12 @@ async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
-  // The injected tracer plus the root-span parent-context token. Merged into
-  // every startup-step option set, so each boundary span parents to the one
-  // root span (`sandbox.startup`) that the executor opens.
-  spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext">;
+  // The injected tracer, the root-span parent-context token, and the
+  // context-builder. Merged into every startup-step option set, so each
+  // boundary span parents to the one root span (`sandbox.startup`) that the
+  // executor opens, and each step publishes its own child context for an inner
+  // exec span to parent to.
+  spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext" | "contextWithSpan">;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
@@ -2969,9 +2971,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ? ctx.startupTraceContext
         : NOOP_STARTUP_TRACE_CONTEXT;
     const rootSpan = openStartupRootSpan(tracing);
-    const spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext"> = {
+    const spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext" | "contextWithSpan"> = {
       tracer: tracing.tracer,
       parentContext: rootSpan.parentContext,
+      // Each step uses this to publish its own child context, so an inner exec
+      // span parents to the step span, not to the root.
+      contextWithSpan: (span) => tracing.contextWithSpan(span),
     };
     let prepared: AcpxPreparedRuntime;
     try {
