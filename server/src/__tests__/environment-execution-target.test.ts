@@ -8,11 +8,16 @@ vi.mock("../services/environment-config.js", () => ({
   resolveEnvironmentDriverConfigForRuntime: mockResolveEnvironmentDriverConfigForRuntime,
 }));
 
-import { measureStartupStep } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import {
+  measureStartupStep,
+  SANDBOX_STARTUP_SPAN_ATTRS,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
   DEFAULT_SANDBOX_REMOTE_CWD,
   resolveEnvironmentExecutionTarget,
 } from "../services/environment-execution-target.js";
+
+const A = SANDBOX_STARTUP_SPAN_ATTRS;
 
 // A recording trace context that models the OTel parenting contract:
 // `startSpan(name, options, context)` reads the parent from the explicit
@@ -485,12 +490,19 @@ describe("resolveEnvironmentExecutionTarget", () => {
     return { tracer, spans };
   }
 
-  // The closed span-attribute allowlist for a provider-exec span (Phase 4).
-  const ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS = new Set([
-    "provider",
-    "exit",
-    "provider.exec.duration_ms",
-    "provider.get.duration_ms",
+  // The closed span-attribute allowlist for a `sandbox.exec` span. A test
+  // asserts every recorded key is in this set, so a command, an argument, a
+  // path, an id, or an error-text key can never ride the span.
+  const ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS = new Set<string>([
+    A.provider,
+    A.execCommand,
+    A.execExitCode,
+    A.execWallMs,
+    A.execWaitBeforeMs,
+    A.execSandboxMs,
+    A.execNetworkMs,
+    A.execCriticalPath,
+    A.outcome,
   ]);
 
   async function runnerFor(input: {
@@ -541,12 +553,20 @@ describe("resolveEnvironmentExecutionTarget", () => {
 
     expect(spans).toHaveLength(1);
     const span = spans[0]!;
-    expect(span.name).toBe("provider.execute");
+    expect(span.name).toBe("sandbox.exec");
     expect(span.ended).toBe(true);
-    expect(span.attributes["provider.exec.duration_ms"]).toBe(600);
-    expect(span.attributes["provider.get.duration_ms"]).toBe(15);
-    expect(span.attributes.provider).toBe("daytona");
-    expect(span.attributes.exit).toBe("ok");
+    // `sandbox_ms` = provider in-sandbox run; `wait_before_ms` = handle-fetch.
+    expect(span.attributes[A.execSandboxMs]).toBe(600);
+    expect(span.attributes[A.execWaitBeforeMs]).toBe(15);
+    expect(span.attributes[A.provider]).toBe("daytona");
+    // `echo` is a known command basename, so it rides as a clamped label.
+    expect(span.attributes[A.execCommand]).toBe("echo");
+    expect(span.attributes[A.execExitCode]).toBe(0);
+    expect(span.attributes[A.outcome]).toBe("ok");
+    expect(span.attributes[A.execCriticalPath]).toBe(true);
+    // The wall time is a real, finite, non-negative number.
+    expect(typeof span.attributes[A.execWallMs]).toBe("number");
+    expect(span.attributes[A.execWallMs] as number).toBeGreaterThanOrEqual(0);
   });
 
   it("omits each duration attribute when a provider returns no timing (does not throw, keeps provider)", async () => {
@@ -561,10 +581,12 @@ describe("resolveEnvironmentExecutionTarget", () => {
 
     expect(spans).toHaveLength(1);
     const span = spans[0]!;
-    expect("provider.exec.duration_ms" in span.attributes).toBe(false);
-    expect("provider.get.duration_ms" in span.attributes).toBe(false);
+    expect(A.execSandboxMs in span.attributes).toBe(false);
+    expect(A.execWaitBeforeMs in span.attributes).toBe(false);
+    // With no provider durations, the derived network time is also omitted.
+    expect(A.execNetworkMs in span.attributes).toBe(false);
     // The provider attribute is always present so a trace shows which provider ran.
-    expect(span.attributes.provider).toBe("kubernetes");
+    expect(span.attributes[A.provider]).toBe("kubernetes");
   });
 
   it("never emits a `0` duration attribute for a Daytona timeout that omits durationMs", async () => {
@@ -586,12 +608,16 @@ describe("resolveEnvironmentExecutionTarget", () => {
     await runner.execute({ command: "sleep", args: ["999"] });
 
     const span = spans[0]!;
-    expect("provider.exec.duration_ms" in span.attributes).toBe(false);
-    expect(span.attributes["provider.get.duration_ms"]).toBe(20);
-    expect(span.attributes.exit).toBe("error");
+    expect(A.execSandboxMs in span.attributes).toBe(false);
+    expect(span.attributes[A.execWaitBeforeMs]).toBe(20);
+    // A non-zero exit yields `failed`; the exit code rides as a number.
+    expect(span.attributes[A.outcome]).toBe("failed");
+    expect(span.attributes[A.execExitCode]).toBe(124);
+    // `sleep` is not in the known-command allowlist, so it clamps to `other`.
+    expect(span.attributes[A.execCommand]).toBe("other");
   });
 
-  it("never sets a command, arg, or non-allowlisted key as an indexed span attribute", async () => {
+  it("never sets a command, arg, env, cwd, or stream text as a span attribute, even with secret-like input", async () => {
     const { tracer, spans } = createRecordingExecTracer();
     const runner = await runnerFor({
       provider: "daytona",
@@ -599,22 +625,48 @@ describe("resolveEnvironmentExecutionTarget", () => {
         exitCode: 0,
         signal: null,
         timedOut: false,
-        stdout: "",
-        stderr: "",
+        // Secret-like standard-stream text must never ride the span.
+        stdout: "AKIAIOSFODNN7EXAMPLE token=s3cr3t-stdout",
+        stderr: "error at /home/agent/.ssh/id_rsa: s3cr3t-stderr",
         metadata: { durationMs: 5, getDurationMs: 1 },
       },
       tracer,
     });
 
-    await runner.execute({ command: "bash -lc 'rm -rf /secret/path'", args: ["--token", "s3cr3t"] });
+    await runner.execute({
+      // A full command line, a secret-like argument, a secret-like env value, a
+      // stdin blob, and a path-like cwd — none may ride the span.
+      command: "bash -lc 'rm -rf /secret/path'",
+      args: ["--token", "s3cr3t-arg", "--password", "hunter2"],
+      env: { AWS_SECRET_ACCESS_KEY: "s3cr3t-env", HOME: "/home/agent" },
+      cwd: "/home/agent/secret-workspace/.git",
+      stdin: "s3cr3t-stdin-blob",
+    });
 
     const span = spans[0]!;
     for (const key of Object.keys(span.attributes)) {
       expect(ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS.has(key), `non-allowlisted key "${key}"`).toBe(true);
     }
+    // The command clamps to the bounded `other` fallback (not a known basename).
+    expect(span.attributes[A.execCommand]).toBe("other");
+    // No forbidden substring rides any attribute value.
     const values = Object.values(span.attributes).map(String);
-    expect(values.some((value) => value.includes("rm -rf"))).toBe(false);
-    expect(values.some((value) => value.includes("s3cr3t"))).toBe(false);
+    for (const forbidden of [
+      "rm -rf",
+      "s3cr3t",
+      "hunter2",
+      "AKIA",
+      "id_rsa",
+      "/secret/path",
+      "/home/agent",
+      "secret-workspace",
+      "stdin",
+    ]) {
+      expect(
+        values.some((value) => value.includes(forbidden)),
+        `attribute value leaked "${forbidden}"`,
+      ).toBe(false);
+    }
   });
 
   it("normalizes a plugin-backed provider key to `plugin` and keeps a built-in family as-is", async () => {
@@ -625,7 +677,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       tracer: plugin.tracer,
     });
     await pluginRunner.execute({ command: "echo" });
-    expect(plugin.spans[0]!.attributes.provider).toBe("plugin");
+    expect(plugin.spans[0]!.attributes[A.provider]).toBe("plugin");
 
     const builtIn = createRecordingExecTracer();
     const builtInRunner = await runnerFor({
@@ -634,7 +686,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       tracer: builtIn.tracer,
     });
     await builtInRunner.execute({ command: "echo" });
-    expect(builtIn.spans[0]!.attributes.provider).toBe("e2b");
+    expect(builtIn.spans[0]!.attributes[A.provider]).toBe("e2b");
   });
 
   it("parents the exec span to the active step span when the exec runs inside a measured step", async () => {
@@ -654,7 +706,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
     });
 
     const stepSpan = spans.find((span) => span.name === "stage.sync");
-    const execSpan = spans.find((span) => span.name === "provider.execute");
+    const execSpan = spans.find((span) => span.name === "sandbox.exec");
     expect(stepSpan).toBeTruthy();
     expect(execSpan).toBeTruthy();
     expect(execSpan!.parent).toBe(stepSpan);
@@ -672,7 +724,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
     // the exec span opens unparented (a no-op when tracing is off).
     await runner.execute({ command: "echo" });
 
-    const execSpan = spans.find((span) => span.name === "provider.execute");
+    const execSpan = spans.find((span) => span.name === "sandbox.exec");
     expect(execSpan).toBeTruthy();
     expect(execSpan!.parent).toBeNull();
   });

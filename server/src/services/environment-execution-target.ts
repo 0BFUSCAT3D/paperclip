@@ -6,8 +6,11 @@ import {
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  clampSpanLabel,
   getActiveStepContext,
   normalizeProviderFamily,
+  SANDBOX_STARTUP_OUTCOME,
+  SANDBOX_STARTUP_SPAN_ATTRS,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { parseObject } from "../adapters/utils.js";
 import { getStartupTracer } from "../instrumentation.js";
@@ -41,6 +44,68 @@ function setFiniteNumberAttr(span: ExecSpan, key: string, value: unknown): void 
   if (typeof value === "number" && Number.isFinite(value)) {
     span.setAttribute(key, value);
   }
+}
+
+/** Read a free-form metadata value as a finite number, or `undefined`. The
+ * provider durations ride the exec result's untyped `metadata`, so a provider
+ * that omits or mistypes one yields no attribute — never a misleading `0`. */
+function toFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * The closed input for one `sandbox.exec` span. The seam builds it from the
+ * exec result and the active step context. Every field is already bounded or
+ * numeric; the raw command clamps inside the helper below.
+ */
+interface SandboxExecSpanInput {
+  /** The low-cardinality provider family (already through `normalizeProviderFamily`). */
+  provider: string;
+  /** The raw `argv[0]`. The helper clamps it; the raw value never rides the span. */
+  command: string;
+  /** The numeric process exit code, or `null`. */
+  exitCode: number | null;
+  /** The host-measured wall time of the execution. */
+  wallMs: number;
+  /** The provider handle-fetch wait before the execution ran. */
+  waitBeforeMs: number | undefined;
+  /** The in-sandbox run time of the execution. */
+  sandboxMs: number | undefined;
+  /** Whether the execution sits on the startup critical path. */
+  criticalPath: boolean;
+}
+
+/**
+ * Assemble every `sandbox.exec` span attribute in one place. This is the single
+ * producer-side boundary for the exec span: it sets only the closed
+ * `paperclip.sandbox.startup.exec.*` allowlist. The command rides only as a
+ * clamped label, so a full command line, an argument, a path, an environment
+ * value, or any standard-stream text can never ride the span. A non-finite
+ * numeric input yields no attribute (fail open — never `NaN`, never a
+ * misleading `0`).
+ */
+function setSandboxExecSpanAttributes(span: ExecSpan, input: SandboxExecSpanInput): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  span.setAttribute(A.provider, input.provider);
+  const command = clampSpanLabel("command", input.command);
+  if (command !== undefined) span.setAttribute(A.execCommand, command);
+  if (typeof input.exitCode === "number" && Number.isFinite(input.exitCode)) {
+    span.setAttribute(A.execExitCode, input.exitCode);
+  }
+  setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
+  setFiniteNumberAttr(span, A.execWaitBeforeMs, input.waitBeforeMs);
+  setFiniteNumberAttr(span, A.execSandboxMs, input.sandboxMs);
+  // The transport time the host adds around the provider work: wall minus the
+  // handle-fetch wait minus the in-sandbox run. Set it only when both parts are
+  // present, so a provider that reports no durations yields no derived value.
+  if (input.waitBeforeMs !== undefined && input.sandboxMs !== undefined) {
+    setFiniteNumberAttr(span, A.execNetworkMs, input.wallMs - input.waitBeforeMs - input.sandboxMs);
+  }
+  span.setAttribute(A.execCriticalPath, input.criticalPath);
+  span.setAttribute(
+    A.outcome,
+    input.exitCode === 0 ? SANDBOX_STARTUP_OUTCOME.ok : SANDBOX_STARTUP_OUTCOME.failed,
+  );
 }
 
 export async function resolveEnvironmentExecutionTarget(input: {
@@ -148,7 +213,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
             providerGetMs: () => providerGetMs,
             execute: async (commandInput) => {
               execCount += 1;
-              const startedAt = new Date().toISOString();
+              // Record true start and stop timestamps around the provider await,
+              // so the exec span and the result carry a real wall time.
+              const startedAtMs = Date.now();
+              const startedAt = new Date(startedAtMs).toISOString();
               const result = await input.environmentRuntime!.execute({
                 environment: input.environment as Environment,
                 lease: input.lease!,
@@ -159,26 +227,32 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 stdin: commandInput.stdin,
                 timeoutMs: commandInput.timeoutMs,
               });
+              const finishedAtMs = Date.now();
+              const finishedAt = new Date(finishedAtMs).toISOString();
+              const durationMs = finishedAtMs - startedAtMs;
               accumulateProviderDurations(result.metadata);
-              // Emit one span for this host→sandbox exec (opt-in; a no-op tracer
-              // when tracing is off). It carries ONLY closed-allowlist,
-              // low-cardinality attributes: the normalized provider family, the
-              // exit status (a two-value enum), and the host-received provider
-              // durations (per field, only when finite). The full command, args,
-              // env, stdout, and stderr never ride a span — not as an attribute
-              // and not as an event. The span name is the fixed operation label.
+              // Emit one `sandbox.exec` span for this host→sandbox exec (opt-in;
+              // a no-op tracer when tracing is off), parented to the active step
+              // span. `setSandboxExecSpanAttributes` sets ONLY the closed
+              // `paperclip.sandbox.startup.exec.*` allowlist: the normalized
+              // provider family, the clamped command label, the numeric exit
+              // code, the wall / wait-before / sandbox / network times, the
+              // critical-path flag, and the outcome. The full command, args,
+              // env, stdout, and stderr never ride the span. The span name is
+              // the fixed operation label.
               try {
-                // Parent the exec span to the active step span, so the trace
-                // shows each host→sandbox exec under the step that made it. A
-                // `null` active step context (no measured step, or tracing off)
-                // opens an unparented span, which is a no-op when tracing is off.
                 const activeStep = getActiveStepContext();
-                const span = tracer.startSpan("provider.execute", undefined, activeStep?.parentContext);
+                const span = tracer.startSpan("sandbox.exec", undefined, activeStep?.parentContext);
                 try {
-                  span.setAttribute("provider", providerFamily);
-                  span.setAttribute("exit", result.exitCode === 0 ? "ok" : "error");
-                  setFiniteNumberAttr(span, "provider.exec.duration_ms", result.metadata?.durationMs);
-                  setFiniteNumberAttr(span, "provider.get.duration_ms", result.metadata?.getDurationMs);
+                  setSandboxExecSpanAttributes(span, {
+                    provider: providerFamily,
+                    command: commandInput.command,
+                    exitCode: result.exitCode,
+                    wallMs: durationMs,
+                    waitBeforeMs: toFiniteNumber(result.metadata?.getDurationMs),
+                    sandboxMs: toFiniteNumber(result.metadata?.durationMs),
+                    criticalPath: activeStep?.criticalPath ?? true,
+                  });
                 } finally {
                   span.end();
                 }
@@ -195,6 +269,8 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 stderr: result.stderr,
                 pid: null,
                 startedAt,
+                finishedAt,
+                durationMs,
               };
             },
             // Expose the native file-sync capability only when the provider's
