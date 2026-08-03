@@ -108,6 +108,26 @@ function setSandboxExecSpanAttributes(span: ExecSpan, input: SandboxExecSpanInpu
   );
 }
 
+/**
+ * Record a failed `sandbox.exec` span when the provider execution throws. There
+ * is no exec result, so only the bounded provider family, the clamped command
+ * label, the measured wall time, the critical-path flag, and the `failed`
+ * outcome ride the span. The raw command never rides the span. A thrown
+ * execution now still produces a span, instead of no span at all.
+ */
+function setSandboxExecSpanFailure(
+  span: ExecSpan,
+  input: { provider: string; command: string; wallMs: number; criticalPath: boolean },
+): void {
+  const A = SANDBOX_STARTUP_SPAN_ATTRS;
+  span.setAttribute(A.provider, input.provider);
+  const command = clampSpanLabel("command", input.command);
+  if (command !== undefined) span.setAttribute(A.execCommand, command);
+  setFiniteNumberAttr(span, A.execWallMs, input.wallMs);
+  span.setAttribute(A.execCriticalPath, input.criticalPath);
+  span.setAttribute(A.outcome, SANDBOX_STARTUP_OUTCOME.failed);
+}
+
 export async function resolveEnvironmentExecutionTarget(input: {
   db: Db;
   companyId: string;
@@ -217,61 +237,94 @@ export async function resolveEnvironmentExecutionTarget(input: {
               // so the exec span and the result carry a real wall time.
               const startedAtMs = Date.now();
               const startedAt = new Date(startedAtMs).toISOString();
-              const result = await input.environmentRuntime!.execute({
-                environment: input.environment as Environment,
-                lease: input.lease!,
-                command: commandInput.command,
-                args: commandInput.args,
-                cwd: commandInput.cwd ?? remoteCwd,
-                env: commandInput.env,
-                stdin: commandInput.stdin,
-                timeoutMs: commandInput.timeoutMs,
-              });
-              const finishedAtMs = Date.now();
-              const finishedAt = new Date(finishedAtMs).toISOString();
-              const durationMs = finishedAtMs - startedAtMs;
-              accumulateProviderDurations(result.metadata);
-              // Emit one `sandbox.exec` span for this host→sandbox exec (opt-in;
-              // a no-op tracer when tracing is off), parented to the active step
-              // span. `setSandboxExecSpanAttributes` sets ONLY the closed
-              // `paperclip.sandbox.startup.exec.*` allowlist: the normalized
-              // provider family, the clamped command label, the numeric exit
-              // code, the wall / wait-before / sandbox / network times, the
-              // critical-path flag, and the outcome. The full command, args,
-              // env, stdout, and stderr never ride the span. The span name is
-              // the fixed operation label.
+              // Open one `sandbox.exec` span BEFORE the provider await, so the
+              // native span duration covers the whole execution and a thrown
+              // execution still produces a span. The span parents to the active
+              // step span. `startSpan` sits inside a guard; observability must
+              // never change execution control flow, and a no-op tracer
+              // (tracing off) makes the whole block inert.
+              const activeStep = getActiveStepContext();
+              const criticalPath = activeStep?.criticalPath ?? true;
+              let span: ExecSpan | null = null;
               try {
-                const activeStep = getActiveStepContext();
-                const span = tracer.startSpan("sandbox.exec", undefined, activeStep?.parentContext);
-                try {
-                  setSandboxExecSpanAttributes(span, {
-                    provider: providerFamily,
-                    command: commandInput.command,
-                    exitCode: result.exitCode,
-                    wallMs: durationMs,
-                    waitBeforeMs: toFiniteNumber(result.metadata?.getDurationMs),
-                    sandboxMs: toFiniteNumber(result.metadata?.durationMs),
-                    criticalPath: activeStep?.criticalPath ?? true,
-                  });
-                } finally {
-                  span.end();
-                }
+                span = tracer.startSpan("sandbox.exec", undefined, activeStep?.parentContext);
               } catch {
-                // Observability must not change execution control flow.
+                span = null;
               }
-              if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-              if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
-              return {
-                exitCode: result.exitCode,
-                signal: result.signal ?? null,
-                timedOut: result.timedOut,
-                stdout: result.stdout,
-                stderr: result.stderr,
-                pid: null,
-                startedAt,
-                finishedAt,
-                durationMs,
-              };
+              try {
+                const result = await input.environmentRuntime!.execute({
+                  environment: input.environment as Environment,
+                  lease: input.lease!,
+                  command: commandInput.command,
+                  args: commandInput.args,
+                  cwd: commandInput.cwd ?? remoteCwd,
+                  env: commandInput.env,
+                  stdin: commandInput.stdin,
+                  timeoutMs: commandInput.timeoutMs,
+                });
+                const finishedAtMs = Date.now();
+                const finishedAt = new Date(finishedAtMs).toISOString();
+                const durationMs = finishedAtMs - startedAtMs;
+                accumulateProviderDurations(result.metadata);
+                // `setSandboxExecSpanAttributes` sets ONLY the closed
+                // `paperclip.sandbox.startup.exec.*` allowlist: the normalized
+                // provider family, the clamped command label, the numeric exit
+                // code, the wall / wait-before / sandbox / network times, the
+                // critical-path flag, and the outcome. The full command, args,
+                // env, stdout, and stderr never ride the span.
+                if (span) {
+                  try {
+                    setSandboxExecSpanAttributes(span, {
+                      provider: providerFamily,
+                      command: commandInput.command,
+                      exitCode: result.exitCode,
+                      wallMs: durationMs,
+                      waitBeforeMs: toFiniteNumber(result.metadata?.getDurationMs),
+                      sandboxMs: toFiniteNumber(result.metadata?.durationMs),
+                      criticalPath,
+                    });
+                  } catch {
+                    // Observability must not change execution control flow.
+                  }
+                }
+                if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
+                if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+                return {
+                  exitCode: result.exitCode,
+                  signal: result.signal ?? null,
+                  timedOut: result.timedOut,
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                  pid: null,
+                  startedAt,
+                  finishedAt,
+                  durationMs,
+                };
+              } catch (error) {
+                // The provider execution threw. Mark the span failed with the
+                // measured wall time, then rethrow the original error unchanged.
+                if (span) {
+                  try {
+                    setSandboxExecSpanFailure(span, {
+                      provider: providerFamily,
+                      command: commandInput.command,
+                      wallMs: Date.now() - startedAtMs,
+                      criticalPath,
+                    });
+                  } catch {
+                    // Observability must not change execution control flow.
+                  }
+                }
+                throw error;
+              } finally {
+                if (span) {
+                  try {
+                    span.end();
+                  } catch {
+                    // Observability must not change execution control flow.
+                  }
+                }
+              }
             },
             // Expose the native file-sync capability only when the provider's
             // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut

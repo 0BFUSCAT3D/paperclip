@@ -510,12 +510,26 @@ describe("resolveEnvironmentExecutionTarget", () => {
     execResult: Record<string, unknown>;
     tracer: unknown;
   }) {
+    return runnerWithExecute({
+      provider: input.provider,
+      tracer: input.tracer,
+      execute: vi.fn().mockResolvedValue(input.execResult),
+    });
+  }
+
+  // Build the sandbox runner with a custom provider-exec implementation, so a
+  // test can drive a thrown execution or assert the span order around the await.
+  async function runnerWithExecute(input: {
+    provider: string;
+    tracer: unknown;
+    execute: (...args: unknown[]) => Promise<unknown>;
+  }) {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
       config: { provider: input.provider, reuseLease: false, timeoutMs: 30_000 },
     });
     const environmentRuntime = {
-      execute: vi.fn().mockResolvedValue(input.execResult),
+      execute: input.execute,
       supportsSync: vi.fn().mockReturnValue(false),
     };
     const target = await resolveEnvironmentExecutionTarget({
@@ -727,5 +741,59 @@ describe("resolveEnvironmentExecutionTarget", () => {
     const execSpan = spans.find((span) => span.name === "sandbox.exec");
     expect(execSpan).toBeTruthy();
     expect(execSpan!.parent).toBeNull();
+  });
+
+  it("opens the exec span before the provider await so the span wraps the execution", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    // Assert the span is already open (started, not ended) while the provider
+    // runs. If the seam opened the span after the await, no open span would
+    // exist here and the native span duration would be near zero.
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn().mockImplementation(async () => {
+        const open = spans.find((span) => span.name === "sandbox.exec");
+        expect(open, "the exec span must be open during the provider await").toBeTruthy();
+        expect(open!.ended).toBe(false);
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+      }),
+    });
+
+    await runner.execute({ command: "echo" });
+
+    const span = spans.find((s) => s.name === "sandbox.exec");
+    expect(span!.ended).toBe(true);
+    expect(span!.attributes[A.outcome]).toBe("ok");
+  });
+
+  it("records a failed exec span and rethrows when the provider execution throws", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn().mockRejectedValue(new Error("provider transport failed")),
+    });
+
+    // The original error rides through unchanged; observability never swallows it.
+    await expect(runner.execute({ command: "echo" })).rejects.toThrow("provider transport failed");
+
+    // A thrown execution still produces one ended span with the `failed` outcome,
+    // instead of no span at all.
+    const span = spans.find((s) => s.name === "sandbox.exec");
+    expect(span).toBeTruthy();
+    expect(span!.ended).toBe(true);
+    expect(span!.attributes[A.outcome]).toBe("failed");
+    expect(span!.attributes[A.provider]).toBe("daytona");
+    // `echo` is a known basename, so the clamped command rides the span.
+    expect(span!.attributes[A.execCommand]).toBe("echo");
+    // No exec result exists, so the exit code never rides the span.
+    expect(A.execExitCode in span!.attributes).toBe(false);
+    // The wall time is a real, finite, non-negative number.
+    expect(typeof span!.attributes[A.execWallMs]).toBe("number");
+    expect(span!.attributes[A.execWallMs] as number).toBeGreaterThanOrEqual(0);
+    // Only allowlisted keys ride the failed span.
+    for (const key of Object.keys(span!.attributes)) {
+      expect(ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS.has(key), `non-allowlisted key "${key}"`).toBe(true);
+    }
   });
 });

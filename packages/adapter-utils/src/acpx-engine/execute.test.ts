@@ -3292,6 +3292,47 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     expect(rootSpan!.attributes).not.toHaveProperty(A.sandboxId);
   });
 
+  it("excludes the nested skills.reconcile wall time from the root work sum (no double count)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // A codex bring-up runs the codex-home.seed step, which nests skills.reconcile.
+    const { events } = await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    const stepEvents = events.filter((event) => event.eventType === "run.startup.step");
+    // The nested skills.reconcile step still emits its own boundary event.
+    const reconcile = stepEvents.find((event) => event.payload?.step === "skills.reconcile");
+    expect(reconcile, "skills.reconcile must still emit its own step event").toBeTruthy();
+
+    // The root work sum is the sum of the top-level step walls only. The nested
+    // skills.reconcile wall sits inside the codex-home.seed wall, so it must not
+    // ride the sum a second time. The sum of every step wall except
+    // skills.reconcile equals the recorded root work sum exactly; each step
+    // reports the same duration to the event and to the root accumulator.
+    const sumExceptReconcile = stepEvents
+      .filter((event) => event.payload?.step !== "skills.reconcile")
+      .reduce((total, event) => total + (event.payload?.durationMs as number), 0);
+
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    expect(rootSpan).toBeTruthy();
+    expect(rootSpan!.attributes[A.rootWorkMs]).toBe(sumExceptReconcile);
+  });
+
   it("parents both concurrent bridge spans to the root (neither orphans)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

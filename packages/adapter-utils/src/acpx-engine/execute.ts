@@ -975,7 +975,15 @@ async function prepareCodexSkillRuntime(input: {
   const skillsHome = path.join(effectiveCodexHome, "skills");
   await fs.mkdir(skillsHome, { recursive: true });
   // Step 3 — skills.reconcile: nested inside the codex-home seed (step 2), so it
-  // emits its own boundary event at this call-site.
+  // emits its own boundary event and span at this call-site. It must NOT add its
+  // wall time to the root work sum. The enclosing step 2 wall already covers this
+  // interval, so a second `onWallMs` call would count the same milliseconds
+  // twice. Drop `onWallMs` for the nested step; keep every other attribution
+  // field.
+  const nestedStepMetrics: StartupStepMeasureOptions = {
+    ...(input.stepMetrics ?? {}),
+    onWallMs: undefined,
+  };
   await measureStartupStep({ onEvent: input.onEvent }, now, "skills.reconcile", () =>
     reconcileManagedCodexSkills({
       skillsHome,
@@ -983,7 +991,7 @@ async function prepareCodexSkillRuntime(input: {
       selectedSkills,
       onLog: input.onLog,
     }),
-    input.stepMetrics ?? {},
+    nestedStepMetrics,
   );
 
   for (const entry of selectedSkills) {
