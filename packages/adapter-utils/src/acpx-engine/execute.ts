@@ -1463,8 +1463,14 @@ async function buildRuntime(input: {
   // would double-count each other if we sampled them here. Keep the shared
   // counter attribution on the sequential startup phases only; the concurrent
   // bridge steps still emit duration telemetry (and a span), just not
-  // misleading per-step round-trip/provider deltas.
-  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = { ...input.spanParent };
+  // misleading per-step round-trip/provider deltas. A shared `batch` tag marks
+  // the two spans as one parallel batch, and `criticalPath: false` keeps their
+  // inner exec spans off the critical path (their wall time overlaps).
+  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = {
+    ...input.spanParent,
+    batch: STARTUP_BRIDGE_BATCH,
+    criticalPath: false,
+  };
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
@@ -2878,6 +2884,11 @@ function warmHandleMatches(
  * low-cardinality constant, never derived from run/user data. */
 const STARTUP_ROOT_SPAN_NAME = "sandbox.startup";
 
+/** The shared batch tag for the two parallel bridge steps. It is a fixed
+ * low-cardinality literal, so it marks the two spans as one batch without
+ * carrying run or user data. */
+const STARTUP_BRIDGE_BATCH = "bridge";
+
 /**
  * Open the one root span for a sandbox bring-up and return its parent-context
  * token plus a guarded `end`. The span parents every startup boundary span:
@@ -3156,6 +3167,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               ...(createRuntimeMs !== undefined ? { createRuntimeMs } : {}),
               ...(ensureSessionMs !== undefined ? { ensureSessionMs } : {}),
             }),
+            // The same two sub-times ride the span as fixed, closed keys.
+            spanWallTimes: () => ({
+              createRuntime: createRuntimeMs,
+              ensureSession: ensureSessionMs,
+            }),
           });
         } catch (err) {
           if (!resumeSessionId || !isResumeFailure(err)) throw err;
@@ -3185,6 +3201,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             extra: () => ({
               ...(retryEnsureSessionMs !== undefined ? { ensureSessionMs: retryEnsureSessionMs } : {}),
             }),
+            // The retry reuses the runtime from the first attempt, so it reports
+            // only its own ensure-session sub-time on the span.
+            spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
           });
         }
       } else {

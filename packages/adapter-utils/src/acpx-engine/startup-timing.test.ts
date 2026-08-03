@@ -419,6 +419,35 @@ describe("measureStartupStep", () => {
     expect(events[0]!.payload).toMatchObject({ step: "stage.sync" });
   });
 
+  it("sets a batch tag on the span from the batch option", async () => {
+    const { tracer, spans } = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "bridge.paperclip", async () => "ok", {
+      tracer,
+      batch: "bridge",
+    });
+    expect(spans[0]!.attributes[A.batch]).toBe("bridge");
+  });
+
+  it("maps handshake sub-times to fixed span keys and skips a non-finite one", async () => {
+    const { tracer, spans } = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "acp.handshake", async () => "ok", {
+      tracer,
+      spanWallTimes: () => ({ createRuntime: 12, ensureSession: 6988 }),
+    });
+    expect(spans[0]!.attributes[A.handshakeCreateRuntimeWallMs]).toBe(12);
+    expect(spans[0]!.attributes[A.handshakeEnsureSessionWallMs]).toBe(6988);
+
+    // A retry reports only its own ensure-session sub-time; the absent create-
+    // runtime value sets no attribute.
+    const retry = makeMockTracer();
+    await measureStartupStep({ onEvent: vi.fn(async () => {}) }, () => 0, "acp.handshake", async () => "ok", {
+      tracer: retry.tracer,
+      spanWallTimes: () => ({ ensureSession: 40 }),
+    });
+    expect(retry.spans[0]!.attributes[A.handshakeEnsureSessionWallMs]).toBe(40);
+    expect(retry.spans[0]!.attributes).not.toHaveProperty(A.handshakeCreateRuntimeWallMs);
+  });
+
   it("sets outcome = ok on a settled step and outcome = failed on a throwing step", async () => {
     const okEvents: AdapterRuntimeEvent[] = [];
     const ok = makeMockTracer();

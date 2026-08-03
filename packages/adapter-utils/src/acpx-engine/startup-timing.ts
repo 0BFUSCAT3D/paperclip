@@ -438,6 +438,21 @@ export interface StartupStepMeasureOptions {
    * changes startup control flow.
    */
   onWallMs?: (wallMs: number) => void;
+  /**
+   * A shared low-cardinality batch tag. Two steps that run in parallel (the
+   * bridges) pass the same value, so the trace marks them as one batch. It
+   * rides the span as the closed `…batch` attribute. Pass only a fixed literal,
+   * never run or user data.
+   */
+  batch?: string;
+  /**
+   * Named wall-time sub-splits (float ms) that ride the step span as fixed,
+   * closed attribute keys. Only `acp.handshake` uses it today, for the
+   * create-runtime and ensure-session sub-times. The helper maps each value to
+   * a hard-coded attribute key, so a free-form key can never widen the closed
+   * span allowlist. A non-finite value sets no attribute.
+   */
+  spanWallTimes?: () => Partial<Record<"createRuntime" | "ensureSession", number>>;
 }
 
 function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
@@ -491,6 +506,9 @@ export async function measureStartupStep<T>(
   const startAttributes: Record<string, string> = {};
   if (options.provider !== undefined) {
     startAttributes[SANDBOX_STARTUP_SPAN_ATTRS.provider] = normalizeProviderFamily(options.provider);
+  }
+  if (options.batch !== undefined) {
+    startAttributes[SANDBOX_STARTUP_SPAN_ATTRS.batch] = options.batch;
   }
   let span: StartupSpan;
   try {
@@ -558,6 +576,13 @@ export async function measureStartupStep<T>(
       // provider-duration detail, so the step span no longer duplicates them.
       setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.stepWallMs, durationMs);
       span.setAttribute(SANDBOX_STARTUP_SPAN_ATTRS.outcome, outcome);
+      if (options.spanWallTimes) {
+        // Map each named sub-time to a hard-coded, closed attribute key, so a
+        // caller cannot widen the span allowlist with a free-form key.
+        const sub = options.spanWallTimes();
+        setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.handshakeCreateRuntimeWallMs, sub.createRuntime);
+        setFiniteNumberAttr(span, SANDBOX_STARTUP_SPAN_ATTRS.handshakeEnsureSessionWallMs, sub.ensureSession);
+      }
       span.end();
     } catch {
       // Observability must not change startup control flow.
