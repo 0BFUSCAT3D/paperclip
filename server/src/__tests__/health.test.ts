@@ -349,6 +349,100 @@ describe("GET /health", () => {
     });
   });
 
+  it("ignores other filename prefixes when judging the latest backup against the median", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-mixed-prefix-"));
+    // A foreign stream of much larger backups sharing the directory — a
+    // directory-wide median would flag the healthy paperclip stream below.
+    for (let day = 1; day <= 4; day += 1) {
+      const other = path.join(backupDir, `other-2026070${day}-120000.sql.gz`);
+      fs.writeFileSync(other, Buffer.alloc(10_000_000));
+      fs.utimesSync(
+        other,
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+      );
+      const prior = path.join(backupDir, `paperclip-2026070${day}-031702.sql.gz`);
+      fs.writeFileSync(prior, Buffer.alloc(100_000));
+      fs.utimesSync(
+        prior,
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+      );
+    }
+    const latestFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(latestFile, Buffer.alloc(60_000));
+    fs.utimesSync(
+      latestFile,
+      new Date("2026-07-06T03:17:02.000Z"),
+      new Date("2026-07-06T03:17:02.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    // 60 KB vs the paperclip-stream median of 100 KB is a moderate shrink,
+    // not a collapse; the 10 MB foreign stream must not change that call.
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "ok",
+      warnings: [],
+    });
+  });
+
+  it("still detects a collapsed backup when tiny foreign-prefix files share the directory", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-mixed-collapse-"));
+    // Tiny foreign files would drag a directory-wide median down far enough
+    // to hide the paperclip stream's collapse.
+    for (let day = 1; day <= 4; day += 1) {
+      const other = path.join(backupDir, `other-2026070${day}-120000.sql.gz`);
+      fs.writeFileSync(other, Buffer.alloc(2_000));
+      fs.utimesSync(
+        other,
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+        new Date(`2026-07-0${day}T12:00:00.000Z`),
+      );
+      const prior = path.join(backupDir, `paperclip-2026070${day}-031702.sql.gz`);
+      fs.writeFileSync(prior, Buffer.alloc(100_000));
+      fs.utimesSync(
+        prior,
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+        new Date(`2026-07-0${day}T03:17:02.000Z`),
+      );
+    }
+    const latestFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
+    fs.writeFileSync(latestFile, Buffer.alloc(5_000));
+    fs.utimesSync(
+      latestFile,
+      new Date("2026-07-06T03:17:02.000Z"),
+      new Date("2026-07-06T03:17:02.000Z"),
+    );
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date("2026-07-06T04:00:00.000Z"),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    // 5 KB is under 10% of the paperclip-stream median of 100 KB.
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      warnings: [
+        {
+          code: "database_backup_too_small",
+        },
+      ],
+    });
+    expect(res.body.databaseBackup.warnings[0].message).toContain("median");
+  });
+
   it("surfaces redacted database backup warnings for anonymous authenticated probes", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");

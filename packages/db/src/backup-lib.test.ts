@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -124,6 +125,54 @@ describe("sweepBackupOrphans", () => {
     const missingDir = path.join(os.tmpdir(), "paperclip-missing-sweep-dir");
     expect(sweepBackupOrphans(missingDir, "paperclip")).toEqual([]);
   });
+
+  it("never sweeps files whose pid marker names a live process, even past the age guard", () => {
+    const backupDir = createTempDir("paperclip-backup-sweep-live-pid-");
+    const nowMs = Date.UTC(2026, 6, 31, 22, 0, 0);
+    const staleTime = new Date(nowMs - 3 * 60 * 60 * 1000);
+
+    // A stalled-but-alive run in another process: working .sql plus a tiny
+    // in-progress .sql.gz, both idle past the age guard, marker pid = us.
+    const stalledSql = path.join(backupDir, "paperclip-20260731-152400.sql");
+    const stalledGz = path.join(backupDir, "paperclip-20260731-152400.sql.gz");
+    const marker = path.join(backupDir, "paperclip-20260731-152400.sql.pid");
+    fs.writeFileSync(stalledSql, "x".repeat(4096));
+    fs.writeFileSync(stalledGz, "x".repeat(20));
+    fs.writeFileSync(marker, `${process.pid}\n`);
+    for (const file of [stalledSql, stalledGz, marker]) {
+      fs.utimesSync(file, staleTime, staleTime);
+    }
+
+    expect(sweepBackupOrphans(backupDir, "paperclip", { nowMs })).toEqual([]);
+    expect(fs.existsSync(stalledSql)).toBe(true);
+    expect(fs.existsSync(stalledGz)).toBe(true);
+    expect(fs.existsSync(marker)).toBe(true);
+  });
+
+  it("sweeps orphans and their marker once the owning process is gone", () => {
+    const backupDir = createTempDir("paperclip-backup-sweep-dead-pid-");
+    const nowMs = Date.UTC(2026, 6, 31, 22, 0, 0);
+    const staleTime = new Date(nowMs - 3 * 60 * 60 * 1000);
+
+    // A real-but-exited pid, so liveness is checked against the OS.
+    const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+    const orphanSql = path.join(backupDir, "paperclip-20260731-152400.sql");
+    const orphanGz = path.join(backupDir, "paperclip-20260731-152400.sql.gz");
+    const marker = path.join(backupDir, "paperclip-20260731-152400.sql.pid");
+    const strayMarker = path.join(backupDir, "paperclip-20260730-092400.sql.pid");
+    fs.writeFileSync(orphanSql, "x".repeat(4096));
+    fs.writeFileSync(orphanGz, "x".repeat(20));
+    fs.writeFileSync(marker, `${deadPid}\n`);
+    fs.writeFileSync(strayMarker, "not-a-pid\n");
+    for (const file of [orphanSql, orphanGz, marker, strayMarker]) {
+      fs.utimesSync(file, staleTime, staleTime);
+    }
+
+    const swept = sweepBackupOrphans(backupDir, "paperclip", { nowMs });
+
+    expect([...swept].sort()).toEqual([marker, orphanGz, orphanSql, strayMarker].sort());
+    expect(fs.readdirSync(backupDir)).toEqual([]);
+  });
 });
 
 describe("pruneOldBackups", () => {
@@ -189,6 +238,8 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       expect(fs.existsSync(healthyGz)).toBe(true);
       expect(fs.existsSync(result.backupFile)).toBe(true);
       expect(result.prunedCount).toBe(0);
+      // The run's own pid ownership marker must not outlive the run.
+      expect(fs.readdirSync(backupDir).filter((name) => name.endsWith(".pid"))).toEqual([]);
     },
     30_000,
   );

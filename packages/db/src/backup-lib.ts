@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -123,12 +123,37 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
 }
 
 /**
+ * True when the pid recorded in a `.sql.pid` ownership marker still names a
+ * running process. EPERM means the process exists but belongs to another
+ * user, so it counts as alive.
+ */
+function isMarkedByLiveProcess(markerPath: string): boolean {
+  let raw: string;
+  try {
+    raw = readFileSync(markerPath, "utf8");
+  } catch {
+    return false;
+  }
+  const pid = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
  * Removes crash orphans left behind when a backup process dies mid-run
  * (e.g. SIGTERM): bare `${prefix}-*.sql` working files, which the normal flow
- * always deletes after compression, and `.sql.gz` files too small to be a
- * plausible backup (a killed gzip pipeline leaves a header-only file).
- * Files modified within `minAgeMs` are left alone so a concurrently running
- * backup is never swept out from under itself.
+ * always deletes after compression, `.sql.gz` files too small to be a
+ * plausible backup (a killed gzip pipeline leaves a header-only file), and
+ * stray `.sql.pid` ownership markers.
+ * Files modified within `minAgeMs` are left alone, and files whose `.sql.pid`
+ * marker names a live process are never swept — a stalled-but-alive backup in
+ * another process (e.g. the server while a CLI backup runs) must not have its
+ * working files unlinked out from under it.
  */
 export function sweepBackupOrphans(
   backupDir: string,
@@ -145,8 +170,9 @@ export function sweepBackupOrphans(
   for (const name of readdirSync(backupDir)) {
     if (!name.startsWith(`${filenamePrefix}-`)) continue;
     const isGz = name.endsWith(".sql.gz");
-    const isWorkingSql = !isGz && name.endsWith(".sql");
-    if (!isGz && !isWorkingSql) continue;
+    const isPidMarker = !isGz && name.endsWith(".sql.pid");
+    const isWorkingSql = !isGz && !isPidMarker && name.endsWith(".sql");
+    if (!isGz && !isPidMarker && !isWorkingSql) continue;
 
     const fullPath = resolve(backupDir, name);
     let stat;
@@ -157,6 +183,13 @@ export function sweepBackupOrphans(
     }
     if (nowMs - stat.mtimeMs < minAgeMs) continue;
     if (isGz && stat.size >= minGzBytes) continue;
+
+    const markerPath = isPidMarker
+      ? fullPath
+      : isGz
+        ? `${fullPath.slice(0, -".gz".length)}.pid`
+        : `${fullPath}.pid`;
+    if (isMarkedByLiveProcess(markerPath)) continue;
 
     try {
       unlinkSync(fullPath);
@@ -604,6 +637,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const sweptOrphans = sweepBackupOrphans(opts.backupDir, filenamePrefix);
   const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
   const backupFile = `${sqlFile}.gz`;
+  const pidMarkerFile = `${sqlFile}.pid`;
+  try {
+    // Ownership marker: a concurrent caller's orphan sweep must be able to
+    // tell this live run's working files apart from crash leftovers.
+    writeFileSync(pidMarkerFile, `${process.pid}\n`);
+  } catch {
+    // The marker is advisory; failing to write it must not block the backup.
+  }
   const writer = createBufferedTextFileWriter(sqlFile);
 
   try {
@@ -1049,6 +1090,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
     throw error;
   } finally {
+    try { unlinkSync(pidMarkerFile); } catch { /* ignore */ }
     await closeSql();
   }
 }

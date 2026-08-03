@@ -123,6 +123,18 @@ function findLatestBackup(backups: ReturnType<typeof listBackups>, nowMs: number
   };
 }
 
+/**
+ * Groups backups into streams by filename prefix (`paperclip-20260803-071500.sql.gz`
+ * → `paperclip`). Sweep and retention treat each prefix as its own stream, so
+ * the median comparison must too — a shared directory can hold e.g. CLI and
+ * scheduled backups of very different sizes, and mixing them would let one
+ * stream mask or fake a collapse in the other. Names without the timestamp
+ * pattern fall back to the full name, i.e. they never share a stream.
+ */
+function backupStreamKey(name: string): string {
+  return name.replace(/-\d{8}-\d{6}\.sql\.gz$/, "");
+}
+
 function findImplausibleSizeWarning(
   backups: ReturnType<typeof listBackups>,
   latestBackup: NonNullable<DatabaseBackupHealthStatus["latestBackup"]>,
@@ -135,8 +147,11 @@ function findImplausibleSizeWarning(
     };
   }
 
+  const latestStream = backupStreamKey(latestBackup.name);
   const priorSizes = backups
-    .slice(1, 1 + RECENT_BACKUP_MEDIAN_SAMPLE)
+    .slice(1)
+    .filter((entry) => backupStreamKey(entry.name) === latestStream)
+    .slice(0, RECENT_BACKUP_MEDIAN_SAMPLE)
     .map((entry) => entry.stat.size);
   if (priorSizes.length < MIN_BACKUPS_FOR_MEDIAN_CHECK) return null;
 
