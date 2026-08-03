@@ -86,6 +86,8 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   execNetworkMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.network_ms`,
   /** Whether one execution sits on the startup critical path. */
   execCriticalPath: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.critical_path`,
+  /** Whether the provider served the sandbox handle from its warm cache. */
+  execCacheHit: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.cache_hit`,
   /** The root-span wall time of the whole bring-up. */
   rootWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}root.wall_ms`,
   /** The sum of the step wall times of the whole bring-up. */

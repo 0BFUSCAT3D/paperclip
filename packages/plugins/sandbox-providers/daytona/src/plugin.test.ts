@@ -1157,6 +1157,41 @@ describe("Daytona sandbox provider plugin", () => {
     }
   });
 
+  it("sets metadata.cacheHit false on a client.get miss and true on a warm-handle hit", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockResolvedValue({
+      exitCode: 0,
+      result: "ok",
+      artifacts: { stdout: "ok" },
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    const execParams = {
+      driverKey: "daytona" as const,
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      timeoutMs: 1000,
+    };
+
+    // First execute: the handle cache is empty, so the lookup calls `client.get`
+    // and reports a miss.
+    const first = await plugin.definition.onEnvironmentExecute?.(execParams);
+    expect(first!.metadata).toMatchObject({ cacheHit: false });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    // Second execute: the warm handle cache serves the handle, so the lookup
+    // makes no `client.get` round trip and reports a hit.
+    const second = await plugin.definition.onEnvironmentExecute?.(execParams);
+    expect(second!.metadata).toMatchObject({ cacheHit: true });
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
   it("stages stdin in the sandbox filesystem when execution needs redirected input", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
