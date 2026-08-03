@@ -796,4 +796,39 @@ describe("resolveEnvironmentExecutionTarget", () => {
       expect(ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS.has(key), `non-allowlisted key "${key}"`).toBe(true);
     }
   });
+
+  it("keeps the exec span outcome `ok` when the execution succeeds but a log callback rejects", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    // The provider execution succeeds and returns stdout, so the seam invokes
+    // the log callback. The callback rejects, which models a downstream log-sink
+    // failure. The rejection must reach the caller, but it must never reclassify
+    // the successful execution as a failed span.
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "hello",
+        stderr: "",
+      }),
+    });
+
+    const onLog = vi.fn().mockRejectedValue(new Error("log sink rejected"));
+    // The rejection rides through unchanged; observability never swallows it.
+    await expect(
+      (runner as { execute(input: unknown): Promise<unknown> }).execute({ command: "echo", onLog }),
+    ).rejects.toThrow("log sink rejected");
+
+    // The span ended with the successful outcome from the command result, not
+    // the failed outcome. A log failure never marks the execution failed.
+    const span = spans.find((s) => s.name === "sandbox.exec");
+    expect(span).toBeTruthy();
+    expect(span!.ended).toBe(true);
+    expect(span!.attributes[A.outcome]).toBe("ok");
+    expect(span!.attributes[A.execExitCode]).toBe(0);
+    // The seam reached the log callback exactly once (the stdout delivery).
+    expect(onLog).toHaveBeenCalledTimes(1);
+  });
 });

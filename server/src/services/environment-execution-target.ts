@@ -252,16 +252,42 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 span = null;
               }
               try {
-                const result = await input.environmentRuntime!.execute({
-                  environment: input.environment as Environment,
-                  lease: input.lease!,
-                  command: commandInput.command,
-                  args: commandInput.args,
-                  cwd: commandInput.cwd ?? remoteCwd,
-                  env: commandInput.env,
-                  stdin: commandInput.stdin,
-                  timeoutMs: commandInput.timeoutMs,
-                });
+                // Classify the span outcome from the provider execution ONLY.
+                // The inner try/catch wraps just the provider await, so a thrown
+                // provider execution marks the span failed. A later log-callback
+                // rejection sits outside this block and never flips a successful
+                // execution to failed.
+                let result;
+                try {
+                  result = await input.environmentRuntime!.execute({
+                    environment: input.environment as Environment,
+                    lease: input.lease!,
+                    command: commandInput.command,
+                    args: commandInput.args,
+                    cwd: commandInput.cwd ?? remoteCwd,
+                    env: commandInput.env,
+                    stdin: commandInput.stdin,
+                    timeoutMs: commandInput.timeoutMs,
+                  });
+                } catch (error) {
+                  // The provider execution threw. Mark the span failed with the
+                  // measured wall time, then rethrow the original error unchanged.
+                  if (span) {
+                    try {
+                      setSandboxExecSpanFailure(span, {
+                        provider: providerFamily,
+                        command: commandInput.command,
+                        wallMs: Date.now() - startedAtMs,
+                        criticalPath,
+                      });
+                    } catch {
+                      // Observability must not change execution control flow.
+                    }
+                  }
+                  throw error;
+                }
+                // The provider execution succeeded. The span timing and outcome
+                // come from the command result, not from the log callbacks below.
                 const finishedAtMs = Date.now();
                 const finishedAt = new Date(finishedAtMs).toISOString();
                 const durationMs = finishedAtMs - startedAtMs;
@@ -287,6 +313,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     // Observability must not change execution control flow.
                   }
                 }
+                // Deliver the captured output. A rejected `onLog` still
+                // propagates to the caller (control flow is unchanged), but the
+                // span already carries the successful outcome, so a log failure
+                // never marks the execution failed.
                 if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
                 if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
                 return {
@@ -300,22 +330,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
                   finishedAt,
                   durationMs,
                 };
-              } catch (error) {
-                // The provider execution threw. Mark the span failed with the
-                // measured wall time, then rethrow the original error unchanged.
-                if (span) {
-                  try {
-                    setSandboxExecSpanFailure(span, {
-                      provider: providerFamily,
-                      command: commandInput.command,
-                      wallMs: Date.now() - startedAtMs,
-                      criticalPath,
-                    });
-                  } catch {
-                    // Observability must not change execution control flow.
-                  }
-                }
-                throw error;
               } finally {
                 if (span) {
                   try {
