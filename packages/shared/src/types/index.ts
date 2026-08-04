@@ -1,4 +1,8 @@
-export type { Company } from "./company.js";
+export type {
+  Company,
+  InteractionResolverGovernance,
+  InteractionResolverKindGovernance,
+} from "./company.js";
 export type {
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
@@ -586,6 +590,12 @@ export type {
   IssueBlockerAttention,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
+  IssueReviewAttention,
+  IssueReviewAttentionPath,
+  IssueReviewAttentionPathKind,
+  IssueReviewAttentionState,
+  StalledReviewDecisionAction,
+  StalledReviewDecisionResponse,
   IssueInboxAttentionKind,
   IssueBlockedInboxAction,
   IssueBlockedInboxAttention,

@@ -46,6 +46,11 @@ export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
 export { skillAnalyticsService } from "./skill-analytics.js";
+export {
+  stalledReviewDecisionService,
+  type DecideStalledReviewInput,
+  type StalledReviewDecisionActor,
+} from "./stalled-review-decisions.js";
 export { taskWatchdogService } from "./task-watchdogs.js";
 export {
   issueIsInTaskWatchdogSubtree,
