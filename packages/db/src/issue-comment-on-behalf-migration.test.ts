@@ -27,11 +27,45 @@ describeEmbeddedPostgres("issue comment on-behalf attribution migration", () => 
     const database = await startEmbeddedPostgresTestDatabase("paperclip-comment-on-behalf-");
     cleanups.push(database.cleanup);
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    const historicalCompanyId = randomUUID();
+    const historicalAgentId = randomUUID();
+    const historicalIssueId = randomUUID();
+    const historicalRunId = randomUUID();
+    const historicalCommentId = randomUUID();
+    const historicalUserId = `historical-comment-user-${randomUUID()}`;
 
     try {
       await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
       await sql`ALTER TABLE "issue_comments" DROP CONSTRAINT IF EXISTS "issue_comments_on_behalf_of_user_id_user_id_fk"`;
       await sql`ALTER TABLE "issue_comments" DROP COLUMN IF EXISTS "on_behalf_of_user_id"`;
+      await sql`
+        INSERT INTO "companies" ("id", "name", "issue_prefix")
+        VALUES (${historicalCompanyId}, 'Historical attribution company', 'HAC')
+      `;
+      await sql`
+        INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "adapter_config")
+        VALUES (${historicalAgentId}, ${historicalCompanyId}, 'Historical comment agent', 'engineer', 'process', '{}'::jsonb)
+      `;
+      await sql`
+        INSERT INTO "issues" ("id", "company_id", "title", "identifier")
+        VALUES (${historicalIssueId}, ${historicalCompanyId}, 'Historical comment issue', 'HAC-1')
+      `;
+      await sql`
+        INSERT INTO "user" ("id", "name", "email", "email_verified", "created_at", "updated_at")
+        VALUES (${historicalUserId}, 'Historical Comment User', 'historical-comment-user@example.test', true, now(), now())
+      `;
+      await sql`
+        INSERT INTO "heartbeat_runs" ("id", "company_id", "agent_id", "status", "responsible_user_id")
+        VALUES (${historicalRunId}, ${historicalCompanyId}, ${historicalAgentId}, 'succeeded', ${historicalUserId})
+      `;
+      await sql`
+        INSERT INTO "issue_comments" (
+          "id", "company_id", "issue_id", "author_agent_id", "created_by_run_id", "body"
+        ) VALUES (
+          ${historicalCommentId}, ${historicalCompanyId}, ${historicalIssueId}, ${historicalAgentId},
+          ${historicalRunId}, 'Historical attributed comment'
+        )
+      `;
     } finally {
       await sql.end();
     }
@@ -71,6 +105,13 @@ describeEmbeddedPostgres("issue comment on-behalf attribution migration", () => 
         constraint_name: "issue_comments_on_behalf_of_user_id_user_id_fk",
         delete_rule: "SET NULL",
       }]);
+
+      const historical = await verify<{ on_behalf_of_user_id: string | null }[]>`
+        SELECT "on_behalf_of_user_id"
+        FROM "issue_comments"
+        WHERE "id" = ${historicalCommentId}
+      `;
+      expect(historical).toEqual([{ on_behalf_of_user_id: historicalUserId }]);
 
       const companyId = randomUUID();
       const agentId = randomUUID();
