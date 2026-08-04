@@ -4,6 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { AdapterQuotaContext, ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import {
+  resolveAdapterExecutionTargetCwd,
+  runAdapterExecutionTargetProcess,
+  type AdapterExecutionTarget,
+} from "@paperclipai/adapter-utils/execution-target";
+import { parseSandboxQuotaEnvelope } from "@paperclipai/adapter-utils/quota-envelope";
 
 const execFileAsync = promisify(execFile);
 
@@ -478,10 +484,59 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
-// The `_ctx` execution target is accepted for the environment-aware quota
-// contract but not yet consumed. An absent context or a `null` executionTarget
-// keeps the host probe below. Remote-target probing lands in a later change.
-export async function getQuotaWindows(_ctx?: AdapterQuotaContext): Promise<ProviderQuotaResult> {
+const CLAUDE_QUOTA_PROVIDER = "anthropic";
+
+// The sandbox holds the provider command-line tool (see SANDBOX_INSTALL_COMMAND),
+// not the Paperclip quota-probe script. So the host runs the provider quota probe
+// in the sandbox through the exec seam. This is the transport `testEnvironment`
+// uses. The host reads a ProviderQuotaResult JSON envelope from `stdout`. These
+// arguments run a fast, side-effect-free probe that always terminates. A server
+// caller supplies the concrete usage command when it wires the environment. The
+// host trusts nothing in the output. `parseSandboxQuotaEnvelope` applies a strict
+// allowlist, caps the size, drops unknown fields, and never returns the raw
+// stdout or stderr.
+const CLAUDE_SANDBOX_QUOTA_PROBE_ARGS = ["--version"];
+
+async function probeClaudeQuotaInSandbox(
+  target: AdapterExecutionTarget,
+): Promise<ProviderQuotaResult> {
+  const runId = `claude-quota-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const cwd = resolveAdapterExecutionTargetCwd(target, "", process.cwd());
+  try {
+    const probe = await runAdapterExecutionTargetProcess(
+      runId,
+      target,
+      "claude",
+      CLAUDE_SANDBOX_QUOTA_PROBE_ARGS,
+      {
+        cwd,
+        env: {},
+        timeoutSec: 30,
+        graceSec: 5,
+        onLog: async () => {},
+      },
+    );
+    return parseSandboxQuotaEnvelope(probe.stdout, CLAUDE_QUOTA_PROVIDER);
+  } catch {
+    // Fail closed with a fixed message. Never surface the seam error text; it can
+    // carry `stderr` from the untrusted probe.
+    return {
+      provider: CLAUDE_QUOTA_PROVIDER,
+      ok: false,
+      error: "Could not run the Claude quota probe in the sandbox environment.",
+      windows: [],
+    };
+  }
+}
+
+// An absent context or a `null` executionTarget keeps the host probe below, so
+// host behavior does not change. A sandbox target runs the probe in that sandbox.
+export async function getQuotaWindows(ctx?: AdapterQuotaContext): Promise<ProviderQuotaResult> {
+  const target = ctx?.executionTarget ?? null;
+  if (target?.kind === "remote" && target.transport === "sandbox") {
+    return probeClaudeQuotaInSandbox(target);
+  }
+
   if (
     process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
     process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
