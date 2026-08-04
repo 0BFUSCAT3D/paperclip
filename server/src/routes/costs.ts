@@ -22,6 +22,11 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
+import { environmentService } from "../services/environments.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { createAdapterTestExecutionContextResolver } from "../services/adapter-execution-context.js";
+import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { logger } from "../middleware/logger.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -63,6 +68,17 @@ export function costRoutes(
   const agents = agentService(db);
   const issues = issueService(db);
   const access = accessService(db);
+  const environmentsSvc = environmentService(db);
+  const environmentRuntime = environmentRuntimeService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
+  // Resolve one execution target per adapter for a selected environment. The
+  // quota service injects this resolver and releases every lease it acquires.
+  const resolveQuotaExecutionContext = createAdapterTestExecutionContextResolver({
+    db,
+    environmentsSvc,
+    environmentRuntime,
+  });
 
   async function resolveIssueByRef(rawId: string) {
     const identifier = normalizeIssueIdentifier(rawId);
@@ -281,7 +297,32 @@ export function costRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    const results = await fetchAllQuotaWindows();
+
+    // An absent `environmentId` keeps the host probe and the current response
+    // shape. A present value selects an environment the adapters probe inside.
+    const environmentId =
+      typeof req.query.environmentId === "string" && req.query.environmentId.trim().length > 0
+        ? req.query.environmentId.trim()
+        : null;
+
+    // Validate a selected environment before we touch any credentials. The
+    // helper rejects an unknown, an archived, and a `fake`-provider
+    // environment. Environments are an instance-scoped shared pool, so no
+    // company partition applies here.
+    if (environmentId) {
+      await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId);
+    }
+
+    // The service resolves one target per adapter, dispatches each probe into
+    // it, and releases every lease in a `finally` block. When the environment
+    // fails to resolve it returns a failed per-provider result and never falls
+    // back to the host probe.
+    const results = await fetchAllQuotaWindows({
+      environmentId,
+      companyId,
+      resolveExecutionContext: resolveQuotaExecutionContext,
+      logger,
+    });
     res.json(results);
   });
 
