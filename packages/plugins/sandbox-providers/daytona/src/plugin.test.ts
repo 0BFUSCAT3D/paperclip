@@ -1916,6 +1916,34 @@ describe("Daytona sandbox provider plugin", () => {
       expect(storedSessionId("lease-a", SESSION_CONFIG)).toBe(sessionId);
     });
 
+    it("resume keeps a session id an execute stores while the sandbox starts", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+
+      // Model the resume/execute race. Resume snapshots the stopped state and the
+      // empty store, then awaits the start. The start mock marks the sandbox
+      // started, then runs a concurrent execute that opens a session and stores
+      // its id. Resume must keep that live id, not clear it as a stale restart id.
+      sandbox.start.mockImplementation(async () => {
+        sandbox.state = "started";
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      });
+
+      await plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: SESSION_CONFIG,
+        leaseMetadata: RESUME_SENTINEL,
+      });
+
+      expect(sandbox.start).toHaveBeenCalled();
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).not.toBeNull();
+      expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
+    });
+
     it("opens exactly one session when two executes race on the same lease", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });

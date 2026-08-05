@@ -1361,10 +1361,11 @@ const sandboxHandleWritableDirs = (() => {
 // `sandboxHandleCacheKey(scope)`. The `useSessions` driver-config flag gates
 // every write: with the flag off the store stays empty, so the provider opens
 // and deletes no session. A sandbox that restarts loses its session shell, so
-// `onEnvironmentResumeLease` clears the id only when the sandbox actually
-// restarted, and the next execute opens a new session. A resume that finds the
-// sandbox already started keeps the live id. Every teardown path deletes the
-// session and clears the id.
+// `onEnvironmentResumeLease` clears the pre-start id only when the sandbox
+// actually restarted and the store still holds that same id, and the next
+// execute opens a new session. A resume that finds the sandbox already started,
+// or that races an execute which stored a new id, keeps the live id. Every
+// teardown path deletes the session and clears the id.
 const sandboxHandleSessionIds = (() => {
   const idsByKey = new Map<string, string>();
   // In-flight session-create promises, keyed the same way as `idsByKey`. The
@@ -1399,12 +1400,25 @@ const sandboxHandleSessionIds = (() => {
     pendingByKey.delete(key);
   }
 
+  // Compare-and-clear: delete the stored id only when it still equals
+  // `sessionId`. `onEnvironmentResumeLease` uses this to drop the stale id that a
+  // restart killed. A concurrent execute can store a new id while resume awaits
+  // the sandbox start. The new id does not equal the pre-start id, so this leaves
+  // it in place and the live session stays reachable for teardown. Return `true`
+  // when it deletes the id.
+  function clearIfMatches(scope: SandboxScope, sessionId: string): boolean {
+    const key = sandboxHandleCacheKey(scope);
+    if (idsByKey.get(key) !== sessionId) return false;
+    idsByKey.delete(key);
+    return true;
+  }
+
   function reset(): void {
     idsByKey.clear();
     pendingByKey.clear();
   }
 
-  return { get, set, getPending, setPending, clearPending, clear, reset };
+  return { get, set, getPending, setPending, clearPending, clear, clearIfMatches, reset };
 })();
 
 // Return the lease's Daytona session id, and open one on a cache miss. On a hit
@@ -1866,14 +1880,17 @@ const plugin = definePlugin({
       }
 
       // A sandbox restart drops the session shell, so a stored session id no
-      // longer points at a live session. Read the pre-start state, then start
-      // the sandbox. Clear the stored id only when the sandbox actually
-      // restarted. A sandbox that stayed started keeps its live session id, so
-      // resume never drops an id that a concurrent execute just stored.
+      // longer points at a live session. Read the pre-start state and the
+      // pre-start session id, then start the sandbox. Clear the stored id only
+      // when the sandbox actually restarted and the store still holds that same
+      // pre-start id. A concurrent execute can store a new id while resume awaits
+      // the start. The compare-and-clear leaves that new id in place, so resume
+      // never drops a live session that teardown must still delete.
       const sandboxWasStarted = sandbox.state === "started";
+      const staleSessionId = sandboxHandleSessionIds.get(scope);
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-      if (!sandboxWasStarted) {
-        sandboxHandleSessionIds.clear(scope);
+      if (!sandboxWasStarted && staleSessionId) {
+        sandboxHandleSessionIds.clearIfMatches(scope, staleSessionId);
       }
       try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
