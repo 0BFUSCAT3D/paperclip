@@ -1593,22 +1593,72 @@ function resolveBwrapExecPlan(
   return { writableDirs: [...writableDirs], username };
 }
 
-// One-shot command execution via Daytona's `process.executeCommand`. The
-// session-based API (`createSession` + `executeSessionCommand` with
-// `runAsync: false`) hangs indefinitely when the supplied command ends with
-// `exec <something>`, which `buildLoginShellScript` always produces. Reproduced
-// directly against the Daytona SDK: identical login-shell wrapper returns in
-// ~600 ms via `executeCommand` but times out via `executeSessionCommand`. So we
-// use the one-shot path, mirroring e2b's `sandbox.commands.run` model.
-//
-// `executeCommand` returns combined stdout+stderr in `result`. We surface that
-// as `stdout` and leave `stderr` empty; callers that grep for error messages
-// still see them in `stdout`.
+// Poll interval for an async session command. The provider dispatches a user
+// command with `runAsync: true`, then polls `getSessionCommand` for the exit
+// code, because the SDK has no built-in wait method.
+const SESSION_COMMAND_POLL_INTERVAL_MS = 250;
+
+// Wait `ms` milliseconds. The session-command poll uses it between status reads.
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Dispatch one user command into the persistent session. Return its exit code
+// and its separated `stdout` and `stderr`. A synchronous `runAsync: false` call
+// hangs for the login-shell wrapper (reproduced against the Daytona SDK: the
+// same wrapper returns in ~600 ms via `executeCommand` but times out via a
+// synchronous `executeSessionCommand`). So this dispatches with `runAsync: true`
+// and polls `getSessionCommand` until the exit code is set. The synchronous
+// response carries only optional combined `output`, so this reads the true
+// `stdout` and `stderr` from `getSessionCommandLogs` after the exit code is set.
+// It throws `DaytonaTimeoutError` when the poll passes `effectiveTimeoutMs`, so
+// the caller converts it on the same timeout branch as a one-shot timeout.
+async function runSessionCommand(
+  sandbox: Sandbox,
+  sessionId: string,
+  command: string,
+  timeoutSeconds: number,
+  effectiveTimeoutMs: number,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const dispatch = await sandbox.process.executeSessionCommand(
+    sessionId,
+    { command, runAsync: true },
+    timeoutSeconds,
+  );
+  const commandId = dispatch.cmdId;
+  const pollStart = timingNow();
+  let exitCode: number;
+  for (;;) {
+    const status = await sandbox.process.getSessionCommand(sessionId, commandId);
+    if (typeof status.exitCode === "number") {
+      exitCode = status.exitCode;
+      break;
+    }
+    if (timingNow() - pollStart >= effectiveTimeoutMs) {
+      throw new DaytonaTimeoutError(
+        `Session command timed out after ${Math.round(effectiveTimeoutMs / 1000)} s.`,
+      );
+    }
+    await sleep(SESSION_COMMAND_POLL_INTERVAL_MS);
+  }
+  const logs = await sandbox.process.getSessionCommandLogs(sessionId, commandId);
+  return { exitCode, stdout: logs.stdout ?? "", stderr: logs.stderr ?? "" };
+}
+
+// User-command execution. When `sessionId` is set, the provider dispatches the
+// command into the per-lease persistent session and returns the true, separated
+// `stdout` and `stderr` from `getSessionCommandLogs`. The exec hook opens the
+// session before dispatch when the `useSessions` flag is on, so the provider
+// never opens a one-shot command path for a user command under sessions
+// (security condition 4). When `sessionId` is null the flag is off, so the
+// provider keeps today's one-shot `executeCommand`, which returns combined
+// stdout+stderr in `result` as `stdout` and leaves `stderr` empty.
 async function executeOneShot(
   sandbox: Sandbox,
   params: PluginEnvironmentExecuteParams,
   config: DaytonaDriverConfig,
   bwrap: BwrapExecPlan | null,
+  sessionId: string | null,
 ): Promise<PluginEnvironmentExecuteResult> {
   const gitNet = isGitNetworkCommand(params.command, params.args ?? []);
   const timeoutMs = resolveTimeoutMs(params.timeoutMs, config);
@@ -1654,14 +1704,36 @@ async function executeOneShot(
     // attribute a step's exec time to the provider boundary through the
     // free-form `metadata.durationMs`.
     execStart = timingNow();
-    const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
+    // Dispatch the user command. With a session id, run it in the persistent
+    // session and read the true, separated streams. Without one (flag off), keep
+    // today's one-shot `executeCommand` path.
+    let exitCode: number;
+    let stdout: string;
+    let stderr: string;
+    if (sessionId != null) {
+      const session = await runSessionCommand(
+        sandbox,
+        sessionId,
+        command,
+        timeoutSeconds,
+        effectiveTimeoutMs,
+      );
+      exitCode = session.exitCode;
+      stdout = session.stdout;
+      stderr = session.stderr;
+    } else {
+      const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
+      exitCode = typeof result.exitCode === "number" ? result.exitCode : 1;
+      stdout = result.result ?? result.artifacts?.stdout ?? "";
+      stderr = "";
+    }
     const durationMs = timingNow() - execStart;
 
     return {
-      exitCode: typeof result.exitCode === "number" ? result.exitCode : 1,
+      exitCode,
       timedOut: false,
-      stdout: result.result ?? result.artifacts?.stdout ?? "",
-      stderr: "",
+      stdout,
+      stderr,
       metadata: { durationMs },
     };
   } catch (error) {
@@ -2361,13 +2433,15 @@ const plugin = definePlugin({
       });
       const getDurationMs = timingNow() - getStart;
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
-      // Open the persistent session on a cache miss when the flag is on. This
-      // phase keeps the one-shot command dispatch below; it only opens and
-      // stores the session id so a later phase can dispatch through it. A
-      // `createSession` failure propagates and aborts the execute; the provider
-      // never opens a session through the one-shot path (security condition 4).
+      // Open the persistent session on a cache miss when the flag is on, then
+      // dispatch the user command into it below. A `createSession` failure
+      // propagates and aborts the execute; the provider never opens a session
+      // through the one-shot path, and never runs a user command one-shot under
+      // sessions (security condition 4). With the flag off, `sessionId` stays
+      // null and dispatch keeps today's one-shot `executeCommand` path.
+      let sessionId: string | null = null;
       if (config.useSessions) {
-        await getOrCreateSession(sandbox, {
+        sessionId = await getOrCreateSession(sandbox, {
           driverKey: params.driverKey,
           companyId: params.companyId,
           environmentId: params.environmentId,
@@ -2384,7 +2458,7 @@ const plugin = definePlugin({
         providerLeaseId,
         config,
       });
-      const result = await executeOneShot(sandbox, params, config, bwrapPlan);
+      const result = await executeOneShot(sandbox, params, config, bwrapPlan, sessionId);
       if (!result.timedOut) {
         sandboxHandleCache.markFresh({
           driverKey: params.driverKey,

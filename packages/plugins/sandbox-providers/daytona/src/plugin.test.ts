@@ -1122,13 +1122,16 @@ describe("Daytona sandbox provider plugin", () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  it("executes commands one-shot and returns combined output via stdout", async () => {
+  it("dispatches commands into the session and returns separate stdout and stderr", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
-    sandbox.process.executeCommand.mockResolvedValue({
-      exitCode: 7,
-      result: "stdout\nstderr\n",
-      artifacts: { stdout: "stdout\nstderr\n" },
+    // The session command ends with exit code 7 and writes to both streams. The
+    // logs endpoint returns the true, separated stdout and stderr.
+    sandbox.process.getSessionCommand.mockResolvedValue({ id: "cmd-1", exitCode: 7 });
+    sandbox.process.getSessionCommandLogs.mockResolvedValue({
+      output: "out\nerr\n",
+      stdout: "out\n",
+      stderr: "err\n",
     });
     mockGet.mockResolvedValue(sandbox);
 
@@ -1139,6 +1142,7 @@ describe("Daytona sandbox provider plugin", () => {
       config: {
         timeoutMs: 300000,
         reuseLease: false,
+        useSessions: true,
       },
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "printf",
@@ -1148,25 +1152,40 @@ describe("Daytona sandbox provider plugin", () => {
       timeoutMs: 1000,
     });
 
-    expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
-    const [command, cwdArg, envArg, timeoutArg] = sandbox.process.executeCommand.mock.calls[0] as [string, unknown, unknown, number];
-    expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/"\$HOME\/\.profile"/);
-    expect(command).not.toMatch(/nvm\.sh/);
-    expect(command).toMatch(/&& cd '\/workspace'/);
-    expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
-    expect(command).not.toMatch(/(?:^|&& )exec /);
-    // cwd/env are baked into the command itself; we pass undefined to the SDK
-    // so its own cwd argument does not run before the caller env is applied.
-    expect(cwdArg).toBeUndefined();
-    expect(envArg).toBeUndefined();
-    expect(timeoutArg).toBe(1);
+    // The user command runs in the persistent session, never through the
+    // one-shot path (security condition 4).
+    expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
+    expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+    const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+    const [dispatchedSessionId, req, dispatchTimeout] = sandbox.process.executeSessionCommand.mock
+      .calls[0] as [string, { command: string; runAsync?: boolean }, number];
+    expect(dispatchedSessionId).toBe(sessionId);
+    // Dispatch is asynchronous. A synchronous call hangs for the login-shell
+    // wrapper, so the provider dispatches async and polls for the exit code.
+    expect(req.runAsync).toBe(true);
+    expect(dispatchTimeout).toBe(1);
+    // The dispatched command keeps the login-shell wrapper, the cwd, and the
+    // caller env prefix.
+    expect(req.command).toMatch(/\/etc\/profile/);
+    expect(req.command).toMatch(/"\$HOME\/\.profile"/);
+    expect(req.command).not.toMatch(/nvm\.sh/);
+    expect(req.command).toMatch(/&& cd '\/workspace'/);
+    expect(req.command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
+    // The login script stays a plain `&&`-chain. It never ends with `exec`, so
+    // the async session dispatch returns cleanly instead of hanging.
+    expect(req.command).not.toMatch(/(?:^|&& )exec /);
+    // The provider polls the command for its exit code, then reads the logs.
+    expect(sandbox.process.getSessionCommand).toHaveBeenCalledWith(sessionId, "cmd-1");
+    expect(sandbox.process.getSessionCommandLogs).toHaveBeenCalledWith(sessionId, "cmd-1");
     expect(result).toMatchObject({
       exitCode: 7,
       timedOut: false,
-      stdout: "stdout\nstderr\n",
-      stderr: "",
+      stdout: "out\n",
+      stderr: "err\n",
     });
+    // Both streams are non-empty and separated; stderr no longer rides stdout.
+    expect(result!.stdout).not.toBe("");
+    expect(result!.stderr).not.toBe("");
     // Provider-boundary timings ride the free-form result metadata (Open Q1).
     expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
     expect(typeof (result!.metadata as Record<string, unknown>)?.getDurationMs).toBe("number");
@@ -1752,9 +1771,49 @@ describe("Daytona sandbox provider plugin", () => {
       expect(typeof sessionId).toBe("string");
       expect(sessionId.length).toBeGreaterThan(0);
       expect(storedSessionId("lease-a", SESSION_CONFIG)).toBe(sessionId);
-      // The one-shot dispatch is unchanged: both execs still run the command.
-      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+      // Both execs dispatch into the session, never through the one-shot path.
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
       expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
+    });
+
+    it("state persists across commands in one session", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      // Run two commands on the same lease. The provider dispatches both into one
+      // session id. That single persistent shell is what carries state (a `cd` or
+      // an environment variable) from the first command to the second.
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(2);
+      const firstSessionId = sandbox.process.executeSessionCommand.mock.calls[0][0] as string;
+      const secondSessionId = sandbox.process.executeSessionCommand.mock.calls[1][0] as string;
+      expect(firstSessionId).toBe(sessionId);
+      expect(secondSessionId).toBe(sessionId);
+    });
+
+    it("creates a session when none exists and never runs a one-shot command", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      // The store holds no session id for this lease before the execute.
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+
+      // The exec path opens a session and dispatches into it. It never opens a
+      // one-shot command path for the user command (security condition 4).
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBe(sessionId);
     });
 
     it("does not create a session when the useSessions flag is off", async () => {
