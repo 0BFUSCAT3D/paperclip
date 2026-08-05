@@ -45,8 +45,12 @@ export const costsApi = {
     api.get<FinanceEvent[]>(`/companies/${companyId}/costs/finance-events${dateParamsWithLimit(from, to, limit)}`),
   windowSpend: (companyId: string) =>
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
-  quotaWindows: (companyId: string) =>
-    api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
+  quotaWindows: (companyId: string, environmentId?: string | null) => {
+    const params = new URLSearchParams();
+    if (environmentId) params.set("environmentId", environmentId);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    return api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows${query}`);
+  },
 };
 
 function dateParamsWithLimit(from?: string, to?: string, limit?: number): string {
