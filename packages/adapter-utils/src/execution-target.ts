@@ -638,6 +638,49 @@ export async function runAdapterExecutionTargetProcess(
   });
 }
 
+// Stage an adapter-owned script into the sandbox and return the remote path.
+// A quota probe uses this to place its shell script before it runs the script
+// through the exec seam. The staging reuses `syncRemoteTextFileWithHashSkip`,
+// so a warm start (same sandbox, same script) skips the byte upload. The caller
+// passes the exact reviewed script bytes as `body`; the function never
+// interpolates a caller value into the script. The function applies a
+// restrictive file mode, so only the owner reads the staged script.
+export async function stageAdapterExecutionTargetProbeScript(
+  target: AdapterExecutionTarget | null | undefined,
+  input: {
+    adapterKey: string;
+    scriptName: string;
+    body: string;
+    timeoutSec?: number | null;
+  },
+): Promise<string> {
+  if (!target || target.kind !== "remote" || target.transport !== "sandbox") {
+    throw new Error("A sandbox execution target is required to stage the probe script.");
+  }
+  const runner = requireSandboxRunner(target);
+  const shellCommand = preferredSandboxShell(target);
+  const timeoutMs =
+    typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
+      ? Math.trunc(input.timeoutSec * 1000)
+      : target.timeoutMs ?? undefined;
+  const scriptDir = path.posix.join(target.remoteCwd, ".paperclip-runtime", input.adapterKey, "quota");
+  const remotePath = path.posix.join(scriptDir, input.scriptName);
+  await syncRemoteTextFileWithHashSkip({
+    runner,
+    remoteCwd: target.remoteCwd,
+    remoteDir: scriptDir,
+    remotePath,
+    body: input.body,
+    label: "Quota probe script",
+    action: "sync quota probe script",
+    lockDir: path.posix.join(scriptDir, ".paperclip-quota-probe-script.lock"),
+    fileMode: "700",
+    timeoutMs,
+    shellCommand,
+  });
+  return remotePath;
+}
+
 export async function runAdapterExecutionTargetShellCommand(
   runId: string,
   target: AdapterExecutionTarget | null | undefined,

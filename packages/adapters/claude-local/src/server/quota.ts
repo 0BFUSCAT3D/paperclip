@@ -7,9 +7,11 @@ import type { AdapterQuotaContext, ProviderQuotaResult, QuotaWindow } from "@pap
 import {
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
+  stageAdapterExecutionTargetProbeScript,
   type AdapterExecutionTarget,
 } from "@paperclipai/adapter-utils/execution-target";
 import { parseSandboxQuotaEnvelope } from "@paperclipai/adapter-utils/quota-envelope";
+import { getClaudeQuotaProbeSource } from "../cli/quota-probe-source.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -486,16 +488,19 @@ function formatProviderError(source: string, error: unknown): string {
 
 const CLAUDE_QUOTA_PROVIDER = "anthropic";
 
-// The sandbox holds the provider command-line tool (see SANDBOX_INSTALL_COMMAND),
-// not the Paperclip quota-probe script. So the host runs the provider quota probe
-// in the sandbox through the exec seam. This is the transport `testEnvironment`
-// uses. The host reads a ProviderQuotaResult JSON envelope from `stdout`. These
-// arguments run a fast, side-effect-free probe that always terminates. A server
-// caller supplies the concrete usage command when it wires the environment. The
-// host trusts nothing in the output. `parseSandboxQuotaEnvelope` applies a strict
-// allowlist, caps the size, drops unknown fields, and never returns the raw
-// stdout or stderr.
-const CLAUDE_SANDBOX_QUOTA_PROBE_ARGS = ["--version"];
+// The sandbox holds the provider credentials, not a host connection to the
+// provider. So the host stages the Paperclip quota-probe script into the sandbox
+// and runs it through the exec seam. This is the transport `testEnvironment`
+// uses. The probe reads the token, calls the provider usage endpoint, and prints
+// a ProviderQuotaResult JSON envelope to `stdout`. The host reads that envelope.
+// The host trusts nothing in the output. `parseSandboxQuotaEnvelope` applies a
+// strict allowlist, caps the size, drops unknown fields, and never returns the
+// raw stdout or stderr.
+const CLAUDE_QUOTA_PROBE_SCRIPT_NAME = "quota-probe.sh";
+// The probe reads the token from this environment variable first (see the
+// probe script token source order). The host passes the token by env only, so
+// the token never enters the argument list, a file name, or a log line (C7).
+const CLAUDE_QUOTA_PROBE_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
 async function probeClaudeQuotaInSandbox(
   target: AdapterExecutionTarget,
@@ -503,14 +508,25 @@ async function probeClaudeQuotaInSandbox(
   const runId = `claude-quota-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const cwd = resolveAdapterExecutionTargetCwd(target, "", process.cwd());
   try {
+    const stagedPath = await stageAdapterExecutionTargetProbeScript(target, {
+      adapterKey: "claude",
+      scriptName: CLAUDE_QUOTA_PROBE_SCRIPT_NAME,
+      body: await getClaudeQuotaProbeSource(),
+      timeoutSec: 30,
+    });
+    // Pass the token by env only. When the host holds no token, the env stays
+    // empty and the probe reads the token from the sandbox credential file.
+    const env: Record<string, string> = {};
+    const token = await readClaudeToken();
+    if (token) env[CLAUDE_QUOTA_PROBE_TOKEN_ENV] = token;
     const probe = await runAdapterExecutionTargetProcess(
       runId,
       target,
-      "claude",
-      CLAUDE_SANDBOX_QUOTA_PROBE_ARGS,
+      "sh",
+      [stagedPath],
       {
         cwd,
-        env: {},
+        env,
         timeoutSec: 30,
         graceSec: 5,
         onLog: async () => {},

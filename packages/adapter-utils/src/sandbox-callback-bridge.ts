@@ -830,6 +830,18 @@ export async function startSandboxCallbackBridgeWorker(input: {
   };
 }
 
+// Accept only a short octal permission mode, e.g. "700" or "0700". The value
+// becomes a `chmod` argument in the remote shell script, so the function
+// rejects any value that is not a plain octal mode. This keeps a bad value out
+// of the shell command.
+function normalizeFileMode(mode: string | null | undefined): string | null {
+  if (mode == null) return null;
+  if (!/^[0-7]{3,4}$/.test(mode)) {
+    throw new Error(`Invalid file mode for remote sync: ${mode}`);
+  }
+  return mode;
+}
+
 /**
  * Content-hash-skip write of a Paperclip-authored text file into the sandbox, in
  * a SINGLE remote exec. The body's sha256 is computed on the host; the one shell
@@ -858,6 +870,11 @@ export async function syncRemoteTextFileWithHashSkip(input: {
   // "sync sandbox callback bridge entrypoint".
   action: string;
   lockDir: string;
+  // Optional octal permission mode for the staged file, e.g. "700". When set,
+  // the sync applies `chmod <fileMode>` to the remote file, so a staged script
+  // stays readable by the owner only. The value is a fixed adapter-owned
+  // constant; a caller never passes an untrusted value.
+  fileMode?: string | null;
   timeoutMs?: number | null;
   shellCommand?: "bash" | "sh" | null;
 }): Promise<{ uploaded: boolean; sha256: string }> {
@@ -867,6 +884,8 @@ export async function syncRemoteTextFileWithHashSkip(input: {
   const remoteUploadPath = `${input.remotePath}.paperclip-upload.b64`;
   const base64Body = toBuffer(Buffer.from(input.body, "utf8")).toString("base64");
   const sha256 = createHash("sha256").update(input.body, "utf8").digest("hex");
+  const fileMode = normalizeFileMode(input.fileMode);
+  const chmodLines = fileMode ? [`chmod ${fileMode} "$remote_path"`] : [];
 
   const syncResult = await runShell(
     input.runner,
@@ -900,6 +919,7 @@ export async function syncRemoteTextFileWithHashSkip(input: {
       "  current_sha=\"$(hash_file \"$remote_path\" 2>/dev/null)\" || current_sha=\"\"",
       "fi",
       "if [ -n \"$current_sha\" ] && [ \"$current_sha\" = \"$expected_sha\" ]; then",
+      ...chmodLines,
       "  printf '{\"uploaded\":false}\\n'",
       "  exit 0",
       "fi",
@@ -919,6 +939,7 @@ export async function syncRemoteTextFileWithHashSkip(input: {
       `  echo ${shellQuote(`${input.label} sha verify skipped: no sha256sum/shasum on remote.`)} >&2`,
       "fi",
       "mv \"$remote_partial\" \"$remote_path\"",
+      ...chmodLines,
       "printf '{\"uploaded\":true}\\n'",
     ].join("\n"),
     timeoutMs,
