@@ -122,6 +122,11 @@ interface DaytonaDriverConfig {
   autoDeleteInterval: number | null;
   reuseLease: boolean;
   archiveOnRelease: boolean;
+  // Gate for the persistent Daytona session model. When off (the default), the
+  // provider opens, stores, and deletes no session and behaves as before. When
+  // on, `onEnvironmentExecute` opens one session per lease on a cache miss, and
+  // every teardown path deletes it.
+  useSessions: boolean;
 }
 
 type WorkspaceSentinelResult = {
@@ -231,6 +236,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
+    useSessions: raw.useSessions === true,
   };
 }
 
@@ -1349,6 +1355,69 @@ const sandboxHandleWritableDirs = (() => {
   return { recordWritableTargets, get, reset };
 })();
 
+// Per-lease Daytona session id store. It holds, per lease scope, the id of the
+// long-lived session that `onEnvironmentExecute` opens on a cache miss. The
+// store is keyed the same way as `sandboxHandleCache`, by
+// `sandboxHandleCacheKey(scope)`. The `useSessions` driver-config flag gates
+// every write: with the flag off the store stays empty, so the provider opens
+// and deletes no session. A resumed sandbox loses its session shell, so
+// `onEnvironmentResumeLease` clears the id and the next execute opens a new
+// session. Every teardown path deletes the session and clears the id.
+const sandboxHandleSessionIds = (() => {
+  const idsByKey = new Map<string, string>();
+
+  function get(scope: SandboxScope): string | null {
+    return idsByKey.get(sandboxHandleCacheKey(scope)) ?? null;
+  }
+
+  function set(scope: SandboxScope, sessionId: string): void {
+    idsByKey.set(sandboxHandleCacheKey(scope), sessionId);
+  }
+
+  function clear(scope: SandboxScope): void {
+    idsByKey.delete(sandboxHandleCacheKey(scope));
+  }
+
+  function reset(): void {
+    idsByKey.clear();
+  }
+
+  return { get, set, clear, reset };
+})();
+
+// Return the lease's Daytona session id, and open one on a cache miss. On a hit
+// it returns the stored id and opens no new session. On a miss it opens one
+// session through the SDK `createSession` call and stores its id. A
+// `createSession` failure propagates to the caller; the caller must not run the
+// user command through the one-shot path to open a session (security condition
+// 4). The caller opens a session only when the `useSessions` flag is on.
+async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promise<string> {
+  const existing = sandboxHandleSessionIds.get(scope);
+  if (existing) return existing;
+  const sessionId = randomUUID();
+  await sandbox.process.createSession(sessionId);
+  sandboxHandleSessionIds.set(scope, sessionId);
+  return sessionId;
+}
+
+// Delete the lease's Daytona session, best-effort, inside a teardown path. It
+// deletes only when the store holds an id, so a lease that never opened a
+// session (flag off, or no execute) is a no-op. A delete failure must not abort
+// the rest of teardown, so it logs the id and the error to the local process
+// log and returns. The log stays local and never reaches host telemetry or a
+// span. The caller clears the stored id in its `finally` block.
+async function deleteSessionIfPresent(sandbox: Sandbox, scope: SandboxScope): Promise<void> {
+  const sessionId = sandboxHandleSessionIds.get(scope);
+  if (!sessionId) return;
+  try {
+    await sandbox.process.deleteSession(sessionId);
+  } catch (error) {
+    console.warn(
+      `Failed to delete Daytona session ${sessionId} during teardown: ${formatErrorMessage(error)}`,
+    );
+  }
+}
+
 /**
  * Test seam: clear the process-scoped handle cache between tests so a handle
  * memoized under a reused composite key in one test never leaks into the next.
@@ -1360,6 +1429,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleActivityGates.reset();
   sandboxHandleLeaseAdmissionStates.reset();
   sandboxHandleWritableDirs.reset();
+  sandboxHandleSessionIds.reset();
 }
 
 /**
@@ -1382,6 +1452,28 @@ export function __getDaytonaWritableDirsForTest(input: {
     config: parseDriverConfig(input.config),
   };
   return [...sandboxHandleWritableDirs.get(scope)];
+}
+
+/**
+ * Test seam: read the stored Daytona session id for a lease scope, or null when
+ * the store holds none. The caller passes the same hook inputs, so this rebuilds
+ * the exact scope key the hooks use. Not used in production.
+ */
+export function __getDaytonaSessionIdForTest(input: {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  providerLeaseId: string;
+  config: Record<string, unknown>;
+}): string | null {
+  const scope: SandboxScope = {
+    driverKey: input.driverKey,
+    companyId: input.companyId,
+    environmentId: input.environmentId,
+    providerLeaseId: input.providerLeaseId,
+    config: parseDriverConfig(input.config),
+  };
+  return sandboxHandleSessionIds.get(scope);
 }
 
 async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
@@ -1717,6 +1809,10 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
+    // A restarted sandbox loses its session shell, so the stored id no longer
+    // points at a live session. Clear it here; the next execute opens a new
+    // session on the cache miss.
+    sandboxHandleSessionIds.clear(scope);
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
@@ -1789,6 +1885,11 @@ const plugin = definePlugin({
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
 
+      // Delete the session before the sandbox stop/archive/delete below. A
+      // delete failure logs and does not abort the rest of teardown. The
+      // `finally` clears the stored id on every exit path.
+      await deleteSessionIfPresent(sandbox, scope);
+
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
           try {
@@ -1826,6 +1927,7 @@ const plugin = definePlugin({
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
+      sandboxHandleSessionIds.clear(scope);
     }
   },
 
@@ -1851,10 +1953,14 @@ const plugin = definePlugin({
 
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
+      // Delete the session before the sandbox delete. A delete failure logs and
+      // does not abort teardown. The `finally` clears the stored id.
+      await deleteSessionIfPresent(sandbox, scope);
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
+      sandboxHandleSessionIds.clear(scope);
     }
   },
 
@@ -2088,6 +2194,9 @@ const plugin = definePlugin({
       }
       evictSandboxHandle(scope);
       await sandboxHandleActivityGates.waitForIdle(scope);
+      // Delete the session before the sandbox delete. A delete failure logs and
+      // does not abort teardown. The `finally` clears the stored id.
+      await deleteSessionIfPresent(sandbox, scope);
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
       return {
         status: params.reason === "timed_out" ? "timed_out" : "cancelled",
@@ -2100,6 +2209,7 @@ const plugin = definePlugin({
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
       evictSandboxHandle(scope);
+      sandboxHandleSessionIds.clear(scope);
     }
   },
 
@@ -2179,6 +2289,20 @@ const plugin = definePlugin({
       });
       const getDurationMs = timingNow() - getStart;
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
+      // Open the persistent session on a cache miss when the flag is on. This
+      // phase keeps the one-shot command dispatch below; it only opens and
+      // stores the session id so a later phase can dispatch through it. A
+      // `createSession` failure propagates and aborts the execute; the provider
+      // never opens a session through the one-shot path (security condition 4).
+      if (config.useSessions) {
+        await getOrCreateSession(sandbox, {
+          driverKey: params.driverKey,
+          companyId: params.companyId,
+          environmentId: params.environmentId,
+          providerLeaseId,
+          config,
+        });
+      }
       // Read the advisory bwrap flags from the lease metadata and read the
       // collected writable directories from the same scope the sync-in hook uses.
       const bwrapPlan = resolveBwrapExecPlan(params.lease.metadata, {

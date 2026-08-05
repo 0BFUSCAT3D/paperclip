@@ -33,6 +33,7 @@ import plugin, {
   setDaytonaHandleFreshnessClockForTest,
   __resetDaytonaSandboxHandleCacheForTest,
   __getDaytonaWritableDirsForTest,
+  __getDaytonaSessionIdForTest,
   __setDaytonaPluginContextForTest,
   buildBwrapCommand,
 } from "./plugin.js";
@@ -87,6 +88,17 @@ function createMockSandbox(overrides: {
         result: "bash",
         artifacts: { stdout: "bash" },
       }),
+      // Persistent session primitives (Daytona SDK 0.203.0). The session model
+      // opens one session per lease and dispatches through it in a later phase.
+      createSession: vi.fn().mockResolvedValue(undefined),
+      executeSessionCommand: vi.fn().mockResolvedValue({
+        cmdId: "cmd-1",
+        exitCode: 0,
+        output: "",
+      }),
+      getSessionCommand: vi.fn().mockResolvedValue({ id: "cmd-1", exitCode: 0 }),
+      getSessionCommandLogs: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
     },
   };
 }
@@ -160,6 +172,7 @@ describe("Daytona sandbox provider plugin", () => {
         autoDeleteInterval: -1,
         reuseLease: true,
         archiveOnRelease: false,
+        useSessions: false,
       },
     });
   });
@@ -1646,6 +1659,199 @@ describe("Daytona sandbox provider plugin", () => {
     expect(command).toMatch(/"\$HOME\/\.profile"/);
     expect(command).not.toMatch(/nvm\.sh/);
     expect(command).not.toMatch(/NVM_DIR/);
+  });
+
+  // ─── Persistent session model (useSessions flag) ───────────────────────────
+  // These prove the per-lease session store and the lazy session lifecycle: one
+  // session opens on a cache miss with the flag on, a cache hit reuses it, the
+  // flag off opens no session, every teardown path deletes the session and
+  // clears the stored id, resume clears the stored id, and a failed delete logs
+  // without aborting teardown.
+  describe("persistent session model", () => {
+    const SESSION_CONFIG = { timeoutMs: 300000, reuseLease: false, useSessions: true };
+    const FLAG_OFF_CONFIG = { timeoutMs: 300000, reuseLease: false };
+
+    function execParams(providerLeaseId: string, config: Record<string, unknown>) {
+      return {
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config,
+        lease: { providerLeaseId, metadata: {} },
+        command: "printf",
+        args: ["hi"],
+        timeoutMs: 1000,
+      };
+    }
+
+    function teardownParams(providerLeaseId: string, config: Record<string, unknown>) {
+      return {
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId,
+        config,
+      };
+    }
+
+    function storedSessionId(providerLeaseId: string, config: Record<string, unknown>) {
+      return __getDaytonaSessionIdForTest({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId,
+        config,
+      });
+    }
+
+    it("creates one session on the first execute and reuses it on the next", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+
+      // One session opens on the first miss and the second exec reuses it.
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+      expect(typeof sessionId).toBe("string");
+      expect(sessionId.length).toBeGreaterThan(0);
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBe(sessionId);
+      // The one-shot dispatch is unchanged: both execs still run the command.
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
+    });
+
+    it("does not create a session when the useSessions flag is off", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", FLAG_OFF_CONFIG));
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", FLAG_OFF_CONFIG));
+      await plugin.definition.onEnvironmentReleaseLease?.(teardownParams("lease-a", FLAG_OFF_CONFIG));
+
+      // Behavior equals today: no session opens, none is stored, none is deleted.
+      expect(sandbox.process.createSession).not.toHaveBeenCalled();
+      expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
+      expect(storedSessionId("lease-a", FLAG_OFF_CONFIG)).toBeNull();
+      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(2);
+    });
+
+    it("deletes the session and clears the stored id on release", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+      await plugin.definition.onEnvironmentReleaseLease?.(teardownParams("lease-a", SESSION_CONFIG));
+
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+    });
+
+    it("deletes the session and clears the stored id on destroy", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+      await plugin.definition.onEnvironmentDestroyLease?.(teardownParams("lease-a", SESSION_CONFIG));
+
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+    });
+
+    it("deletes the session and clears the stored id on cancel", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+      await plugin.definition.onEnvironmentCancelInteractiveSetup?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: SESSION_CONFIG,
+        reason: "cancelled",
+      });
+
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+    });
+
+    it("deletes the session before a throwing teardown and still clears the stored id", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      sandbox.delete.mockRejectedValueOnce(new Error("sandbox delete failed"));
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+
+      // The sandbox delete throws, but the session delete already ran and the
+      // `finally` still clears the stored id.
+      await expect(
+        plugin.definition.onEnvironmentDestroyLease?.(teardownParams("lease-a", SESSION_CONFIG)),
+      ).rejects.toThrow(/sandbox delete failed/);
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+    });
+
+    it("logs a failed session delete and does not throw past teardown", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      sandbox.process.deleteSession.mockRejectedValueOnce(new Error("session delete failed"));
+      mockGet.mockResolvedValue(sandbox);
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+
+      // The failed session delete must not abort the rest of teardown.
+      await plugin.definition.onEnvironmentDestroyLease?.(teardownParams("lease-a", SESSION_CONFIG));
+
+      expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
+      expect(sandbox.delete).toHaveBeenCalledWith(300);
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+      const warnMessage = warnSpy.mock.calls.map((call) => String(call[0])).join("\n");
+      expect(warnMessage).toContain(sessionId);
+      expect(warnMessage).toContain("session delete failed");
+    });
+
+    it("resume clears the session store id", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).not.toBeNull();
+
+      await plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: SESSION_CONFIG,
+        leaseMetadata: {
+          workspaceSentinel: {
+            path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+            token: "expected-token",
+            result: "written",
+          },
+        },
+      });
+
+      // A restarted sandbox loses its session shell, so resume clears the id and
+      // never deletes a session.
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+      expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
+    });
   });
 
   // ─── Per-lease started-sandbox handle cache ────────────────────────────────
