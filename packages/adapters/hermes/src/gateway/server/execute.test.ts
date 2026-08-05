@@ -171,6 +171,39 @@ describe("execute", () => {
     expect(body.input).toContain("A still-failing check is not a valid basis for declaring `done`");
   });
 
+  it("preserves the failure-continuation rule on recovery wakes", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+    });
+    ctx.context.paperclipWake = {
+      reason: "source_scoped_recovery_action",
+      issue: { identifier: "PAP-1", title: "Do the thing" },
+      recovery: {
+        cause: "process_lost",
+        failureSummary: "FAILED tests/test_main.py::test_expected_output",
+      },
+    };
+
+    await execute(ctx);
+
+    const calls = fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>;
+    const createCall = calls.find(([input]) => String(input).endsWith("/v1/runs"));
+    const body = JSON.parse(String(createCall?.[1]?.body));
+    expect(body.input).toContain("Recovery contract: your job is to RECOVER this task");
+    expect(body.input).toContain("Failure-continuation rule for the deliverable owner after recovery:");
+    expect(body.input).toContain("A still-failing check is not a valid basis for declaring `done`");
+  });
+
   it("sends the task brief once on fresh runs and compacts it on stable-session resumes", async () => {
     const description = "Update launch-card.svg and change the CTA to Try Team free.";
     const fullTaskMarkdown = [

@@ -1014,6 +1014,8 @@ describe("renderPaperclipWakePrompt", () => {
       "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
     );
     expect(prompt).toContain(instruction);
+    expect(prompt).toContain("Failure-continuation rule for the deliverable owner after recovery:");
+    expect(prompt).toContain("A still-failing check is not a valid basis for declaring `done`");
     expect(prompt).toContain("Fallback preference order: (1) send back to Coder");
     expect(prompt).toContain(`- recovery cause: ${cause}`);
     expect(prompt).toContain("- failure summary: adapter stopped");

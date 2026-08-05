@@ -1489,6 +1489,7 @@ export function renderPaperclipWakePrompt(
     ? [
         "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
         `Cause-specific instruction: ${recoveryInstruction}`,
+        `Failure-continuation rule for the deliverable owner after recovery: ${UNRESOLVED_FAILING_CHECK_RULE}`,
         ...(recovery?.cause === "successful_run_missing_state" ||
             recovery?.cause === "successful_run_missing_issue_disposition"
           ? []
