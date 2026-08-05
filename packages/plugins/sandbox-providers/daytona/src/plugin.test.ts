@@ -1858,7 +1858,15 @@ describe("Daytona sandbox provider plugin", () => {
       expect(warnMessage).toContain("session delete failed");
     });
 
-    it("resume clears the session store id", async () => {
+    const RESUME_SENTINEL = {
+      workspaceSentinel: {
+        path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+        token: "expected-token",
+        result: "written" as const,
+      },
+    };
+
+    it("resume clears the session store id when the sandbox restarted", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });
       mockGet.mockResolvedValue(sandbox);
@@ -1866,25 +1874,73 @@ describe("Daytona sandbox provider plugin", () => {
       await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
       expect(storedSessionId("lease-a", SESSION_CONFIG)).not.toBeNull();
 
+      // The sandbox was stopped before resume, so the restart drops its session
+      // shell. Resume must clear the stale id and never delete a dead session.
+      sandbox.state = "stopped";
       await plugin.definition.onEnvironmentResumeLease?.({
         driverKey: "daytona",
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "lease-a",
         config: SESSION_CONFIG,
-        leaseMetadata: {
-          workspaceSentinel: {
-            path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
-            token: "expected-token",
-            result: "written",
-          },
-        },
+        leaseMetadata: RESUME_SENTINEL,
       });
 
-      // A restarted sandbox loses its session shell, so resume clears the id and
-      // never deletes a session.
+      expect(sandbox.start).toHaveBeenCalled();
       expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
       expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
+    });
+
+    it("resume keeps a live session id when the sandbox stayed started", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a", state: "started" });
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      const sessionId = storedSessionId("lease-a", SESSION_CONFIG);
+      expect(sessionId).not.toBeNull();
+
+      // The sandbox stayed started, so its session shell is still live. A resume
+      // that finds it started must keep the id another execute stored. It must
+      // not clear the id and leak the live session.
+      await plugin.definition.onEnvironmentResumeLease?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        providerLeaseId: "lease-a",
+        config: SESSION_CONFIG,
+        leaseMetadata: RESUME_SENTINEL,
+      });
+
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBe(sessionId);
+    });
+
+    it("opens exactly one session when two executes race on the same lease", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+
+      // Hold the create call open so both executes reach `getOrCreateSession`
+      // and miss the store before either stores an id. Single-flight must let
+      // only one `createSession` run and share it with the second execute.
+      let releaseCreate: () => void = () => undefined;
+      const createGate = new Promise<void>((resolve) => {
+        releaseCreate = resolve;
+      });
+      sandbox.process.createSession.mockImplementation(() => createGate);
+
+      const first = plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      const second = plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      // Flush pending microtasks so both executes reach the gated create call.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      releaseCreate();
+      await Promise.all([first, second]);
+
+      // Overlap opens exactly one session; both executes share its id.
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(1);
+      const sessionId = sandbox.process.createSession.mock.calls[0][0] as string;
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBe(sessionId);
     });
 
     it("emits a session.setup span around the session create", async () => {

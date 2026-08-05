@@ -1360,11 +1360,18 @@ const sandboxHandleWritableDirs = (() => {
 // store is keyed the same way as `sandboxHandleCache`, by
 // `sandboxHandleCacheKey(scope)`. The `useSessions` driver-config flag gates
 // every write: with the flag off the store stays empty, so the provider opens
-// and deletes no session. A resumed sandbox loses its session shell, so
-// `onEnvironmentResumeLease` clears the id and the next execute opens a new
-// session. Every teardown path deletes the session and clears the id.
+// and deletes no session. A sandbox that restarts loses its session shell, so
+// `onEnvironmentResumeLease` clears the id only when the sandbox actually
+// restarted, and the next execute opens a new session. A resume that finds the
+// sandbox already started keeps the live id. Every teardown path deletes the
+// session and clears the id.
 const sandboxHandleSessionIds = (() => {
   const idsByKey = new Map<string, string>();
+  // In-flight session-create promises, keyed the same way as `idsByKey`. The
+  // store keeps one entry per lease scope while a `createSession` call runs, so
+  // concurrent executes on the same lease share it instead of each opening a
+  // session. See `getOrCreateSession` for the single-flight logic.
+  const pendingByKey = new Map<string, Promise<string>>();
 
   function get(scope: SandboxScope): string | null {
     return idsByKey.get(sandboxHandleCacheKey(scope)) ?? null;
@@ -1374,15 +1381,30 @@ const sandboxHandleSessionIds = (() => {
     idsByKey.set(sandboxHandleCacheKey(scope), sessionId);
   }
 
+  function getPending(scope: SandboxScope): Promise<string> | null {
+    return pendingByKey.get(sandboxHandleCacheKey(scope)) ?? null;
+  }
+
+  function setPending(scope: SandboxScope, creation: Promise<string>): void {
+    pendingByKey.set(sandboxHandleCacheKey(scope), creation);
+  }
+
+  function clearPending(scope: SandboxScope): void {
+    pendingByKey.delete(sandboxHandleCacheKey(scope));
+  }
+
   function clear(scope: SandboxScope): void {
-    idsByKey.delete(sandboxHandleCacheKey(scope));
+    const key = sandboxHandleCacheKey(scope);
+    idsByKey.delete(key);
+    pendingByKey.delete(key);
   }
 
   function reset(): void {
     idsByKey.clear();
+    pendingByKey.clear();
   }
 
-  return { get, set, clear, reset };
+  return { get, set, getPending, setPending, clearPending, clear, reset };
 })();
 
 // Return the lease's Daytona session id, and open one on a cache miss. On a hit
@@ -1394,15 +1416,31 @@ const sandboxHandleSessionIds = (() => {
 async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promise<string> {
   const existing = sandboxHandleSessionIds.get(scope);
   if (existing) return existing;
-  const sessionId = randomUUID();
-  // The `session.setup` span records only the provider family and the span
-  // status. It never carries the session id. The span shows the create latency.
-  await withProviderSpan({
-    name: "session.setup",
-    run: () => sandbox.process.createSession(sessionId),
-  });
-  sandboxHandleSessionIds.set(scope, sessionId);
-  return sessionId;
+  // Single-flight: two executes on the same lease can both miss the store
+  // before either stores an id. Without a guard each opens its own session and
+  // one id overwrites the other, so the first session leaks. The first caller
+  // stores the in-flight create promise; a concurrent caller finds it and awaits
+  // the same call. So overlap opens exactly one session. The store keeps the
+  // in-flight promise until the create settles, then the `finally` clears it.
+  const pending = sandboxHandleSessionIds.getPending(scope);
+  if (pending) return await pending;
+  const creation = (async () => {
+    const sessionId = randomUUID();
+    // The `session.setup` span records only the provider family and the span
+    // status. It never carries the session id. The span shows the create latency.
+    await withProviderSpan({
+      name: "session.setup",
+      run: () => sandbox.process.createSession(sessionId),
+    });
+    sandboxHandleSessionIds.set(scope, sessionId);
+    return sessionId;
+  })();
+  sandboxHandleSessionIds.setPending(scope, creation);
+  try {
+    return await creation;
+  } finally {
+    sandboxHandleSessionIds.clearPending(scope);
+  }
 }
 
 // Delete the lease's Daytona session, best-effort, inside a teardown path. It
@@ -1821,17 +1859,22 @@ const plugin = definePlugin({
       providerLeaseId: params.providerLeaseId,
       config,
     };
-    // A restarted sandbox loses its session shell, so the stored id no longer
-    // points at a live session. Clear it here; the next execute opens a new
-    // session on the cache miss.
-    sandboxHandleSessionIds.clear(scope);
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
       if (!sandbox) {
         return { providerLeaseId: null, metadata: { expired: true } };
       }
 
+      // A sandbox restart drops the session shell, so a stored session id no
+      // longer points at a live session. Read the pre-start state, then start
+      // the sandbox. Clear the stored id only when the sandbox actually
+      // restarted. A sandbox that stayed started keeps its live session id, so
+      // resume never drops an id that a concurrent execute just stored.
+      const sandboxWasStarted = sandbox.state === "started";
       await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+      if (!sandboxWasStarted) {
+        sandboxHandleSessionIds.clear(scope);
+      }
       try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
       // C3: a resumed lease must clear the workspace sentinel before it is
