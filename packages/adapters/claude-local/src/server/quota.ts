@@ -145,7 +145,19 @@ function describeClaudeSubscriptionAuth(status: ClaudeAuthStatus | null): string
     : "Claude is logged in via claude.ai";
 }
 
+// The order of the token sources. The host reads the token from an environment
+// variable first, then from the on-disk credential file. The portable probe
+// uses the same order, so a host that carries the token only in the environment
+// resolves the same token as the sandbox probe.
+const CLAUDE_TOKEN_ENV_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_OAUTH_TOKEN"];
+
 export async function readClaudeToken(): Promise<string | null> {
+  for (const key of CLAUDE_TOKEN_ENV_KEYS) {
+    const fromEnv = process.env[key];
+    if (typeof fromEnv === "string" && fromEnv.trim().length > 0) {
+      return fromEnv;
+    }
+  }
   const configDir = claudeConfigDir();
   for (const filename of [".credentials.json", "credentials.json"]) {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
