@@ -1066,6 +1066,17 @@ async function prepareCodexSkillRuntime(input: {
         "stderr",
         `[paperclip] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
+      // A failed refresh usually preserves the prior run's copy intact
+      // (materialization is temp-dir + rename), and Codex discovers skills by
+      // directory scan — so that stale copy is still readable and usable by
+      // the session. Count it as loaded: analytics tracks what the session
+      // could actually use, not whether this run's copy succeeded.
+      try {
+        await fs.access(path.join(target, "SKILL.md"));
+        materializedSkills.push(entry);
+      } catch {
+        // No prior copy on disk — genuinely unavailable, stays uncounted.
+      }
     }
   }
   // The manifest tracks which skillsHome paths Paperclip OWNS (reconcile uses
@@ -1075,8 +1086,9 @@ async function prepareCodexSkillRuntime(input: {
   // discovers skills by directory scan, so a failed copy with no prior
   // materialization is simply absent and never advertised to the runtime.
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
-  // Usage analytics only counts skills the session can actually read, so
-  // `loaded` skips entries whose materialization failed above.
+  // Usage analytics only counts skills the session can actually read: fresh
+  // copies plus preserved prior copies (still discoverable), never entries
+  // with nothing on disk.
   await emitPaperclipSkillUsageEvents({
     adapter: "codex",
     entries: materializedSkills,

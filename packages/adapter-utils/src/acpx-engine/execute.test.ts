@@ -1029,6 +1029,38 @@ describe("shared ACPX engine runtime behavior", () => {
     )).toBe(true);
   });
 
+  it("counts a preserved prior Codex skill copy as loaded when its refresh fails", async () => {
+    const root = await makeTempRoot();
+    const codexHome = path.join(root, "codex-home");
+    const skill = await createSkill(root, "coach");
+    const runOptions = {
+      agent: "codex" as const,
+      stateDir: path.join(root, "state"),
+      env: { CODEX_HOME: codexHome },
+      paperclipRuntimeSkills: [skill],
+      paperclipSkillSync: { desiredSkills: [skill.key] },
+    };
+
+    await runExecutor(runOptions);
+    expect(await pathExists(path.join(codexHome, "skills", skill.runtimeName, "SKILL.md"))).toBe(true);
+
+    // Break the source so the refresh copy fails while the prior run's copy
+    // stays on disk and discoverable.
+    await fs.rm(skill.source, { recursive: true, force: true });
+    await fs.writeFile(skill.source, "not a skill directory", "utf8");
+
+    const { events, logs } = await runExecutor(runOptions);
+
+    expect(logs.some((log) =>
+      log.stream === "stderr" && log.text.includes(`Failed to inject ACPX Codex skill "${skill.key}"`),
+    )).toBe(true);
+    const usageEvents = events.filter((event) => event.eventType === "paperclip.skill.usage");
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toMatchObject({
+      payload: { adapter: "codex", skillKey: skill.key, eventKind: "loaded" },
+    });
+  });
+
   it.skipIf(process.platform === "win32")("removes legacy ACPX Codex skill symlinks when a skill is no longer desired", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
