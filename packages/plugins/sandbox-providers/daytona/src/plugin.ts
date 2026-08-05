@@ -40,7 +40,7 @@ import type {
   PluginEnvironmentValidationResult,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
-import { performSyncIn, performSyncOut } from "./file-sync.js";
+import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
 
 // Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
 // to the real wall clock; `plugin.test.ts` overrides it via
@@ -1395,7 +1395,12 @@ async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promis
   const existing = sandboxHandleSessionIds.get(scope);
   if (existing) return existing;
   const sessionId = randomUUID();
-  await sandbox.process.createSession(sessionId);
+  // The `session.setup` span records only the provider family and the span
+  // status. It never carries the session id. The span shows the create latency.
+  await withProviderSpan({
+    name: "session.setup",
+    run: () => sandbox.process.createSession(sessionId),
+  });
   sandboxHandleSessionIds.set(scope, sessionId);
   return sessionId;
 }
@@ -1410,7 +1415,14 @@ async function deleteSessionIfPresent(sandbox: Sandbox, scope: SandboxScope): Pr
   const sessionId = sandboxHandleSessionIds.get(scope);
   if (!sessionId) return;
   try {
-    await sandbox.process.deleteSession(sessionId);
+    // The `session.teardown` span records only the provider family and the span
+    // status. It never carries the session id. `withProviderSpan` marks the span
+    // failed and re-throws on a delete error, but this helper stays best-effort:
+    // the `catch` swallows the error, logs it locally, and returns.
+    await withProviderSpan({
+      name: "session.teardown",
+      run: () => sandbox.process.deleteSession(sessionId),
+    });
   } catch (error) {
     console.warn(
       `Failed to delete Daytona session ${sessionId} during teardown: ${formatErrorMessage(error)}`,

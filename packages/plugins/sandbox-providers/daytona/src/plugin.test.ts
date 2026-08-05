@@ -103,6 +103,40 @@ function createMockSandbox(overrides: {
   };
 }
 
+// A recording tracer that captures every provider span the plugin opens. It
+// satisfies the structural plugin tracer contract. The file-sync tests and the
+// session-lifecycle span tests share this seam.
+function createRecordingPluginTracer() {
+  const spans: Array<{
+    name: string;
+    attributes: Record<string, unknown>;
+    status: { code: number; message?: string } | null;
+    ended: boolean;
+  }> = [];
+  const tracer = {
+    startSpan(name: string, options?: { attributes?: Record<string, string | number | boolean> }) {
+      const span = {
+        name,
+        attributes: { ...(options?.attributes ?? {}) } as Record<string, unknown>,
+        status: null as { code: number; message?: string } | null,
+        ended: false,
+        setAttribute(key: string, value: unknown) {
+          span.attributes[key] = value;
+        },
+        setStatus(status: { code: number; message?: string }) {
+          span.status = status;
+        },
+        end() {
+          span.ended = true;
+        },
+      };
+      spans.push(span);
+      return span;
+    },
+  };
+  return { tracer, spans };
+}
+
 describe("Daytona sandbox provider plugin", () => {
   beforeEach(() => {
     mockCreate.mockReset();
@@ -1852,6 +1886,72 @@ describe("Daytona sandbox provider plugin", () => {
       expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
       expect(sandbox.process.deleteSession).not.toHaveBeenCalled();
     });
+
+    it("emits a session.setup span around the session create", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+      const { tracer, spans } = createRecordingPluginTracer();
+      const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+      try {
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+      } finally {
+        restore();
+      }
+
+      const setup = spans.find((span) => span.name === "session.setup");
+      expect(setup).toBeDefined();
+      expect(setup!.ended).toBe(true);
+      expect(setup!.status).toBeNull();
+      // The span carries only the provider family. It never carries the session
+      // id, the command, an argument, or a path.
+      expect(setup!.attributes).toEqual({ "paperclip.sandbox.startup.provider": "daytona" });
+    });
+
+    it("emits a session.teardown span around the session delete", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      mockGet.mockResolvedValue(sandbox);
+      const { tracer, spans } = createRecordingPluginTracer();
+      const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+      try {
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+        await plugin.definition.onEnvironmentReleaseLease?.(teardownParams("lease-a", SESSION_CONFIG));
+      } finally {
+        restore();
+      }
+
+      const teardown = spans.find((span) => span.name === "session.teardown");
+      expect(teardown).toBeDefined();
+      expect(teardown!.ended).toBe(true);
+      expect(teardown!.status).toBeNull();
+      expect(teardown!.attributes).toEqual({ "paperclip.sandbox.startup.provider": "daytona" });
+    });
+
+    it("marks the session.teardown span failed when the delete throws and still returns", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      sandbox.process.deleteSession.mockRejectedValueOnce(new Error("session delete failed"));
+      mockGet.mockResolvedValue(sandbox);
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { tracer, spans } = createRecordingPluginTracer();
+      const restore = __setDaytonaPluginContextForTest({ tracer } as unknown as PluginContext);
+      try {
+        await plugin.definition.onEnvironmentExecute?.(execParams("lease-a", SESSION_CONFIG));
+        // The failed delete must not abort teardown, so the sandbox still deletes.
+        await plugin.definition.onEnvironmentReleaseLease?.(teardownParams("lease-a", SESSION_CONFIG));
+      } finally {
+        restore();
+      }
+
+      const teardown = spans.find((span) => span.name === "session.teardown");
+      expect(teardown).toBeDefined();
+      expect(teardown!.ended).toBe(true);
+      // `withProviderSpan` sets the OpenTelemetry error status code (2).
+      expect(teardown!.status).toEqual({ code: 2 });
+      // Teardown swallowed the delete error and cleared the stored id.
+      expect(storedSessionId("lease-a", SESSION_CONFIG)).toBeNull();
+    });
   });
 
   // ─── Per-lease started-sandbox handle cache ────────────────────────────────
@@ -2871,39 +2971,6 @@ describe("daytona native file-sync hooks", () => {
       operations: [{ operationId: "sync-op-1", filesTransferred: 2, bytesTransferred: "credential-material".length + "plain".length }],
     });
   });
-
-  // A recording tracer that captures every provider span the file sync opens.
-  // It satisfies the structural plugin tracer contract.
-  function createRecordingPluginTracer() {
-    const spans: Array<{
-      name: string;
-      attributes: Record<string, unknown>;
-      status: { code: number; message?: string } | null;
-      ended: boolean;
-    }> = [];
-    const tracer = {
-      startSpan(name: string, options?: { attributes?: Record<string, string | number | boolean> }) {
-        const span = {
-          name,
-          attributes: { ...(options?.attributes ?? {}) } as Record<string, unknown>,
-          status: null as { code: number; message?: string } | null,
-          ended: false,
-          setAttribute(key: string, value: unknown) {
-            span.attributes[key] = value;
-          },
-          setStatus(status: { code: number; message?: string }) {
-            span.status = status;
-          },
-          end() {
-            span.ended = true;
-          },
-        };
-        spans.push(span);
-        return span;
-      },
-    };
-    return { tracer, spans };
-  }
 
   it("opens a transfer span with the guard round-trip count around the bulk file upload", async () => {
     const hostDir = await makeHostDir();
