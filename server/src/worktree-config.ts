@@ -324,6 +324,21 @@ function atomicWriteFile(filePath: string, contents: string): void {
       fs.closeSync(fileDescriptor);
       fileDescriptor = null;
       fs.renameSync(temporaryPath, filePath);
+      let directoryDescriptor: number | null = null;
+      try {
+        directoryDescriptor = fs.openSync(path.dirname(filePath), "r");
+        fs.fsyncSync(directoryDescriptor);
+      } catch (error) {
+        const code = error instanceof Error && "code" in error ? error.code : null;
+        if (
+          process.platform !== "win32" ||
+          !["EACCES", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(String(code))
+        ) {
+          throw error;
+        }
+      } finally {
+        if (directoryDescriptor !== null) fs.closeSync(directoryDescriptor);
+      }
       return;
     } catch (error) {
       if (fileDescriptor !== null) fs.closeSync(fileDescriptor);

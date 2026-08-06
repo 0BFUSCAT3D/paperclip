@@ -114,15 +114,25 @@ describe("config store", () => {
     fs.writeFileSync(configPath, invalidBytes);
     fs.writeFileSync(`${configPath}.invalid-1`, "existing backup");
 
+    const open = vi.spyOn(fs, "openSync");
+    const sync = vi.spyOn(fs, "fsyncSync");
     const backupPath = backupInvalidConfig(configPath);
     expect(backupPath).toBe(`${configPath}.invalid-2`);
     expect(fs.readFileSync(backupPath)).toEqual(invalidBytes);
+    expect(open).toHaveBeenCalledWith(backupPath, "r");
+    expect(open).toHaveBeenCalledWith(path.dirname(configPath), "r");
+    expect(sync).toHaveBeenCalled();
     expect(() => writeConfig(defaultConfig(), configPath)).toThrow(/Refusing to overwrite invalid config/);
     expect(fs.readFileSync(configPath)).toEqual(invalidBytes);
 
+    open.mockClear();
+    sync.mockClear();
     const rename = vi.spyOn(fs, "renameSync");
     expect(writeConfig(defaultConfig(), configPath, { invalidBackupPath: backupPath })).toBe(true);
     expect(rename).toHaveBeenCalledWith(expect.stringMatching(/config\.json\.tmp-\d+-\d+$/), configPath);
+    expect(open).toHaveBeenCalledWith(path.dirname(configPath), "r");
+    expect(open.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(rename.mock.invocationCallOrder.at(-1)!);
+    expect(sync.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(open.mock.invocationCallOrder.at(-1)!);
     expect(readConfig(configPath)).not.toBeNull();
     expect(fs.readdirSync(path.dirname(configPath)).some((entry) => entry.includes(".tmp-"))).toBe(false);
   });

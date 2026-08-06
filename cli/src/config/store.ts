@@ -110,6 +110,34 @@ function effectiveConfig(config: PaperclipConfig): Record<string, unknown> {
   };
 }
 
+function syncDirectory(directoryPath: string): void {
+  let directoryDescriptor: number | null = null;
+  try {
+    directoryDescriptor = fs.openSync(directoryPath, "r");
+    fs.fsyncSync(directoryDescriptor);
+  } catch (error) {
+    const code = error instanceof Error && "code" in error ? error.code : null;
+    if (process.platform !== "win32" || !["EACCES", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(String(code))) {
+      throw error;
+    }
+  } finally {
+    if (directoryDescriptor !== null) fs.closeSync(directoryDescriptor);
+  }
+}
+
+function durableCopyFile(sourcePath: string, destinationPath: string, flags = 0): void {
+  fs.copyFileSync(sourcePath, destinationPath, flags);
+  fs.chmodSync(destinationPath, 0o600);
+
+  const backupDescriptor = fs.openSync(destinationPath, "r");
+  try {
+    fs.fsyncSync(backupDescriptor);
+  } finally {
+    fs.closeSync(backupDescriptor);
+  }
+  syncDirectory(path.dirname(destinationPath));
+}
+
 function atomicWriteFile(filePath: string, contents: string): void {
   let attempt = 0;
 
@@ -124,6 +152,7 @@ function atomicWriteFile(filePath: string, contents: string): void {
       fs.closeSync(fileDescriptor);
       fileDescriptor = null;
       fs.renameSync(temporaryPath, filePath);
+      syncDirectory(path.dirname(filePath));
       return;
     } catch (error) {
       if (fileDescriptor !== null) fs.closeSync(fileDescriptor);
@@ -144,8 +173,7 @@ export function backupInvalidConfig(configPath?: string): string {
   for (let suffix = 1; ; suffix += 1) {
     const backupPath = `${filePath}.invalid-${suffix}`;
     try {
-      fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
-      fs.chmodSync(backupPath, 0o600);
+      durableCopyFile(filePath, backupPath, fs.constants.COPYFILE_EXCL);
       return backupPath;
     } catch (error) {
       const code = error instanceof Error && "code" in error ? error.code : null;
@@ -193,8 +221,7 @@ export function writeConfig(
   // Backup existing config before overwriting
   if (fs.existsSync(filePath)) {
     const backupPath = filePath + ".backup";
-    fs.copyFileSync(filePath, backupPath);
-    fs.chmodSync(backupPath, 0o600);
+    durableCopyFile(filePath, backupPath);
   }
 
   atomicWriteFile(filePath, JSON.stringify(nextConfig, null, 2) + "\n");

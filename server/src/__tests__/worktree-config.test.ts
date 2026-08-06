@@ -1,3 +1,4 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1029,7 +1030,12 @@ describe("worktree config repair", () => {
     delete process.env.PORT;
     delete process.env.DATABASE_URL;
 
+    const open = vi.spyOn(fsSync, "openSync");
+    const sync = vi.spyOn(fsSync, "fsyncSync");
     maybePersistWorktreeRuntimePorts({ serverPort: 3103, databasePort: 54335 });
+
+    expect(open).toHaveBeenCalledWith(paperclipDir, "r");
+    expect(sync).toHaveBeenCalled();
 
     const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
     expect(writtenConfig).toMatchObject({
