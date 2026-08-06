@@ -70,4 +70,28 @@ describe("FoldedCommentBody", () => {
     expect(visible).toBe("a".repeat(LONG_COMMENT_CHARACTER_LIMIT - 1));
     expect(visible).not.toContain("�");
   });
+
+  it("reports when a long body is collapsed so callers can defer structured content", () => {
+    const body = `${"a".repeat(LONG_COMMENT_CHARACTER_LIMIT)}hidden tail`;
+
+    flushSync(() => {
+      root.render(
+        <FoldedCommentBody body={body}>
+          {(visibleBody, { isCollapsed, isExpanded }) => (
+            <div data-testid="render-state">
+              {isCollapsed ? `preview:${visibleBody.length}` : `full:${isExpanded}`}
+            </div>
+          )}
+        </FoldedCommentBody>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="render-state"]')?.textContent)
+      .toBe(`preview:${LONG_COMMENT_CHARACTER_LIMIT}`);
+
+    flushSync(() => container.querySelector("button")?.click());
+
+    expect(container.querySelector('[data-testid="render-state"]')?.textContent)
+      .toBe("full:true");
+  });
 });

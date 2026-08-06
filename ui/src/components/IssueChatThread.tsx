@@ -1909,7 +1909,11 @@ function IssueChatAssistantMessage({
             ) : (
               <div className="min-w-0 max-w-full space-y-3">
                 <FoldedCommentBody body={getThreadMessageCopyText(message)}>
-                  {(visibleBody) => <IssueChatTextPart text={visibleBody} />}
+                  {(visibleBody, { isCollapsed }) => (
+                    isCollapsed
+                      ? <IssueChatTextPart text={visibleBody} />
+                      : <IssueChatAssistantParts message={message} hasCoT={false} />
+                  )}
                 </FoldedCommentBody>
                 {notices.length > 0 ? (
                   <div className="space-y-2">

@@ -12,7 +12,10 @@ export const LONG_COMMENT_CHARACTER_LIMIT = 20_000;
 
 interface FoldedCommentBodyProps {
   body: string;
-  children: (visibleBody: string) => ReactNode;
+  children: (
+    visibleBody: string,
+    state: { isCollapsed: boolean; isExpanded: boolean },
+  ) => ReactNode;
   className?: string;
   /** Contrast override for the toggle when the body sits on a colored bubble. */
   toggleClassName?: string;
@@ -44,13 +47,14 @@ export function FoldedCommentBody({
     ? body.slice(0, previewEnd(body))
     : body;
   const hiddenCharacterCount = body.length - visibleBody.length;
+  const isCollapsed = shouldFold && !expanded;
 
   return (
     <div
       className={cn("min-w-0", className)}
-      data-comment-body-folded={shouldFold && !expanded ? "true" : "false"}
+      data-comment-body-folded={isCollapsed ? "true" : "false"}
     >
-      {children(visibleBody)}
+      {children(visibleBody, { isCollapsed, isExpanded: expanded })}
       {shouldFold ? (
         <div className="mt-2 flex justify-center print:hidden">
           <Button
