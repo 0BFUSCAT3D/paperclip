@@ -71,8 +71,13 @@ readonly MAX_RESPONSE_BYTES=262144
 # The fixed request body of the messages fallback. The body carries no user
 # data and no secret. The model is small and `max_tokens` is one, so the call
 # is minimal. The script never interpolates a value into this literal.
-readonly FALLBACK_MODEL="claude-3-5-haiku-20241022"
-readonly FALLBACK_BODY='{"model":"claude-3-5-haiku-20241022","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
+#
+# The model must be a current dated model id. A subscription OAuth token rejects
+# a legacy model id and a `-latest` alias with HTTP 404. A 404 response carries
+# no rate-limit header, so the fallback then reads no quota window. Pick the
+# cheapest current model. Update this id when the vendor retires the model.
+readonly FALLBACK_MODEL="claude-haiku-4-5-20251001"
+readonly FALLBACK_BODY='{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}'
 
 BODY_FILE=""
 HEADER_FILE=""
