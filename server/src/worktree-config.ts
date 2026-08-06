@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { PaperclipConfig } from "@paperclipai/shared";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import {
+  paperclipConfigSchema,
+  type PaperclipConfig,
+} from "@paperclipai/shared";
+import { mergeConfigValues } from "@paperclipai/shared/config-persistence";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 
 function nonEmpty(value: string | null | undefined): string | null {
@@ -305,9 +311,32 @@ function resolveWorktreeRuntimeContext(
   };
 }
 
-function writeConfigFile(configPath: string, config: PaperclipConfig): void {
+function writeConfigFile(configPath: string, config: PaperclipConfig): boolean {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+  let sourceConfig: PaperclipConfig | null = null;
+  if (fs.existsSync(configPath)) {
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as unknown;
+    sourceConfig = paperclipConfigSchema.parse(raw);
+  }
+
+  const merged = sourceConfig ? mergeConfigValues(sourceConfig, config) : config;
+  const parsed = paperclipConfigSchema.parse(merged);
+  if (sourceConfig && isDeepStrictEqual(sourceConfig, parsed)) return false;
+
+  const temporaryPath = path.join(
+    path.dirname(configPath),
+    `.${path.basename(configPath)}.tmp-${process.pid}-${randomUUID()}`,
+  );
+  try {
+    fs.writeFileSync(temporaryPath, JSON.stringify(parsed, null, 2) + "\n", {
+      mode: 0o600,
+      flag: "wx",
+    });
+    fs.renameSync(temporaryPath, configPath);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+  return true;
 }
 
 function resolveRepoManagedWorktreesRoot(worktreeRoot: string): string | null {
@@ -585,8 +614,7 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
             serverPort: selectedServerPort,
             databasePort: selectedDatabasePort,
           });
-          writeConfigFile(context.configPath, selectedConfig);
-          repairedConfig = true;
+          repairedConfig = writeConfigFile(context.configPath, selectedConfig);
 
           if (serverPortCollision || databasePortCollision) {
             console.warn(

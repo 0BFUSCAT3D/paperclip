@@ -1,6 +1,11 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { readConfig, writeConfig, configExists, resolveConfigPath } from "../config/store.js";
+import {
+  backupInvalidConfig,
+  readConfigState,
+  writeConfig,
+  resolveConfigPath,
+} from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { ensureLocalSecretsKeyFile } from "../config/secrets-key.js";
 import { promptDatabase } from "../prompts/database.js";
@@ -80,7 +85,8 @@ export async function configure(opts: {
   p.intro(pc.bgCyan(pc.black(" paperclip configure ")));
   const configPath = resolveConfigPath(opts.config);
 
-  if (!configExists(opts.config)) {
+  const configState = readConfigState(opts.config);
+  if (configState.status === "missing") {
     p.log.error("No config file found. Run `paperclipai onboard` first.");
     p.outro("");
     process.exitCode = 1;
@@ -88,15 +94,39 @@ export async function configure(opts: {
   }
 
   let config: PaperclipConfig;
-  try {
-    config = readConfig(opts.config) ?? defaultConfig();
-  } catch (err) {
+  let allowInvalidReplace = false;
+  if (configState.status === "valid") {
+    config = configState.config;
+  } else {
+    const backupPath = backupInvalidConfig(opts.config);
     p.log.message(
       pc.yellow(
-        `Existing config is invalid. Loading defaults so you can repair it now.\n${err instanceof Error ? err.message : String(err)}`,
+        `Existing config is invalid. Preserved a byte-for-byte backup at ${backupPath}.\n${configState.error.message}`,
       ),
     );
+
+    const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+    if (!interactive) {
+      p.log.error(
+        `Refusing to replace invalid config in non-interactive mode. Fix ${configState.path} manually or rerun configure in an interactive terminal to repair from defaults.`,
+      );
+      p.outro("");
+      process.exitCode = 1;
+      return;
+    }
+
+    const repair = await p.confirm({
+      message: `Repair from defaults? This replaces ${configState.path}; the invalid original is preserved at ${backupPath}.`,
+      initialValue: false,
+    });
+    if (p.isCancel(repair) || !repair) {
+      p.cancel(`Configuration repair aborted. Original and backup remain at ${configState.path} and ${backupPath}.`);
+      process.exitCode = 1;
+      return;
+    }
+
     config = defaultConfig();
+    allowInvalidReplace = true;
   }
 
   let section: Section | undefined = opts.section as Section | undefined;
@@ -139,7 +169,7 @@ export async function configure(opts: {
         if (llm) {
           config.llm = llm;
         } else {
-          delete config.llm;
+          config.llm = undefined;
         }
         break;
       }
@@ -179,8 +209,13 @@ export async function configure(opts: {
     config.$meta.updatedAt = new Date().toISOString();
     config.$meta.source = "configure";
 
-    writeConfig(config, opts.config);
-    p.log.success(`${SECTION_LABELS[section]} configuration updated.`);
+    const wroteConfig = writeConfig(config, opts.config, { allowInvalidReplace });
+    allowInvalidReplace = false;
+    if (wroteConfig) {
+      p.log.success(`${SECTION_LABELS[section]} configuration updated.`);
+    } else {
+      p.log.message(`${SECTION_LABELS[section]} configuration unchanged; skipped writing config.json.`);
+    }
 
     // If section was provided via CLI flag, don't loop
     if (opts.section) {

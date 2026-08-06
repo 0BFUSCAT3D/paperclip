@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { paperclipConfigSchema, type PaperclipConfig } from "./schema.js";
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import {
+  findConfigNearMatchWarnings,
+  mergeConfigValues,
+  paperclipConfigSchema,
+  type PaperclipConfig,
+} from "./schema.js";
 import {
   resolveDefaultConfigPath,
   resolvePaperclipInstanceId,
@@ -83,25 +90,121 @@ function formatValidationError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export function readConfig(configPath?: string): PaperclipConfig | null {
-  const filePath = resolveConfigPath(configPath);
-  if (!fs.existsSync(filePath)) return null;
+function parseConfig(filePath: string, options: { warnNearMatches?: boolean } = {}): PaperclipConfig {
   const raw = parseJson(filePath);
   const migrated = migrateLegacyConfig(raw);
   const parsed = paperclipConfigSchema.safeParse(migrated);
   if (!parsed.success) {
     throw new Error(`Invalid config at ${filePath}: ${formatValidationError(parsed.error)}`);
   }
+  if (options.warnNearMatches !== false) {
+    for (const warning of findConfigNearMatchWarnings(raw)) {
+      console.warn(`Warning: ${warning}`);
+    }
+  }
   return parsed.data;
+}
+
+function writeFileAtomic(filePath: string, contents: string): void {
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.tmp-${process.pid}-${randomUUID()}`,
+  );
+  try {
+    fs.writeFileSync(temporaryPath, contents, { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporaryPath, filePath);
+  } finally {
+    fs.rmSync(temporaryPath, { force: true });
+  }
+}
+
+function effectiveConfigEquals(source: PaperclipConfig, candidate: PaperclipConfig): boolean {
+  const normalizedCandidate: PaperclipConfig = {
+    ...candidate,
+    $meta: {
+      ...candidate.$meta,
+      source: source.$meta.source,
+      updatedAt: source.$meta.updatedAt,
+    },
+  };
+  return isDeepStrictEqual(source, normalizedCandidate);
+}
+
+export type ConfigReadState =
+  | { status: "missing"; path: string }
+  | { status: "valid"; path: string; config: PaperclipConfig }
+  | { status: "invalid"; path: string; error: Error };
+
+export function readConfigState(configPath?: string): ConfigReadState {
+  const filePath = resolveConfigPath(configPath);
+  if (!fs.existsSync(filePath)) return { status: "missing", path: filePath };
+  try {
+    return { status: "valid", path: filePath, config: parseConfig(filePath) };
+  } catch (error) {
+    return {
+      status: "invalid",
+      path: filePath,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
+export function backupInvalidConfig(configPath?: string): string {
+  const filePath = resolveConfigPath(configPath);
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Cannot back up missing config at ${filePath}`);
+  }
+
+  for (let index = 1; ; index += 1) {
+    const backupPath = `${filePath}.invalid-${index}`;
+    try {
+      fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+      fs.chmodSync(backupPath, 0o600);
+      return backupPath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+  }
+}
+
+export function readConfig(configPath?: string): PaperclipConfig | null {
+  const filePath = resolveConfigPath(configPath);
+  if (!fs.existsSync(filePath)) return null;
+  return parseConfig(filePath);
 }
 
 export function writeConfig(
   config: PaperclipConfig,
   configPath?: string,
-): void {
+  options: { allowInvalidReplace?: boolean } = {},
+): boolean {
   const filePath = resolveConfigPath(configPath);
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
+
+  let sourceConfig: PaperclipConfig | null = null;
+  if (fs.existsSync(filePath)) {
+    try {
+      sourceConfig = parseConfig(filePath, { warnNearMatches: false });
+    } catch (error) {
+      if (!options.allowInvalidReplace) {
+        throw new Error(
+          `Refusing to overwrite invalid config at ${filePath}. Back it up and explicitly confirm repair first. ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  const merged = sourceConfig ? mergeConfigValues(sourceConfig, config) : config;
+  const parsed = paperclipConfigSchema.safeParse(merged);
+  if (!parsed.success) {
+    throw new Error(`Invalid config update for ${filePath}: ${formatValidationError(parsed.error)}`);
+  }
+
+  if (sourceConfig && effectiveConfigEquals(sourceConfig, parsed.data)) {
+    return false;
+  }
 
   // Backup existing config before overwriting
   if (fs.existsSync(filePath)) {
@@ -110,9 +213,8 @@ export function writeConfig(
     fs.chmodSync(backupPath, 0o600);
   }
 
-  fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + "\n", {
-    mode: 0o600,
-  });
+  writeFileAtomic(filePath, JSON.stringify(parsed.data, null, 2) + "\n");
+  return true;
 }
 
 export function configExists(configPath?: string): boolean {

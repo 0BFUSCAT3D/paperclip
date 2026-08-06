@@ -1,5 +1,6 @@
 export {
   paperclipConfigSchema,
+  findConfigNearMatchWarnings,
   configMetaSchema,
   llmConfigSchema,
   databaseBackupConfigSchema,
@@ -28,3 +29,5 @@ export {
   type SecretsLocalEncryptedConfig,
   type ConfigMeta,
 } from "../../../packages/shared/src/config-schema.js";
+
+export { mergeConfigValues } from "../../../packages/shared/src/config-persistence.js";

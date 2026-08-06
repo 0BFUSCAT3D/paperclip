@@ -96,4 +96,21 @@ describe("configure command", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("backs up an invalid config and preserves it in non-interactive mode", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-configure-invalid-"));
+    const configPath = path.join(root, "config.json");
+    const invalidContents = "{\n  invalid: true\n}\n";
+    fs.writeFileSync(configPath, invalidContents);
+
+    try {
+      await configure({ config: configPath, section: "server" });
+
+      expect(process.exitCode).toBe(1);
+      expect(fs.readFileSync(configPath, "utf8")).toBe(invalidContents);
+      expect(fs.readFileSync(`${configPath}.invalid-1`, "utf8")).toBe(invalidContents);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

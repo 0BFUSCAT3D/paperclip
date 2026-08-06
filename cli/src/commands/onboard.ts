@@ -17,7 +17,12 @@ import {
   type SecretProvider,
   type StorageProvider,
 } from "@paperclipai/shared";
-import { configExists, readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
+import {
+  backupInvalidConfig,
+  readConfigState,
+  resolveConfigPath,
+  writeConfig,
+} from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { ensureAgentJwtSecret, resolveAgentJwtEnvFile } from "../config/env.js";
 import { ensureLocalSecretsKeyFile } from "../config/secrets-key.js";
@@ -356,17 +361,43 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   );
 
   let existingConfig: PaperclipConfig | null = null;
-  if (configExists(opts.config)) {
+  let allowInvalidReplace = false;
+  const configState = readConfigState(opts.config);
+  if (configState.status !== "missing") {
     p.log.message(pc.dim(`${configPath} exists`));
 
-    try {
-      existingConfig = readConfig(opts.config);
-    } catch (err) {
+    if (configState.status === "valid") {
+      existingConfig = configState.config;
+    } else {
+      const backupPath = backupInvalidConfig(opts.config);
       p.log.message(
         pc.yellow(
-          `Existing config appears invalid and will be updated.\n${err instanceof Error ? err.message : String(err)}`,
+          `Existing config is invalid. Preserved a byte-for-byte backup at ${backupPath}.\n${configState.error.message}`,
         ),
       );
+
+      const interactive = opts.yes !== true && opts.invokedByRun !== true
+        && process.stdin.isTTY === true && process.stdout.isTTY === true;
+      if (!interactive) {
+        p.log.error(
+          `Refusing to replace invalid config in non-interactive mode. Fix ${configPath} manually or rerun onboard in an interactive terminal to repair from defaults.`,
+        );
+        p.outro("");
+        process.exitCode = 1;
+        return;
+      }
+
+      const repair = await p.confirm({
+        message: `Repair from defaults? This replaces ${configPath}; the invalid original is preserved at ${backupPath}.`,
+        initialValue: false,
+      });
+      if (p.isCancel(repair) || !repair) {
+        p.cancel(`Configuration repair aborted. Original and backup remain at ${configPath} and ${backupPath}.`);
+        process.exitCode = 1;
+        return;
+      }
+
+      allowInvalidReplace = true;
     }
   }
 
@@ -646,7 +677,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.message(pc.dim(`Using existing local secrets key file at ${keyResult.path}`));
   }
 
-  writeConfig(config, opts.config);
+  writeConfig(config, opts.config, { allowInvalidReplace });
 
   if (tc) trackInstallCompleted(tc, {
     adapterType: server.deploymentMode,
