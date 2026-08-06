@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -236,6 +237,25 @@ const MANAGED_ENVIRONMENT_BUNDLE_KEY = "managed-sandbox-environment";
 const MANAGED_ENVIRONMENT_RESOURCE_KIND = "environment";
 const MANAGED_ENVIRONMENT_RESOURCE_KEY = "managed-sandbox";
 const MANAGED_ENVIRONMENT_STOCK_VERSION = "managed-environment-v1";
+const MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_METADATA_KEY = "_paperclipManagedArchiveToken";
+const MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY = "_paperclipManagedArchiveToken";
+
+function managedEnvironmentBaselineDefaults(
+  defaultsJson: Record<string, unknown>,
+): Record<string, unknown> {
+  const baseline = { ...defaultsJson };
+  delete baseline[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY];
+  return baseline;
+}
+
+function withoutManagedEnvironmentArchiveToken(
+  metadata: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!metadata) return null;
+  const next = { ...metadata };
+  delete next[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_METADATA_KEY];
+  return next;
+}
 
 function managedMetadataKeys(
   desiredMetadata: Record<string, unknown>,
@@ -491,6 +511,8 @@ export function environmentService(db: Db) {
         }, keys);
         const currentHash = stockHash(currentStock);
         const matchingBindings = bindings.filter((binding) => binding.resourceId === row!.id);
+        const rowArchiveToken = (row.metadata as Record<string, unknown> | null)
+          ?.[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_METADATA_KEY];
         let stockStatus = resourceStatus({
           resourceId: row.id,
           currentHash,
@@ -508,10 +530,21 @@ export function environmentService(db: Db) {
           );
           if (stockControlledBinding) stockStatus = "stock_update_available";
         }
+        const operatorReaffirmedArchive = row.status === "archived" && matchingBindings.some(
+          (binding) => {
+            const bindingToken = binding.defaultsJson[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY];
+            return binding.defaultsJson.status === "archived" &&
+              typeof bindingToken === "string" &&
+              bindingToken !== rowArchiveToken;
+          },
+        );
+        if (operatorReaffirmedArchive) stockStatus = "operator_modified";
 
         if (stockStatus === "operator_modified") {
           const baseline = matchingBindings[0];
-          let baselineDefaults = baseline?.defaultsJson ?? desiredStock;
+          let baselineDefaults = baseline
+            ? managedEnvironmentBaselineDefaults(baseline.defaultsJson)
+            : desiredStock;
           let baselineHash = baseline?.stockHash ?? latestStockHash;
 
           // Provider unavailability is an operational state transition, not
@@ -520,13 +553,21 @@ export function environmentService(db: Db) {
           // operator-modified field intact and leave the stock update pending.
           // A manually archived row still has an active binding baseline, so
           // it remains operator_modified and is not reactivated here.
-          const archivedByReconciler = row.status === "archived" && matchingBindings.some(
-            (binding) => (cloneRecord(binding.defaultsJson) ?? {}).status === "archived",
-          );
+          const archivedByReconciler = row.status === "archived" &&
+            typeof rowArchiveToken === "string" &&
+            matchingBindings.some((binding) => {
+              const bindingDefaults = binding.defaultsJson;
+              return bindingDefaults.status === "archived" &&
+                bindingDefaults[MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY] === rowArchiveToken;
+            });
           if (archivedByReconciler) {
             const reactivated = await tx
               .update(environments)
-              .set({ status: "active", updatedAt: new Date() })
+              .set({
+                status: "active",
+                metadata: withoutManagedEnvironmentArchiveToken(row.metadata),
+                updatedAt: new Date(),
+              })
               .where(and(eq(environments.id, row.id), eq(environments.status, "archived")))
               .returning()
               .then((rows) => rows[0] ?? null);
@@ -538,7 +579,7 @@ export function environmentService(db: Db) {
 
             for (const binding of matchingBindings) {
               const reactivatedDefaults = {
-                ...cloneRecord(binding.defaultsJson),
+                ...managedEnvironmentBaselineDefaults(binding.defaultsJson),
                 status: "active",
               };
               const reactivatedHash = stockHash(reactivatedDefaults);
@@ -598,7 +639,9 @@ export function environmentService(db: Db) {
             name: desiredName,
             description: input.description ?? null,
             config: desiredConfig,
-            metadata: mergeManagedEnvironmentMetadata(row.metadata, desiredMetadata, keys),
+            metadata: withoutManagedEnvironmentArchiveToken(
+              mergeManagedEnvironmentMetadata(row.metadata, desiredMetadata, keys),
+            ),
             status: "active",
             updatedAt: new Date(),
           })
@@ -701,9 +744,18 @@ export function environmentService(db: Db) {
             eq(builtInManagedResources.resourceId, existing.id),
           ))
         : [];
+      const archiveToken = randomUUID();
+      const archivedMetadata = {
+        ...(existing.metadata ?? {}),
+        [MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_METADATA_KEY]: archiveToken,
+      };
       const archived = await tx
         .update(environments)
-        .set({ status: "archived", updatedAt: new Date() })
+        .set({
+          status: "archived",
+          metadata: archivedMetadata,
+          updatedAt: new Date(),
+        })
         .where(and(eq(environments.id, existing.id), eq(environments.status, "active")))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -714,14 +766,17 @@ export function environmentService(db: Db) {
       // from defaultsJson keeps operator-modified row fields out of stock.
       for (const binding of bindings) {
         const archivedStock = {
-          ...cloneRecord(binding.defaultsJson),
+          ...managedEnvironmentBaselineDefaults(binding.defaultsJson),
           status: "archived",
         };
         await tx
           .update(builtInManagedResources)
           .set({
             stockHash: stockHash(archivedStock),
-            defaultsJson: archivedStock,
+            defaultsJson: {
+              ...archivedStock,
+              [MANAGED_ENVIRONMENT_ARCHIVE_TOKEN_DEFAULTS_KEY]: archiveToken,
+            },
             updatedAt: new Date(),
           })
           .where(and(
@@ -940,6 +995,7 @@ export function environmentService(db: Db) {
       patch: UpdateEnvironment,
       options?: { db?: EnvironmentWriteDb },
     ): Promise<Environment | null> => {
+      const writeDb = options?.db ?? db;
       const values: Partial<typeof environments.$inferInsert> = {
         updatedAt: new Date(),
       };
@@ -951,9 +1007,18 @@ export function environmentService(db: Db) {
       if ("envVars" in patch && patch.envVars !== undefined) {
         values.envVars = (patch.envVars ?? {}) as Record<string, unknown>;
       }
-      if (patch.metadata !== undefined) values.metadata = patch.metadata ?? null;
+      if (patch.metadata !== undefined) {
+        values.metadata = withoutManagedEnvironmentArchiveToken(patch.metadata ?? null);
+      } else if (patch.status !== undefined) {
+        const existingMetadata = await writeDb
+          .select({ metadata: environments.metadata })
+          .from(environments)
+          .where(eq(environments.id, id))
+          .then((rows) => rows[0]?.metadata ?? null);
+        values.metadata = withoutManagedEnvironmentArchiveToken(existingMetadata);
+      }
 
-      const row = await (options?.db ?? db)
+      const row = await writeDb
         .update(environments)
         .set(values)
         .where(eq(environments.id, id))

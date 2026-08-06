@@ -1033,7 +1033,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(restored.stockHash).not.toBe(reactivatedBinding?.stockHash);
   });
 
-  it("preserves an operator-archived managed row", async () => {
+  it("preserves an operator archive decision made after provider archival", async () => {
     const companyId = await seedCompany();
     const created = await svc.ensureManagedSandboxEnvironment({
       companyId,
@@ -1041,10 +1041,10 @@ describeEmbeddedPostgres("environmentService leases", () => {
       provider: "daytona",
       config: { target: "us" },
     });
-    await db
-      .update(environments)
-      .set({ status: "archived" })
-      .where(eq(environments.id, created.environment.id));
+    expect((await svc.archiveManagedSandboxEnvironment({ provider: "daytona" }))?.status)
+      .toBe("archived");
+    expect((await svc.update(created.environment.id, { status: "archived" }))?.status)
+      .toBe("archived");
 
     const reconciled = await svc.ensureManagedSandboxEnvironment({
       companyId,
