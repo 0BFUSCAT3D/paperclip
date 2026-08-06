@@ -1454,8 +1454,22 @@
     {
       "idx": 209,
       "version": "7",
-      "when": 1786007344000,
-      "tag": "0209_company_skill_usage_events",
+      "when": 1786020026023,
+      "tag": "0209_heartbeat_context_snapshot_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1786032087897,
+      "tag": "0210_heartbeat_context_taskkey_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1786050420624,
+      "tag": "0211_company_skill_usage_events",
       "breakpoints": true
     }
   ]
