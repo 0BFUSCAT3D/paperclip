@@ -2,6 +2,8 @@ import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  builtInManagedResources,
+  companies,
   companySecretBindings,
   environmentCustomImageSetupSessions,
   environmentLeases,
@@ -28,7 +30,13 @@ import {
   type UpdateEnvironment,
 } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
+import { logActivity } from "./activity-log.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import {
+  resourceStatus,
+  stockHash,
+  type ManagedResourceStockStatus,
+} from "./managed-resource-drift.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -81,6 +89,8 @@ export interface KubernetesEnvironmentConfigInput {
  * lease time.
  */
 export interface ManagedSandboxEnvironmentInput {
+  /** Company whose managed-resource binding should be reconciled. Omit at instance boot to bind every company. */
+  companyId?: string;
   name: string;
   description?: string;
   /** Sandbox provider key (the plugin's driverKey, e.g. "kubernetes", "daytona"). */
@@ -92,6 +102,24 @@ export interface ManagedSandboxEnvironmentInput {
    * `findKubernetesEnvironment` keys on).
    */
   extraMetadata?: Record<string, unknown>;
+  /** Version label recorded with the stock binding; hashes remain the drift authority. */
+  stockVersion?: string;
+}
+
+export type ManagedSandboxEnvironmentReconcileAction =
+  | "added"
+  | "updated"
+  | "unchanged"
+  | "skipped";
+
+export interface ManagedSandboxEnvironmentReconcileResult {
+  environment: Environment;
+  action: ManagedSandboxEnvironmentReconcileAction;
+  /** Classification observed before this reconciliation wrote anything. */
+  stockStatus: ManagedResourceStockStatus;
+  /** True only when operator drift prevented the available stock update. */
+  updateAvailable: boolean;
+  stockHash: string;
 }
 
 function cloneRecord(value: unknown, fallback: Record<string, unknown> | null = null): Record<string, unknown> | null {
@@ -204,21 +232,62 @@ function countFromRows(rows: Array<{ count: number | string | null | undefined }
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type EnvironmentWriteDb = Pick<Db | DbTransaction, "select" | "insert" | "update" | "delete">;
 
-export function environmentService(db: Db) {
-  /** The single Paperclip-managed sandbox row (`environments_managed_sandbox_idx`), if present. */
-  const findManagedSandboxRow = () =>
-    db
-      .select()
-      .from(environments)
-      .where(eq(environments.driver, "sandbox"))
-      .then(
-        (rows) =>
-          rows.find(
-            (row) =>
-              (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
-          ) ?? null,
-      );
+const MANAGED_ENVIRONMENT_BUNDLE_KEY = "managed-sandbox-environment";
+const MANAGED_ENVIRONMENT_RESOURCE_KIND = "environment";
+const MANAGED_ENVIRONMENT_RESOURCE_KEY = "managed-sandbox";
+const MANAGED_ENVIRONMENT_STOCK_VERSION = "managed-environment-v1";
 
+function managedMetadataKeys(
+  desiredMetadata: Record<string, unknown>,
+  bindings: Array<{ defaultsJson: Record<string, unknown> }>,
+): string[] {
+  const keys = new Set([
+    "managedByPaperclip",
+    "managedSandboxProvider",
+    KUBERNETES_MANAGED_MARKER,
+    ...Object.keys(desiredMetadata),
+  ]);
+  for (const binding of bindings) {
+    const metadata = cloneRecord(binding.defaultsJson.metadata);
+    for (const key of Object.keys(metadata ?? {})) keys.add(key);
+  }
+  return [...keys].sort((left, right) => left.localeCompare(right));
+}
+
+function managedEnvironmentStock(input: {
+  name: string;
+  description: string | null;
+  config: Record<string, unknown>;
+  metadata: Record<string, unknown> | null;
+  status: string;
+}, metadataKeys: readonly string[]): Record<string, unknown> {
+  const metadata = input.metadata ?? {};
+  return {
+    name: input.name,
+    description: input.description,
+    config: input.config,
+    metadata: Object.fromEntries(
+      metadataKeys.map((key) => [key, Object.prototype.hasOwnProperty.call(metadata, key) ? metadata[key] : null]),
+    ),
+    status: input.status,
+  };
+}
+
+function mergeManagedEnvironmentMetadata(
+  current: Record<string, unknown> | null,
+  desired: Record<string, unknown>,
+  keys: readonly string[],
+): Record<string, unknown> {
+  const merged = { ...(current ?? {}) };
+  for (const key of keys) {
+    const value = Object.prototype.hasOwnProperty.call(desired, key) ? desired[key] : null;
+    if (value === null || value === undefined) delete merged[key];
+    else merged[key] = value;
+  }
+  return merged;
+}
+
+export function environmentService(db: Db) {
   /**
    * Idempotently ensure THE Paperclip-managed sandbox environment for this
    * instance, configured for an arbitrary sandbox provider plugin. Mirrors
@@ -227,18 +296,15 @@ export function environmentService(db: Db) {
    * row per instance, so this function owns that single slot regardless of
    * provider:
    *
-   * - An existing managed row is adopted and refreshed (name, description,
-   *   config, provider) on every call, so operator/control-plane changes flow
-   *   via redeploy without recreating the row — including a provider switch,
-   *   which also drops a stale provider-specific metadata marker.
-   * - An existing UNmanaged sandbox row holding the desired name is adopted
-   *   and stamped as managed, so a row created by hand before the instance
-   *   became config-managed converges instead of colliding on
-   *   `environments_name_idx` on every boot.
+   * - A stock-controlled managed row advances to a new stock hash in the same
+   *   transaction as its managed fields, including provider switches.
+   * - A stock-current row is returned without an environment write.
+   * - An operator-modified or previously unmanaged row is preserved and
+   *   reported as skipped; its user-owned fields are never folded into stock.
    */
   const ensureManagedSandboxEnvironment = async (
     input: ManagedSandboxEnvironmentInput,
-  ): Promise<Environment> => {
+  ): Promise<ManagedSandboxEnvironmentReconcileResult> => {
     const desiredConfig: Record<string, unknown> = {
       ...(input.config ?? {}),
       provider: input.provider,
@@ -248,99 +314,290 @@ export function environmentService(db: Db) {
       managedSandboxProvider: input.provider,
       ...(input.extraMetadata ?? {}),
     };
+    if (desiredMetadata[KUBERNETES_MANAGED_MARKER] !== true) {
+      desiredMetadata[KUBERNETES_MANAGED_MARKER] = null;
+    }
 
-    const adopt = async (row: EnvironmentRow): Promise<Environment> => {
-      const metadata: Record<string, unknown> = { ...(row.metadata ?? {}), ...desiredMetadata };
-      // A provider switch must not leave the previous provider's marker
-      // behind (`findKubernetesEnvironment` keys on it).
-      if (desiredMetadata[KUBERNETES_MANAGED_MARKER] !== true) {
-        delete metadata[KUBERNETES_MANAGED_MARKER];
-      }
-      const now = new Date();
-      const runUpdate = (values: { name?: string }) =>
-        db
+    let activityCompanyIds: string[] = [];
+    let trackingInitialized = false;
+    const reconciliation = await db.transaction(
+      async (tx): Promise<ManagedSandboxEnvironmentReconcileResult> => {
+        const companyIds = input.companyId
+          ? [input.companyId]
+          : await tx.select({ id: companies.id }).from(companies).then((rows) => rows.map((row) => row.id));
+        activityCompanyIds = companyIds;
+        const bindingConditions = and(
+          eq(builtInManagedResources.bundleKey, MANAGED_ENVIRONMENT_BUNDLE_KEY),
+          eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
+          eq(builtInManagedResources.resourceKey, MANAGED_ENVIRONMENT_RESOURCE_KEY),
+          ...(companyIds.length > 0 ? [inArray(builtInManagedResources.companyId, companyIds)] : []),
+        );
+        const bindings = companyIds.length > 0
+          ? await tx.select().from(builtInManagedResources).where(bindingConditions)
+          : [];
+        trackingInitialized = bindings.length < companyIds.length;
+        const keys = managedMetadataKeys(desiredMetadata, bindings);
+
+        const sandboxRows = await tx
+          .select()
+          .from(environments)
+          .where(eq(environments.driver, "sandbox"))
+          .for("update");
+        let row = sandboxRows.find(
+          (candidate) => (candidate.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
+        ) ?? sandboxRows.find((candidate) => candidate.name === input.name) ?? null;
+
+        const writeBindings = async (
+          environmentId: string,
+          stockVersion: string,
+          installedStockHash: string,
+          defaultsJson: Record<string, unknown>,
+          replace: boolean,
+        ) => {
+          const targetCompanyIds = replace
+            ? companyIds
+            : companyIds.filter(
+              (companyId) => !bindings.some((binding) => binding.companyId === companyId),
+            );
+          if (targetCompanyIds.length === 0) return;
+          const values = targetCompanyIds.map((companyId) => ({
+            companyId,
+            bundleKey: MANAGED_ENVIRONMENT_BUNDLE_KEY,
+            resourceKind: MANAGED_ENVIRONMENT_RESOURCE_KIND,
+            resourceKey: MANAGED_ENVIRONMENT_RESOURCE_KEY,
+            resourceId: environmentId,
+            stockVersion,
+            stockHash: installedStockHash,
+            defaultsJson,
+          }));
+          const insert = tx.insert(builtInManagedResources).values(values);
+          if (!replace) {
+            await insert.onConflictDoNothing({
+              target: [
+                builtInManagedResources.companyId,
+                builtInManagedResources.bundleKey,
+                builtInManagedResources.resourceKind,
+                builtInManagedResources.resourceKey,
+              ],
+            });
+            return;
+          }
+          await insert.onConflictDoUpdate({
+            target: [
+              builtInManagedResources.companyId,
+              builtInManagedResources.bundleKey,
+              builtInManagedResources.resourceKind,
+              builtInManagedResources.resourceKey,
+            ],
+            set: {
+              resourceId: environmentId,
+              stockVersion,
+              stockHash: installedStockHash,
+              defaultsJson,
+              updatedAt: new Date(),
+            },
+          });
+        };
+
+        if (!row) {
+          const nameOwner = await tx
+            .select()
+            .from(environments)
+            .where(eq(environments.name, input.name))
+            .then((rows) => rows[0] ?? null);
+          if (nameOwner && nameOwner.driver !== "sandbox") {
+            throw new Error(
+              `Failed to ensure managed sandbox environment: environment "${input.name}" already exists with driver "${nameOwner.driver}"`,
+            );
+          }
+          const now = new Date();
+          const inserted = await tx
+            .insert(environments)
+            .values({
+              name: input.name,
+              description: input.description ?? null,
+              driver: "sandbox",
+              status: "active",
+              config: desiredConfig,
+              envVars: {},
+              metadata: mergeManagedEnvironmentMetadata(null, desiredMetadata, keys),
+              createdAt: now,
+              updatedAt: now,
+            })
+            // Either the managed-slot partial index or the global name index
+            // can select the concurrent winner. Treat both as convergence and
+            // reselect that winner under lock below.
+            .onConflictDoNothing()
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (inserted) {
+            const stock = managedEnvironmentStock({
+              name: inserted.name,
+              description: inserted.description ?? null,
+              config: inserted.config,
+              metadata: inserted.metadata,
+              status: inserted.status,
+            }, keys);
+            const latestStockHash = stockHash(stock);
+            await writeBindings(
+              inserted.id,
+              input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
+              latestStockHash,
+              stock,
+              true,
+            );
+            return {
+              environment: toEnvironment(inserted),
+              action: "added",
+              stockStatus: "missing",
+              updateAvailable: false,
+              stockHash: latestStockHash,
+            };
+          }
+          row = await tx
+            .select()
+            .from(environments)
+            .where(eq(environments.driver, "sandbox"))
+            .for("update")
+            .then(
+              (rows) => rows.find(
+                (candidate) => (candidate.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
+              ) ?? null,
+            );
+          if (!row) throw new Error("Failed to ensure managed sandbox environment");
+        }
+
+        const nameOwner = await tx
+          .select({ id: environments.id })
+          .from(environments)
+          .where(eq(environments.name, input.name))
+          .then((rows) => rows[0] ?? null);
+        const desiredName = nameOwner && nameOwner.id !== row.id ? row.name : input.name;
+        const desiredStock = managedEnvironmentStock({
+          name: desiredName,
+          description: input.description ?? null,
+          config: desiredConfig,
+          metadata: desiredMetadata,
+          status: "active",
+        }, keys);
+        const latestStockHash = stockHash(desiredStock);
+        const currentStock = managedEnvironmentStock({
+          name: row.name,
+          description: row.description ?? null,
+          config: row.config,
+          metadata: row.metadata,
+          status: row.status,
+        }, keys);
+        const currentHash = stockHash(currentStock);
+        const matchingBindings = bindings.filter((binding) => binding.resourceId === row!.id);
+        let stockStatus = resourceStatus({
+          resourceId: row.id,
+          currentHash,
+          bindingStockHash: matchingBindings[0]?.stockHash ?? null,
+          latestStockHash,
+        });
+        if (stockStatus === "operator_modified") {
+          const stockControlledBinding = matchingBindings.find(
+            (binding) => resourceStatus({
+              resourceId: row!.id,
+              currentHash,
+              bindingStockHash: binding.stockHash,
+              latestStockHash,
+            }) === "stock_update_available",
+          );
+          if (stockControlledBinding) stockStatus = "stock_update_available";
+        }
+
+        if (stockStatus === "operator_modified") {
+          const baseline = matchingBindings[0];
+          await writeBindings(
+            row.id,
+            baseline?.stockVersion ?? input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
+            baseline?.stockHash ?? latestStockHash,
+            baseline?.defaultsJson ?? desiredStock,
+            false,
+          );
+          return {
+            environment: toEnvironment(row),
+            action: "skipped",
+            stockStatus,
+            updateAvailable: true,
+            stockHash: latestStockHash,
+          };
+        }
+
+        if (stockStatus === "stock_current") {
+          await writeBindings(
+            row.id,
+            input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
+            latestStockHash,
+            desiredStock,
+            false,
+          );
+          return {
+            environment: toEnvironment(row),
+            action: "unchanged",
+            stockStatus,
+            updateAvailable: false,
+            stockHash: latestStockHash,
+          };
+        }
+
+        const updated = await tx
           .update(environments)
           .set({
-            ...values,
-            // The row mirrors the managed spec: omitting `description` clears
-            // a previously configured one rather than pinning it forever.
+            name: desiredName,
             description: input.description ?? null,
             config: desiredConfig,
-            metadata,
+            metadata: mergeManagedEnvironmentMetadata(row.metadata, desiredMetadata, keys),
             status: "active",
-            updatedAt: now,
+            updatedAt: new Date(),
           })
           .where(eq(environments.id, row.id))
           .returning()
-          .then((rows) => rows[0] ?? row);
-      const updated = await runUpdate({ name: input.name }).catch((error: unknown) => {
-        // Another row already holds the desired name; keep the current name
-        // rather than failing a boot-time ensure over a display label.
-        if (hasConstraintName(error, "environments_name_idx")) {
-          return runUpdate({});
-        }
-        throw error;
-      });
-      return toEnvironment(updated);
-    };
-
-    const existing = await findManagedSandboxRow();
-    if (existing) return adopt(existing);
-
-    // The partial unique index `environments_managed_sandbox_idx` enforces
-    // "at most one Paperclip-managed sandbox row per instance" at the DB
-    // level. Use ON CONFLICT DO NOTHING keyed on that index so concurrent
-    // callers can race the INSERT; losers re-read the surviving row.
-    const now = new Date();
-    const inserted = await db
-      .insert(environments)
-      .values({
-        name: input.name,
-        description: input.description ?? null,
-        driver: "sandbox",
-        status: "active",
-        config: desiredConfig,
-        envVars: {},
-        metadata: desiredMetadata,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoNothing({
-        target: [environments.driver],
-        where:
-          sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
-      })
-      .returning()
-      .then((rows) => rows[0] ?? null)
-      .catch((error) => {
-        if (
-          hasConstraintName(error, "environments_name_idx")
-          || hasConstraintName(error, "environments_managed_sandbox_idx")
-        ) {
-          return null;
-        }
-        throw error;
-      });
-    if (inserted) return toEnvironment(inserted);
-
-    // Either a concurrent caller won the managed slot, or an unmanaged row
-    // holds the desired name. Adopt whichever exists.
-    const winner = await findManagedSandboxRow();
-    if (winner) return adopt(winner);
-    const sameName = await db
-      .select()
-      .from(environments)
-      .where(eq(environments.name, input.name))
-      .then((rows) => rows[0] ?? null);
-    if (sameName) {
-      if (sameName.driver !== "sandbox") {
-        throw new Error(
-          `Failed to ensure managed sandbox environment: environment "${input.name}" already exists with driver "${sameName.driver}"`,
+          .then((rows) => rows[0] ?? null);
+        if (!updated) throw new Error("Managed sandbox environment changed during reconciliation");
+        await writeBindings(
+          updated.id,
+          input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
+          latestStockHash,
+          desiredStock,
+          true,
         );
-      }
-      return adopt(sameName);
+        return {
+          environment: toEnvironment(updated),
+          action: "updated",
+          stockStatus,
+          updateAvailable: false,
+          stockHash: latestStockHash,
+        };
+      },
+    );
+    if (reconciliation.action !== "unchanged" || trackingInitialized) {
+      const action = reconciliation.action === "added"
+        ? "environment.managed_stock_added"
+        : reconciliation.action === "updated"
+          ? "environment.managed_stock_updated"
+          : reconciliation.action === "skipped"
+            ? "environment.managed_stock_skipped"
+            : "environment.managed_stock_tracking_initialized";
+      await Promise.all(activityCompanyIds.map((companyId) => logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "managed-environment-reconciler",
+        action,
+        entityType: "environment",
+        entityId: reconciliation.environment.id,
+        details: {
+          provider: input.provider,
+          reconciliationAction: reconciliation.action,
+          stockStatus: reconciliation.stockStatus,
+          updateAvailable: reconciliation.updateAvailable,
+          stockHash: reconciliation.stockHash,
+        },
+      })));
     }
-    throw new Error("Failed to ensure managed sandbox environment");
+    return reconciliation;
   };
 
   /**
@@ -359,21 +616,97 @@ export function environmentService(db: Db) {
    * managed row for this provider.
    */
   const archiveManagedSandboxEnvironment = async (
-    input: { provider: string },
+    input: { provider: string; companyId?: string },
   ): Promise<Environment | null> => {
-    const existing = await findManagedSandboxRow();
-    if (!existing || existing.status !== "active") return null;
-    const rowProvider = (existing.metadata as Record<string, unknown> | null)
-      ?.managedSandboxProvider;
-    if (rowProvider !== input.provider) return null;
-    const archived = await db
-      .update(environments)
-      .set({ status: "archived", updatedAt: new Date() })
-      // Guarded on status so a concurrent re-activation is not clobbered.
-      .where(and(eq(environments.id, existing.id), eq(environments.status, "active")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    return archived ? toEnvironment(archived) : null;
+    let activityCompanyIds: string[] = [];
+    const archived = await db.transaction(async (tx) => {
+      const existing = await tx
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "sandbox"))
+        .for("update")
+        .then(
+          (rows) => rows.find(
+            (row) => (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
+          ) ?? null,
+        );
+      if (!existing || existing.status !== "active") return null;
+      const rowProvider = (existing.metadata as Record<string, unknown> | null)
+        ?.managedSandboxProvider;
+      if (rowProvider !== input.provider) return null;
+
+      const companyIds = input.companyId
+        ? [input.companyId]
+        : await tx.select({ id: companies.id }).from(companies).then((rows) => rows.map((row) => row.id));
+      activityCompanyIds = companyIds;
+      const bindings = companyIds.length > 0
+        ? await tx
+          .select()
+          .from(builtInManagedResources)
+          .where(and(
+            inArray(builtInManagedResources.companyId, companyIds),
+            eq(builtInManagedResources.bundleKey, MANAGED_ENVIRONMENT_BUNDLE_KEY),
+            eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
+            eq(builtInManagedResources.resourceKey, MANAGED_ENVIRONMENT_RESOURCE_KEY),
+            eq(builtInManagedResources.resourceId, existing.id),
+          ))
+        : [];
+      const keys = managedMetadataKeys({}, bindings);
+      const currentStock = managedEnvironmentStock({
+        name: existing.name,
+        description: existing.description ?? null,
+        config: existing.config,
+        metadata: existing.metadata,
+        status: existing.status,
+      }, keys);
+      const currentHash = stockHash(currentStock);
+      const stockControlled = bindings.some((binding) => binding.stockHash === currentHash);
+
+      const archived = await tx
+        .update(environments)
+        .set({ status: "archived", updatedAt: new Date() })
+        .where(and(eq(environments.id, existing.id), eq(environments.status, "active")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!archived) return null;
+
+      // Archival is a Paperclip-owned availability transition. Advance the
+      // installed-stock baseline only when the row was stock-controlled;
+      // operator-modified fields must never be laundered into stock.
+      if (stockControlled && bindings.length > 0) {
+        const archivedStock = managedEnvironmentStock({
+          name: archived.name,
+          description: archived.description ?? null,
+          config: archived.config,
+          metadata: archived.metadata,
+          status: archived.status,
+        }, keys);
+        await tx
+          .update(builtInManagedResources)
+          .set({
+            stockHash: stockHash(archivedStock),
+            defaultsJson: archivedStock,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            inArray(builtInManagedResources.id, bindings.map((binding) => binding.id)),
+            eq(builtInManagedResources.resourceId, existing.id),
+          ));
+      }
+      return toEnvironment(archived);
+    });
+    if (archived) {
+      await Promise.all(activityCompanyIds.map((companyId) => logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "managed-environment-reconciler",
+        action: "environment.managed_provider_unavailable_archived",
+        entityType: "environment",
+        entityId: archived.id,
+        details: { provider: input.provider },
+      })));
+    }
+    return archived;
   };
 
   return {
@@ -488,8 +821,8 @@ export function environmentService(db: Db) {
      * an instance, configured from instance/operator-supplied config. A thin
      * wrapper over `ensureManagedSandboxEnvironment` that pins the provider to
      * "kubernetes" and stamps the legacy marker `findKubernetesEnvironment`
-     * keys on. On subsequent calls the config is refreshed (so operators can
-     * update egress/runtimeClass via gitops without recreating the row).
+     * keys on. On subsequent calls stock-controlled config advances in place;
+     * operator modifications remain untouched for explicit review.
      */
     ensureKubernetesEnvironment: async (
       companyIdOrConfig: string | KubernetesEnvironmentConfigInput,
@@ -497,12 +830,13 @@ export function environmentService(db: Db) {
     ): Promise<Environment> => {
       const config = resolveKubernetesConfig(companyIdOrConfig, maybeConfig);
       return ensureManagedSandboxEnvironment({
+        companyId: typeof companyIdOrConfig === "string" ? companyIdOrConfig : undefined,
         name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
         description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
         provider: KUBERNETES_PROVIDER_KEY,
         config,
         extraMetadata: { [KUBERNETES_MANAGED_MARKER]: true },
-      });
+      }).then((result) => result.environment);
     },
 
     /**
