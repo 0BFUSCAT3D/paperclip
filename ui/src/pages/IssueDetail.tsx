@@ -111,6 +111,9 @@ import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
+import { IssueFieldChangeReceipt } from "../components/IssueFieldChangeReceipt";
+import { IssueWriteDenialNotice } from "../components/IssueWriteDenialNotice";
+import { issueWriteDenialForActivity } from "../lib/issue-write-denial-activity";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import {
   IssueMonitorBanner,
@@ -119,8 +122,6 @@ import {
 } from "../components/IssueMonitorBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
-import { PendingDecisionStrip } from "../components/PendingDecisionStrip";
-import { IssueReviewPanel } from "../components/IssueReviewPanel";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
@@ -874,6 +875,8 @@ type IssueDetailChatTabProps = {
   companyId: string;
   projectId: string | null;
   issueStatus: Issue["status"];
+  /** Marks cross-issue agent comments in the thread (the open cross-task write design (attribution)). */
+  issueAssigneeAgentId: Issue["assigneeAgentId"];
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
@@ -980,6 +983,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   projectId,
   issueWorkMode,
   issueStatus,
+  issueAssigneeAgentId,
   executionRunId,
   blockedBy,
   liveIssueIds,
@@ -1259,6 +1263,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         companyId={companyId}
         projectId={projectId}
         issueStatus={issueStatus}
+        issueAssigneeAgentId={issueAssigneeAgentId}
         agentMap={agentMap}
         currentUserId={currentUserId}
         userLabelMap={userLabelMap}
@@ -1540,6 +1545,24 @@ function IssueDetailActivityTab({
                   <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
                 </div>
                 <IssueReferenceActivitySummary event={evt} />
+                {/* Field-level who/what/why receipt for agent and board edits alike. */}
+                <IssueFieldChangeReceipt
+                  event={evt}
+                  resolveAgentLabel={(agentId) => agentMap.get(agentId)?.name ?? null}
+                  resolveUserLabel={(userId) => userProfileMap.get(userId)?.label ?? null}
+                />
+                {/* A refused write explains itself here, not just in the API error. */}
+                {(() => {
+                  const denial = issueWriteDenialForActivity(evt.action, evt.details, {
+                    actorLabel: evt.agentId ? agentMap.get(evt.agentId)?.name ?? null : null,
+                    responsibleUserName: evt.responsibleUserId
+                      ? userProfileMap.get(evt.responsibleUserId)?.label ?? null
+                      : null,
+                  });
+                  return denial ? (
+                    <IssueWriteDenialNotice code={denial.code} context={denial.context} />
+                  ) : null;
+                })()}
               </div>
             );
           }}
@@ -2019,6 +2042,7 @@ export function IssueDetail() {
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueId ?? "Task";
+  const breadcrumbIdentifier = issue?.identifier ?? issueHeaderSeed?.identifier ?? undefined;
   const breadcrumbStatus = issue?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
@@ -3186,12 +3210,14 @@ export function IssueDetail() {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
         label: breadcrumbTitle,
+        identifier: breadcrumbIdentifier,
         leading: breadcrumbStatusLeading,
         leadingKey: breadcrumbStatusKey,
       },
     ]);
   }, [
     breadcrumbTitle,
+    breadcrumbIdentifier,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,
@@ -4502,10 +4528,6 @@ export function IssueDetail() {
           checkingNow={checkIssueMonitorNow.isPending}
         />
 
-        <PendingDecisionStrip companyId={issue.companyId} issueId={issue.id} />
-
-        <IssueReviewPanel issue={issue} />
-
         {taskChatShellEnabled ? null : (
           <InlineEditor
             value={issue.description ?? ""}
@@ -4929,6 +4951,7 @@ export function IssueDetail() {
               companyId={issue.companyId}
               projectId={issue.projectId ?? null}
               issueStatus={issue.status}
+              issueAssigneeAgentId={issue.assigneeAgentId}
               issueWorkMode={issue.workMode ?? "standard"}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}

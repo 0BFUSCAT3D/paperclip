@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
+import { CommentAttributionChip } from "@/components/CommentAttributionChip";
 import {
   Attachment,
   AttachmentContent,
@@ -75,6 +76,12 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
             )}
           </Avatar>
           <span className="text-sm font-semibold text-foreground">{item.authorName}</span>
+          {item.onBehalfOfUserName ? (
+            <CommentAttributionChip
+              agentName={item.authorName}
+              userName={item.onBehalfOfUserName}
+            />
+          ) : null}
           {item.modeLabel ? (
             <span className="rounded-full border border-border px-2 py-px text-(length:--text-micro) font-medium text-muted-foreground">
               {item.modeLabel}
@@ -92,7 +99,17 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
             item.optimistic ? "opacity-80" : null,
           )}
         >
-          <MarkdownBody softBreaks linkIssueReferences>
+          <MarkdownBody
+            // The human bubble sits on the solid --liveness-blue accent, so the
+            // prose body text must follow the bubble's `text-white` rather than
+            // the default light-mode prose color (which reads as black on blue).
+            // `paperclip-markdown-on-accent` flips prose tokens to currentColor
+            // (== inherited white) in both themes; dark mode was already correct
+            // only because `prose-invert` happened to lighten the text.
+            className={isHuman ? "paperclip-markdown-on-accent" : undefined}
+            softBreaks
+            linkIssueReferences
+          >
             {bodyText}
           </MarkdownBody>
         </div>

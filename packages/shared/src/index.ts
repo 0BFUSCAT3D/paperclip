@@ -20,6 +20,8 @@ export {
   type DecisionSpecInput,
 } from "./validators/decision.js";
 
+export { decisionEffectTargetIssueIds } from "./types/decision.js";
+
 export type {
   DecisionEffectStaleness,
   DecisionOptionStyle,
@@ -81,6 +83,18 @@ export {
   type ResponsibleUserSource,
   type OriginatingActor,
 } from "./issue-attribution.js";
+export {
+  ISSUE_WRITE_DENIAL_CODES,
+  describeIssueWriteDenial,
+  isIssueWriteDenialCode,
+  issueWriteDenialApiMessage,
+  issueWriteDenialCodeForResponsibleUserDenial,
+  issueWriteDenialResponse,
+  type IssueWriteDenialCode,
+  type IssueWriteDenialContext,
+  type IssueWriteDenialCopy,
+  type IssueWriteDenialTone,
+} from "./issue-write-denial.js";
 export {
   RESPONSIBLE_USER_DENIAL_CODES,
   describeResponsibleUserDenial,
@@ -209,6 +223,8 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AssignmentAuthorizationPolicy,
+  type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
   type SourceTrustArtifactKind,
   type SourceTrustDisposition,
@@ -254,6 +270,7 @@ export {
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
   ISSUE_PRIORITIES,
+  ISSUE_REVIEW_POLICIES,
   ISSUE_WORK_MODES,
   ISSUE_HARNESS_KINDS,
   MAX_ISSUE_REQUEST_DEPTH,
@@ -441,6 +458,7 @@ export {
   type ProjectIconName,
   type IssueStatus,
   type IssuePriority,
+  type IssueReviewPolicy,
   type IssueWorkMode,
   type IssueHarnessKind,
   type SummarySlotScopeKind,
@@ -823,6 +841,7 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  ExecutionWorkspaceDeliveryState,
   WorkspaceOverviewItem,
   WorkspaceOverviewLinkedIssue,
   WorkspaceOverviewPrimaryService,
@@ -1181,6 +1200,13 @@ export type {
   SecretStatus,
   SecretVersionSelector,
   SecretVersionStatus,
+  SecretProposalKind,
+  SecretProposalStatus,
+  SecretProposalAgentRef,
+  SecretProposalIssueRef,
+  SecretProposalView,
+  ApproveSecretProposalInput,
+  RejectSecretProposalInput,
   ConnectToolAppResult,
   ToolOAuthStartResult,
   ToolActionRequest,
@@ -1524,6 +1550,8 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  assignmentAuthorizationPolicySchema,
+  protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
   type PatchInstanceExperimentalSettings,
   type PatchInstanceSettings,
@@ -1735,6 +1763,7 @@ export {
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
+  executionWorkspaceDeliveryStateSchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,
