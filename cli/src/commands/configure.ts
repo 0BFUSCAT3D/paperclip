@@ -183,7 +183,10 @@ export async function configure(opts: {
             currentAuth: config.auth,
           });
           config.server = server;
-          config.auth = auth;
+          // The server prompt owns publicBaseUrl. Keep an explicit undefined
+          // so the merge writer removes a stale public URL when the selected
+          // preset no longer uses one, while retaining unknown auth keys.
+          config.auth = { ...auth, publicBaseUrl: auth.publicBaseUrl };
         }
         break;
       case "storage":
