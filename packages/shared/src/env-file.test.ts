@@ -71,6 +71,21 @@ describe("env file editor", () => {
     ].join("\n"));
   });
 
+  it("does not treat an unquoted dotenv comment as the managed value", () => {
+    expect(
+      updateEnvFileContents(
+        ["PAPERCLIP_COLOR=#439edb", "PAPERCLIP_HOME=old# keep this comment"].join("\n"),
+        {
+          PAPERCLIP_COLOR: "#439edb",
+          PAPERCLIP_HOME: "new",
+        },
+        { valueEncoding: "minimal" },
+      ),
+    ).toBe(
+      ['PAPERCLIP_COLOR="#439edb"#439edb', "PAPERCLIP_HOME=new# keep this comment"].join("\n"),
+    );
+  });
+
   it("is a no-op when every managed duplicate is already current", () => {
     const original = [
       "export PAPERCLIP_HOME = '/same path' # first",

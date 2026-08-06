@@ -45,7 +45,9 @@ function trailingEnvCommentStart(rawValue: string): number | null {
       quote = character;
       continue;
     }
-    if (character !== "#" || index === 0 || !/\s/.test(rawValue[index - 1] ?? "")) continue;
+    // dotenv treats every unquoted # as the start of a comment, even when it
+    // immediately follows the assignment separator or the value.
+    if (character !== "#") continue;
 
     let commentStart = index;
     while (commentStart > 0 && /\s/.test(rawValue[commentStart - 1] ?? "")) {
