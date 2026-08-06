@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { FoldedCommentBody } from "@/components/FoldedCommentBody";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { CommentAttributionChip } from "@/components/CommentAttributionChip";
@@ -53,7 +54,9 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
   if (item.author === "system") {
     return (
       <div className="tc-enter-bubble flex justify-center py-1">
-        <p className="max-w-(--pct-85) text-center text-xs text-muted-foreground">{item.text}</p>
+        <FoldedCommentBody body={item.text} className="max-w-(--pct-85) text-center">
+          {(visibleBody) => <p className="text-xs text-muted-foreground">{visibleBody}</p>}
+        </FoldedCommentBody>
       </div>
     );
   }
@@ -99,19 +102,22 @@ export function TaskChatBubble({ item, attachedTurn }: TaskChatBubbleProps) {
             item.optimistic ? "opacity-80" : null,
           )}
         >
-          <MarkdownBody
-            // The human bubble sits on the solid --liveness-blue accent, so the
-            // prose body text must follow the bubble's `text-white` rather than
-            // the default light-mode prose color (which reads as black on blue).
-            // `paperclip-markdown-on-accent` flips prose tokens to currentColor
-            // (== inherited white) in both themes; dark mode was already correct
-            // only because `prose-invert` happened to lighten the text.
-            className={isHuman ? "paperclip-markdown-on-accent" : undefined}
-            softBreaks
-            linkIssueReferences
+          <FoldedCommentBody
+            body={bodyText}
+            toggleClassName={isHuman ? "text-white/80 hover:text-white hover:bg-white/10" : undefined}
           >
-            {bodyText}
-          </MarkdownBody>
+            {(visibleBody) => (
+              <MarkdownBody
+                // The human bubble sits on the solid --liveness-blue accent, so
+                // prose must inherit the bubble's white text in both themes.
+                className={isHuman ? "paperclip-markdown-on-accent" : undefined}
+                softBreaks
+                linkIssueReferences
+              >
+                {visibleBody}
+              </MarkdownBody>
+            )}
+          </FoldedCommentBody>
         </div>
       ) : null}
       {attachmentRefs.length > 0 ? (
