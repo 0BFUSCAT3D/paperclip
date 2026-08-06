@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readConfigFile } from "../config-file.js";
 
 const ORIGINAL_PAPERCLIP_CONFIG = process.env.PAPERCLIP_CONFIG;
@@ -49,6 +49,7 @@ describe("readConfigFile", () => {
     }
 
     fs.rmSync(tempDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
   it("returns null when the config file does not exist", () => {
@@ -88,5 +89,19 @@ describe("readConfigFile", () => {
         mode: "file",
       },
     });
+  });
+
+  it("preserves near-match keys and warns instead of deleting them", () => {
+    const config = minimalConfig() as { server: Record<string, unknown> };
+    config.server.potr = 3200;
+    writeConfig(configPath, config);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const parsed = readConfigFile();
+
+    expect(parsed?.server.potr).toBe(3200);
+    expect(warn).toHaveBeenCalledWith(
+      "Warning: Unknown config key server.potr; did you mean server.port? The unknown key will be preserved.",
+    );
   });
 });

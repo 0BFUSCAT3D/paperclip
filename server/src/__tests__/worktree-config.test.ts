@@ -331,6 +331,53 @@ describe("worktree config repair", () => {
     expect(writtenConfig.database.embeddedPostgresPort).toBe(54329);
   });
 
+  it("preserves unknown config keys and skips unchanged writes through the server writer", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-passthrough-"));
+    const worktreeRoot = path.join(tempRoot, "PAP-16582-config-passthrough");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const instanceRoot = path.join(isolatedHome, "instances", "pap-16582-config-passthrough");
+    const config = {
+      ...buildIsolatedConfig(instanceRoot, 3101, 54330),
+      futurePlugin: { enabled: true },
+      server: {
+        ...buildIsolatedConfig(instanceRoot, 3101, 54330).server,
+        futureProxyMode: "tunnel",
+      },
+    };
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    await fs.writeFile(
+      path.join(paperclipDir, ".env"),
+      ["PAPERCLIP_IN_WORKTREE=true", "PAPERCLIP_WORKTREE_NAME=PAP-16582-config-passthrough", ""].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-16582-config-passthrough";
+    process.env.PAPERCLIP_HOME = isolatedHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "pap-16582-config-passthrough";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PORT;
+    delete process.env.DATABASE_URL;
+
+    maybePersistWorktreeRuntimePorts({ serverPort: 3200, databasePort: 54400 });
+
+    const writtenConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    expect(writtenConfig.server.port).toBe(3200);
+    expect(writtenConfig.database.embeddedPostgresPort).toBe(54400);
+    expect(writtenConfig.futurePlugin).toEqual({ enabled: true });
+    expect(writtenConfig.server.futureProxyMode).toBe("tunnel");
+
+    const stableTime = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(configPath, stableTime, stableTime);
+    maybePersistWorktreeRuntimePorts({ serverPort: 3200, databasePort: 54400 });
+    expect((await fs.stat(configPath)).mtimeMs).toBe(stableTime.getTime());
+  });
+
   it("does not adopt a .paperclip config whose own env does not declare a worktree", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-unattested-"));
     const repoRoot = path.join(tempRoot, "repo");
