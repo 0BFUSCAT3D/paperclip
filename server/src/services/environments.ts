@@ -320,6 +320,7 @@ export function environmentService(db: Db) {
 
     let activityCompanyIds: string[] = [];
     let trackingInitialized = false;
+    let providerReactivated = false;
     const reconciliation = await db.transaction(
       async (tx): Promise<ManagedSandboxEnvironmentReconcileResult> => {
         const companyIds = input.companyId
@@ -510,11 +511,59 @@ export function environmentService(db: Db) {
 
         if (stockStatus === "operator_modified") {
           const baseline = matchingBindings[0];
+          let baselineDefaults = baseline?.defaultsJson ?? desiredStock;
+          let baselineHash = baseline?.stockHash ?? latestStockHash;
+
+          // Provider unavailability is an operational state transition, not
+          // an operator edit. If the binding records that Paperclip archived
+          // this row, restore only its availability status. Keep every other
+          // operator-modified field intact and leave the stock update pending.
+          // A manually archived row still has an active binding baseline, so
+          // it remains operator_modified and is not reactivated here.
+          const archivedByReconciler = row.status === "archived" && matchingBindings.some(
+            (binding) => (cloneRecord(binding.defaultsJson) ?? {}).status === "archived",
+          );
+          if (archivedByReconciler) {
+            const reactivated = await tx
+              .update(environments)
+              .set({ status: "active", updatedAt: new Date() })
+              .where(and(eq(environments.id, row.id), eq(environments.status, "archived")))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (!reactivated) {
+              throw new Error("Managed sandbox environment changed during reactivation");
+            }
+            row = reactivated;
+            providerReactivated = true;
+
+            for (const binding of matchingBindings) {
+              const reactivatedDefaults = {
+                ...cloneRecord(binding.defaultsJson),
+                status: "active",
+              };
+              const reactivatedHash = stockHash(reactivatedDefaults);
+              await tx
+                .update(builtInManagedResources)
+                .set({
+                  stockHash: reactivatedHash,
+                  defaultsJson: reactivatedDefaults,
+                  updatedAt: new Date(),
+                })
+                .where(and(
+                  eq(builtInManagedResources.id, binding.id),
+                  eq(builtInManagedResources.resourceId, row.id),
+                ));
+              if (binding.id === baseline?.id) {
+                baselineDefaults = reactivatedDefaults;
+                baselineHash = reactivatedHash;
+              }
+            }
+          }
           await writeBindings(
             row.id,
             baseline?.stockVersion ?? input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
-            baseline?.stockHash ?? latestStockHash,
-            baseline?.defaultsJson ?? desiredStock,
+            baselineHash,
+            baselineDefaults,
             false,
           );
           return {
@@ -594,6 +643,7 @@ export function environmentService(db: Db) {
           stockStatus: reconciliation.stockStatus,
           updateAvailable: reconciliation.updateAvailable,
           stockHash: reconciliation.stockHash,
+          providerReactivated,
         },
       })));
     }
@@ -651,17 +701,6 @@ export function environmentService(db: Db) {
             eq(builtInManagedResources.resourceId, existing.id),
           ))
         : [];
-      const keys = managedMetadataKeys({}, bindings);
-      const currentStock = managedEnvironmentStock({
-        name: existing.name,
-        description: existing.description ?? null,
-        config: existing.config,
-        metadata: existing.metadata,
-        status: existing.status,
-      }, keys);
-      const currentHash = stockHash(currentStock);
-      const stockControlled = bindings.some((binding) => binding.stockHash === currentHash);
-
       const archived = await tx
         .update(environments)
         .set({ status: "archived", updatedAt: new Date() })
@@ -670,17 +709,14 @@ export function environmentService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!archived) return null;
 
-      // Archival is a Paperclip-owned availability transition. Advance the
-      // installed-stock baseline only when the row was stock-controlled;
-      // operator-modified fields must never be laundered into stock.
-      if (stockControlled && bindings.length > 0) {
-        const archivedStock = managedEnvironmentStock({
-          name: archived.name,
-          description: archived.description ?? null,
-          config: archived.config,
-          metadata: archived.metadata,
-          status: archived.status,
-        }, keys);
+      // Archival is a Paperclip-owned availability transition. Record only
+      // that status change in each installed baseline. Deriving the new hash
+      // from defaultsJson keeps operator-modified row fields out of stock.
+      for (const binding of bindings) {
+        const archivedStock = {
+          ...cloneRecord(binding.defaultsJson),
+          status: "archived",
+        };
         await tx
           .update(builtInManagedResources)
           .set({
@@ -689,7 +725,7 @@ export function environmentService(db: Db) {
             updatedAt: new Date(),
           })
           .where(and(
-            inArray(builtInManagedResources.id, bindings.map((binding) => binding.id)),
+            eq(builtInManagedResources.id, binding.id),
             eq(builtInManagedResources.resourceId, existing.id),
           ));
       }

@@ -973,6 +973,93 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(restored.status).toBe("active");
   });
 
+  it("reactivates a reconciler-archived row without replacing operator drift", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+    });
+    await db
+      .update(environments)
+      .set({
+        description: "Operator description",
+        config: { provider: "daytona", target: "operator" },
+      })
+      .where(eq(environments.id, created.environment.id));
+
+    expect((await svc.archiveManagedSandboxEnvironment({ provider: "daytona" }))?.status)
+      .toBe("archived");
+    const [archivedBinding] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(archivedBinding?.defaultsJson).toMatchObject({
+      description: "Managed stock",
+      status: "archived",
+    });
+
+    const restored = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona v2",
+      description: "Managed stock v2",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+    });
+    expect(restored).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+      environment: {
+        status: "active",
+        name: "Daytona",
+        description: "Operator description",
+        config: { provider: "daytona", target: "operator" },
+      },
+    });
+    const [reactivatedBinding] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(reactivatedBinding?.defaultsJson).toMatchObject({
+      description: "Managed stock",
+      status: "active",
+    });
+    expect(reactivatedBinding?.stockVersion).toBe("v1");
+    expect(restored.stockHash).not.toBe(reactivatedBinding?.stockHash);
+  });
+
+  it("preserves an operator-archived managed row", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    await db
+      .update(environments)
+      .set({ status: "archived" })
+      .where(eq(environments.id, created.environment.id));
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(reconciled).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+      environment: { status: "archived" },
+    });
+  });
+
   it("preserves an existing unmanaged sandbox row holding the desired name", async () => {
     const companyId = await seedCompany();
     const handMade = await svc.create({
