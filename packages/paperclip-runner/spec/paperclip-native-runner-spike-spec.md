@@ -3377,6 +3377,12 @@ Issue status is a server-owned projection of validated work facts, not an agent 
 | Agent/model | Work-report authority | Reported disposition, completion claim, evidence, remaining work, blocker and attention candidates | Authoritative issue transition, governed approval, cross-company routing |
 | Status arbiter | Organizational status authority | Legal issue transition/no-op and atomic side effects | Rewriting the original agent report or fabricating evidence |
 
+The approved operator-facing presentation of these four authorities — the
+layered outcome vocabulary, components, desktop board flows, reason-code copy,
+and token mapping — is maintained in
+[`paperclip-runner-status-attention-ux.md`](./paperclip-runner-status-attention-ux.md)
+(PAP-16712) and is normative for Phase 4 UI work.
+
 The arbiter consumes a durable assessment rather than raw prose:
 
 ```ts
@@ -4178,7 +4184,7 @@ Implementation-ready file map:
 | Heartbeat integration | In `server/src/services/heartbeat.ts`, replace the native-mode exit-code outcome branch and the later sequence of independent issue liveness handlers with the coordinator. Keep usage/cost/session/runtime diagnostics and the legacy branch intact. Workspace finalization completes before native run success and arbitration. |
 | Routes/OpenAPI | Add company-authorized read routes in `server/src/routes/issues.ts` and `server/src/routes/agents.ts`; document them in `server/src/routes/openapi.ts`. Native ingestion stays on the runner transport/internal service boundary. |
 | UI API | Add read types/fetchers in `ui/src/api/issues.ts` and `ui/src/api/heartbeats.ts`; invalidate issue, run, assessment, and decision queries from the existing live-update provider. |
-| UI surfaces | Phase 4 renders run outcome separately from issue status, the agent claim separately from the arbiter decision, reason/evidence classification, supersession history, finalization failure, and the concrete current liveness owner/path. This phase supplies data contracts only; it does not pre-empt the approved UX task. |
+| UI surfaces | Phase 4 renders run outcome separately from issue status, the agent claim separately from the arbiter decision, reason/evidence classification, supersession history, finalization failure, and the concrete current liveness owner/path. This phase supplies data contracts only; the approved operator UX for these surfaces is [`paperclip-runner-status-attention-ux.md`](./paperclip-runner-status-attention-ux.md), and the read models above MUST carry every field that design renders (turn/run/claim/decision layers, criterion assessments, side-effect links, attention owner/authority/scope/attempts/expiry, resume consequence, supersession chain). |
 | CLI/MCP | Expose read-only finalization/decision inspection if operator parity requires it. Do not expose status-decision creation or arbitrary replay inputs. |
 
 Migration and rollout sequence:
