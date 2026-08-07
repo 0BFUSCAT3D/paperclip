@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod phase1;
+
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 

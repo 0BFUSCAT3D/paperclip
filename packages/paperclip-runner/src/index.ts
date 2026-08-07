@@ -4,4 +4,8 @@ export * from "./contracts/native-session-backend.js";
 export * from "./contracts/types.js";
 export * from "./mock-core/mock-control-plane-adapter.js";
 export * from "./protocol/phase0-fixture.js";
+export * from "./protocol/phase1-contract.js";
+export * from "./protocol/phase1-loader.js";
+export * from "./reducer/session-reducer.js";
 export * from "./tracer/phase0-runner.js";
+export * from "./tracer/phase1-replay.js";
