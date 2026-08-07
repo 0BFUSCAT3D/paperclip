@@ -14,14 +14,15 @@ Only Phase 0 and Phase 1 implementation issues may be created initially. After b
 2. **Standalone first:** new runtime behavior, documentation, tutorials, examples, journals, fixtures, and devtools live under `packages/paperclip-runner/`. The default development and test path uses a mock Paperclip core adapter.
 3. **Core is a port, not a dependency:** package code depends on a small `ControlPlanePort`/`NativeSessionBackend` contract. Mock implementations own tests and tutorials. Paperclip-specific integration implements that port later.
 4. **No hidden control-plane coupling:** standalone tests must not import `server/`, `ui/`, or production database modules. Contract tests may consume shared generated schemas or fixtures through explicit package exports.
-5. **Tracer bullet in every phase:** each phase ends with a useful executable path, even if it is intentionally narrow.
-6. **Evidence in every phase:** record the exact commands run, versions used, results, known gaps, and links to artifacts/screenshots.
-7. **Documentation in every phase:** add reference documentation plus a hand-run tutorial. Add each tutorial to a Native Runner tutorial index and to a cumulative end-to-end tutorial.
-8. **OKF engineering journal:** maintain a Google Open Knowledge Format journal using current OKF v0.2 conventions: Markdown files, YAML frontmatter, typed entries, timestamps, links, and index pages. Add a journal usage guide before implementation begins.
-9. **Human checkpoint in every phase:** the board/user can run the tutorial and accept or request changes before the next dependent phase starts.
-10. **Commit by phase:** create small, reviewable commits during each phase. Each phase ends with a named checkpoint commit after QA and human acceptance.
-11. **No invented UI primitives:** evaluate and selectively adapt shadcn/ui and Vercel AI Elements components. Keep Paperclip design tokens and accessibility requirements authoritative.
-12. **Production integration is additive:** legacy adapters and existing run finalization remain unchanged unless the separate integration phase explicitly proves a minimal feature-flagged bridge.
+5. **Rust production boundary:** the production runner direction is Rust. TypeScript may provide control-plane/client contracts and a test oracle, but each runner phase must establish or extend the Rust workspace and prove shared-fixture parity rather than deferring Rust implicitly.
+6. **Tracer bullet in every phase:** each phase ends with a useful executable path, even if it is intentionally narrow.
+7. **Evidence in every phase:** record the exact commands run, versions used, results, known gaps, and links to artifacts/screenshots.
+8. **Documentation in every phase:** add reference documentation plus a hand-run tutorial. Add each tutorial to a Native Runner tutorial index and to a cumulative end-to-end tutorial.
+9. **OKF engineering journal:** maintain a Google Open Knowledge Format journal using current OKF v0.2 conventions: Markdown files, YAML frontmatter, typed entries, timestamps, links, and index pages. Add a journal usage guide before implementation begins.
+10. **Human checkpoint in every phase:** the board/user can run the tutorial and accept or request changes before the next dependent phase starts.
+11. **Commit by phase:** create small, reviewable commits during each phase. Each phase ends with a named checkpoint commit after QA and human acceptance.
+12. **No invented UI primitives:** evaluate and selectively adapt shadcn/ui and Vercel AI Elements components. Keep Paperclip design tokens and accessibility requirements authoritative.
+13. **Production integration is additive:** legacy adapters and existing run finalization remain unchanged unless the separate integration phase explicitly proves a minimal feature-flagged bridge.
 
 ## Proposed package and documentation boundaries
 
@@ -29,7 +30,7 @@ Only Phase 0 and Phase 1 implementation issues may be created initially. After b
 packages/paperclip-runner/
   protocol/                 language-neutral schemas and fixtures
   sdk/typescript/           TypeScript protocol/reducer/client SDK
-  runner/                   deterministic runner daemon and local state
+  runner/                   Rust workspace; runner-core first, daemon/local state later
   drivers/api/              harness driver contract
   drivers/fake/             scripted deterministic harness
   drivers/codex/            reference Codex app-server driver
@@ -91,15 +92,17 @@ Every phase child issue uses the same completion checklist:
 **Deliverables:**
 
 - package workspace skeleton and build/test commands;
+- Rust Cargo workspace with the initial `runner-core` crate and default Phase 0 tracer;
 - architecture boundary document with forbidden imports and dependency direction;
 - initial `ControlPlanePort`, `HarnessDriver`, and `NativeSessionBackend` interface sketches;
 - mock core adapter shell;
 - tutorial index and cumulative tutorial shell;
 - OKF v0.2 bundle, journal entry template, index pages, and “how to use the journal” instructions;
-- CI/static boundary check that rejects imports from production core packages;
+- CI/static boundary check that rejects TypeScript imports and Cargo path dependencies from production core packages;
+- shared-fixture parity check between the Rust tracer and TypeScript reference;
 - a dated compatibility note for shadcn/ui and AI Elements.
 
-**Tests/evidence:** package build, fixture validation smoke, forbidden-import test, docs link check, OKF frontmatter/index validation.
+**Tests/evidence:** Rust and TypeScript package builds, shared-fixture validation smoke, byte-identical tracer output, forbidden-import/path-dependency tests, docs link check, and OKF frontmatter/index validation.
 
 **Owners/review:** CodexCoder implementation; DevRel documentation review; SecurityEngineer boundary/secret review; CTO architecture approval; QA tutorial execution.
 

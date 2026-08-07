@@ -16,13 +16,22 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run && node --test scripts/check-forbidden-imports.test.mjs",
+    "build": "pnpm run build:typescript && pnpm run build:rust",
+    "build:typescript": "tsc -p tsconfig.json",
+    "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace",
+    "typecheck": "pnpm run typecheck:typescript && pnpm run typecheck:rust",
+    "typecheck:typescript": "tsc -p tsconfig.json --noEmit",
+    "typecheck:rust": "cargo check --manifest-path runner/Cargo.toml --locked --workspace",
+    "test": "pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs",
+    "test:typescript": "vitest run",
+    "test:rust": "cargo test --manifest-path runner/Cargo.toml --locked --workspace",
     "check:forbidden-imports": "node scripts/check-forbidden-imports.mjs",
+    "check:phase0-parity": "vitest run src/tracer/phase0-runner.test.ts && cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core runs_the_mock_core_path_with_stable_output && node -e \"process.stdout.write('Rust and TypeScript Phase 0 tracer output matches the shared golden fixture.\\n')\"",
     "docs:validate": "node scripts/validate-doc-links.mjs && node scripts/validate-okf.mjs",
-    "trace:phase0": "pnpm run build && node dist/tracer/phase0.js",
-    "verify": "pnpm run build && pnpm run test && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run trace:phase0"
+    "trace:phase0": "pnpm run trace:phase0:rust",
+    "trace:phase0:rust": "pnpm run build:rust && cargo run --quiet --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin phase0-tracer",
+    "trace:phase0:typescript": "pnpm run build:typescript && node dist/tracer/phase0.js",
+    "verify": "pnpm run build && pnpm run test && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run trace:phase0"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

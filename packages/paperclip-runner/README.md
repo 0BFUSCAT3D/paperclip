@@ -1,9 +1,11 @@
 # Paperclip Native Runner
 
 This workspace is the standalone development boundary for Paperclip's native
-runner protocol, harness drivers, and normalized session backends. Phase 0
-contains a deterministic tracer and an in-memory mock control plane. It does not
-import or start Paperclip's server, UI, CLI, or production database packages.
+runner protocol, harness drivers, and normalized session backends. The
+production runner direction is Rust; `runner/` is its Cargo workspace. The
+TypeScript surface remains a control-plane/client reference implementation.
+Phase 0 runs both implementations against one language-neutral fixture without
+importing or starting Paperclip's server, UI, CLI, or production database.
 
 ## Phase 0 quick start
 
@@ -13,6 +15,9 @@ From the repository root:
 pnpm install --filter @paperclipai/paperclip-runner --lockfile=false --offline --ignore-scripts --dev
 pnpm --filter @paperclipai/paperclip-runner verify
 ```
+
+The verification command requires a stable Rust toolchain with `cargo` on
+`PATH`, in addition to Node.js 20+ and pnpm 9+.
 
 The tracer's final line is stable:
 
@@ -30,12 +35,14 @@ pnpm --filter @paperclipai/paperclip-runner trace:phase0
 
 | Command | Purpose |
 |---|---|
-| `build` | Compile the TypeScript public surface to `dist/`. |
-| `typecheck` | Check the public surface without emitting files. |
-| `test` | Run fixture, mock-contract, stable-output, and negative-boundary tests. |
-| `check:forbidden-imports` | Reject imports or dependencies that cross into Paperclip core. |
+| `build` | Compile the TypeScript public surface and Rust workspace. |
+| `typecheck` | Check both language surfaces without a release build. |
+| `test` | Run Rust/TypeScript fixture, mock-contract, stable-output, and negative-boundary tests. |
+| `check:forbidden-imports` | Reject TypeScript imports and Cargo path dependencies that cross into Paperclip core. |
+| `check:phase0-parity` | Require byte-for-byte equivalent Rust and TypeScript tracer output. |
 | `docs:validate` | Validate local documentation links and the OKF v0.2 bundle. |
-| `trace:phase0` | Build, start the mock core, replay the fixture, print the result, and exit. |
+| `trace:phase0` | Run the Rust mock-core tracer, print the stable result, and exit. |
+| `trace:phase0:typescript` | Run the TypeScript reference tracer directly. |
 | `verify` | Run the complete Phase 0 acceptance sequence. |
 
 ## Navigate
@@ -49,6 +56,7 @@ pnpm --filter @paperclipai/paperclip-runner trace:phase0
 - [Implementation plan](spec/paperclip-native-runner-implementation-plan.md)
 - [Normative spike specification](spec/paperclip-native-runner-spike-spec.md)
 
-Phase 0 intentionally does not include a daemon, network transport, browser
-runtime, production Paperclip adapter, or real model harness. Those layers remain
-behind later phase checkpoints in the implementation plan.
+Phase 0 establishes `runner-core`, not the `paperclip-runnerd` daemon. Network
+transport, process supervision, browser runtime, production Paperclip adapter,
+and real model harnesses remain behind later phase checkpoints in the
+implementation plan.

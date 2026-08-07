@@ -13,11 +13,25 @@ test("the package passes its standalone boundary", async () => {
 test("a negative fixture proves that a core import is rejected", async () => {
   const violations = await checkForbiddenImports({
     scanRoots: ["test-fixtures/forbidden-import"],
+    cargoRoots: [],
     checkManifest: false,
   });
 
   assert.equal(violations.length, 1);
   assert.equal(violations[0].specifier, "../../../../server/src/services/heartbeat.js");
   assert.match(violations[0].reason, /may not escape/);
+  assert.ok(violations[0].file.startsWith(defaultPackageRoot));
+});
+
+test("a negative Cargo fixture proves that a core path dependency is rejected", async () => {
+  const violations = await checkForbiddenImports({
+    scanRoots: [],
+    cargoRoots: ["test-fixtures/forbidden-cargo-path"],
+    checkManifest: false,
+  });
+
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].specifier, "../../../../server");
+  assert.match(violations[0].reason, /Cargo path dependencies may not escape/);
   assert.ok(violations[0].file.startsWith(defaultPackageRoot));
 });

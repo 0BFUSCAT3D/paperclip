@@ -2,11 +2,13 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SOURCE_EXTENSIONS = new Set([".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"]);
+const SOURCE_EXTENSIONS = new Set([".cjs", ".js", ".jsx", ".mjs", ".rs", ".ts", ".tsx"]);
 const IMPORT_PATTERNS = [
   /\b(?:import|export)\s+(?:type\s+)?(?:[^"'`;]{0,500}?\s+from\s+)?["']([^"']+)["']/g,
   /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
   /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+  /\b(?:include|include_str|include_bytes)!\s*\(\s*["']([^"']+)["']\s*\)/g,
+  /#\[path\s*=\s*["']([^"']+)["']\]/g,
 ];
 
 const libraryDirectory = dirname(fileURLToPath(import.meta.url));
@@ -94,9 +96,53 @@ async function manifestViolations(packageRoot) {
     }));
 }
 
+async function cargoManifestViolations(packageRoot, cargoRoots) {
+  const violations = [];
+  const manifests = [];
+
+  async function collectCargoManifests(target) {
+    const entries = await readdir(target, { withFileTypes: true });
+    for (const entry of entries) {
+      if (["target", "node_modules", ".git"].includes(entry.name)) {
+        continue;
+      }
+      const path = resolve(target, entry.name);
+      if (entry.isDirectory()) {
+        await collectCargoManifests(path);
+      } else if (entry.isFile() && entry.name === "Cargo.toml") {
+        manifests.push(path);
+      }
+    }
+  }
+
+  for (const root of cargoRoots) {
+    await collectCargoManifests(resolve(packageRoot, root));
+  }
+
+  for (const manifest of manifests.sort()) {
+    const source = await readFile(manifest, "utf8");
+    const pathPattern = /\bpath\s*=\s*["']([^"']+)["']/g;
+    for (let match = pathPattern.exec(source); match !== null; match = pathPattern.exec(source)) {
+      const dependencyPath = resolve(dirname(manifest), match[1]);
+      if (isInside(packageRoot, dependencyPath)) {
+        continue;
+      }
+      violations.push({
+        file: manifest,
+        line: source.slice(0, match.index).split("\n").length,
+        specifier: match[1],
+        reason: "Cargo path dependencies may not escape packages/paperclip-runner",
+      });
+    }
+  }
+
+  return violations;
+}
+
 export async function checkForbiddenImports({
   packageRoot = defaultPackageRoot,
-  scanRoots = ["src", "scripts"],
+  scanRoots = ["src", "scripts", "runner"],
+  cargoRoots = ["runner"],
   checkManifest = true,
 } = {}) {
   const violations = [];
@@ -124,6 +170,7 @@ export async function checkForbiddenImports({
   if (checkManifest) {
     violations.push(...(await manifestViolations(packageRoot)));
   }
+  violations.push(...(await cargoManifestViolations(packageRoot, cargoRoots)));
   return violations;
 }
 

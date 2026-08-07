@@ -2,16 +2,17 @@
 
 ## Outcome
 
-You will install only the runner workspace's declared tools, compile it, run its
-tests and static checks, start the in-memory mock core, validate the minimal
-fixture, print a deterministic result, and return to the shell. Paperclip itself
-does not start.
+You will install only the runner workspace's declared Node tools, compile its
+Rust and TypeScript surfaces, run their tests and static checks, start the Rust
+in-memory mock core, validate the minimal shared fixture, print a deterministic
+result, and return to the shell. Paperclip itself does not start.
 
 ## Prerequisites
 
 - repository checkout on the assigned runner branch;
 - Node.js 20 or newer;
 - pnpm 9 or newer;
+- stable Rust with `cargo` on `PATH`;
 - commands run from the repository root.
 
 ## 1. Install the package tools
@@ -31,8 +32,8 @@ root lockfile. `--offline` proves Phase 0 needs no newly downloaded package.
 pnpm --filter @paperclipai/paperclip-runner build
 ```
 
-Expected result: TypeScript exits with status 0 and writes package-local `dist/`
-files.
+Expected result: TypeScript writes package-local `dist/` files and Cargo builds
+the `paperclip-runner-core` crate under `runner/target/`.
 
 ## 3. Run the behavior and boundary tests
 
@@ -41,9 +42,9 @@ pnpm --filter @paperclipai/paperclip-runner test
 pnpm --filter @paperclipai/paperclip-runner check:forbidden-imports
 ```
 
-The tests cover fixture validation, the complete mock `ControlPlanePort` path,
-stable output, and a negative core-import fixture. The standalone boundary check
-must print `Standalone boundary check passed.`
+The tests cover fixture validation, complete Rust and TypeScript mock-core paths,
+stable output, and negative TypeScript/Cargo core-dependency fixtures. The
+standalone boundary check must print `Standalone boundary check passed.`
 
 ## 4. Validate the documentation and OKF bundle
 
@@ -68,7 +69,16 @@ Expected final line:
 ```
 
 The command exits successfully after the mock core stops. No service remains
-running.
+
+The default tracer is Rust. Prove that the TypeScript reference produces the
+same bytes with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner check:phase0-parity
+```
+
+Expected result: `Rust and TypeScript Phase 0 tracer output matches the shared
+golden fixture.`
 
 ## 6. Inspect and query the journal
 
