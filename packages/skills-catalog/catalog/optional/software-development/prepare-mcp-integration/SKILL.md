@@ -134,15 +134,14 @@ open a second PR for the same connection accidentally.
    - known limitations, prerequisites, and deferred questions.
 2. Create a Paperclip `request_confirmation` interaction targeted at that issue
    document's latest revision. Use a revision-specific idempotency key and a
-   `wake_assignee` continuation policy so acceptance resumes implementation.
-   State in the interaction that a rejection must include a normal issue
-   comment with revision notes; rejection alone does not wake the assignee.
+   `wake_assignee` continuation policy so either acceptance or rejection wakes
+   the assignee. Ask the reviewer to include revision notes when rejecting.
 3. Put the issue in `in_review` and stop. Do not prepare App worktrees or code
    while the interaction is pending.
-4. On rejection, resume only after the reviewer adds the normal issue comment
-   that wakes the assignee. Revise Phase A only and present a new revision. If
-   the research PR head, gate document, or connection set changes,
-   withdraw/supersede the old confirmation and request a fresh one.
+4. On rejection, use the interaction response and any revision notes to revise
+   Phase A only and present a new revision. If the research PR head, gate
+   document, or connection set changes, withdraw/supersede the old confirmation
+   and request a fresh one.
 5. On acceptance, verify that the response still targets the latest gate
    revision and recorded PR head. Implement only the accepted connections.
 
