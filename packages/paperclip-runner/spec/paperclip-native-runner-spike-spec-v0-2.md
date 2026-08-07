@@ -1,7 +1,7 @@
 # Paperclip Native Runner Mode
 ## Minimal spike specification and production-compatible design
 
-**Document status:** Draft v0.3<br>
+**Document status:** Draft v0.4<br>
 **Date:** 2026-08-07<br>
 **Audience:** Paperclip control-plane, runtime, sandbox, adapter, and UI workers<br>
 **Primary goal:** Prove that Paperclip can deliver a Codex-TUI-quality live agent experience without loading the Paperclip skill into the model and without making the model operate Paperclip's control-plane API.
@@ -51,8 +51,11 @@ The essential architectural choices are:
 11. **The durable control record is authoritative.** PostgreSQL owns normalized lifecycle, control, audit, result, and replay metadata; it does not need every token delta, terminal byte, audio frame, or large artifact body.
 12. **MCP remains a separate tool plane.** Paperclip resolves run-scoped MCP bindings and the runner injects them through capable harness drivers; PRP does not tunnel general MCP traffic.
 13. **Native sessions have pluggable backends.** The first backend uses `paperclip-runnerd`; hosted agent platforms can implement the same normalized contract without pretending to be Paperclip-managed sandboxes.
-14. **Durable control events and transient media use different paths.** Channel adapters consume the normalized event model, while low-latency audio or media can use an authenticated side channel bound to the same identities.
-15. **The protocol is language-neutral and independently testable.** JSON Schema, fixtures, and conformance behavior are authoritative for Rust, TypeScript, and future implementations.
+14. **Human-facing channel adapters terminate at Paperclip core.** Slack, email, voice, browser, webhook, and similar ingress must authenticate, authorize, bind, persist, and audit through Paperclip before normalized input reaches a runner or hosted backend.
+15. **Durable control events and transient media use different paths.** Core-owned channel adapters consume the normalized event model, while low-latency audio or media can use an authenticated side channel bound to the same identities without bypassing Paperclip authority.
+16. **Agent-reported dispositions are advisory inputs, not status mutations.** Paperclip validates evidence, blockers, reviewer paths, continuations, and transition legality before changing an issue status.
+17. **Credential delivery has two explicit local modes plus provider-native binding.** Paperclip may materialize narrowly scoped environment values for compatibility, provision a short-lived broker/proxy session so the workload can call approved services without possessing long-term credentials, or bind identity/secrets through a managed runtime's control plane.
+18. **The protocol is language-neutral and independently testable.** JSON Schema, fixtures, and conformance behavior are authoritative for Rust, TypeScript, and future implementations.
 
 The minimal vertical slice is:
 
@@ -492,13 +495,54 @@ The browser subscription is a logical per-run stream. One company-scoped physica
 
 ### 5.5 Interaction channels and transient media
 
-A channel adapter connects a human or external system to a normalized Paperclip session. Initial and future examples include the browser, voice gateways, Slack, Discord, email, and CopilotKit-style channel adapters.
+A channel adapter connects a human or external system to a normalized Paperclip session. Initial and future examples include the browser, voice gateways, Slack, Discord, email, webhooks, and CopilotKit-style channel adapters.
 
-Channel adapters send normalized input and consume the durable event stream for control state, transcripts, tool events, runtime requests, approvals, results, and reconnect behavior. Audio frames and other latency-sensitive transient media may use a separate authenticated media channel bound to the same company, run, session, and turn identities.
+These adapters belong on the Paperclip core/web side of the native-session boundary, not inside `paperclip-runnerd`. They own external identity verification, company and user authorization, rate limits, channel-to-session routing, durable input acceptance, approval presentation, audit attribution, and replay. After those checks, they send normalized input through `NativeSessionRuntime` and consume the same durable event stream used by the browser.
+
+No Slack bot, email handler, voice gateway, or provider-owned channel may send a control command directly to a runner or harness. That shortcut would bypass Paperclip's task state, governance, identity, and audit model. A hosted runtime such as Cloudflare Agents may supply useful channel primitives, but a Paperclip integration must terminate or federate those primitives through an authenticated core-owned gateway before they can affect a Paperclip session.
+
+This ownership choice does not require slow polling. The core channel gateway may keep a company-scoped WebSocket, SSE, or provider callback connection, append accepted input once, and fan out normalized events through the live event infrastructure. Audio frames and other latency-sensitive transient media may use a separate authenticated media channel bound to the same company, user, run, session, and turn identities.
 
 The database stores durable media metadata, transcripts, consent records, important markers, and artifact references. It does not need to store every audio frame as a normal run event. Paperclip remains authoritative for authorization, session binding, interruption, audit, and terminal state.
 
-### 5.6 MCP injection boundary
+### 5.6 Credential provisioning and broker boundary
+
+The existing design addresses secret ownership but does not yet define a complete runtime credential-delivery contract. Native mode needs an explicit `CredentialPlan` created by Paperclip core and materialized by the trusted environment/runner boundary. PRP carries only opaque references, policy, and short-lived capabilities; it never emits long-term secret values as normal commands or events.
+
+```ts
+interface CredentialPlan {
+  schema: "paperclip.credential-plan.v1";
+  bindings: Array<
+    | {
+        mode: "environment";
+        bindingRef: string;
+        targetName: string;
+        exposure: "harness_process" | "approved_child_process";
+      }
+    | {
+        mode: "http_broker";
+        brokerSessionRef: string;
+        proxyEnvRef: string;
+        trustBundleRef?: string;
+        allowedServiceIds: string[];
+      }
+    | {
+        mode: "provider_native";
+        providerBindingRef: string;
+      }
+  >;
+}
+```
+
+The three modes have different boundaries:
+
+1. **Environment materialization** is the compatibility path for CLIs and SDKs that require a real environment value. Paperclip resolves the versioned binding at launch, injects it only into the approved process scope, redacts it from logs/events, and does not persist it in PRP payloads or runner outboxes. This mode reduces accidental spread but does not protect a secret from a fully compromised harness process.
+2. **HTTP credential brokering** is the preferred path for supported outbound APIs. Paperclip creates a short-lived, run-scoped broker session and supplies proxy settings, a broker capability, optional trust material, and placeholder values. The broker stays outside the untrusted workload, enforces destination/service policy, attaches the real credential on the wire, audits use, and can revoke access without rotating the underlying secret. This is the architectural pattern demonstrated by Infisical Agent Vault.
+3. **Provider-native identity or secret binding** is used when AWS AgentCore, Google Vertex AI Agent Engine, Microsoft Foundry, Cloudflare, or another managed runtime owns process launch and network identity. Paperclip configures an opaque provider binding through the provider control plane and records provenance; it does not pretend the secret was injected by `paperclip-runnerd`.
+
+The broker contract must declare supported protocols and failure behavior. An HTTP/HTTPS proxy does not automatically cover raw database protocols, SSH, custom sockets, certificate-pinned clients, clients that ignore proxy variables, or hostile code that can bypass the intended egress route. Strong mode therefore combines a separate broker host, short-lived session identity, destination allowlists, network egress enforcement, audit, and fail-closed launch when required proxy configuration cannot be established.
+
+### 5.7 MCP injection boundary
 
 MCP is separate from PRP and the harness driver protocol. Paperclip core owns the MCP gateway, catalog, authentication, authorization, policy, credentials, audit rules, and proxy behavior.
 
@@ -506,7 +550,7 @@ Paperclip passes resolved, run-scoped MCP bindings to the native session backend
 
 The runner may expose loopback transport or start an approved workspace-local MCP process when a harness requires it, but it does not become the authority for MCP permissions or long-term secrets. General MCP traffic must not be tunneled through PRP event messages.
 
-### 5.7 Standalone runner workspace
+### 5.8 Standalone runner workspace
 
 The `packages/paperclip-runner` workspace must support protocol and driver development without booting the full Paperclip product. It includes:
 
@@ -633,14 +677,20 @@ The first spike needs a fake remote backend that passes conformance tests. It do
 
 #### 7.2.1 Initial hosted-provider targets
 
-As of 2026-08-07, the first connector investigations should target providers with documented, automation-safe session APIs rather than every product that has a cloud UI:
+As of 2026-08-07, qualification is sorted by Paperclip priority, then by platform name within a tier. It deliberately includes both general managed agent runtimes and opinionated coding-agent services because they exercise different parts of `NativeSessionBackend`:
 
-| Provider | Documented create primitive | Observe primitive | Follow-up/control | Output | Initial disposition |
-| --- | --- | --- | --- | --- | --- |
-| Cursor Cloud Agents | `POST /v0/agents` with repository/ref, prompt, model, images, target, and optional webhook | agent status and conversation reads; webhook support | follow-up and stop operations | branch/PR target and conversation | **First implementation candidate** because it exposes the closest session-shaped API, follow-ups, stop, status, conversation, and webhook configuration. |
-| Devin v3 | create organization session with prompt and optional user attribution | session detail plus cursor-paginated messages carrying stable `event_id` values | send message; terminate/archive/delete according to RBAC | session URL, messages, status, PR metadata | **First implementation candidate** because it has explicit organization scoping, service-user RBAC, stable message event IDs, cursor pagination, and lifecycle controls. |
-| Google Jules v1alpha | create session from a connected source, branch, prompt, plan-approval mode, and automation mode | poll session and cursor/page through activities | approve plan and send message | pull-request outputs and activities | **Conformance/experimental candidate** because the API is alpha and currently documents polling rather than push delivery or cancellation. |
-| GitHub Copilot cloud agent tasks | `POST /agents/repos/{owner}/{repo}/tasks` or assign Copilot to an issue | list/get task with documented task states | no general follow-up or cancel primitive documented in the task API reviewed for this revision | GitHub task/issue/PR state | **Output-oriented candidate**, not the reference interactive backend. It is useful for asynchronous issue-to-PR delegation but currently exposes less session control. |
+| Order | Provider/platform | Documented runtime boundary | Invoke/observe/control surface | Initial disposition |
+| --- | --- | --- | --- | --- |
+| 0 | **AWS Bedrock AgentCore Runtime** | Provider-managed, versioned container runtime with isolated sessions, workload identity, network configuration, and separate control/data planes | `CreateAgentRuntime`/endpoint APIs; `InvokeAgentRuntime`; HTTP, SSE, persistent WebSocket, MCP, A2A, and AG-UI service contracts; asynchronous/long-running processing and session IDs | **Top qualification priority and preferred first managed-runtime connector.** Its explicit runtime contract, bidirectional streaming, identity, protocol, version, endpoint, and session boundaries are the strongest reference for shaping Paperclip's provider backend and credential model. |
+| 1 | **Cloudflare Agents** | Durable Object-backed agent instances with durable identity, local SQLite state, WebSockets, scheduling, queues, and recoverable fibers | Worker deployment plus `routeAgentRequest`; HTTP/SSE, WebSocket, callable methods, state sync, and application-defined control methods | **Managed-runtime qualification target.** Excellent for real-time and durable execution experiments, but the connector must define a Paperclip-specific control API because the SDK is an application framework/runtime rather than a uniform hosted-task API. Its first-party Slack/email/voice/webhook support does not change the rule that Paperclip channel ingress remains core-owned. |
+| 1 | **Google Vertex AI Agent Engine** | Managed runtime, exposed under the backwards-compatible `ReasoningEngine` resource, with deploy/scale, sessions, observability, and Google Cloud identity/security integration | deployed `query`, `stream_query`, custom operations, bidirectional streaming for supported agents, and session management APIs | **Managed-runtime qualification target.** Useful for testing custom operation discovery, session reconciliation, streaming, provider-native Secret Manager bindings, and the distinction between a deployed runtime resource and a Paperclip run. |
+| 1 | **Microsoft Agent Framework + Foundry Hosted Agents** | Agent Framework is a framework/hosting library; Foundry Hosted Agents is the Microsoft-managed container runtime that owns scale, session persistence, identity, and lifecycle | OpenAI-compatible `/responses`, generic `/invocations`, A2A, AG-UI, durable Azure Functions/self-hosted extensions, and Foundry-managed sessions | **Managed-runtime qualification target, with the boundary kept explicit.** Self-hosted Agent Framework belongs under a local/provider driver; Foundry Hosted Agents belongs under `RemoteAgentBackend`. Do not treat the framework package itself as a cloud runtime. |
+| 2 | **Cursor Cloud Agents** | Opinionated provider-managed coding environment/session | `POST /v0/agents`; status and conversation reads; webhooks; follow-up and stop operations | **First coding-agent implementation candidate** because it exposes a session-shaped API, follow-ups, stop, status, conversation, and webhook configuration. |
+| 2 | **Devin v3** | Organization-scoped provider-managed coding session | create session; session detail; cursor-paginated messages with stable `event_id`; send message; terminate/archive/delete according to RBAC | **First coding-agent implementation candidate** because it has explicit organization scoping, service-user RBAC, stable message event IDs, cursor pagination, and lifecycle controls. |
+| 3 | **GitHub Copilot cloud agent tasks** | Repository task delegated to GitHub-managed execution | `POST /agents/repos/{owner}/{repo}/tasks` or issue assignment; list/get documented task states; no general follow-up/cancel primitive in the reviewed task API | **Output-oriented candidate**, not the reference interactive backend. It is useful for asynchronous issue-to-PR delegation but exposes less session control. |
+| 3 | **Google Jules v1alpha** | Connected-source coding session in a provider-managed environment | create session; poll and page activities; approve plan; send message; pull-request output | **Conformance/experimental candidate** because the API is alpha and currently documents polling rather than push delivery or cancellation. |
+
+The first production investigation should therefore be AWS AgentCore, even if Cursor or Devin remains the fastest first coding-agent connector. AgentCore should shape the managed-runtime conformance profile: create/version endpoint, invoke/stream, stable session identity, reconcile after Paperclip restart, provider-native identity and secrets, async work, cancellation semantics, and explicit protocol capabilities.
 
 Products are not initial `RemoteAgentBackend` targets when they lack a public hosted-task API even if they have a cloud UI. In particular, the Codex SDK and Claude Agent SDK are harness/runtime integrations that Paperclip can run in an environment it controls; they must not be described as hosted-provider connectors unless a separate public cloud-task API supplies create, observe, control, and reconciliation primitives.
 
@@ -1026,6 +1076,7 @@ Promote runner profiles to normalized tables only when at least one of these bec
 - reporting resource and phase metrics;
 - enforcing command preconditions;
 - keeping Paperclip credentials out of child processes;
+- materializing approved `CredentialPlan` bindings without writing secret values to protocol events or the local outbox;
 - validating working directory boundaries;
 - injecting Paperclip-resolved MCP bindings through drivers that advertise the required capability;
 - shutting down or draining on lease revocation.
@@ -1041,6 +1092,7 @@ It is not responsible for:
 - deciding that prose means success;
 - autonomous retry policy across Paperclip attempts.
 - MCP catalog, gateway policy, long-term credentials, or authorization decisions.
+- credential-broker policy, long-term secret storage, or provider identity authorization.
 
 ### 9.2 Language and packaging
 
@@ -2174,6 +2226,8 @@ paperclip.ask({
 
 The tools are implemented by the runner or harness client and translated into typed events. They do not directly mutate issue state.
 
+`paperclip.ask({ blocking: true })` means that the current turn cannot continue without an answer. It creates a durable attention request; it does not by itself mean that the whole issue has a valid first-class blocker.
+
 ---
 
 ## 18. Structured result and terminal semantics
@@ -2246,9 +2300,49 @@ Invalid result:
 - allow a bounded correction turn when policy permits;
 - otherwise finish `needs_review`.
 
-### 18.3 Mapping to Paperclip
+### 18.3 Status authority and human-needed signaling
 
-The native runtime returns the structured result to the finalization pipeline. Native mode requires the additive finalizer contract in section 18.4; it must not pass a native result through the legacy exit-code-only decision path.
+Issue status is a server-owned projection of validated work facts, not an agent speech act. The runner protocol accepts a **reported disposition** and supporting evidence. A control-plane finalization policy decides the **authoritative issue transition**.
+
+This separation preserves the useful part of agent autonomy—the ability to finish, raise a hand, or name a blocker—without letting an unreliable model arbitrarily move work among `done`, `in_review`, `blocked`, and `in_progress`.
+
+The normalized inputs are:
+
+```ts
+type AgentWorkSignal =
+  | { kind: "completion_candidate"; result: StructuredRunResult }
+  | { kind: "blocker_candidate"; result: StructuredRunResult }
+  | { kind: "human_attention"; request: AttentionRequest }
+  | { kind: "continuation_candidate"; result: StructuredRunResult };
+
+interface AttentionRequest {
+  reason:
+    | "question"
+    | "decision"
+    | "approval"
+    | "credential"
+    | "review"
+    | "external_action";
+  summary: string;
+  ownerHint?: string;
+  blockingCurrentTurn: boolean;
+  choices?: Array<{ key: string; label: string }>;
+}
+```
+
+The status arbiter applies these rules:
+
+- `done` requires a valid completion result, required verification/evidence, no unresolved governed action, and no declared live continuation.
+- `blocked` requires a first-class blocker that prevents productive progress, plus a concrete unblock owner and action. A question, uncertainty, failed attempt, or desire for review is not enough. If another productive track can continue, Paperclip records the attention request and keeps or schedules that work instead of marking the whole issue blocked.
+- `in_review` requires a real review path created atomically with the transition: a named reviewer, approval, issue interaction, delegated QA/review issue, or monitor that will wake the assignee. A generic “human should look” result is an attention request, not a valid review status.
+- `in_progress` remains correct when a live continuation, retry, delegated sub-issue, or awaited interaction wake is registered. Evidence or comments alone are not a continuation path.
+- reopening or moving an issue out of `done`, `in_review`, or `blocked` requires an authorized human action, accepted interaction, explicit resume event, dependency resolution, or newly scheduled continuation. A model cannot silently rewrite the prior authoritative status.
+
+The arbiter records both the agent's proposed disposition and its final decision so operators can inspect disagreements. Policy may require board confirmation for high-risk completion or status changes without preventing the agent from reporting that it believes its work is complete.
+
+### 18.4 Mapping to Paperclip
+
+The native runtime returns the structured result to the finalization pipeline. Native mode requires the additive finalizer contract in section 18.5; it must not pass a native result through the legacy exit-code-only decision path.
 
 The finalizer:
 
@@ -2260,13 +2354,14 @@ The finalizer:
 - releases checkout/lock according to policy;
 - finalizes workspace and environment.
 
-### 18.4 Complete terminal conversion contract
+### 18.5 Complete terminal conversion contract
 
-The three vocabularies describe different layers. They are not independent outcome sets:
+Four layers participate in finalization. They are not independent outcome sets:
 
-- `StructuredRunResult.disposition` is the accepted work disposition produced by the model or semantic tool;
+- `StructuredRunResult.disposition` is the validated reported work disposition produced by the model or semantic tool, not the authoritative issue status;
 - `NativeExecutionResult.terminalState` is the native runtime lifecycle result;
 - `AdapterExecutionResult` is the legacy heartbeat compatibility record.
+- the status arbiter applies the final legal issue transition and records why it accepted, transformed, or rejected the reported disposition.
 
 `AdapterExecutionResult` needs one additive, typed discriminator before native mode can ship:
 
@@ -2289,9 +2384,9 @@ The native finalizer must use this table:
 
 | Native disposition | Native terminal state | `AdapterExecutionResult` compatibility fields | Finalizer action |
 |---|---|---|---|
-| `done` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`, then apply the legal `done` issue transition. |
-| `blocked` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result and blocker in `resultJson` | Persist the run as `succeeded`. Apply `blocked` only when the blocker payload and unblock owner/action are valid. Otherwise convert to `needs_review`. |
-| `needs_review` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`. Create or bind a real reviewer, approval, interaction, or monitor path, then apply `in_review`. If no review path can be created, keep the issue `in_progress` and record a finalization error. |
+| `done` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`, then ask the status arbiter to apply the legal `done` transition after completion policy passes. |
+| `blocked` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result and blocker in `resultJson` | Persist the run as `succeeded`. The status arbiter applies `blocked` only when the blocker payload and unblock owner/action are valid and productive progress cannot continue. Otherwise it records attention and chooses `in_progress` or `needs_review` according to the available live path. |
+| `needs_review` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`. Create or bind a real reviewer, approval, interaction, delegated review, or monitor path atomically, then let the status arbiter apply `in_review`. If no review path can be created, keep the issue `in_progress` and record a finalization error. |
 | `yielded` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`. Keep the issue `in_progress` and enqueue the declared continuation or delegated follow-up. If no live continuation can be scheduled, convert to `needs_review`. |
 | `failed` | `failed` | `nativeFinalization` carries both values; nonzero driver exit code when available, otherwise `exitCode: 1`; set `errorMessage`, `errorCode`, and error metadata; include the failure disposition in `resultJson` | Persist the run as `failed` and apply the existing retry and recovery policy. Do not directly change the issue to a terminal status. |
 | `cancelled` | `cancelled` | `nativeFinalization` carries both values; `exitCode: null`, `timedOut: false`, optional cancellation diagnostics in `errorCode` and `resultJson` | Persist the run as `cancelled` from `nativeFinalization`, without relying on `errorCode` or the null-exit fallback. Change the issue to `cancelled` only when the cancellation scope explicitly includes the issue; otherwise leave the issue unchanged. |
@@ -2424,8 +2519,12 @@ External tools/content: potentially adversarial
 - Runner connection credential never enters harness environment.
 - Model never receives a Paperclip API credential.
 - Provider-management API keys stay in the control plane.
-- Model-provider credentials should be short-lived, proxy-injected, or narrowly scoped where possible.
-- Tool credentials should be resolved at a policy boundary rather than preloaded broadly.
+- PRP carries credential binding references and short-lived capabilities, never long-term secret values in commands, events, snapshots, or replay buffers.
+- Environment materialization remains available for compatibility, but the exposure scope, target process, secret version, and audit event are explicit.
+- Model-provider and tool credentials should use a run-scoped HTTP broker/proxy when the client and protocol support it; placeholder values may preserve compatibility without revealing the real credential.
+- The broker runs outside the untrusted workload, authenticates the run/session, enforces service and destination policy, injects credentials only on approved outbound requests, and records access events.
+- Broker session tokens are not the underlying secrets, but they are still sensitive capabilities: keep them short-lived, scoped, revocable, redacted, and unavailable to unrelated child processes.
+- Provider-managed runtimes use provider-native workload identity or secret bindings when available; Paperclip stores the binding provenance and never represents it as local runner injection.
 - Artifact upload uses run-scoped presigned capabilities.
 - Secrets are redacted in logs and events before persistence.
 - A runner can only act on its bound environment lease and commands.
@@ -2482,12 +2581,13 @@ Minimum:
 - frame size limits;
 - request rate limits;
 - egress policy inherited from sandbox provider or environment configuration.
+- support for a run-scoped credential broker configuration and fail-closed launch when policy requires brokered egress.
 
 Optional later:
 
 - mTLS runner identity;
 - provider-attested runner claims;
-- egress credential proxy modeled after Centaur's boundary.
+- deeper transparent egress enforcement for protocols and clients that cannot use the initial HTTP/HTTPS broker path.
 
 ---
 
@@ -3415,6 +3515,7 @@ packages/native-runtime-protocol/
 - TypeScript types;
 - JSON Schemas;
 - sample envelopes;
+- `CredentialPlan`, work-signal, and attention-request schemas;
 - schema validation;
 - protocol-version negotiation rules;
 - fixture corpus for Rust and TypeScript;
@@ -3427,6 +3528,7 @@ packages/native-runtime-protocol/
 - unknown required command/event versions fail clearly;
 - size limits are testable;
 - event and command IDs are mandatory.
+- credential plans contain only opaque references/capabilities, never secret values.
 
 **Dependencies:** none.
 
@@ -3521,6 +3623,7 @@ runner/crates/paperclip-runnerd/
 - signal escalation;
 - backpressure;
 - diagnostic heartbeat.
+- credential-plan materialization for environment and HTTP-broker modes.
 
 **Acceptance:**
 
@@ -3529,6 +3632,7 @@ runner/crates/paperclip-runnerd/
 - TERM/interrupt precedes KILL;
 - outbox limit preserves P0 events;
 - runner reports process exit separately from run result.
+- secret values never enter the local outbox, diagnostics, or canonical events.
 
 **Dependencies:** NR-001, NR-003.
 
@@ -3583,6 +3687,7 @@ server/src/services/environment-run-orchestrator.ts
 - `NativeSessionRuntime.execute`;
 - terminal conversion to `AdapterExecutionResult`;
 - typed `nativeFinalization` validation and six-row disposition handling;
+- server-owned status arbiter for completion, blocker, review, attention, and continuation signals;
 - native finalizer conformance tests for run status, issue status, continuation/review effects, and cancellation scope;
 - cancellation hook;
 - no behavior change for legacy adapters.
@@ -3592,6 +3697,8 @@ server/src/services/environment-run-orchestrator.ts
 - fake driver run completes through native-aware run/issue finalization and existing workspace finalization;
 - native run can be cancelled through existing board controls;
 - a missing or invalid native finalization discriminator fails closed instead of using the legacy success heuristic;
+- an agent signal cannot move an issue to `blocked` or `in_review` without the required blocker or review path;
+- human-needed requests persist and wake the correct owner without requiring an invalid issue status;
 - legacy integration tests are unchanged;
 - no Paperclip skill materialization occurs in native mode.
 
@@ -3871,6 +3978,7 @@ packages/paperclip-runner/
 - mock Paperclip control-plane harness;
 - lightweight browser devtools/example page;
 - MCP binding capability and injection fixtures;
+- environment, HTTP-broker, and provider-native credential-plan fixtures;
 - channel and media side-channel fixtures;
 - direct Codex and ACP/acpx standalone examples;
 - phase-level benchmark commands and reports.
@@ -3880,7 +3988,9 @@ packages/paperclip-runner/
 - standalone and production integration use the same protocol schemas, fixtures, and reducer behavior;
 - replay and reconnect tests pass without the full Paperclip application;
 - MCP credentials remain outside model-visible configuration;
+- broker fixtures prove that proxy capabilities are short-lived and long-term secret values never enter PRP;
 - simulated voice interruption preserves normalized identities and durable audit events;
+- simulated Slack/email/voice ingress terminates at the mock core gateway and cannot address the fake runner directly;
 - the fake remote backend passes the common native-session conformance suite;
 - benchmarks isolate runner and harness overhead from unrelated application startup.
 
@@ -3902,11 +4012,13 @@ packages/paperclip-runner/backends/provider-conformance/
 
 **Deliverables:**
 
-- dated provider capability matrix for Cursor, Devin, Jules, GitHub Copilot cloud agent, and any newly qualified provider;
+- dated, priority-sorted provider capability matrix covering AWS Bedrock AgentCore Runtime, Cloudflare Agents, Google Vertex AI Agent Engine, Microsoft Agent Framework/Foundry Hosted Agents, Cursor, Devin, GitHub Copilot cloud agent, and Jules;
 - source links and captured API schemas/examples for every claimed capability;
 - connector descriptor schema from Section 7.2.2;
 - fake-provider fixtures for polling, webhook duplication, cursor gaps, ambiguous cancellation, and provider retention expiry;
-- first production connector, choosing Cursor or Devin after credential/access validation;
+- AWS AgentCore qualification spike covering runtime creation/versioning, endpoint invocation, HTTP/SSE/WebSocket behavior, session identity, async work, identity/secret binding, restart reconciliation, and cancellation gaps;
+- first managed-runtime connector targeting AWS AgentCore unless access validation identifies a concrete blocker;
+- optional first coding-agent connector choosing Cursor or Devin after credential/access validation;
 - reconciliation and terminal-state mapping report;
 - explicit Paperclip-managed versus provider-managed execution ownership tests.
 
@@ -3918,6 +4030,9 @@ packages/paperclip-runner/backends/provider-conformance/
 - Paperclip restart can reconstruct the session from PostgreSQL plus provider reconciliation without relying on an old process or socket;
 - Paperclip cancellation is durable even when provider cancellation is unavailable or unconfirmed;
 - no provider-managed runtime is represented as a Paperclip environment lease or sandbox;
+- Microsoft Agent Framework self-hosting is classified as a driver/host integration while Foundry Hosted Agents is classified as provider-managed execution;
+- Cloudflare's channel primitives cannot bypass Paperclip core authorization, durable input, governance, or audit;
+- provider-native workload identity and secret bindings use opaque `CredentialPlan` references rather than secret values in PRP;
 - raw provider payload retention is bounded independently from canonical control-event retention.
 
 **Dependencies:** NR-001, NR-002, NR-005, NR-006, NR-011, and NR-015.
@@ -3980,6 +4095,9 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Checkout occurs before expensive sandbox/model execution.
 - [ ] Existing budgets and workspace policy still apply.
 - [ ] Existing workspace finalization still runs, and the additive native finalizer applies the legal issue transition for all six dispositions.
+- [ ] Agent-reported dispositions remain advisory; the server records the proposal and authoritative status decision separately.
+- [ ] `blocked` requires a blocker owner/action, and `in_review` requires a real reviewer, approval, interaction, delegated review, or monitor path.
+- [ ] A human-needed request can wake or notify the correct owner without granting the model arbitrary status-transition authority.
 - [ ] Legacy adapters are unchanged.
 - [ ] Runtime permission and governance approval are separate.
 - [ ] Database state remains authoritative when the active producer disconnects.
@@ -3993,6 +4111,8 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Warm runner can be reused.
 - [ ] Runner reconnects after control-plane restart.
 - [ ] No inbound sandbox port is required.
+- [ ] A compatibility secret can be process-scoped through environment materialization without appearing in PRP or logs.
+- [ ] A supported HTTP client can use a short-lived broker session without possessing the underlying long-term credential.
 
 ### Session
 
@@ -4016,6 +4136,7 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Final result is unambiguous.
 - [ ] The run subscription behaves as a logical per-run stream over a shared company connection.
 - [ ] A simulated channel/voice interrupt uses the same durable command and event state.
+- [ ] Slack, email, voice, webhook, and provider-owned channel ingress cannot bypass Paperclip core authorization, durable acceptance, or audit.
 
 ### Reliability and performance
 
@@ -4161,7 +4282,7 @@ The spec was designed around these current Paperclip seams. Workers should re-op
 - **Daytona:** outbound worker connection and snapshot/warm-sandbox pattern.
 - **exe.dev:** persistent VM and system service pattern.
 
-## Appendix C — Sources reviewed for v0.3
+## Appendix C — Sources reviewed for v0.4
 
 Source review date: 2026-08-07.
 
@@ -4174,3 +4295,8 @@ Source review date: 2026-08-07.
 - Jules REST API quickstart and reference: `https://jules.google/docs/api/reference/` and `https://developers.google.com/jules/api/reference/rest`.
 - GitHub Copilot cloud agent task API: `https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-cloud-agent-via-the-api`.
 - OpenAI Codex cloud/SDK distinction: `https://openai.com/index/codex-now-generally-available/`.
+- AWS Bedrock AgentCore overview, runtime service contract, invocation API, runtime lifecycle/versioning, session isolation, async work, and identity behavior: `https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/`, `https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-service-contract.html`, `https://docs.aws.amazon.com/bedrock-agentcore/latest/APIReference/API_InvokeAgentRuntime.html`, and `https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html`.
+- Cloudflare Agents runtime, API, WebSockets, durable state, and durable execution: `https://developers.cloudflare.com/agents/`, `https://developers.cloudflare.com/agents/runtime/agents-api/`, `https://developers.cloudflare.com/agents/runtime/communication/websockets/`, and `https://developers.cloudflare.com/agents/runtime/execution/durable-execution/`.
+- Google Vertex AI Agent Engine managed runtime, custom query/stream operations, sessions, and bidirectional streaming: `https://cloud.google.com/vertex-ai/generative-ai/docs/reasoning-engine/overview`, `https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/develop/custom`, `https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/sessions/manage-sessions-api`, and `https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/bidirectional-streaming`.
+- Microsoft Agent Framework hosting, self-hosting, durable extension, and Foundry Hosted Agents: `https://learn.microsoft.com/en-us/agent-framework/get-started/hosting`, `https://learn.microsoft.com/en-us/agent-framework/hosting/self-hosting`, `https://learn.microsoft.com/en-us/agent-framework/integrations/durable-extension`, and `https://learn.microsoft.com/en-us/agent-framework/hosting/foundry-hosted-agent`.
+- Infisical Agent Vault credential-broker and HTTP/HTTPS proxy model: `https://github.com/Infisical/agent-vault` and `https://docs.agent-vault.dev/reference/cli`.
