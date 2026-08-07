@@ -276,10 +276,10 @@ export function InterruptedRunRecoveryUxLab() {
           title="Blocked parent — name the exact unhealthy leaf"
           description="The parent names the deepest unhealthy task, never just the direct blocker edge."
         >
-          <Variant label="Leaf needs an owner (C/D)">
+          <Variant label="Suppressed leaf needs an owner (C)">
             <IssueBlockedNotice
               issueStatus="blocked"
-              blockers={[parent([leaf({ interruptedRunRecoveryState: "retry_exhausted" })])]}
+              blockers={[parent([leaf({ interruptedRunRecoveryState: "suppressed" })])]}
             />
           </Variant>
 

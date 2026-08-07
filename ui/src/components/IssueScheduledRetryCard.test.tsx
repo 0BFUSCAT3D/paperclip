@@ -385,7 +385,9 @@ describe("IssueScheduledRetryCard — interrupted-run recovery variants", () => 
     const text = getCard()!.textContent ?? "";
     expect(text).toContain("No recovery scheduled");
     expect(text).toContain("The last run was interrupted and no retry or recovery is scheduled.");
-    expect(text).toContain("comment on the task to wake the assignee");
+    expect(text).toContain(
+      "open a typed recovery action or escalate to a recovery owner",
+    );
   });
 
   it("stands down entirely when a recovery owner is required (one card per task)", () => {

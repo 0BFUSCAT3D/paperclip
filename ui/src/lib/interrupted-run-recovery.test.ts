@@ -283,7 +283,7 @@ describe("recovery slot copy (spec §6)", () => {
       "The last run was interrupted and no retry or recovery is scheduled.",
     );
     expect(presentation.body).toBe(
-      "Paperclip should repair this automatically. If this card persists, comment on the task to wake the assignee.",
+      "Paperclip should repair this automatically. If this card persists, open a typed recovery action or escalate to a recovery owner.",
     );
   });
 
@@ -319,7 +319,7 @@ describe("blocked-parent leaf states (spec §4)", () => {
   it("gives A/C leaves a chip and leaves D leaves to the recovery chips", () => {
     expect(leafRecoveryChip("retry_queued")?.label).toBe("Retry queued");
     expect(leafRecoveryChip("retry_exhausted")?.label).toBe("Retry exhausted");
-    expect(leafRecoveryChip("suppressed")?.label).toBe("Retry exhausted");
+    expect(leafRecoveryChip("suppressed")?.label).toBe("Retry withheld");
     expect(leafRecoveryChip("recovery_owner_required")).toBeNull();
     expect(leafRecoveryChip("recovered")).toBeNull();
   });

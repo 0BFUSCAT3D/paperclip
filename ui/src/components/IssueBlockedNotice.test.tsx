@@ -770,6 +770,18 @@ describe("IssueBlockedNotice — interrupted leaf naming (PAP-16730 §4)", () =>
     ).toBe("Work resumes automatically when PAP-16728 recovers.");
   });
 
+  it("labels a suppressed leaf as Retry withheld", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[{ ...leaf, interruptedRunRecoveryState: "suppressed" }]}
+      />,
+    );
+    expect(
+      node.querySelector('[data-testid="issue-blocked-notice-interruption-indicator"]')!.textContent,
+    ).toContain("Retry withheld");
+  });
+
   it("pluralizes the row label and prefers the server's sampled terminal blocker", () => {
     const other = {
       id: "leaf-2",

@@ -297,7 +297,7 @@ export function describeRecoverySlot(slot: RecoverySlot): RecoverySlotPresentati
       badgeLabel: "No recovery scheduled",
       icon: "alert",
       tone: AMBER_TONE,
-      body: "Paperclip should repair this automatically. If this card persists, comment on the task to wake the assignee.",
+      body: "Paperclip should repair this automatically. If this card persists, open a typed recovery action or escalate to a recovery owner.",
       showRetryNow: slot.promotableRetry,
     };
   }
@@ -378,7 +378,7 @@ const LEAF_RECOVERY_CHIPS: Partial<Record<InterruptedRunRecoveryState, LeafRecov
     needsOwner: true,
   },
   suppressed: {
-    label: "Retry exhausted",
+    label: "Retry withheld",
     className: "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300",
     needsOwner: true,
   },
