@@ -486,6 +486,70 @@ describe("scrubber — high-trust strategy", () => {
   });
 });
 
+describe("scrubber — free-form secret values", () => {
+  // A bare credential can reach the event without a denylist key around it: a
+  // bearer token in an exception message, a breadcrumb, or a stack-frame local
+  // variable. The secret pass must redact the bare value, not only the URL
+  // credentials, so the high-trust debug data never carries a live token.
+  const RAW_TOKEN = "sk-live-abcdef0123456789";
+  const BEARER_HEADER = `Bearer ${RAW_TOKEN}`;
+
+  it("redacts a bare bearer token in the high-trust message, breadcrumb, and locals", async () => {
+    const { fake } = await loadGateAtLevel("high");
+    const event = buildRichEvent();
+    const values = (event.exception as any).values;
+    values[0].value = `auth failed with ${BEARER_HEADER}`;
+    values[0].stacktrace.frames[0].vars = { authHeader: BEARER_HEADER, retries: 3 };
+    (event.breadcrumbs as any)[0].message = `sent ${BEARER_HEADER}`;
+
+    const out = fake.runBeforeSend(event);
+    const serialized = JSON.stringify(out);
+    // The bare token never reaches the envelope through any high-trust field.
+    expect(serialized).not.toContain(RAW_TOKEN);
+    // The scheme word stays, so the reader still sees an auth header was present.
+    expect(serialized).toContain("Bearer [REDACTED]");
+    // The non-secret local variable survives, so redaction did not blank locals.
+    const frame = (out!.exception as any).values[0].stacktrace.frames[0];
+    expect(frame.vars.retries).toBe(3);
+  });
+
+  it("redacts a bare bearer token in the low-trust exception message", async () => {
+    const { fake } = await loadGateAtLevel("low");
+    const event = buildRichEvent();
+    (event.exception as any).values[0].value = `boom ${BEARER_HEADER}`;
+
+    const out = fake.runBeforeSend(event);
+    const message = (out!.exception as any).values[0].value as string;
+    expect(message).not.toContain(RAW_TOKEN);
+    expect(message).toContain("Bearer [REDACTED]");
+  });
+});
+
+describe("scrubber — high-trust credential headers", () => {
+  // The high-trust scrubber keeps the request headers for debug use, but a
+  // credential can ride an unlisted header such as `proxy-authorization` or
+  // `x-api-key`. The scrubber must redact the value of such a header, because a
+  // bare API key has no recognizable pattern the string pass can find.
+  it("redacts a credential-bearing header outside the removed set", async () => {
+    const { fake } = await loadGateAtLevel("high");
+    const event = buildRichEvent();
+    const headers = (event.request as any).headers;
+    headers["proxy-authorization"] = "Basic dXNlcjpwYXNzd29yZA==";
+    headers["x-api-key"] = "raw-opaque-key-value-1234567890";
+
+    const out = fake.runBeforeSend(event);
+    const outHeaders = (out!.request as any).headers as Record<string, unknown>;
+    expect(outHeaders["proxy-authorization"]).toBe("[REDACTED]");
+    expect(outHeaders["x-api-key"]).toBe("[REDACTED]");
+    // A non-sensitive header still survives, so the scrubber kept the debug set.
+    expect(outHeaders["user-agent"]).toBe("curl/8");
+    // Neither raw credential value reaches the envelope.
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toContain("dXNlcjpwYXNzd29yZA==");
+    expect(serialized).not.toContain("raw-opaque-key-value-1234567890");
+  });
+});
+
 describe("CaptureContext type", () => {
   it("allows the seven typed keys and rejects a raw request object and a free-form key", () => {
     // A compile-time contract. `pnpm --dir server typecheck` enforces it: an

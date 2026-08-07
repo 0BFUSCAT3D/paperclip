@@ -181,6 +181,33 @@ const REMOVED_HIGH_TRUST_HEADERS = new Set<string>([
   "cf-connecting-ip",
 ]);
 
+// The name fragments that mark a credential-bearing header. The removed set
+// above drops the session, the primary credential, and the caller IP address in
+// full. The high-trust scrubber keeps every other request header for debug use,
+// so it must still redact the value of a header that carries a secret under a
+// non-standard name, for example `proxy-authorization` or `x-api-key`. The
+// scrubber compares the lower-case header name against these fragments and
+// redacts the value of any match, but it keeps the header name.
+const SENSITIVE_HEADER_FRAGMENTS = [
+  "authorization",
+  "api-key",
+  "apikey",
+  "api_key",
+  "auth-token",
+  "authtoken",
+  "auth_token",
+  "access-token",
+  "session-token",
+  "x-auth",
+  "secret",
+  "credential",
+  "token",
+] as const;
+
+function isSensitiveHeaderName(lowerName: string): boolean {
+  return SENSITIVE_HEADER_FRAGMENTS.some((fragment) => lowerName.includes(fragment));
+}
+
 // A guard against a hostile or accidental cycle. The event tree is shallow, so a
 // cap of twenty keeps the high-trust debug data (breadcrumbs, contexts, and
 // stack-frame local variables) while it stops runaway recursion.
@@ -198,15 +225,61 @@ function stripUrlCredentials(value: string): string {
   return value.replace(URL_CREDENTIALS_PATTERN, "$1");
 }
 
+// The patterns that find a bare credential inside a free-form string. The
+// high-trust level keeps the exception message, the breadcrumbs, and the
+// stack-frame local variables. A secret can appear there as a bare value with no
+// denylist key around it, so the key walker cannot catch it. Each pattern
+// redacts the credential in place and keeps the surrounding text. These patterns
+// mirror the secret value patterns in `services/feedback-redaction.ts`. The URL
+// credential strip stays a separate pass, because it keeps the host for debug
+// use.
+const SECRET_VALUE_PATTERNS: ReadonlyArray<{ regex: RegExp; replacement: string }> = [
+  // A PEM private-key or certificate block.
+  { regex: /-----BEGIN [^-]+-----[\s\S]+?-----END [^-]+-----/g, replacement: REDACTED },
+  // An HTTP Authorization credential: `Bearer <token>` or `Basic <base64>`. Keep
+  // the scheme word so the reader still sees an auth header was present.
+  { regex: /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, replacement: `$1 ${REDACTED}` },
+  // A GitHub token (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`).
+  { regex: /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, replacement: REDACTED },
+  // A provider API key such as `sk-...` or `sk-ant-...`.
+  { regex: /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g, replacement: REDACTED },
+  // A JSON Web Token. It always starts with the base64url header prefix `eyJ`.
+  {
+    regex: /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/g,
+    replacement: REDACTED,
+  },
+  // A `key=value` or `key: value` secret assignment inside prose.
+  {
+    regex:
+      /\b(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|private[-_]?key|session[-_]?token)\s*[:=]\s*([^\s,;'"]+)/gi,
+    replacement: `$1=${REDACTED}`,
+  },
+];
+
+/**
+ * Scrub the secrets from a single string value. It strips the URL credentials
+ * and then redacts every bare credential pattern. It returns a new string; it
+ * never mutates the input. The scrubber runs it on every string it keeps, in
+ * both trust levels.
+ */
+function scrubSecretString(value: string): string {
+  let out = stripUrlCredentials(value);
+  for (const pattern of SECRET_VALUE_PATTERNS) {
+    out = out.replace(pattern.regex, pattern.replacement);
+  }
+  return out;
+}
+
 /**
  * Run the secret-redaction pass over any value. It redacts the value of a
- * secret-denylist key and strips the credentials from a URL inside any string.
- * It returns a new value; it never mutates the input. It runs in both trust
- * levels. Paperclip must never send its own secrets to a third party.
+ * secret-denylist key, strips the credentials from a URL inside any string, and
+ * redacts a bare credential pattern inside any string. It returns a new value;
+ * it never mutates the input. It runs in both trust levels. Paperclip must never
+ * send its own secrets to a third party.
  */
 function redactSecrets(value: unknown, depth = 0): unknown {
   if (depth > MAX_SCRUB_DEPTH) return undefined;
-  if (typeof value === "string") return stripUrlCredentials(value);
+  if (typeof value === "string") return scrubSecretString(value);
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map((entry) => redactSecrets(entry, depth + 1));
   const out: Record<string, unknown> = {};
@@ -265,7 +338,7 @@ function scrubLowTrust(event: Record<string, unknown>): Record<string, unknown> 
         });
         return {
           type: value.type,
-          value: typeof value.value === "string" ? stripUrlCredentials(value.value) : value.value,
+          value: typeof value.value === "string" ? scrubSecretString(value.value) : value.value,
           ...(frames ? { stacktrace: { frames } } : {}),
           ...(value.mechanism ? { mechanism: redactSecrets(value.mechanism) } : {}),
         };
@@ -309,8 +382,15 @@ function scrubHighTrust(event: Record<string, unknown>): Record<string, unknown>
     if (headers) {
       const nextHeaders: Record<string, unknown> = {};
       for (const [name, headerValue] of Object.entries(headers)) {
+        const lowerName = name.toLowerCase();
         // Remove the cookie, authorization, and caller-IP header entries.
-        if (REMOVED_HIGH_TRUST_HEADERS.has(name.toLowerCase())) continue;
+        if (REMOVED_HIGH_TRUST_HEADERS.has(lowerName)) continue;
+        // Redact the value of any other credential-bearing header, such as a
+        // proxy credential or an API key. Keep the header name for debug use.
+        if (isSensitiveHeaderName(lowerName)) {
+          nextHeaders[name] = REDACTED;
+          continue;
+        }
         nextHeaders[name] = headerValue;
       }
       nextRequest.headers = nextHeaders;
