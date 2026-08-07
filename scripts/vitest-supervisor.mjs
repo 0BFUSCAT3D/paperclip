@@ -243,14 +243,49 @@ async function slotOwnerIsAlive(owner) {
   }
 }
 
-async function reapStaleHostSlot(slot, reaperLock) {
-  try {
-    await fs.mkdir(reaperLock, { mode: 0o700 });
-  } catch (error) {
-    if (error?.code === "EEXIST") return false;
-    throw error;
-  }
+async function acquireReaperLock(reaperLock) {
+  const identity = await readLinuxProcessIdentity(process.pid);
+  const owner = {
+    token: randomUUID(),
+    pid: process.pid,
+    startTime: identity?.startTime ?? null,
+    acquiredAt: new Date().toISOString(),
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await fs.mkdir(reaperLock, { mode: 0o700 });
+      try {
+        await fs.writeFile(path.join(reaperLock, "owner.json"), `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+      } catch (error) {
+        await fs.rm(reaperLock, { recursive: true, force: true });
+        throw error;
+      }
+      return true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
 
+    const stored = JSON.parse(
+      await fs.readFile(path.join(reaperLock, "owner.json"), "utf8").catch(() => "null"),
+    );
+    const stats = await fs.stat(reaperLock).catch(() => null);
+    const ownerWriteMayBeInFlight = !stored && stats && Date.now() - stats.mtimeMs < 5_000;
+    if (!stats || ownerWriteMayBeInFlight || (await slotOwnerIsAlive(stored))) return false;
+    const generation = stored?.token ?? `${stats.dev}-${stats.ino}`;
+    const abandoned = `${reaperLock}-abandoned-${generation}`;
+    try {
+      await fs.rename(reaperLock, abandoned);
+      await fs.writeFile(path.join(abandoned, "tombstone"), `${generation}\n`, { mode: 0o600 });
+    } catch (error) {
+      if (["EEXIST", "ENOTEMPTY", "ENOENT"].includes(error?.code)) return false;
+      throw error;
+    }
+  }
+  return false;
+}
+
+async function reapStaleHostSlot(slot, reaperLock) {
+  if (!(await acquireReaperLock(reaperLock))) return false;
   try {
     const stored = JSON.parse(await fs.readFile(path.join(slot, "owner.json"), "utf8").catch(() => "null"));
     const stats = stored ? null : await fs.stat(slot).catch(() => null);

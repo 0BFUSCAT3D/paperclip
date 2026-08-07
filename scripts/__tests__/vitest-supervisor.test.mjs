@@ -260,7 +260,7 @@ test("concurrent stale-slot reapers cannot remove a replacement owner", async (t
   await acquired[0].value.release();
 });
 
-test("an existing stale-slot reaper lock fails closed", async (t) => {
+test("a reaper lock with an owner write in flight fails closed", async (t) => {
   const parent = await withTempParent(t);
   const control = path.join(parent, "control");
   const slot = path.join(control, "slot-0");
@@ -280,6 +280,71 @@ test("an existing stale-slot reaper lock fails closed", async (t) => {
     /host slot/,
   );
   assert.equal(JSON.parse(await fs.readFile(path.join(slot, "owner.json"), "utf8")).invocationId, "stale");
+});
+
+test("an abandoned reaper lock is quarantined before capacity is recovered", async (t) => {
+  const parent = await withTempParent(t);
+  const control = path.join(parent, "control");
+  const slot = path.join(control, "slot-0");
+  const reaperLock = path.join(control, ".slot-0-reaper");
+  await fs.mkdir(slot, { recursive: true });
+  await fs.writeFile(
+    path.join(slot, "owner.json"),
+    `${JSON.stringify({ invocationId: "stale", pid: 2_000_000_000, startTime: "missing" })}\n`,
+  );
+  await fs.mkdir(reaperLock);
+  await fs.writeFile(
+    path.join(reaperLock, "owner.json"),
+    `${JSON.stringify({
+      token: "abandoned-token",
+      pid: 2_000_000_000,
+      startTime: "missing",
+    })}\n`,
+  );
+  const replacement = await acquireHostSlot({
+    invocationId: "replacement",
+    env: { PAPERCLIP_TEST_CONTROL_DIR: control },
+    cap: 1,
+    waitMs: 1_000,
+  });
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(slot, "owner.json"), "utf8")).invocationId,
+    "replacement",
+  );
+  assert.equal(
+    JSON.parse(
+      await fs.readFile(path.join(`${reaperLock}-abandoned-abandoned-token`, "owner.json"), "utf8"),
+    ).token,
+    "abandoned-token",
+  );
+  await replacement.release();
+});
+
+test("an abandoned incomplete reaper lock is recovered after its write window", async (t) => {
+  const parent = await withTempParent(t);
+  const control = path.join(parent, "control");
+  const slot = path.join(control, "slot-0");
+  const reaperLock = path.join(control, ".slot-0-reaper");
+  await fs.mkdir(slot, { recursive: true });
+  await fs.writeFile(
+    path.join(slot, "owner.json"),
+    `${JSON.stringify({ invocationId: "stale", pid: 2_000_000_000, startTime: "missing" })}\n`,
+  );
+  await fs.mkdir(reaperLock);
+  const old = new Date(Date.now() - 10_000);
+  await fs.utimes(reaperLock, old, old);
+  const replacement = await acquireHostSlot({
+    invocationId: "replacement",
+    env: { PAPERCLIP_TEST_CONTROL_DIR: control },
+    cap: 1,
+    waitMs: 1_000,
+  });
+  const tombstone = (await fs.readdir(control)).find((entry) =>
+    entry.startsWith(".slot-0-reaper-abandoned-"),
+  );
+  assert.ok(tombstone);
+  assert.match(await fs.readFile(path.join(control, tombstone, "tombstone"), "utf8"), /\S/);
+  await replacement.release();
 });
 
 test("stale-root recovery only reaps an empty unreferenced dead-runner record", { skip: process.platform !== "linux" }, async (t) => {
