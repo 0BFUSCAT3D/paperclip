@@ -159,6 +159,23 @@ async function listCgroupProcesses(cgroupPath) {
   return results;
 }
 
+async function listProcessGroupProcesses(processGroupId) {
+  if (process.platform !== "linux" || !Number.isInteger(processGroupId) || processGroupId <= 0) return [];
+  const entries = await fs.readdir("/proc", { withFileTypes: true }).catch(() => []);
+  const matches = [];
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .map(async (entry) => {
+        const identity = await readLinuxProcessIdentity(Number(entry.name));
+        if (!identity || identity.processGroupId !== processGroupId) return;
+        const commandTokens = await readProcessCommandTokens(identity.pid);
+        matches.push({ ...identity, family: classifyFamily(identity, commandTokens) });
+      }),
+  );
+  return matches.sort((a, b) => a.pid - b.pid);
+}
+
 export async function findRootReferences(root, invocationId = null) {
   if (process.platform !== "linux") return [];
   const entries = await fs.readdir("/proc", { withFileTypes: true }).catch(() => []);
@@ -574,12 +591,13 @@ export class VitestInvocationSupervisor {
   }
 
   async ownedProcesses() {
-    const [tagged, cgroup] = await Promise.all([
+    const [tagged, cgroup, processGroup] = await Promise.all([
       listTaggedProcesses(this.invocationId),
       listCgroupProcesses(this.cgroupPath),
+      listProcessGroupProcesses(this.processGroupId),
     ]);
     const byIdentity = new Map();
-    for (const processInfo of [...tagged, ...cgroup]) {
+    for (const processInfo of [...tagged, ...cgroup, ...processGroup]) {
       byIdentity.set(`${processInfo.pid}:${processInfo.startTime}`, processInfo);
     }
     return [...byIdentity.values()].filter((processInfo) => processInfo.pid !== process.pid);
@@ -680,6 +698,7 @@ export class VitestInvocationSupervisor {
   async signalOwned(signal) {
     const owned = await this.ownedProcesses();
     let count = 0;
+    let groupSignaled = false;
     if (
       process.platform !== "win32" &&
       this.processGroupId &&
@@ -690,12 +709,18 @@ export class VitestInvocationSupervisor {
       let groupIdentityMatches = true;
       if (process.platform === "linux" && this.childIdentity) {
         const current = await readLinuxProcessIdentity(this.processGroupId);
-        groupIdentityMatches = current?.startTime === this.childIdentity.startTime;
+        const groupStillOwned = owned.some(
+          (processInfo) => processInfo.processGroupId === this.processGroupId,
+        );
+        groupIdentityMatches =
+          current?.startTime === this.childIdentity.startTime ||
+          (!current && groupStillOwned);
       }
       if (groupIdentityMatches) {
         try {
           process.kill(-this.processGroupId, signal);
           count += 1;
+          groupSignaled = true;
         } catch (error) {
           if (error?.code !== "ESRCH") throw error;
         }
@@ -704,6 +729,7 @@ export class VitestInvocationSupervisor {
       }
     }
     for (const identity of owned) {
+      if (groupSignaled && identity.processGroupId === this.processGroupId) continue;
       const outcome = await signalProcessIdentity(identity, signal);
       if (outcome === "signaled") count += 1;
       if (outcome === "identity_mismatch") this.identityMismatches.push(identity.pid);

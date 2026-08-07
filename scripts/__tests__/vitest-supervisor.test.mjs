@@ -168,6 +168,24 @@ test("a detached grandchild is reaped after its direct parent exits", { skip: pr
   assert.equal(cleanup.survivors.length, 0);
 });
 
+test("an untagged process-group descendant is reaped after its parent exits", { skip: process.platform !== "linux" }, async (t) => {
+  const parent = await withTempParent(t);
+  const childCode = "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)";
+  const parentCode = [
+    "const {spawn}=require('node:child_process')",
+    `const child=spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{env:{},stdio:'ignore'})`,
+    "child.unref()",
+  ].join(";");
+  const run = supervisor(parent, "untagged-process-group-descendant");
+  const result = await run.run(process.execPath, ["-e", parentCode]);
+  assert.equal(result.code, 0);
+  const owned = await run.ownedProcesses();
+  assert.equal(owned.length, 1);
+  assert.equal(owned[0].processGroupId, run.processGroupId);
+  const cleanup = await run.cleanup();
+  assert.equal(cleanup.survivors.length, 0);
+});
+
 test("concurrent invocation boundaries cannot signal one another", { skip: process.platform !== "linux" }, async (t) => {
   const parent = await withTempParent(t);
   const code = "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)";
