@@ -135,6 +135,14 @@ type RecoveryWakeup = (
   opts?: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
+type EnsureInterruptedRunHandoff = (
+  interruptedRunId: string,
+  options?: { issueId?: string },
+) => Promise<{
+  receipt: { status: string } | null;
+  successor: typeof heartbeatRuns.$inferSelect | null;
+}>;
+
 type ResolvedDependencyWakeBackstopSource =
   | "issue_graph_liveness.backstop"
   | "workspace.finalize";
@@ -780,7 +788,13 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(
+  db: Db,
+  deps: {
+    enqueueWakeup: RecoveryWakeup;
+    ensureInterruptedRunHandoff?: EnsureInterruptedRunHandoff;
+  },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -5821,7 +5835,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     } catch (error) {
       logger.error(
         { err: error, runId: run.id, previousStatus: run.status },
-        "failed to append recovery run event after terminalizing orphaned run; run stays terminal and the sweep clears the lock",
+        "failed to append recovery run event after terminalizing orphaned run; run stays terminal and liveness handoff continues",
       );
     }
     logger.warn(
@@ -5851,6 +5865,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         id: issues.id,
         companyId: issues.companyId,
         status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
         checkoutRunId: issues.checkoutRunId,
         executionRunId: issues.executionRunId,
       })
@@ -5874,7 +5889,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
     const runStatusById = new Map<string, string>();
-    for (const row of runRows) runStatusById.set(row.id, row.status);
+    const runById = new Map<string, typeof heartbeatRuns.$inferSelect>();
+    for (const row of runRows) {
+      runStatusById.set(row.id, row.status);
+      runById.set(row.id, row);
+    }
 
     // Collect the runs that a non-terminal issue still references. Such a run is
     // the live run of an active issue. A different, terminal issue can also hold
@@ -5934,6 +5953,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const issue of candidates) {
       if (!isCleanable(issue.checkoutRunId) || !isCleanable(issue.executionRunId)) {
         continue;
+      }
+
+      const interruptedRunId = issue.executionRunId ?? issue.checkoutRunId;
+      const interruptedRun = interruptedRunId ? runById.get(interruptedRunId) : null;
+      if (
+        interruptedRun &&
+        deps.ensureInterruptedRunHandoff &&
+        TERMINAL_HEARTBEAT_RUN_STATUSES.has(runStatusById.get(interruptedRun.id) ?? interruptedRun.status)
+      ) {
+        const handoff = await deps.ensureInterruptedRunHandoff(interruptedRun.id, { issueId: issue.id });
+        if (!handoff.receipt) {
+          // Clearing the final persisted path without a durable receipt would
+          // recreate the original liveness gap. Leave the stale pointer for the
+          // next reconciliation pass instead.
+          continue;
+        }
+        if (handoff.successor) {
+          // The handoff primitive promoted the issue to the successor while it
+          // held the issue row lock. This stale snapshot must not clear it.
+          continue;
+        }
       }
 
       const updated = await db
