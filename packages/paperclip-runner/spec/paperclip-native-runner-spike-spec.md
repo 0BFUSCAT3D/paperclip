@@ -327,27 +327,30 @@ The following must work without silently creating a replacement session:
 - transient network loss;
 - harness process restart when the harness supports resume.
 
-When exact session resume is impossible, the run changes to an explicit recoverable failure or `needs_review`. It must not pretend that a fresh session is the same session.
+When exact session resume is impossible, the run records an explicit recoverable failure. The status arbiter may route the issue to `in_review` only if it atomically creates a real review path. The system must not pretend that a fresh session is the same session.
 
 ### 3.6 Terminal clarity
 
-Every accepted turn ends in exactly one of:
+The native protocol keeps four facts separate. No field is an alias for another:
 
-- completed;
-- failed;
-- interrupted;
-- cancelled.
+| Fact | Values | Authority | Meaning |
+|---|---|---|---|
+| **Turn terminal state** | `completed`, `failed`, `interrupted`, `cancelled` | Harness driver, reconciled by the runner and control plane | How one accepted turn stopped. |
+| **Run terminal state** | `succeeded`, `failed`, `cancelled` | Runner/finalizer | How the Paperclip execution attempt ended after runtime and workspace finalization. |
+| **Reported work disposition** | `done`, `blocked`, `needs_review`, `yielded` | Agent/model or semantic tool | What the agent claims should happen to the assigned work. Advisory only. |
+| **Authoritative issue status** | legal Paperclip issue status | Paperclip status arbiter | The organizational state committed to the issue. |
 
-Every Paperclip run ends in exactly one structured disposition:
+Every accepted turn terminalizes exactly once. Every run terminalizes exactly once, but only after required workspace finalization and result reconciliation. A completed turn and a succeeded run prove execution health; neither proves that the task objective or completion contract was satisfied.
 
-- `done`;
-- `blocked`;
-- `needs_review`;
-- `yielded`;
-- `failed`;
-- `cancelled`.
+The protocol therefore forbids these inferences:
 
-A process exit is evidence, not the disposition itself.
+- `turnTerminalState: "completed"` does not imply `reportedWorkDisposition: "done"`;
+- `runTerminalState: "succeeded"` does not imply authoritative issue status `done`;
+- `reportedWorkDisposition: "done"` does not grant authority to set issue status `done`;
+- `blockingCurrentTurn: true` does not imply authoritative issue status `blocked`;
+- process exit code, signal, timeout, or transport closure is runtime evidence only.
+
+When the arbiter rejects or transforms the reported disposition, Paperclip preserves the original claim, criterion-level evidence, verification, artifacts, and remaining-work declaration. Reconciliation appends a new assessment or decision; it does not rewrite the agent report.
 
 ---
 
@@ -368,6 +371,13 @@ Use these terms consistently.
 | **Provider session** | The underlying provider-native thread/session identity, when distinct. |
 | **Turn** | One user/input request and the agent work it triggers. Steering may remain in the turn or create a later turn depending on driver semantics. |
 | **Item** | A typed unit inside a turn: message, tool, command, file change, plan, approval, and so on. |
+| **Turn terminal state** | The driver-observed terminal state of one accepted turn: `completed`, `failed`, `interrupted`, or `cancelled`. |
+| **Run terminal state** | The finalizer-owned terminal state of one Paperclip attempt: `succeeded`, `failed`, or `cancelled`. It includes required runtime and workspace finalization. |
+| **Reported work disposition** | The agent's advisory claim that work is `done`, `blocked`, `needs_review`, or `yielded`. |
+| **Completion contract** | The versioned objective, acceptance, verification, artifact, approval, authority, and risk requirements used to assess completion. |
+| **Attention request** | A typed request for capability, authority, information, or external action. It is not itself an issue status. |
+| **Work assessment** | The durable normalization of runtime facts, agent claims, evidence, unresolved requirements, and live paths for one finalization attempt. |
+| **Status decision** | The arbiter's durable authoritative issue transition or no-op, including authority, inputs, reason code, side effects, and supersession lineage. |
 | **Runtime request** | A pending permission or elicitation request from the harness. |
 | **Control-plane approval** | A Paperclip governance decision. It is not a runtime request. |
 | **Artifact** | A durable file, diff, report, test result, URL, or other output referenced by the run. |
@@ -478,9 +488,16 @@ Only model judgments that cannot be inferred deterministically should be exposed
 ```text
 paperclip.finish
 paperclip.block
-paperclip.ask
+paperclip.interact
 paperclip.progress        # optional
 ```
+
+`paperclip.interact` is one strict discriminated union over the five current
+issue-thread interaction kinds. A provider that cannot register that union
+faithfully may expose five generated presentation aliases, but every alias
+normalizes into the same union before persistence. A model session sees the
+canonical union or the aliases, never both. The legacy `paperclip.ask` surface
+is deprecated and may translate only the lossless structured-question subset.
 
 Managers may later receive:
 
@@ -505,6 +522,7 @@ NativeSessionRuntime
   ├── NativeEventIngestor
   ├── NativeSessionService
   ├── NativeRuntimeRequestService
+  ├── NativeInteractionBridgeService
   ├── NativeRunProjectionService
   ├── NativeResultFinalizer
   └── NativeRunRecoveryService
@@ -677,6 +695,7 @@ A detailed architecture does not require building every production feature in th
 19. `NativeSessionBackend` with a runner backend and a fake remote-backend conformance implementation.
 20. Standalone fake driver, mock control plane, browser devtools page, real-driver examples, and performance harness inside the runner workspace.
 21. Channel and media extension points proven by conformance fixtures without requiring a production voice integration.
+22. All five current issue-thread interaction kinds round-trip from a strict model request, through durable materialization and resolution, into a resumed skillless task envelope.
 
 ### 6.2 Explicit non-goals
 
@@ -743,11 +762,15 @@ That is the proof that the abstraction is real.
 19. The runner emits normalized typed events.
 20. The control plane persists and ACKs events, then fans them out to the browser.
 21. Human steering becomes a durable control-plane command and is delivered over the same runner connection.
-22. The harness emits a structured result or invokes the completion tool.
-23. The runner emits `run.result`.
-24. The control plane finalizes the native session, converts the result to the additive native-aware adapter result shape, and runs native-aware run/issue finalization plus existing workspace finalization.
-25. Paperclip applies issue status, handoff, cost, and work-product behavior.
-26. The run and environment lease are released or retained according to warm policy.
+22. The harness emits a structured result, invokes a completion tool, or invokes `paperclip.interact` with a strict request.
+23. For an interaction, the runner validates the schema, binds the current company/issue/agent/run/session/turn/tool call, durably proposes it, and waits for the bridge's materialized-or-rejected receipt. The model never sends the runner credential or the host binding.
+24. A non-blocking materialized interaction returns its durable reference and the turn continues. A blocking materialized interaction terminalizes the turn once as `completed` with reported disposition `yielded`; a rejected request leaves the turn open for correction.
+25. The runner emits `run.result` for a terminal completion path. Interaction request, resolution, progress, and delivery events remain P0 durable events even when the current run has already terminalized.
+26. The control plane finalizes the native session, converts the result to the additive native-aware adapter result shape, and runs native-aware run/issue finalization plus existing workspace finalization.
+27. Paperclip applies issue status, handoff, cost, work-product, and interaction-continuation behavior through server-owned policy. Creating a blocking interaction does not directly set issue status.
+28. When the interaction resolves, the control plane stores the normalized typed response, applies the effective continuation policy, and places the response in the next eligible skillless task envelope until its delivery cursor is acknowledged.
+29. The resumed turn consumes that response without Paperclip API credentials. Replayed delivery is deduplicated by the stable interaction response identity.
+30. The run and environment lease are released or retained according to warm policy.
 
 ### 7.2 Remote agent backend path
 
@@ -883,7 +906,9 @@ This is a logical per-run stream, not a requirement for one physical WebSocket p
 7. Runner replays unacknowledged events.
 8. Event ingestion deduplicates and ACKs after commit.
 9. Session reconciliation asks the driver for current session/turn state when supported.
-10. Any divergence becomes an explicit diagnostic or recovery state.
+10. The control plane rebuilds pending interaction context and any undelivered response cursors from authoritative interaction rows plus durable interaction events.
+11. A response already delivered but not acknowledged is redelivered with the same response identity; replay cannot recreate an interaction, rematerialize suggested tasks, or queue a second equivalent continuation.
+12. Any divergence becomes an explicit diagnostic or recovery state.
 
 ---
 
@@ -942,6 +967,7 @@ server/src/services/native-runtime/
   native-event-ingestor.ts
   native-session-service.ts
   native-runtime-request-service.ts
+  native-interaction-bridge.ts
   native-run-projection.ts
   native-result-finalizer.ts
   native-run-recovery.ts
@@ -960,6 +986,7 @@ Routes:
 ```text
 server/src/routes/native-runs.ts
 server/src/routes/native-runtime-requests.ts
+server/src/routes/native-interactions.ts
 ```
 
 Shared protocol:
@@ -979,7 +1006,7 @@ packages/native-runtime-protocol/
 
 ### 8.3 Preserve the existing terminal boundary
 
-`NativeSessionRuntime.execute()` can be internally durable and bidirectional while returning only when the run reaches a terminal state.
+`NativeSessionRuntime.execute()` can be internally durable and bidirectional while returning only when native execution reaches a terminal state. The control-plane finalizer derives the run terminal state after workspace finalization and reconciliation.
 
 ```ts
 interface NativeSessionRuntime {
@@ -991,17 +1018,14 @@ interface NativeSessionRuntime {
 
 ```ts
 interface NativeExecutionResult {
-  terminalState: "completed" | "failed" | "cancelled";
-  disposition:
-    | "done"
-    | "blocked"
-    | "needs_review"
-    | "yielded"
-    | "failed"
-    | "cancelled";
+  turnTerminalState: TurnTerminalState;
+  runtimeTerminalState: "completed" | "failed" | "cancelled";
+  reportedWorkDisposition: ReportedWorkDisposition | null;
 
   summary: string;
   result: StructuredRunResult | null;
+  completionContractRevision: string;
+  attentionRequests: AttentionRequest[];
 
   usage?: UsageSummary;
   costUsd?: number | null;
@@ -1481,6 +1505,7 @@ Required v1 commands:
 | `turn.interrupt` | Interrupt active turn while preserving session. |
 | `turn.stop` | Stop the turn with explicit terminal intent. |
 | `request.resolve` | Resolve runtime permission or elicitation. |
+| `interaction.receipt` | Return the durable materialized/replayed/rejected receipt for a bound semantic interaction request. |
 | `session.snapshot` | Ask driver for reconcilable state. |
 | `session.close` | Close session and optionally child process. |
 | `run.cancel` | Cancel the Paperclip run. |
@@ -1526,6 +1551,14 @@ interface RunnerEvent<T = unknown> {
 }
 ```
 
+The canonical run stream also contains server-originated events. They use the
+same `runId`, session/turn identities, schema version, priority, canonical
+sequence allocation, and reducer as runner events, but have
+`sourceKind: "control_plane"` and a server-owned stable source event ID. A
+runner cannot forge that source kind. Interaction materialization, resolution,
+continuation, and delivery events are server-originated except for the initial
+runner-produced proposal (or local schema rejection).
+
 ### 10.7 Acknowledgement
 
 After committing an event batch, the control plane sends:
@@ -1549,7 +1582,9 @@ The runner must not delete events before this ACK.
 
 Event priority:
 
-- **P0:** terminal events, approval/input requests, cancellations, session identity, errors. Never dropped.
+- **P0:** terminal events, runtime approval/input requests, issue-thread
+  interaction proposal/materialization/resolution/delivery, cancellations,
+  session identity, and errors. Never dropped.
 - **P1:** item starts/completions, plans, diffs, usage snapshots, phase changes. Persisted and not dropped.
 - **P2:** text deltas, command-output deltas, repetitive progress. May be coalesced.
 
@@ -1693,14 +1728,76 @@ runtime_request.expired
 runtime_request.cancelled
 ```
 
+Runtime requests gate a provider or harness operation inside one run. They do
+not create or resolve an issue-thread interaction, formal approval, or
+execution-stage decision.
+
+#### Issue-thread interactions
+
+```text
+interaction.request.proposed
+interaction.request.materialized
+interaction.request.rejected
+interaction.response.progressed
+interaction.response.resolved
+interaction.response.delivered
+```
+
+All six event families are P0 and are never coalesced or dropped.
+
+- `interaction.request.proposed` carries the stable runner `requestId`, strict
+  normalized request, payload hash, and host-owned run/session/turn/tool-call
+  binding.
+- `interaction.request.materialized` carries the interaction ID, created versus
+  replayed receipt, requested and effective policy, target binding, and
+  idempotency receipt. It is committed with the authoritative interaction row
+  before the runner receives success.
+- `interaction.request.rejected` carries the safe stable error, bounded
+  validation paths, retryability, and whether any row was created. Detailed
+  authorization facts remain in company-scoped audit data.
+- `interaction.response.progressed` carries full current item-verdict state,
+  newly resolved item IDs, a response cursor, and the server continuation
+  decision. Model-authored interactions use progress only for item verdicts in
+  v1; output-only trusted tool-action execution updates may use the same event
+  family.
+- `interaction.response.resolved` carries the complete terminal typed response,
+  target freshness, effective policies, redacted resolver class, and
+  continuation decision.
+- `interaction.response.delivered` binds one response cursor to its destination
+  run/session/turn and acknowledgement state.
+
+`interaction.request.*` events are bound to the source run. Resolution events
+remain durable after that run terminalizes and may also be projected into the
+destination resumed run. The business interaction row and
+`issue.thread_interaction_*` activity remain authoritative for resolver state
+and audit; the native events are the execution-protocol trail. Rebuilding a
+projection joins those authoritative rows with the durable events and never
+infers a resolution from UI state or an in-memory wake payload.
+
 #### Result
 
 ```text
 run.result.proposed
 run.result.accepted
 run.result.rejected
+attention.request.proposed
+attention.request.routed
+attention.request.resolved
+attention.request.expired
+attention.request.superseded
+work.assessment.recorded
+issue.status.decision.recorded
+issue.status.decision.applied
+issue.status.decision.rejected
+issue.status.decision.superseded
 run.terminal
 ```
+
+`run.result.proposed` preserves the model-authored `StructuredRunResult` and its contract revision. `run.result.accepted` means the result passed schema and binding validation; it does not mean the completion claim was accepted or the issue became `done`.
+
+`work.assessment.recorded` contains the normalized runtime facts, accepted/missing/rejected/unverifiable evidence, pending governed actions, attention routing, and live continuation paths. `issue.status.decision.*` records the arbiter authority, exact assessment and prior-status inputs, reason code, selected transition or no-op, atomic side effects, policy version, and supersession lineage.
+
+`run.terminal` carries `turnTerminalState`, `runTerminalState`, `reportedWorkDisposition`, `workAssessmentId`, and `statusDecisionId`. Consumers must not infer issue status from this event. Attention events use a stable request ID and dedupe key; stale or duplicate responses are retained for audit but cannot resolve a superseded request.
 
 ### 11.2 Item examples
 
@@ -2309,6 +2406,17 @@ interface NativeTaskEnvelope {
       id: string;
       title: string;
     }>;
+    interactions: {
+      pending: PendingInteractionContextV1[];
+      resolved: InteractionResponseV1[];
+      deliveryCursor?: string | null;
+      resumeCause?: {
+        interactionId: string;
+        kind: InteractionKind;
+        phase: "progress" | "terminal";
+        responseCursor: string;
+      } | null;
+    };
   };
 
   workspace: {
@@ -2329,9 +2437,29 @@ interface NativeTaskEnvelope {
   completion: {
     mode: "structured_output" | "semantic_tool";
     schemaName: "paperclip.run_result.v1";
+    contract: CompletionContract;
   };
 }
 ```
+
+`pending` contains the current issue's still-open interaction requests that the
+model may need to account for before reporting completion. Each entry contains
+the durable interaction ID, strict normalized request, target state, requested
+and effective resolver/continuation policies, and source run reference, but no
+resolver identity, credential, or writable lifecycle field.
+
+`resolved` contains complete normalized responses in response-cursor order,
+including full suggested-task materialization, question answers, confirmation
+reason/outcome, checkbox selection, and full item-verdict state plus
+`newlyResolvedItemIds` for a progress delivery. Responses remain present until
+the destination delivery cursor is durably acknowledged. A reconnect or retry
+may redeliver an identical response; `interactionId + phase + recordedAt` is
+the stable response identity and reducers must treat redelivery as harmless.
+
+The server selects same-session versus fresh-session continuation. A target-bound
+plan acceptance may require a fresh native session and workspace refresh. The
+model cannot choose session routing, rewrite target freshness, acknowledge an
+undelivered response, or request a wake by editing the envelope.
 
 The model does not receive:
 
@@ -2351,12 +2479,18 @@ Project-specific `AGENTS.md`, repository instructions, or task-domain skills may
 
 ```ts
 paperclip.finish({
-  disposition: "done" | "needs_review" | "yielded",
+  reportedWorkDisposition: "done" | "needs_review" | "yielded",
   summary: string,
-  evidence?: Evidence[],
+  completionClaim: {
+    contractRevision: string,
+    objectiveSatisfied: boolean,
+    criteria: CriterionClaim[],
+    remainingWork?: RemainingWork[]
+  },
+  evidence?: WorkEvidence[],
   verification?: VerificationResult[],
   artifacts?: ArtifactRef[],
-  nextActions?: string[]
+  continuation?: ContinuationIntent
 })
 ```
 
@@ -2364,24 +2498,458 @@ paperclip.finish({
 paperclip.block({
   summary: string,
   blocker: {
-    reason: string,
-    needs?: string,
-    evidence?: Evidence[]
-  }
+    reasonCode: string,
+    owner: ResolverTarget,
+    unblockAction: string,
+    scope: "current_track" | "task_wide",
+    evidence?: WorkEvidence[]
+  },
+  attention?: AttentionRequest
 })
 ```
 
 ```ts
-paperclip.ask({
-  question: string,
-  choices?: Array<{ key: string; label: string }>,
-  blocking: boolean
-})
+paperclip.interact(input: PaperclipInteractV1)
 ```
 
 The tools are implemented by the runner or harness client and translated into typed events. They do not directly mutate issue state.
 
-`paperclip.ask({ blocking: true })` means that the current turn cannot continue without an answer. It creates a durable attention request; it does not by itself mean that the whole issue has a valid first-class blocker.
+`paperclip.interact` replaces the narrow native `paperclip.ask`. It is a strict,
+versioned discriminated union over the five current issue-thread kinds:
+
+```ts
+type InteractionKind =
+  | "suggest_tasks"
+  | "ask_user_questions"
+  | "request_confirmation"
+  | "request_checkbox_confirmation"
+  | "request_item_verdicts";
+
+type PaperclipInteractV1 =
+  | InteractVariant<"suggest_tasks", SuggestTasksRequestV1>
+  | InteractVariant<"ask_user_questions", AskUserQuestionsRequestV1>
+  | InteractVariant<"request_confirmation", RequestConfirmationRequestV1>
+  | InteractVariant<"request_checkbox_confirmation", CheckboxConfirmationRequestV1>
+  | InteractVariant<"request_item_verdicts", ItemVerdictsRequestV1>;
+
+interface InteractVariant<K extends InteractionKind, R> {
+  schema: "paperclip.interact.v1";
+  kind: K;
+  blockingCurrentTurn: boolean;
+  title?: string;
+  summary?: string;
+  resolverHint?: {
+    policy?: "board_only" | "board_or_agents";
+    addresseeAgentId?: string;
+  };
+  continuationHint?:
+    | "none"
+    | "wake_assignee"
+    | "wake_assignee_on_accept";
+  request: R;
+}
+
+type ModelInteractionTargetV1 =
+  | {
+      type: "issue_document";
+      key: string;
+      revisionId: string;
+      revisionNumber?: number;
+      label?: string;
+    }
+  | {
+      type: "custom";
+      key: string;
+      revisionId?: string;
+      revisionNumber?: number;
+      label?: string;
+    };
+
+interface SuggestTasksRequestV1 {
+  version: 1;
+  defaultParentId?: string | null;
+  tasks: Array<{
+    clientKey: string;
+    parentClientKey?: string | null;
+    parentId?: string | null;
+    title: string;
+    description?: string | null;
+    priority?: "critical" | "high" | "medium" | "low" | null;
+    workMode?: "standard" | "ask" | "planning" | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    projectId?: string | null;
+    goalId?: string | null;
+    billingCode?: string | null;
+    labels?: string[];
+    hiddenInPreview?: boolean;
+  }>;
+}
+
+interface AskUserQuestionsRequestV1 {
+  version: 1;
+  title?: string | null;
+  submitLabel?: string | null;
+  supersedeOnUserComment?: boolean;
+  questions: Array<{
+    id: string;
+    prompt: string;
+    helpText?: string | null;
+    selectionMode: "single" | "multi";
+    required?: boolean;
+    options: Array<{
+      id: string;
+      label: string;
+      description?: string | null;
+    }>;
+  }>;
+}
+
+interface RequestConfirmationRequestV1 {
+  version: 1;
+  prompt: string;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  detailsMarkdown?: string | null;
+  supersedeOnUserComment?: boolean;
+  target?: ModelInteractionTargetV1 | null;
+}
+
+interface CheckboxConfirmationRequestV1 {
+  version: 1;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  options: Array<{
+    id: string;
+    label: string;
+    description?: string | null;
+  }>;
+  defaultSelectedOptionIds?: string[];
+  minSelected?: number;
+  maxSelected?: number | null;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  supersedeOnUserComment?: boolean;
+  target?: ModelInteractionTargetV1 | null;
+}
+
+type ItemVerdict = "approve" | "reject" | "defer";
+
+interface ItemVerdictsRequestV1 {
+  version: 1;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  items: Array<{
+    id: string;
+    label: string;
+    description?: string | null;
+    previewMarkdown?: string | null;
+    href?: string | null;
+    attachmentId?: string | null;
+  }>;
+  verdicts?: ItemVerdict[];
+  requireReasonOn?: ItemVerdict[];
+  reasonLabel?: string | null;
+  allowBulkApprove?: boolean;
+  supersedeOnUserComment?: boolean;
+  target?: ModelInteractionTargetV1 | null;
+}
+```
+
+All objects use `additionalProperties: false`. Unknown fields are rejected,
+not stripped. The model-facing union contains no company, issue, agent, run,
+session, source-comment, resolver, status, audit, idempotency, or trusted
+`toolAction` field. Confirmation tool-action enrichment is an output/internal
+gateway type only; model-supplied action IDs, invocation IDs, hashes, risk,
+expiry, signatures, or equivalent reserved fields fail with `reserved_field`.
+
+Only confirmation, checkbox confirmation, and item verdicts accept a target.
+For `issue_document`, the server supplies current issue/document identity and
+atomically verifies the latest same-company revision at creation and resolution.
+A plan decision is `request_confirmation` targeting the latest `plan` revision.
+A later revision resolves it as `stale_target`; a later genuine user comment
+uses the existing `superseded_by_comment` policy. A custom target is descriptive
+unless a registered server resolver recognizes it and never grants authority.
+
+`resolverHint` and `continuationHint` are advisory. The server stores requested
+and effective policies separately and may narrow, replace, or reject them.
+`request_item_verdicts` is board/user-resolved in v1; an agent cannot resolve its
+own or its source run's request; and `blockingCurrentTurn: true` requires the
+effective `wake_assignee` policy so acceptance and rejection both resume work.
+
+#### 17.3.1 Host binding, idempotency, and failures
+
+The runner wraps validated model input in a host-owned proposal:
+
+```ts
+interface BoundInteractionProposalV1 {
+  schema: "paperclip.interaction-proposal.v1";
+  requestId: string;
+  payloadHash: string;
+  binding: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    runId: string;
+    nativeSessionId: string;
+    turnId: string;
+    toolCallId: string;
+  };
+  request: PaperclipInteractV1;
+}
+
+interface InteractionRequestFailureV1 {
+  schema: "paperclip.interaction-request-failure.v1";
+  requestId: string;
+  accepted: false;
+  error: {
+    code:
+      | "invalid_schema"
+      | "reserved_field"
+      | "limit_exceeded"
+      | "invalid_combination"
+      | "invalid_target"
+      | "stale_target"
+      | "run_binding_invalid"
+      | "interaction_not_allowed"
+      | "issue_not_open"
+      | "idempotency_conflict"
+      | "transient_control_plane_failure";
+    message: string;
+    paths?: string[];
+    retryable: boolean;
+  };
+}
+```
+
+Every binding value comes from the authenticated host channel. If the provider
+has no tool-call ID, the driver allocates and durably records one before bridge
+submission. The host computes the route-safe key (at most 255 characters):
+
+```text
+native-interaction:v1:<base64url(sha256(
+  canonicalLengthPrefixedTuple(
+    companyId, issueId, runId, nativeSessionId, turnId, toolCallId
+  )
+))>
+```
+
+The key deliberately excludes payload. The first accepted payload hash is
+stored with it. Replaying the same binding and payload returns the existing
+interaction; reusing the invocation with different input returns
+`idempotency_conflict`. Only a transient control-plane failure may retry, and
+that retry reuses the identical proposal and key. Materialization commits the
+interaction, binding receipt, requested/effective policy, target, provenance,
+business activity, and protocol event before success is returned.
+
+The runner and server both enforce current validator limits: 1–50 suggested
+tasks; 1–10 questions with 1–10 options each; 1–200 checkbox options; 1–200
+verdict items; title 240; summary 1,000; reason/free text 4,000; details,
+preview, or summary markdown 20,000; href 2,000; and at most 20 safe validation
+paths. Requests must also fit `maxEventBytes`; they are never silently moved to
+a blob.
+
+#### 17.3.2 Durable response union
+
+```ts
+type InteractionResponseV1 =
+  | InteractionResponse<"suggest_tasks", SuggestTasksResponseV1>
+  | InteractionResponse<"ask_user_questions", AskUserQuestionsResponseV1>
+  | InteractionResponse<"request_confirmation", ConfirmationResponseV1>
+  | InteractionResponse<"request_checkbox_confirmation", CheckboxResponseV1>
+  | InteractionResponse<"request_item_verdicts", ItemVerdictsResponseV1>;
+
+interface InteractionResponse<K extends InteractionKind, R> {
+  schema: "paperclip.interaction-response.v1";
+  interactionId: string;
+  requestId: string;
+  kind: K;
+  phase: "progress" | "terminal";
+  status:
+    | "pending"
+    | "accepted"
+    | "rejected"
+    | "answered"
+    | "cancelled"
+    | "expired"
+    | "failed";
+  result: R;
+  target?: {
+    requested: ModelInteractionTargetV1;
+    resolvedRevisionId?: string | null;
+    stale: boolean;
+  };
+  policy: {
+    effectiveResolverPolicy: "board_only" | "board_or_agents";
+    effectiveContinuationPolicy:
+      | "none"
+      | "wake_assignee"
+      | "wake_assignee_on_accept";
+  };
+  source: {
+    runId: string;
+    nativeSessionId: string;
+    turnId: string;
+    toolCallId: string;
+  };
+  continuation: {
+    action:
+      | "none"
+      | "wake_queued"
+      | "fresh_session_queued"
+      | "suppressed_closed"
+      | "suppressed_unassigned"
+      | "resume_failed";
+    resumedRunId?: string | null;
+    sessionMode: "same" | "fresh" | "server_selected" | "none";
+  };
+  recordedAt: string;
+}
+
+interface PendingInteractionContextV1 {
+  interactionId: string;
+  kind: InteractionKind;
+  request: PaperclipInteractV1;
+  target?: {
+    requested: ModelInteractionTargetV1;
+    latestRevisionId?: string | null;
+    stale: boolean;
+  };
+  requestedResolverPolicy?: "board_only" | "board_or_agents";
+  effectiveResolverPolicy: "board_only" | "board_or_agents";
+  requestedContinuationPolicy?:
+    | "none"
+    | "wake_assignee"
+    | "wake_assignee_on_accept";
+  effectiveContinuationPolicy:
+    | "none"
+    | "wake_assignee"
+    | "wake_assignee_on_accept";
+  sourceRunId: string;
+  createdAt: string;
+}
+
+type AdministrativeTerminalV1 =
+  | { outcome: "withdrawn"; reason?: string | null }
+  | { outcome: "issue_closed"; reason?: string | null }
+  | { outcome: "addressee_deleted"; reason?: string | null }
+  | { outcome: "failed"; errorCode: string; retryable: false };
+
+type SuggestTasksResponseV1 =
+  | {
+      outcome: "accepted";
+      createdTasks: Array<{
+        clientKey: string;
+        issueId: string;
+        identifier?: string | null;
+        title?: string | null;
+        parentIssueId?: string | null;
+        parentIdentifier?: string | null;
+      }>;
+      skippedClientKeys: string[];
+      materializationId: string;
+    }
+  | { outcome: "rejected"; reason?: string | null }
+  | AdministrativeTerminalV1;
+
+type AskUserQuestionsResponseV1 =
+  | {
+      outcome: "answered";
+      answers: Array<{
+        questionId: string;
+        optionIds: string[];
+        otherText?: string | null;
+      }>;
+      summaryMarkdown?: string | null;
+    }
+  | { outcome: "cancelled"; reason?: string | null }
+  | { outcome: "superseded_by_comment"; commentId: string }
+  | AdministrativeTerminalV1;
+
+type ConfirmationResponseV1 =
+  | { outcome: "accepted"; reason?: string | null }
+  | { outcome: "rejected"; reason?: string | null; commentId?: string | null }
+  | {
+      outcome:
+        | "superseded_by_comment"
+        | "superseded_by_newer_request"
+        | "stale_target";
+      reason?: string | null;
+      commentId?: string | null;
+      supersededByInteractionId?: string | null;
+    }
+  | {
+      outcome: "trusted_tool_action";
+      status: "approved" | "executing" | "executed" | "failed" | "expired";
+      errorCode?: string | null;
+      errorMessage?: string | null;
+      resultSummary?: string | null;
+      resultHref?: string | null;
+    }
+  | AdministrativeTerminalV1;
+
+type CheckboxResponseV1 =
+  | { outcome: "accepted"; selectedOptionIds: string[] }
+  | { outcome: "rejected"; reason?: string | null; commentId?: string | null }
+  | {
+      outcome: "superseded_by_comment" | "stale_target";
+      reason?: string | null;
+      commentId?: string | null;
+    }
+  | AdministrativeTerminalV1;
+
+type ItemVerdictsResponseV1 =
+  | {
+      outcome: "progress" | "resolved";
+      complete: boolean;
+      newlyResolvedItemIds: string[];
+      items: Array<{
+        id: string;
+        verdict: "approve" | "reject" | "defer";
+        reason?: string | null;
+        resolvedAt: string;
+      }>;
+    }
+  | {
+      outcome: "superseded_by_comment" | "stale_target" | "cancelled";
+      reason?: string | null;
+      commentId?: string | null;
+    }
+  | AdministrativeTerminalV1;
+```
+
+Resolver identity remains in the company-scoped auditable row; model delivery
+uses only a redacted resolver class when diagnostics require it. Suggested-task
+acceptance materializes selected drafts transactionally in parent-before-child
+order and is at-most-once per `(interactionId, clientKey)`. Item verdicts may
+deliver progress repeatedly, but already resolved IDs are immutable.
+
+#### 17.3.3 Turn-yield and completion coexistence
+
+- A blocking call yields only after `interaction.request.materialized` is
+  durable. It terminalizes the turn as `completed` with reported work
+  disposition `yielded`; the model does not also call `paperclip.finish`.
+- A rejected blocking request does not yield. The tool returns the safe failure
+  and the model may correct it through a new tool invocation.
+- A non-blocking call returns the materialized interaction reference and the
+  model may continue, create more non-blocking interactions, and later invoke
+  exactly one terminal `paperclip.finish` or `paperclip.block`.
+- A pending interaction is an independent durable fact. If reported completion
+  depends on it, the status arbiter preserves a live continuation/review path;
+  if completion is independent and policy permits closing, issue closure
+  expires pending cards with `issue_closed`.
+- Once a blocking interaction auto-yields, later output or a terminal tool from
+  that turn fails with `turn_already_terminal`.
+- `paperclip.block` remains a task/track blocker report. A blocking interaction
+  is not proof of a task-wide blocker and never directly sets issue `blocked`.
 
 ### 17.4 Current issue-thread interaction inventory
 
@@ -2468,141 +3036,691 @@ The interaction row remains the authoritative full response and is retrievable t
 ### 18.1 Result schema
 
 ```ts
+type TurnTerminalState =
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "cancelled";
+
+type RunTerminalState = "succeeded" | "failed" | "cancelled";
+
+type ReportedWorkDisposition =
+  | "done"
+  | "blocked"
+  | "needs_review"
+  | "yielded";
+
+type AuthoritativeIssueStatus =
+  | "backlog"
+  | "todo"
+  | "in_progress"
+  | "blocked"
+  | "in_review"
+  | "done"
+  | "cancelled";
+
+interface CompletionContract {
+  schema: "paperclip.completion-contract.v1";
+  issueId: string;
+  revision: string;
+  objective: string;
+  criteria: Array<{
+    id: string;
+    description: string;
+    required: boolean;
+    assessmentMode?:
+      | "mechanical"
+      | "policy_backed_agent_claim"
+      | "named_reviewer"
+      | "board";
+    verificationClasses?: Array<
+      "test" | "build" | "lint" | "typecheck" | "review" | "external_check"
+    >;
+  }>;
+  requiredArtifacts: Array<{
+    kind: string;
+    description: string;
+    minimumCount?: number;
+  }>;
+  governedGates: Array<{
+    kind: "approval" | "security_review" | "qa_review" | "board_decision";
+    authority: ResolverTarget;
+    requiredBeforeDone: boolean;
+  }>;
+  completionAuthority:
+    | "mechanical"
+    | "policy_backed_agent_claim"
+    | "named_reviewer"
+    | "board";
+  incompleteCriteriaPolicy:
+    | "continue"
+    | "require_review"
+    | "allow_low_risk_agent_claim";
+  risk: "low" | "medium" | "high";
+  policyVersion: string;
+}
+
+interface CriterionClaim {
+  criterionId: string;
+  status: "satisfied" | "not_satisfied" | "unknown";
+  evidenceRefs: string[];
+  explanation?: string;
+}
+
+interface RemainingWork {
+  description: string;
+  ownerHint?: ResolverTarget;
+  blocksCompletion: boolean;
+}
+
+interface WorkEvidence {
+  id: string;
+  kind: "test" | "artifact" | "diff" | "observation" | "external_check";
+  description: string;
+  status: "passed" | "failed" | "unknown";
+  ref?: string;
+  producedAt: string;
+}
+
+interface ContinuationIntent {
+  kind: "same_agent" | "retry" | "delegated_issue" | "response_wake" | "monitor";
+  summary: string;
+  idempotencyKey: string;
+  notBefore?: string;
+  target?: ResolverTarget;
+}
+
+interface ResolverTarget {
+  ownerClass: "current_agent" | "agent" | "role" | "board_user" | "external_system";
+  agentId?: string;
+  role?: string;
+  userId?: string;
+  externalSystem?: string;
+  companyId: string;
+}
+
+interface AttentionRequest {
+  id: string;
+  dedupeKey: string;
+  requestedCapability:
+    | "context_lookup"
+    | "retry"
+    | "domain_expertise"
+    | "credential_grant"
+    | "governed_approval"
+    | "subjective_decision"
+    | "external_action"
+    | "review";
+  requiredAuthority?: "none" | "agent" | "board" | "external";
+  target: ResolverTarget;
+  scope: "current_turn" | "current_track" | "task_wide";
+  blockingCurrentTurn: boolean;
+  summary: string;
+  question?: string;
+  choices?: Array<{ key: string; label: string }>;
+  attempts: Array<{
+    kind: "context_lookup" | "tool" | "retry" | "delegation";
+    summary: string;
+    evidenceRefs?: string[];
+  }>;
+  evidenceRefs: string[];
+  urgency: "normal" | "high";
+  expiresAt?: string;
+  responsePolicy: "wake_current_turn" | "wake_assignee" | "resume_track" | "record_only";
+}
+
 interface StructuredRunResult {
   schema: "paperclip.run_result.v1";
-
-  disposition:
-    | "done"
-    | "blocked"
-    | "needs_review"
-    | "yielded";
-
+  reportedWorkDisposition: ReportedWorkDisposition;
   summary: string;
-
-  evidence?: Array<{
-    kind:
-      | "test"
-      | "artifact"
-      | "diff"
-      | "observation"
-      | "external_check";
-    description: string;
-    status?: "passed" | "failed" | "unknown";
-    ref?: string;
-  }>;
-
-  verification?: Array<{
+  completionClaim: {
+    contractRevision: string;
+    objectiveSatisfied: boolean;
+    criteria: CriterionClaim[];
+    remainingWork: RemainingWork[];
+  };
+  evidence: WorkEvidence[];
+  verification: Array<{
     commandOrCheck: string;
     status: "passed" | "failed" | "not_run";
     detail?: string;
     artifactRef?: string;
   }>;
-
   blocker?: {
-    reason: string;
-    needs?: string;
-    ownerHint?: string;
+    reasonCode: string;
+    owner: ResolverTarget;
+    unblockAction: string;
+    scope: "current_track" | "task_wide";
   };
-
-  artifacts?: Array<{
+  attentionRequests: AttentionRequest[];
+  artifacts: Array<{
     kind: string;
     ref: string;
     title?: string;
   }>;
-
-  nextActions?: string[];
+  continuation?: ContinuationIntent;
 }
 ```
 
+The task envelope contains the exact `CompletionContract` revision used for the turn. A result that cites another revision is stale until reconciled against the current contract. Missing acceptance criteria do not silently become satisfied criteria: policy must choose continued work, review, or an explicit low-risk agent-claim path.
+
+`assessmentMode` may narrow an individual criterion relative to the contract-wide `completionAuthority`; it may not widen it. This permits a mixed contract—for example, mechanically checking a test while requiring a named reviewer for product judgment—without pretending arbitrary semantic completion is mechanically provable. A mechanical outcome is valid only when it is derived from an authoritative persisted test, artifact, approval, or external-check record. A model-authored `status: "passed"` is a claim to classify, not mechanical proof.
+
+`blockingCurrentTurn` is a runner-observed runtime fact. It must be `true` when the driver cannot continue the current turn without resolution. It does not widen `scope` to `task_wide`, prove that all productive tracks are stopped, or authorize issue status `blocked`.
+
+An accepted blocking `paperclip.interact` call creates a host-authored terminal
+report rather than asking the model to duplicate the result through
+`paperclip.finish`:
+
+```ts
+interface InteractionYieldResultV1 {
+  schema: "paperclip.interaction-yield.v1";
+  reportedWorkDisposition: "yielded";
+  interactionId: string;
+  requestId: string;
+  kind: InteractionKind;
+  materialization: "created" | "replayed";
+  effectiveContinuationPolicy: "wake_assignee";
+}
+```
+
+The finalizer converts this receipt into the same durable work-assessment path
+as an explicit yielded result, while preserving that the source was a semantic
+tool rather than model-authored completion prose. The interaction and the
+status decision remain separate records.
+
+| Interaction fact | Turn/run disposition | Status-arbiter input | Forbidden inference |
+|---|---|---|---|
+| Request rejected before materialization | Turn stays open; no terminal report | Safe validation failure only | Rejection is not a blocker or review path. |
+| Non-blocking request materialized | Turn continues | Pending interaction is durable context | Creating a card does not change issue status. |
+| Blocking request materialized | Turn `completed`; reported disposition `yielded`; run finalizes normally | Pending interaction, effective continuation, and any existing live paths | `blockingCurrentTurn` does not mean issue `blocked`. |
+| Progress response recorded | Source run remains terminal; server may queue a resumed run | Full current item-verdict state, new-item delta, response cursor, continuation decision | Partial verdicts do not imply completion. |
+| Terminal response recorded | Server selects same/fresh resumed session or suppression | Typed response, target state, effective policy, and authoritative continuation result | Acceptance does not itself set `done`; rejection does not itself set `blocked`. |
+| `paperclip.finish` while a dependency-relevant interaction remains pending | Normal completion assessment | Completion contract plus pending interaction and its live path | A model claim cannot discard the pending request or force `done`. |
+
+Formal `approvals` and execution-policy reviews never enter this table as
+interaction kinds. They retain their own authority, participant, and status
+transitions. An interaction may expose a typed issue-thread decision, but it
+cannot satisfy a governed approval or execution stage unless the corresponding
+server policy independently records that authorized decision.
+
 ### 18.2 Validation
 
-The control plane validates:
+Validation has three distinct outcomes:
+
+1. **Schema acceptance** confirms that Paperclip can safely persist and assess the report.
+2. **Evidence assessment** classifies each claim as accepted, missing, rejected, or unverifiable.
+3. **Status arbitration** decides the authoritative issue transition or no-op.
+
+Schema acceptance validates:
 
 - schema version;
-- disposition;
+- reported work disposition;
 - size limits;
 - artifact ownership;
+- evidence-reference ownership and existence where mechanically checkable;
 - run/session binding;
-- whether blocker is present when blocked;
-- whether verification evidence is required by policy;
-- whether issue transition is legal.
+- completion-contract revision;
+- company scope for every resolver target;
+- blocker owner/action when `reportedWorkDisposition` is `blocked`;
+- continuation intent when `reportedWorkDisposition` is `yielded`;
+- stable attention IDs, dedupe keys, expiry, and response policy.
 
 Invalid result:
 
 - emit `run.result.rejected`;
 - allow a bounded correction turn when policy permits;
-- otherwise finish `needs_review`.
+- otherwise terminalize the run according to runtime facts, preserve any safely parsed claims/evidence, record `result_schema_rejected`, and create a live recovery or review path without assuming issue status `in_review`.
+
+A valid result emits `run.result.accepted`, but acceptance grants no status authority. Evidence validation must not erase failed, unknown, stale, or rejected evidence; it records the classification and reason so later review or reconciliation can inspect the original claim.
 
 ### 18.3 Status authority and human-needed signaling
 
-Issue status is a server-owned projection of validated work facts, not an agent speech act. The runner protocol accepts a **reported disposition** and supporting evidence. A control-plane finalization policy decides the **authoritative issue transition**.
+Issue status is a server-owned projection of validated work facts, not an agent speech act. The four authorities are:
 
-This separation preserves the useful part of agent autonomy—the ability to finish, raise a hand, or name a blocker—without letting an unreliable model arbitrarily move work among `done`, `in_review`, `blocked`, and `in_progress`.
+| Decision surface | Authority | Inputs it may assert | Inputs it may not assert |
+|---|---|---|---|
+| Harness driver | Turn lifecycle authority | Accepted turn identity and terminal state | Task completion or issue status |
+| Runner/finalizer | Run lifecycle authority | Process/provider outcome, runtime diagnostics, workspace finalization, run terminal state | Semantic completion or issue status |
+| Agent/model | Work-report authority | Reported disposition, completion claim, evidence, remaining work, blocker and attention candidates | Authoritative issue transition, governed approval, cross-company routing |
+| Status arbiter | Organizational status authority | Legal issue transition/no-op and atomic side effects | Rewriting the original agent report or fabricating evidence |
 
-The normalized inputs are:
+The arbiter consumes a durable assessment rather than raw prose:
 
 ```ts
-type AgentWorkSignal =
-  | { kind: "completion_candidate"; result: StructuredRunResult }
-  | { kind: "blocker_candidate"; result: StructuredRunResult }
-  | { kind: "human_attention"; request: AttentionRequest }
-  | { kind: "continuation_candidate"; result: StructuredRunResult };
+interface WorkAssessment {
+  schema: "paperclip.work-assessment.v1";
+  id: string;
+  issueId: string;
+  runId: string;
+  turnId: string;
+  turnTerminalState: TurnTerminalState;
+  runTerminalState: RunTerminalState;
+  reportedWorkDisposition: ReportedWorkDisposition | null;
+  completionContractRef: string;
+  completionContractRevision: string;
+  criterionAssessments: Array<{
+    criterionId: string;
+    outcome: "accepted" | "missing" | "rejected" | "unverifiable";
+    evidenceRefs: string[];
+    reasonCode: string;
+  }>;
+  acceptedEvidenceRefs: string[];
+  missingRequirements: string[];
+  rejectedEvidence: Array<{ ref: string; reasonCode: string }>;
+  unverifiableEvidence: Array<{ ref: string; reasonCode: string }>;
+  pendingGovernedActions: string[];
+  remainingWork: RemainingWork[];
+  attention: Array<{
+    requestId: string;
+    route: "context" | "retry" | "agent" | "board" | "external" | "rejected";
+    resolver?: ResolverTarget;
+    reasonCode: string;
+  }>;
+  livePaths: Array<{
+    kind: "continuation" | "retry" | "delegated_issue" | "interaction" | "review" | "monitor";
+    ref: string;
+  }>;
+  priorIssueStatus: AuthoritativeIssueStatus;
+  policyVersion: string;
+  supersedesAssessmentId?: string;
+}
 
-interface AttentionRequest {
-  reason:
-    | "question"
-    | "decision"
-    | "approval"
-    | "credential"
-    | "review"
-    | "external_action";
-  summary: string;
-  ownerHint?: string;
-  blockingCurrentTurn: boolean;
-  choices?: Array<{ key: string; label: string }>;
+interface StatusDecision {
+  schema: "paperclip.status-decision.v1";
+  id: string;
+  issueId: string;
+  assessmentId: string;
+  authority: "paperclip_status_arbiter";
+  triggerAuthority: {
+    kind: "runner_finalizer" | "board_user" | "authorized_agent" | "interaction" | "dependency" | "monitor";
+    actorRef?: string;
+    actorCompanyId: string;
+    actionCapability?: string;
+    triggerRef: string;
+  };
+  fromStatus: AuthoritativeIssueStatus;
+  toStatus: AuthoritativeIssueStatus;
+  transitionApplied: boolean;
+  reasonCode: StatusDecisionReasonCode;
+  sideEffects: Array<{
+    kind:
+      | "enqueue_continuation"
+      | "schedule_retry"
+      | "create_delegated_issue"
+      | "create_interaction"
+      | "bind_reviewer"
+      | "bind_blocker"
+      | "notify_owner"
+      | "record_finalization_error"
+      | "release_checkout";
+    ref?: string;
+  }>;
+  inputDigest: string;
+  inputRefs: {
+    structuredResultRef?: string;
+    completionContractRevision: string;
+    priorDecisionId?: string;
+  };
+  policyVersion: string;
+  decidedAt: string;
+  supersedesDecisionId?: string;
 }
 ```
 
-The status arbiter applies these rules:
+`StatusDecisionReasonCode` is a stable protocol enum. The minimum set is:
 
-- `done` requires a valid completion result, required verification/evidence, no unresolved governed action, and no declared live continuation.
-- `blocked` requires a first-class blocker that prevents productive progress, plus a concrete unblock owner and action. A question, uncertainty, failed attempt, or desire for review is not enough. If another productive track can continue, Paperclip records the attention request and keeps or schedules that work instead of marking the whole issue blocked.
-- `in_review` requires a real review path created atomically with the transition: a named reviewer, approval, issue interaction, delegated QA/review issue, or monitor that will wake the assignee. A generic “human should look” result is an attention request, not a valid review status.
-- `in_progress` remains correct when a live continuation, retry, delegated sub-issue, or awaited interaction wake is registered. Evidence or comments alone are not a continuation path.
-- reopening or moving an issue out of `done`, `in_review`, or `blocked` requires an authorized human action, accepted interaction, explicit resume event, dependency resolution, or newly scheduled continuation. A model cannot silently rewrite the prior authoritative status.
+```text
+completion_contract_satisfied
+completion_claim_policy_accepted
+completion_evidence_incomplete
+completion_review_required
+governed_gate_pending
+live_continuation_registered
+turn_waiting_other_track_live
+task_wide_blocker_bound
+attention_resolved_from_context
+attention_routed_to_agent
+attention_requires_human_authority
+attention_duplicate_suppressed
+attention_budget_exhausted
+run_failed_partial_evidence_preserved
+finalization_failed_claim_preserved
+cancellation_turn_only
+cancellation_run_only
+cancellation_issue_authorized
+prior_status_preserved_no_live_path
+authorized_resume
+dependency_resolved
+decision_superseded_by_new_evidence
+result_schema_rejected
+```
 
-The arbiter records both the agent's proposed disposition and its final decision so operators can inspect disagreements. Policy may require board confirmation for high-risk completion or status changes without preventing the agent from reporting that it believes its work is complete.
+The complete arbitration table is normative. “Preserve” means that the current issue status remains unchanged.
+
+| Case | Authority and required inputs | Authoritative decision | Required atomic side effects and liveness | Reason code |
+|---|---|---|---|---|
+| Run succeeded; contract mechanically satisfied | Arbiter; accepted current-revision evidence, required artifacts, no missing criteria, no pending gate, no remaining completion work | `done` | Persist assessment/decision, compact handoff, release checkout | `completion_contract_satisfied` |
+| Run succeeded; low-risk agent claims done under explicit policy | Arbiter; current claim, policy permits agent authority, no contradictory evidence or pending gate | `done` | Persist policy basis and evidence classifications, release checkout | `completion_claim_policy_accepted` |
+| Run succeeded; agent claims done but required evidence or criteria are incomplete | Arbiter; completion claim plus missing/rejected/unverifiable requirements | `in_progress` only when a live path is created; otherwise preserve | Register continuation/retry/delegated verification; if none can be created, record finalization error and preserve status | `completion_evidence_incomplete` |
+| Run succeeded; completion requires subjective, Security, QA, CTO, board, or governed review | Arbiter; contract gate or risk policy and a real review target | `in_review` | Atomically bind reviewer, approval, interaction, delegated review issue, or monitor that wakes the assignee | `completion_review_required` or `governed_gate_pending` |
+| Structured result is invalid, stale, cross-boundary, or remains uncorrected after the bounded correction policy | Runner/finalizer + arbiter; rejected result, binding/schema failure, runtime facts, safely parsed evidence | Preserve | Persist the rejected input and reason, terminalize the run from runtime facts, and atomically create a bounded correction/recovery path when policy permits; never infer `in_review`, `blocked`, or `done` from rejection | `result_schema_rejected` |
+| Run succeeded; agent reports yielded and continuation is valid | Arbiter; declared continuation with valid target/idempotency and policy budget | `in_progress` | Atomically enqueue continuation, retry, delegated issue, response wake, or monitor | `live_continuation_registered` |
+| Current turn waits for an answer, but another productive track exists | Attention resolver + arbiter; `scope: current_turn` or `current_track`, alternate track and continuation | `in_progress` | Persist/rout attention and enqueue alternate productive track; do not create task-wide blocker | `turn_waiting_other_track_live` |
+| A task-wide blocker prevents all productive progress | Arbiter; blocker `scope: task_wide`, concrete owner, unblock action, evidence, no alternate live track | `blocked` | Atomically bind blocker issue or named owner/action and wake/notify route | `task_wide_blocker_bound` |
+| Agent asks a question answerable from durable context or policy | Attention resolver; context hit bound to request and current revision | `in_progress` only when a response wake is registered; otherwise preserve | Record answer, resolve request, wake current turn/assignee as requested | `attention_resolved_from_context` |
+| Agent asks for expertise another in-company agent can supply | Attention resolver; capability match, company scope, delegation policy | `in_progress` only when delegation creates a live response path; otherwise preserve | Route request or create delegated issue with response binding and wake path | `attention_routed_to_agent` |
+| Agent asks for human help and only human/board authority or intentional judgment can resolve it | Attention resolver + arbiter; authority match, company scope, dedupe/budget checks | `in_review` only for contract review; otherwise `in_progress` only with a response wake; otherwise preserve | Create board interaction/approval and required wake atomically; `scope: current_turn` alone does not set status | `attention_requires_human_authority` |
+| Duplicate or repeated attention request has no new evidence | Attention resolver; same dedupe key or superseded request, no material evidence delta | Preserve | Link duplicate to canonical request; do not notify or create another interaction | `attention_duplicate_suppressed` |
+| Attention retry/escalation budget is exhausted with no valid resolver | Arbiter; attempt history and failed capability routing | Preserve | Record finalization error and named recovery owner/action; never manufacture `blocked` or `in_review` | `attention_budget_exhausted` |
+| Run fails after producing partial work or evidence | Runner/finalizer + arbiter; failed run facts and safely persisted result/evidence | Preserve | Persist claims/evidence, apply retry/recovery policy, schedule live path when allowed | `run_failed_partial_evidence_preserved` |
+| Model reports completion but transport, workspace, or finalization later fails | Runner/finalizer + arbiter; accepted completion claim plus finalization failure | Preserve | Persist claim and evidence, mark run failed, open/schedule reconciliation; never mark done | `finalization_failed_claim_preserved` |
+| Cancellation targets only the active turn | Cancellation authority; authenticated command with `scope: turn` | Preserve | Terminalize turn `cancelled`; continue or await replacement turn according to run policy | `cancellation_turn_only` |
+| Cancellation targets the run, not the issue | Cancellation authority; authenticated command with `scope: run` | Preserve | Terminalize run `cancelled`, release runtime resources, keep issue available for resume | `cancellation_run_only` |
+| Cancellation explicitly targets the issue | Board or otherwise authorized issue-status actor; authenticated command with `scope: issue` | `cancelled` | Cancel active turn/run, record issue transition, release checkout and continuations | `cancellation_issue_authorized` |
+| Later evidence, dependency resolution, interaction response, or authorized resume changes the facts | Arbiter; new assessment, prior decision, authorized trigger | Re-evaluate to any legal status | Append superseding assessment/decision and create the required new liveness path | `decision_superseded_by_new_evidence`, `dependency_resolved`, or `authorized_resume` |
+
+Every decision records the arbiter authority, exact input assessment, reason code, side effects, and policy version. An issue transition and its liveness side effects commit in one transaction. A failed side effect means the transition is not applied.
+
+Human-needed is therefore an attention-routing result, not an agent-authored status. Human/board routing is valid only for human authority, governed approval, non-delegable credentials or external action, intentionally subjective judgment, or policy-required high-risk review. Context lookup, bounded self-recovery, safe retry, and qualified in-company delegation precede human escalation.
+
+The following Security constraints are normative for the Phase 2 finalizer/status-arbiter design, the Phase 3 attention resolver, and their conformance tests:
+
+1. **Server-derived company and resolver routing.** The source company comes from the authenticated run-to-issue binding. Caller-supplied company and target fields are untrusted suggestions: mismatches are rejected, agent/role/user targets resolve with company membership in the same scoped query, and external targets resolve only through a company-owned allowlisted integration. Cross-company failures have a generic, side-effect-free response.
+2. **Policy-derived authority.** Requested capability, `requiredAuthority`, and target do not grant authority. Server policy derives the minimum gate from the canonical action and resource. Credential grants, governed approvals, destructive or irreversible external actions, and policy-required reviews cannot be downgraded through expertise routing. Recommendation, approval, and execution are distinct audited acts; tool approval binds exact canonical arguments and executes once.
+3. **Server-canonical replay identity.** Caller IDs and dedupe keys are correlation hints, not the security boundary. The server fingerprints company, issue, run, turn, contract revision, request kind, normalized capability/action, effective target, and material payload. Identical retries return the canonical record; reused IDs with changed payload conflict; fresh-key equivalents consume the same policy budget. Responses bind to the current request version, selected resolver, company, and non-superseded state under lock, so stale responses are audit-only.
+4. **Serialized arbitration.** The arbiter locks the issue/control row and compare-and-swaps current status plus prior decision/version in the same transaction that writes the assessment, decision, side effects, and outbox wake. One canonical decision exists per assessment/trigger. A conflict reloads authoritative facts and appends a superseding assessment; it never replays stale side effects. Downstream side-effect consumers remain idempotent.
+5. **Tamper-evident input lineage.** Canonical serialization and a cryptographic digest cover the immutable completion-contract snapshot, structured result, criterion/evidence classifications, prior status and decision version, trigger identity/company/action capability, policy version, and planned side effects. Immutable references and supersession edges make accepted, rejected, duplicate, stale, and conflicting inputs reconstructable without retaining secrets.
+
+#### 18.3.1 Canonical attention records
+
+An `AttentionRequest` is an agent-authored candidate. The attention resolver first converts it to a server-owned record; no notification, delegation, interaction, retry, wake, or issue transition may be created directly from the candidate.
+
+```ts
+interface CanonicalAttentionRequest {
+  schema: "paperclip.canonical-attention-request.v1";
+  id: string;
+  version: number;
+  companyId: string;
+  issueId: string;
+  runId: string;
+  turnId: string;
+  completionContractRevision: string;
+
+  classification:
+    | "information"
+    | "transient_recovery"
+    | "expertise"
+    | "credential"
+    | "governed_action"
+    | "subjective_judgment"
+    | "external_action"
+    | "policy_review";
+  canonicalAction?: string;
+  canonicalResourceRef?: string;
+  requiredExpertise: string[];
+  minimumAuthority:
+    | "none"
+    | "agent_recommendation"
+    | "authorized_agent_action"
+    | "board_user"
+    | "governed_approval"
+    | "external_system";
+  effectiveTarget?: ResolverTarget;
+
+  requestedScope: "current_turn" | "current_track" | "task_wide";
+  effectiveScope: "current_turn" | "current_track" | "task_wide";
+  blockingCurrentTurn: boolean;
+  alternateTrackRef?: string;
+
+  requestFingerprint: string;
+  equivalenceFingerprint: string;
+  callerRequestId?: string;
+  callerDedupeKey?: string;
+  materialEvidenceDigest: string;
+
+  urgency: "normal" | "high";
+  createdAt: string;
+  expiresAt: string;
+  state:
+    | "pending"
+    | "routed"
+    | "resolved"
+    | "expired"
+    | "superseded"
+    | "rejected"
+    | "exhausted";
+  selectedRoute?: "context" | "retry" | "agent" | "board" | "external" | "recovery";
+  selectedResolver?: ResolverTarget;
+  routeRef?: string;
+  responsePolicy: AttentionRequest["responsePolicy"];
+  policyVersion: string;
+  supersedesRequestId?: string;
+}
+
+type AttentionResolutionReasonCode =
+  | "attention_request_invalid"
+  | "attention_cross_company_rejected"
+  | "attention_agent_resolvable"
+  | "attention_resolved_from_context"
+  | "attention_retry_scheduled"
+  | "attention_retry_succeeded"
+  | "attention_routed_to_agent"
+  | "attention_requires_human_authority"
+  | "attention_duplicate_suppressed"
+  | "attention_scope_narrowed"
+  | "attention_budget_exhausted"
+  | "attention_expired"
+  | "attention_stale_response"
+  | "attention_no_valid_route";
+
+interface AttentionResolutionBudget {
+  schema: "paperclip.attention-budget.v1";
+  equivalenceFingerprint: string;
+  contextPasses: number;
+  transientRetries: number;
+  distinctAgentResolvers: number;
+  humanOrExternalRoutes: number;
+  emittedWakes: number;
+  firstAttemptAt: string;
+  lastAttemptAt: string;
+  policyVersion: string;
+}
+```
+
+The resolver derives `companyId`, issue, run, turn, and contract revision from the authenticated run binding. It canonicalizes the requested action and resource before policy derives `minimumAuthority`. The candidate's `requiredAuthority`, target, company, and requested capability are hints for classification only. `requiredExpertise` answers _who can understand or recommend_; `minimumAuthority` answers _who may decide or act_. Expertise never satisfies an approval, credential, destructive external-action, separation-of-duties, or policy-review gate.
+
+The source company is immutable. Agent, role, and board-user resolvers are selected by company-scoped membership queries. External systems must be company-owned, enabled, and allowlisted for the canonical action. A cross-company target, hidden resource, or mismatched run binding returns the same generic rejection, persists only security/audit telemetry permitted by policy, and creates no resolver-visible record or side effect.
+
+#### 18.3.2 Validation and classification
+
+Ingress runs in this order:
+
+1. Resolve the authenticated run, issue, turn, company, and current completion-contract revision.
+2. Validate schema/version, bounded text and choice sizes, timestamps, evidence ownership, and response policy. `expiresAt` must be in the future and within the policy maximum.
+3. Canonicalize action, resource, material question/payload, requested capability, and target class. Reject ambiguous governed actions rather than treating them as ordinary questions.
+4. Derive `classification`, `requiredExpertise`, and `minimumAuthority` from policy. A caller cannot lower the derived authority or widen resource scope.
+5. Compute the exact request and equivalence fingerprints, then perform idempotency, duplicate, and budget checks under the attention-family lock.
+6. Derive `effectiveScope` from runtime facts and live tracks. The candidate may be narrowed; it becomes `task_wide` only when all productive tracks are proven unavailable.
+7. Persist the canonical request or return the existing canonical record before any resolution side effect runs.
+
+Classification is deterministic for a policy version:
+
+| Canonical need | Classification | Minimum route before any human wait |
+|---|---|---|
+| Fact already present in company/task state, documents, policy, prior bound responses, or tool output | `information` | Context lookup |
+| Retry-safe transient provider, transport, tool, or workspace failure | `transient_recovery` | Bounded retry |
+| Analysis, recommendation, or domain knowledge | `expertise` | Qualified in-company agent |
+| Permission to reveal/use a credential | `credential` | Existing authorized secret/tool binding; otherwise credential owner |
+| Approval, spend, security gate, irreversible action, or policy-controlled decision | `governed_action` | Exact governed approval path |
+| Intentionally subjective choice assigned to a person | `subjective_judgment` | Named board/user interaction |
+| Action in a third-party system | `external_action` | Authorized company integration or agent executor; human only when non-delegable |
+| Completion ambiguity or risk that policy says must be reviewed | `policy_review` | Named reviewer/approval from the completion contract |
+
+Validation failures never manufacture `blocked` or `in_review`. A schema-correct but unnecessary human request is accepted as an auditable candidate, reclassified, and resolved through context/retry/agent routing or rejected with `attention_agent_resolvable`; it is not sent to a human.
+
+#### 18.3.3 Canonical identity, repeats, budgets, urgency, and expiry
+
+The caller's `id` and `dedupeKey` provide correlation, not uniqueness or authority. The server computes two hashes using canonical serialization:
+
+- `requestFingerprint` covers company, issue, run, turn, contract revision, classification, canonical action/resource, normalized capability, the company-validated effective target, scope, response policy, material question/payload, choices, and evidence digest. It identifies an exact request version.
+- `equivalenceFingerprint` omits caller IDs, run/turn IDs, wording-only differences, urgency, and evidence ordering. It covers company, issue, contract revision, classification, canonical action/resource, normalized capability, material question/payload, and effective target class. It groups fresh-key or paraphrased repeats that seek the same outcome.
+
+Exact retries return the canonical record. Reusing a caller request ID or dedupe key with a different request fingerprint returns `409 attention_identity_conflict`. An equivalent request with no material evidence or durable-state change is linked to the canonical request, emits `attention_duplicate_suppressed`, and creates no retry, notification, route, status decision, or wake. New evidence may create a new version in the same equivalence family; it does not reset the family budget. A changed completion-contract revision creates a new family but links the prior request as superseded.
+
+V1 defaults are finite and policy-versioned per equivalence family:
+
+| Budget | Default | Rule |
+|---|---:|---|
+| Context resolution | 1 pass per durable source-state fingerprint | Re-run only when a referenced document, policy, tool result, contract, or prior response version changes. |
+| Transient retry | 2 retries | Exponential schedule, default 30 seconds then 2 minutes; only idempotent or compensatable actions qualify. |
+| Agent resolvers | 2 distinct agents/roles | Do not cycle back to a failed resolver without material new evidence. |
+| Human/external route | 1 pending route | At most one live interaction, approval, credential request, or external action for an equivalence family. |
+| Resolution transitions | 6 total | Context hits do not consume a transition; every retry/delegation/escalation/fallback does. |
+| Resolution wake | 1 per request version and state transition | Wake idempotency is `attention:<requestId>:<version>:<state>`. |
+
+Equivalent fresh-key spam consumes these shared counters. Policy may lower the defaults for risk or cost, but cannot make them unbounded. Permission, validation, policy denial, cross-company, non-idempotent action, and missing-authority failures are never transient retries.
+
+`high` urgency moves an eligible route ahead in its queue and uses shorter scheduling/expiry windows; it never skips validation, context lookup, company checks, separation of duties, budgets, or authority gates. Default expiry is 24 hours for `normal` and 4 hours for `high`, capped at 7 days by V1 policy. A policy-owned monitor may replace an expired credential/external wait with a new request version only after a durable state change or explicit authorized resume. Expiry otherwise resolves the request once, cancels its live route when safe, emits at most one fallback wake, and cannot recursively create an equivalent request.
+
+#### 18.3.4 Ordered resolution pipeline
+
+After canonical persistence, the resolver attempts routes in this strict order. A later stage is legal only when the prior applicable stages recorded why they could not resolve the request.
+
+1. **Context.** Search the bound task envelope, current issue fields, ancestor/goal context, issue documents, completion contract, company policy, prior non-stale responses in the same equivalence family, and authoritative tool/runtime state. Every answer records source references and versions. Secret values are never copied into an attention response; the resolver may return only an authorized binding or a redacted instruction to use one.
+2. **Self-recovery/retry.** Retry only a classified transient failure whose canonical action is idempotent or has a safe compensation. Persist attempt number, failure class, next-at, and idempotency key before dispatch. A successful retry resolves the request; exhaustion advances once to matching/delegation, not back to context unless durable state changed.
+3. **Capability matching and delegation.** Select active, invokable, budget-eligible, same-company agents whose declared capabilities and durable history match `requiredExpertise`. Enforce issue/work-object access, assignment policy, workload, conflict-of-interest, separation-of-duties, and required action authority independently. Rank exact capability and authorized action match before org proximity. A recommendation-only expert may answer analysis but cannot approve or execute the action.
+4. **Human/governed/external escalation.** Create a human-facing route only when `minimumAuthority` or classification proves one of: board/user authority; governed approval; non-delegable credential or external action; intentionally subjective judgment assigned to a human; or policy-required review. Use the exact existing primitive—approval for governed spend/policy/action, typed interaction for a question or judgment, named reviewer for completion review, credential owner flow, or allowlisted external action. Free-form comments are not response routes.
+5. **Truthful fallback.** When every valid route is exhausted or no resolver exists, set the attention request to `exhausted`, persist attempt history and `attention_no_valid_route`, and ask the arbiter for a no-op/preserve decision. If policy can create an internal recovery action, it must atomically bind its owner and wake; otherwise record a finalization error and operational alert, release runtime resources safely, and preserve the prior issue status. Exhaustion alone never creates `blocked`, `in_review`, a human interaction, or another equivalent attention request.
+
+Delegation chooses between a same-run response and a delegated issue. Same-run routing is allowed only when the responder can return through a durable addressed channel. Otherwise Paperclip creates/reuses one company-scoped delegated issue with the exact question, evidence refs, authority limit, response binding, and parent/goal/workspace context. If the source must wait, the dependency and response wake are part of the same transaction. Completing a delegated issue without a valid bound response does not resolve the attention request.
+
+#### 18.3.5 Blocking scope and alternate productive tracks
+
+The resolver and arbiter interpret scope as follows:
+
+| Scope | What is stopped | Required status behavior |
+|---|---|---|
+| `current_turn` | Only the accepted provider turn cannot continue synchronously. | Persist/route the request. Resume that turn when supported or wake the assignee. Do not mark the issue blocked. |
+| `current_track` | One named dependency chain or workstream cannot proceed. | Continue another declared productive track when one exists; keep `in_progress` only with its queued continuation. Do not create a task-wide blocker. |
+| `task_wide` | Every completion-relevant track is unable to make productive progress. | `blocked` is legal only with evidence that no alternate track is live plus a concrete same-company owner/action or first-class blocker and its wake path. |
+
+`blockingCurrentTurn` is observed by the runner and cannot be cleared by model assertion. Conversely, a model's `task_wide` request is only a claim. The arbiter inspects remaining work, active/queued continuations, delegated work, retryable actions, and independent acceptance criteria; if any productive track exists, it narrows effective scope and emits `turn_waiting_other_track_live`. Switching tracks must not discard the waiting request or double-run the blocked track.
+
+#### 18.3.6 Response binding and atomic wake behavior
+
+Every response uses a server-issued binding:
+
+```ts
+interface AttentionResponseBinding {
+  requestId: string;
+  requestVersion: number;
+  companyId: string;
+  issueId: string;
+  completionContractRevision: string;
+  route: "context" | "retry" | "agent" | "board" | "external" | "recovery";
+  resolverRef: string;
+  canonicalAction?: string;
+  canonicalResourceRef?: string;
+  responseNonce: string;
+}
+```
+
+Response handling locks the canonical request and issue control row, then verifies company, request/version, current contract, selected route and resolver, response nonce, current pending/routed state, non-expiry, and non-supersession. It also re-authorizes the resolver for the canonical action/resource at response time. Identical response retries return the stored resolution. A response from an old resolver, old request version, old contract, another company, an expired route, or a superseded request is stored as `stale_response` audit evidence and has no status, approval, execution, or wake side effect.
+
+A recommendation response supplies information only. An approval authorizes only the bound action/resource and does not itself perform a distinct execution unless the governed tool contract explicitly binds exact canonical arguments for execute-once semantics. Credential responses bind an authorized secret/tool reference, never secret material. External-action responses include the provider's immutable operation/result reference.
+
+The following commit as one transaction:
+
+1. request state/version and accepted response;
+2. route/interaction/approval/delegated-issue resolution;
+3. new `WorkAssessment` and `StatusDecision` or explicit preserve/no-op;
+4. issue transition, dependency, reviewer, or recovery binding when applicable;
+5. exactly one continuation/wake outbox row with its idempotency key; and
+6. immutable activity and reason-code records.
+
+The transaction rolls back if any required liveness side effect cannot be created. Outbox delivery is retryable and idempotent; delivery failure cannot create a second semantic wake. A current-turn resume is attempted only when the same provider session still advertises resumability. Otherwise the bound wake starts a later turn with the response and supersession context. No accepted response may wake both paths.
+
+#### 18.3.7 Weak-agent and adversarial scenario check
+
+This matrix is the required Phase 3 design verification. Each row has a bounded terminal routing outcome and no infinite wake edge.
+
+| Scenario | Expected resolver outcome | Status/liveness assertion |
+|---|---|---|
+| Agent asks a question already answered in the current document revision | Context response with versioned source refs | No human route; one response wake at most. |
+| Agent repeats the same question with the same key | Return canonical request | No new attempt, notification, status decision, or wake. |
+| Agent paraphrases the same question with fresh IDs | Match equivalence family and consume the shared budget | Duplicate suppressed; fresh keys cannot reset escalation. |
+| Agent requests a human for ordinary domain expertise | Reclassify to `expertise`; match an in-company agent | No human wait by default; delegation has a bound response path. |
+| Agent claims `task_wide` while an independent acceptance track is runnable | Narrow to `current_turn` or `current_track` and queue the alternate track | Issue remains truthfully `in_progress`; waiting track remains durable. |
+| Retry-safe tool call fails transiently, then succeeds | One bounded idempotent retry resolves it | No delegation or human route. |
+| Retry-safe failure exhausts two retries | Advance once to qualified agent/recovery or truthful fallback | No retry loop and no automatic human escalation without human authority. |
+| Agent labels a governed action as `requiredAuthority: none` | Policy derives the governed minimum authority | Exact approval route; expertise cannot downgrade it. |
+| Candidate names an agent, user, resource, or integration in another company | Generic side-effect-free rejection | No target disclosure, route, notification, or wake. |
+| Selected resolver changes or replies after supersession/expiry | Record stale response only | No issue transition, execution, or wake. |
+| Human interaction expires unanswered | Resolve expiry once; use policy fallback only with a durable new state or authorized resume | At most one fallback wake; no equivalent interaction recreation loop. |
+| No eligible agent, human authority, integration, or safe retry exists | Mark request exhausted and record finalization error/recovery alert | Preserve prior issue status; do not manufacture `blocked` or `in_review`. |
+
+The implementation test plan must turn every row into a deterministic fixture that asserts canonical/equivalence identity, counters, selected route, effective scope, status decision reason, side effects, wake count, and stale-response behavior.
 
 ### 18.4 Mapping to Paperclip
 
-The native runtime returns the structured result to the finalization pipeline. Native mode requires the additive finalizer contract in section 18.5; it must not pass a native result through the legacy exit-code-only decision path.
+The native runtime returns runtime facts, the original structured result or
+host-authored interaction-yield receipt, and typed attention requests to the
+finalization pipeline. Native mode requires the additive contract in section
+18.5; it must not pass a native result through the legacy exit-code heuristic.
 
-The finalizer:
+The ordered pipeline is:
 
-- records run summary;
-- records usage and cost;
-- creates or promotes work products;
-- creates one compact durable final comment or handoff;
-- applies the existing legal issue transition;
-- releases checkout/lock according to policy;
-- finalizes workspace and environment.
+1. Persist and deduplicate all P0 terminal, result, attention, and interaction events.
+2. Validate run/session/company binding and the completion-contract revision.
+3. Preserve the original result, claims, evidence, verification, artifacts, remaining work, attention candidates, and any host-authored interaction-yield receipt.
+4. Finalize workspace and environment. Failure changes the run terminal state to `failed` but does not delete the report.
+5. Record usage, cost, session, provider, model, billing, runtime-service, and process diagnostics.
+6. Validate and reconcile any native interaction bridge receipt plus current pending/resolved interaction state; materialization already occurred at tool-call time and is never repeated by finalization. Never translate an interaction into a formal approval, execution-stage decision, or runtime permission request.
+7. Resolve other attention through context, bounded retry, qualified delegation, human authority, or external routing.
+8. Create `WorkAssessment` from runtime facts, evidence classification, governed gates, pending/resolved interactions, remaining work, attention routes, prior issue status, and live paths.
+9. Ask the status arbiter for a `StatusDecision` using the table in section 18.3.
+10. Commit the issue transition or no-op with all required liveness side effects atomically.
+11. Create one compact durable handoff that links the reported disposition, authoritative decision, disagreement reason, evidence, and next owner.
+12. Release checkout/lock according to the authoritative decision and continuation policy.
+
+Atomic liveness requirements:
+
+- `in_review` commits only with a named reviewer, approval, interaction, delegated review issue, or monitor that will produce a wake;
+- `blocked` commits only with a task-wide blocker and named unblock owner/action or blocker issue;
+- continued `in_progress` commits only with a queued continuation, retry, delegated child, response wake, or monitor;
+- comments, evidence, work products, and remaining-work text are durable context but are not liveness paths by themselves.
+
+Attention responses bind to the attention request ID, dedupe key, contract
+revision, and selected resolver. Interaction responses bind to the interaction
+ID, request ID, source binding, target revision, response cursor, selected
+resolver, and non-superseded state. A response to an expired or superseded
+request is retained for audit and cannot wake or change status unless the
+arbiter creates a new assessment.
 
 ### 18.5 Complete terminal conversion contract
 
-Four layers participate in finalization. They are not independent outcome sets:
+Five layers participate in native finalization:
 
-- `StructuredRunResult.disposition` is the validated reported work disposition produced by the model or semantic tool, not the authoritative issue status;
-- `NativeExecutionResult.terminalState` is the native runtime lifecycle result;
-- `AdapterExecutionResult` is the legacy heartbeat compatibility record.
-- the status arbiter applies the final legal issue transition and records why it accepted, transformed, or rejected the reported disposition.
+- turn terminal state from the driver;
+- run terminal state from the runner/finalizer;
+- reported work disposition and evidence from the model or semantic tool;
+- `AdapterExecutionResult` compatibility diagnostics;
+- authoritative issue status from the status arbiter.
+
+Only the arbiter owns issue status. Runtime-owned `failed` and `cancelled` are run terminal states, not model-facing work dispositions.
 
 `AdapterExecutionResult` needs one additive, typed discriminator before native mode can ship:
 
 ```ts
 interface NativeFinalizationResult {
   schema: "paperclip.native-finalization.v1";
-  terminalState: NativeExecutionResult["terminalState"];
-  disposition: NativeExecutionResult["disposition"];
+  turnTerminalState: TurnTerminalState;
+  runTerminalState: RunTerminalState;
+  reportedWorkDisposition: ReportedWorkDisposition | null;
+  completionContractRevision: string;
+  structuredResultRef?: string;
+  cancellationScope?: "turn" | "run" | "issue";
 }
 
 interface AdapterExecutionResult {
@@ -3418,6 +4536,54 @@ CREATE TABLE native_runtime_requests (
 );
 ```
 
+Issue-thread interactions remain authoritative in
+`issue_thread_interactions`. Native mode adds binding and delivery receipts
+rather than copying their lifecycle into a runner-only table:
+
+```sql
+CREATE TABLE native_interaction_bindings (
+  id UUID PRIMARY KEY,
+  company_id UUID NOT NULL,
+  issue_id UUID NOT NULL,
+  interaction_id UUID NOT NULL UNIQUE,
+  request_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  source_run_id UUID NOT NULL,
+  native_session_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  tool_call_id TEXT NOT NULL,
+  requested_policy JSONB NOT NULL,
+  effective_policy JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  UNIQUE(company_id, issue_id, idempotency_key)
+);
+
+CREATE TABLE native_interaction_deliveries (
+  id UUID PRIMARY KEY,
+  company_id UUID NOT NULL,
+  issue_id UUID NOT NULL,
+  interaction_id UUID NOT NULL,
+  response_cursor TEXT NOT NULL,
+  response_phase TEXT NOT NULL,
+  response_recorded_at TIMESTAMPTZ NOT NULL,
+  destination_run_id UUID,
+  destination_session_id TEXT,
+  destination_turn_id TEXT,
+  delivered_at TIMESTAMPTZ,
+  acknowledged_at TIMESTAMPTZ,
+  response JSONB NOT NULL,
+  UNIQUE(interaction_id, response_cursor)
+);
+```
+
+The materialization transaction writes the interaction row, binding receipt,
+business activity, and protocol event atomically. Resolution writes the
+authoritative interaction result, response event, continuation decision, and
+delivery receipt atomically. Suggested-task materialization keeps its existing
+transactional at-most-once domain effects. Delivery acknowledgement advances a
+cursor only; it never deletes the interaction or its audit history.
+
 ### 21.6 Session table
 
 Extend or normalize `agent_task_sessions` so it stores:
@@ -3498,6 +4664,7 @@ interface NativeRunSnapshot {
   turns: NativeTurnView[];
   items: NativeItemView[];
   requests: NativeRuntimeRequestView[];
+  interactions: NativeInteractionView[];
   artifacts: ArtifactView[];
   capabilities: DriverCapabilities | null;
   lastSeq: number;
@@ -3524,7 +4691,50 @@ These APIs:
 - do not block until the harness operation completes;
 - expose command progress through events.
 
-### 22.4 Human message durability
+The runtime-request resolver is not an interaction resolver. Formal approvals,
+execution-stage decisions, issue-thread interactions, and provider permission
+requests keep distinct routes, authorization, and audit records.
+
+### 22.4 Native interaction bridge and response routing
+
+The trusted runner boundary may submit a bound proposal through the negotiated
+PRP channel or the equivalent narrowly scoped runner endpoint:
+
+```text
+POST /api/runtime/v1/heartbeat-runs/:runId/interactions
+POST /api/runtime/v1/heartbeat-runs/:runId/interactions/:interactionId/deliveries/:responseCursor/ack
+```
+
+The first route accepts only `BoundInteractionProposalV1` authenticated by the
+runner connection/lease identity. It verifies the route run against every
+host-owned binding field, validates the strict union, derives the idempotency
+key, and returns either the materialized/replayed receipt or
+`InteractionRequestFailureV1`. It cannot accept a general agent bearer token or
+model-supplied company/issue identity. The acknowledgement route can advance
+only a delivery already assigned to that destination run/session/turn.
+
+Resolution continues to use the existing issue-scoped, kind-specific
+interaction routes and policy service. The bridge does not invent a generic
+accept/reject operation: suggestions and confirmation kinds use accept/reject,
+questions use respond/cancel, item verdicts use partial verdict submission, and
+all pending kinds may use authorized withdrawal. Every resolution path invokes
+one shared native response projector that:
+
+1. reloads and authorizes the current company/issue/interaction under lock;
+2. validates target freshness and supersession;
+3. stores the complete normalized `InteractionResponseV1` and P0 event;
+4. derives continuation and same/fresh-session routing from server policy;
+5. creates/reuses one response delivery cursor and one idempotent wake; and
+6. includes the response in the next task envelope until acknowledged.
+
+Closed or unassigned issues suppress wakes without losing the durable response.
+Plan acceptance may force a fresh session/workspace refresh. Partial item
+verdict submissions produce progress delivery; the final submission produces a
+terminal response. A duplicate webhook, resolver retry, bridge reconnect, or
+lost delivery acknowledgement cannot repeat domain effects or queue an
+equivalent second continuation.
+
+### 22.5 Human message durability
 
 A steering message should reuse or integrate with Paperclip's current issue-comment queue semantics:
 
@@ -3574,6 +4784,7 @@ ui/src/components/native-run/
     FileChangeItem.tsx
     DiffItem.tsx
     RuntimeRequestItem.tsx
+    InteractionItem.tsx
     UsageItem.tsx
     ResultItem.tsx
 
@@ -3587,13 +4798,14 @@ ui/src/lib/native-run/
 
 ### 23.2 Data flow
 
-1. Initial REST snapshot.
+1. Initial REST snapshot, including pending and delivered interaction context.
 2. Existing Paperclip live-event subscription filtered by run.
-3. Ordered reducer.
+3. Ordered reducer for runner- and control-plane-originated events.
 4. Gap detection.
 5. REST replay.
 6. Same reducer.
-7. Polling only as a degraded fallback.
+7. Issue-thread interaction query invalidation after business interaction activity.
+8. Polling only as a degraded fallback.
 
 Healthy native mode must not rely on 3-second or 5-second run polling for live state.
 
@@ -3633,6 +4845,12 @@ Clicking a phase opens diagnostics, not raw secrets.
 - Command output streams in a bounded viewport and exposes full artifact/log on demand.
 - File changes link into existing file viewer/diff surfaces.
 - Approval and input cards remain actionable until resolved.
+- Issue-thread interaction cards render all five kinds, partial item-verdict
+  progress, stale/superseded outcomes, materialized tasks, and delivered
+  response state without masquerading as provider permission cards.
+- Formal approval and execution-review cards retain distinct labels, routes,
+  authority copy, and actions; the console never presents them as
+  `paperclip.interact` results.
 - Replayed events do not animate as if newly produced.
 - Connection reconnection is shown as a small system marker, not a new agent message.
 - Final result is visually distinct from the last assistant prose.
@@ -3647,6 +4865,7 @@ States:
 | active turn, steer supported | Steer |
 | active turn, steer unsupported | Interrupt & Send |
 | awaiting input | Answer |
+| yielded on issue-thread interaction | Show pending card; resume is server-routed |
 | disconnected within grace | Queue message |
 | terminal | Start continuation/new run according to policy |
 
@@ -3704,6 +4923,14 @@ For developers/operators:
 13. Cold-start phase is visible separately from model latency.
 14. Unsupported features are hidden or explained, not silently broken.
 15. Legacy task runs continue to render through the current path.
+16. Each of the five interaction kinds renders from snapshot, live resolution,
+    and replay with the same stable card identity.
+17. Question answers, created task references, confirmation outcomes/reasons,
+    checkbox selections, and item-verdict progress are visible after resume.
+18. Stale-target and superseded-by-comment outcomes remain visible and cannot
+    expose active resolver actions.
+19. Runtime permission, formal approval, execution review, and issue-thread
+    interaction cards are visually and behaviorally distinct.
 
 ---
 
@@ -3896,16 +5123,20 @@ Preserve this distinction in result evidence and future metric attribution.
 | Event committed, ACK lost | Runner replays; unique source event ID deduplicates; ACK advances. |
 | Events arrive out of order | Buffer within bounded window or reject/reconnect; never apply canonical UI sequence out of order. |
 | Event gap cannot be filled | Mark run stream degraded; request driver snapshot; do not invent events. |
-| Approval while disconnected | Persist request; UI can resolve; command delivers after reconnect unless expired. |
+| Runtime permission while disconnected | Persist request; UI can resolve; command delivers after reconnect unless expired. |
+| Interaction materialized, receipt lost | Replay the identical bound proposal; return the stored interaction and receipt without a second row or side effect. |
+| Interaction resolves before a resumed run starts | Persist the full response and delivery cursor; include it in the next eligible envelope until acknowledged. |
+| Interaction response delivery ACK lost | Redeliver the same response identity; do not queue an equivalent second continuation. |
+| Interaction target becomes stale or a user comment supersedes it | Store and deliver the typed terminal outcome; stale resolver attempts are audit-only. |
 | Interrupt races with completion | First terminal state committed wins; other operation returns `already_terminal`. |
 | Driver lacks steer | UI offers interrupt-and-send, not fake steer. |
-| Driver cannot resume session | Explicit `session_lost`; policy chooses needs-review or new Paperclip attempt. |
+| Driver cannot resume session | Explicit `session_lost`; policy creates a real review/recovery path or a new Paperclip attempt without assuming issue status. |
 | Outbox exceeds limit | Coalesce P2; reject new turns; preserve P0; expose backpressure. |
 | Bad runner digest/version | Reject connection and fail bootstrap visibly. |
 | Expired runner credential | Re-authenticate through lease flow or drain; never pass token to harness. |
 | Workspace path invalid | Reject `run.prepare` before harness launch. |
-| Structured result invalid | Reject result, optionally request correction, then needs-review. |
-| Process exits zero without result | Needs-review/yielded, not done. |
+| Structured result invalid | Reject result, optionally request correction, then record recovery/assessment without assuming `in_review`. |
+| Process exits zero without result | Treat as missing native finalization/result and enter server-owned assessment/recovery; never infer `done`. |
 | Model calls Paperclip tool twice | Tool call is idempotent by item/call ID; result applied once. |
 | Control plane cannot finalize workspace | Run remains finalizing/recovery-required; do not report clean success. |
 | Paperclip issue transition rejected | Preserve run result, show finalization error, and use existing recovery path. |
@@ -3956,7 +5187,9 @@ Every driver must pass:
 11. close;
 12. process exit mapping;
 13. structured result behavior;
-14. duplicate command idempotency.
+14. duplicate command idempotency;
+15. strict `paperclip.interact` union or generated per-kind aliases;
+16. blocking interaction yield and non-blocking continuation behavior.
 
 ### 27.3 Protocol tests
 
@@ -3972,7 +5205,11 @@ Every driver must pass:
 - frame size rejection;
 - backpressure;
 - clock skew;
-- token expiry and rotation.
+- token expiry and rotation;
+- all five interaction request/response JSON Schemas and cross-language fixtures;
+- interaction proposal/materialization/response/delivery event ordering;
+- replay of a proposal before and after materialization;
+- replay of progress and terminal response deliveries after lost acknowledgement.
 
 ### 27.4 Fault injection
 
@@ -4008,7 +5245,12 @@ Run at deterministic points:
 - runner digest mismatch;
 - cross-company runner binding;
 - runtime request cannot resolve a governance approval;
-- semantic tool cannot mutate another run.
+- semantic tool cannot mutate another run;
+- model-supplied company/issue/run/session/idempotency/resolver/audit fields are rejected;
+- model-supplied trusted tool-action fields are rejected and cannot obtain trusted rendering;
+- cross-company target, addressee, attachment, link, parent, project, goal, and assignee references fail closed;
+- same-creator, same-source-run, ineligible addressee, low-trust, terminal-issue, and unauthorized resolver paths are denied;
+- formal approval and execution-review authority cannot be obtained through an interaction request or runtime request.
 
 ### 27.6 UI tests
 
@@ -4021,6 +5263,11 @@ Run at deterministic points:
 - steering optimistic state;
 - interrupt race;
 - permission resolution;
+- all five issue-thread interaction cards and their history states;
+- partial item-verdict progress followed by terminal completion;
+- stale-target and superseded-by-comment rendering;
+- resumed-run response rendering after refresh/replay;
+- distinct runtime permission, interaction, formal approval, and execution-review presentation;
 - legacy fallback;
 - accessibility and keyboard operation.
 
@@ -4055,6 +5302,49 @@ Run the same deterministic file-mutation fixture through the legacy adapter path
 
 The initial sandbox spike is compatible only when these assertions pass without changing the current project-workspace, execution-workspace, environment-lease, realization, or sync contracts.
 
+### 27.9 Interaction bridge conformance
+
+One table-driven suite runs against the TypeScript server bridge, Rust runner
+schema implementation, deterministic driver, and browser reducer. It must prove:
+
+1. every current kind validates as strict model input and materializes one
+   authoritative company/issue-scoped interaction;
+2. `suggest_tasks` accept/reject round-trips created/skipped client keys and a
+   replayed acceptance cannot create duplicate issues;
+3. `ask_user_questions` response/cancel/comment-supersession round-trips full
+   normalized answers or terminal outcome;
+4. `request_confirmation` accept/reject/stale-target/newer-request/comment
+   supersession round-trips the target and reason while trusted tool-action
+   enrichment remains output/internal-only;
+5. `request_checkbox_confirmation` validates defaults/min/max, round-trips an
+   empty legal selection and non-empty selection, and never executes selected
+   IDs as actions;
+6. `request_item_verdicts` supports idempotent partial batches, immutable prior
+   verdicts, progress delivery with full state and new-item delta, and one
+   terminal delivery;
+7. same bound invocation plus same payload replays the materialization receipt,
+   while the same invocation plus changed payload returns
+   `idempotency_conflict` and creates no row;
+8. proposal replay, duplicate resolver webhook, lost ACK, control-plane restart,
+   runner reconnect, and browser replay preserve one interaction, one domain
+   effect, one canonical continuation per response cursor, and one UI card;
+9. latest-revision checks at creation and resolution produce `stale_target`, and
+   a later genuine user comment produces `superseded_by_comment` without an
+   unauthorized wake or status change;
+10. forged binding, stale run/session/turn, cross-company references,
+    unauthorized resolver, low-trust creator, same-creator/source-run resolver,
+    closed issue, and reserved trusted-action fields fail closed with safe
+    errors and detailed company-scoped audit;
+11. blocking creation auto-yields exactly once only after durable
+    materialization; rejection leaves the turn open; non-blocking creation can
+    coexist with one later `paperclip.finish` or `paperclip.block`;
+12. resolved and progress responses arrive inline in the resumed skillless task
+    envelope, survive same/fresh-session routing, and remain until the delivery
+    cursor is acknowledged; and
+13. status arbitration preserves the original interaction/result facts and
+    never derives `blocked`, `in_review`, `done`, a formal approval, or an
+    execution-stage decision solely from the model's request.
+
 ---
 
 ## 28. Rollout and compatibility
@@ -4067,6 +5357,7 @@ native_runner_codex_app_server_enabled
 native_runner_acp_enabled
 native_run_ui_enabled
 native_runner_remote_sandboxes_enabled
+native_runner_interactions_enabled
 ```
 
 Enable per instance, company, agent, and run profile.
@@ -4081,8 +5372,16 @@ managed
   Existing process adapter with small semantic tools and host-owned lifecycle.
 
 native
-  PRP runner, typed session driver, no Paperclip skill.
+  PRP runner, typed session driver, no Paperclip skill, canonical
+  paperclip.interact union with durable resumed-run delivery.
 ```
+
+`paperclip.ask` is deprecated. A compatibility adapter may translate only
+`{question, choices, blocking}` that maps losslessly to one
+`ask_user_questions` request. It rejects confirmation, task creation,
+item-verdict, or untyped-payload semantics. Existing REST, CLI, MCP, and board
+routes remain dedicated control-plane surfaces; native mode does not require
+them to collapse into one public endpoint.
 
 ### 28.3 Rollout gates
 
@@ -4095,7 +5394,8 @@ native
 7. ACP/acpx driver.
 8. Warm runner.
 9. Warm harness/session.
-10. Additional drivers.
+10. Five-kind interaction bridge, response replay, and resumed-run gates.
+11. Additional drivers.
 
 ### 28.4 Kill switch
 
@@ -4129,7 +5429,8 @@ packages/native-runtime-protocol/
 - TypeScript types;
 - JSON Schemas;
 - sample envelopes;
-- `CredentialPlan`, work-signal, and attention-request schemas;
+- `CredentialPlan`, work-signal, attention-request, five-kind interaction
+  request/response, host-binding, failure, and delivery schemas;
 - schema validation;
 - protocol-version negotiation rules;
 - fixture corpus for Rust and TypeScript;
@@ -4167,6 +5468,7 @@ server/src/services/native-runtime/native-event-ingestor.ts
 - batch insertion;
 - ACK cursor return;
 - replay query;
+- native interaction binding and response-delivery receipts;
 - concurrency tests.
 
 **Acceptance:**
@@ -4300,8 +5602,10 @@ server/src/services/environment-run-orchestrator.ts
 - runner expectation/bootstrap;
 - `NativeSessionRuntime.execute`;
 - terminal conversion to `AdapterExecutionResult`;
-- typed `nativeFinalization` validation and six-row disposition handling;
+- typed `nativeFinalization` validation and complete terminal/arbitration handling;
 - server-owned status arbiter for completion, blocker, review, attention, and continuation signals;
+- native interaction bridge binding, materialization, continuation projection,
+  and response-delivery integration;
 - native finalizer conformance tests for run status, issue status, continuation/review effects, and cancellation scope;
 - cancellation hook;
 - no behavior change for legacy adapters.
@@ -4313,6 +5617,8 @@ server/src/services/environment-run-orchestrator.ts
 - a missing or invalid native finalization discriminator fails closed instead of using the legacy success heuristic;
 - an agent signal cannot move an issue to `blocked` or `in_review` without the required blocker or review path;
 - human-needed requests persist and wake the correct owner without requiring an invalid issue status;
+- a blocking semantic interaction yields only after durable materialization and
+  resumes with a typed response without model-visible Paperclip credentials;
 - legacy integration tests are unchanged;
 - no Paperclip skill materialization occurs in native mode.
 
@@ -4369,7 +5675,10 @@ runner/crates/driver-codex-app-server/tools.rs
 **Deliverables:**
 
 - compact task envelope;
-- `paperclip.finish`, `paperclip.block`, `paperclip.ask`;
+- `paperclip.finish`, `paperclip.block`, and the strict five-kind
+  `paperclip.interact` union;
+- provider-generated per-kind aliases that normalize to the canonical union;
+- pending/resolved interaction task-envelope context and response cursors;
 - structured result validator;
 - no Paperclip API credential in harness;
 - model-context test.
@@ -4379,7 +5688,10 @@ runner/crates/driver-codex-app-server/tools.rs
 - native prompt contains no Paperclip REST routes or heartbeat manual;
 - harness environment contains no runner or broad Paperclip credential;
 - duplicate finish tool call applies once;
-- exit zero without result becomes needs-review/yielded.
+- interaction replay and changed-payload idempotency conflict are deterministic;
+- all five kinds resume with their complete typed response;
+- exit zero without result enters server-owned assessment/recovery rather than
+  granting an issue transition.
 
 **Dependencies:** NR-006, NR-007.
 
@@ -4402,6 +5714,7 @@ server/src/routes/native-runs.ts
 - snapshot/replay endpoints;
 - native reducer;
 - typed timeline;
+- five-kind interaction cards backed by snapshot/live/replay state;
 - phase strip;
 - connection health;
 - composer;
@@ -4414,6 +5727,8 @@ server/src/routes/native-runs.ts
 - duplicate replay does not duplicate items;
 - gap recovery works;
 - command/file/tool/plan events render live;
+- pending, progress, stale/superseded, and terminal interaction states render
+  without being confused with runtime permissions or formal approvals;
 - task page remains usable with legacy run;
 - composer remains active during turn.
 
@@ -4443,6 +5758,7 @@ ui/src/components/native-run/LiveRunComposer.tsx
 - stop turn;
 - stop run;
 - permission/input resolution;
+- kind-specific issue-interaction response routing and delivery-cursor acknowledgement;
 - optimistic command UI;
 - race handling.
 
@@ -4451,7 +5767,9 @@ ui/src/components/native-run/LiveRunComposer.tsx
 - every operation has command ID and eventual terminal command result;
 - duplicate clicks do not duplicate effects;
 - interrupt/completion race is deterministic;
-- runtime permissions remain separate from governance approvals.
+- runtime permissions remain separate from governance approvals;
+- runtime permissions, issue-thread interactions, formal approvals, and
+  execution review remain separate authority paths.
 
 **Dependencies:** NR-003, NR-007, NR-009.
 
@@ -4476,6 +5794,7 @@ tests/native-runtime-chaos/
 - driver snapshot/reconciliation;
 - control-plane restart test harness;
 - lost-ACK tests;
+- interaction proposal/response/delivery replay and lost-ACK tests;
 - runner/harness kill tests;
 - explicit session-lost behavior.
 
@@ -4484,7 +5803,8 @@ tests/native-runtime-chaos/
 - reliability targets in Section 24.3;
 - live and replay use the same reducer;
 - no silent new session;
-- terminal state remains exactly once.
+- terminal state remains exactly once;
+- suggested-task materialization and resumed-run wakes remain at-most-once.
 
 **Dependencies:** NR-002 through NR-010.
 
@@ -4653,6 +5973,61 @@ packages/paperclip-runner/backends/provider-conformance/
 
 ---
 
+### NR-017 — Native issue-thread interaction bridge
+
+**Goal:** Complete the lossless skillless round trip for every current
+issue-thread interaction kind without widening model or runner authority.
+
+**Primary files:**
+
+```text
+packages/native-runtime-protocol/
+packages/paperclip-runner/
+server/src/services/native-runtime/native-interaction-bridge.ts
+server/src/services/issue-thread-interactions.ts
+server/src/services/heartbeat.ts
+server/src/routes/native-runs.ts
+ui/src/components/native-run/
+```
+
+**Deliverables:**
+
+- canonical strict `paperclip.interact.v1` union and generated alias schemas;
+- runner-side strict validation, host binding, payload hashing, and blocking-turn
+  auto-yield;
+- server bridge with current-run/session/turn/tool-call authorization and
+  deterministic idempotency;
+- additive binding and response-delivery persistence;
+- P0 proposed/materialized/rejected/progressed/resolved/delivered events;
+- normalized five-kind response projector and response-cursor acknowledgement;
+- same/fresh-session continuation routing and inline resumed-run envelope data;
+- Live Run Console rendering for all kinds and explicit separation from runtime
+  permission, formal approval, and execution-review cards;
+- cross-language schema, server integration, replay/chaos, security, resumed-run,
+  and UI conformance fixtures from Section 27.9.
+
+**Acceptance:**
+
+- all five kinds complete request -> durable interaction -> authorized response
+  -> resumed skillless run with no model-visible control-plane credential;
+- duplicate proposal, resolver retry, reconnect, restart, or delivery replay
+  causes no duplicate interaction, suggested task, verdict, wake, or UI card;
+- stale target, user-comment/newer-request supersession, partial item verdicts,
+  withdrawal, closure, and addressee deletion produce the typed durable outcome;
+- changed-payload idempotency reuse, forged binding, cross-company references,
+  unauthorized resolution, same-source self-resolution, low-trust creation, and
+  model-authored trusted tool-action fields fail closed and are audited;
+- blocking interaction yield and later resume preserve exactly-once turn
+  terminalization while issue status remains server-owned;
+- formal approvals and execution review keep their existing tables, routes,
+  participants, governance checks, and audit semantics; and
+- legacy adapters and existing dedicated REST/CLI/MCP/UI interaction surfaces
+  remain compatible.
+
+**Dependencies:** NR-001, NR-002, NR-005, NR-006, NR-008, NR-009, NR-010, and NR-011.
+
+---
+
 ## 30. Suggested issue dependency graph
 
 ```text
@@ -4675,6 +6050,8 @@ NR-003 + NR-004 + NR-005
           |
        NR-011 Chaos/recovery
           |
+       NR-017 Interaction bridge
+          |
        ├── NR-012 ACP/acpx
        ├── NR-013 Providers
        ├── NR-014 Benchmarks/ADR
@@ -4689,6 +6066,8 @@ Parallelizable branches:
 - security tests alongside runner auth.
 - standalone mock control plane and browser devtools after NR-001 fixtures stabilize;
 - fake remote backend and channel/MCP conformance alongside the direct driver path.
+- interaction schemas, server response projection, and UI cards against the
+  fake driver while provider drivers are built.
 
 ---
 
@@ -4703,17 +6082,29 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] No Paperclip or runner connection credential is available to the model/harness process.
 - [ ] Task instructions remain sufficient to complete the work.
 - [ ] Completion is structured.
+- [ ] A strict canonical `paperclip.interact` union covers all five current
+      issue-thread kinds; provider aliases normalize to it before persistence.
+- [ ] Pending and resolved interaction context is complete in the task envelope,
+      and the model needs no Paperclip API fetch to consume a response.
 
 ### Control plane
 
 - [ ] Checkout occurs before expensive sandbox/model execution.
 - [ ] Existing budgets and workspace policy still apply.
-- [ ] Existing workspace finalization still runs, and the additive native finalizer applies the legal issue transition for all six dispositions.
+- [ ] Existing workspace finalization still runs, and the additive native finalizer applies the complete section 18 arbitration contract.
 - [ ] Agent-reported dispositions remain advisory; the server records the proposal and authoritative status decision separately.
 - [ ] `blocked` requires a blocker owner/action, and `in_review` requires a real reviewer, approval, interaction, delegated review, or monitor path.
 - [ ] A human-needed request can wake or notify the correct owner without granting the model arbitrary status-transition authority.
 - [ ] Legacy adapters are unchanged.
 - [ ] Runtime permission and governance approval are separate.
+- [ ] Issue-thread interactions, runtime permissions, formal approvals, and
+      execution-stage decisions retain separate authority, routes, and audit.
+- [ ] Every interaction request is bound by the host to the current
+      company/issue/agent/run/session/turn/tool call and materialized once.
+- [ ] A blocking interaction yields the turn only after durable materialization
+      and does not directly set issue status.
+- [ ] Suggested-task side effects and every response continuation/delivery are
+      idempotent across retry, reconnect, restart, and lost acknowledgement.
 - [ ] Database state remains authoritative when the active producer disconnects.
 - [ ] Runner and fake remote backends expose the same normalized session contract.
 - [ ] Fleet remains a future projection and does not require a separate first-spike protocol.
@@ -4740,6 +6131,8 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] MCP Apps support is negotiated through `io.modelcontextprotocol/ui`; unsupported clients receive an honest text/structured fallback.
 - [ ] Tool-to-`ui://` resource linkage, app lifecycle, tool input/results, and security-relevant app actions survive replay without persisting every iframe message.
 - [ ] Unsupported remote-backend capabilities degrade explicitly.
+- [ ] All five interaction kinds deliver full typed progress/terminal responses
+      into a resumed run with server-selected same/fresh-session routing.
 
 ### UI
 
@@ -4752,6 +6145,11 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Final result is unambiguous.
 - [ ] Supported MCP Apps render in a sandboxed Paperclip browser host and reconstruct after refresh with the same stable view/item identity.
 - [ ] Provider-rendered or text-only MCP App fallbacks are labeled accurately and never presented as Paperclip-hosted interactive views.
+- [ ] All five issue-thread interaction cards reconstruct from snapshot and
+      replay, including partial verdicts, stale targets, supersession, answers,
+      selected options, created tasks, and terminal reasons.
+- [ ] Runtime permission, interaction, formal approval, and execution-review
+      cards are visually distinct and call only their authorized route family.
 - [ ] The run subscription behaves as a logical per-run stream over a shared company connection.
 - [ ] A simulated channel/voice interrupt uses the same durable command and event state.
 - [ ] Slack, email, voice, webhook, and provider-owned channel ingress cannot bypass Paperclip core authorization, durable acceptance, or audit.
@@ -4761,6 +6159,10 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Event sequence allocation is transactional.
 - [ ] Source events are idempotent.
 - [ ] Lost ACK does not duplicate state.
+- [ ] Interaction proposal and response-delivery replay do not duplicate
+      materialization, domain effects, continuations, or UI cards.
+- [ ] Stale-target, supersession, authorization, idempotency-conflict, and
+      resumed-run conformance cases pass for every applicable kind.
 - [ ] Interrupt/completion race is deterministic.
 - [ ] Startup phases and transport latency are measured.
 - [ ] Direct Codex and ACPX paths can be compared fairly.
@@ -4796,6 +6198,11 @@ Unless implementation evidence forces a change:
 18. Fleet is a future control-plane projection, not a first-spike protocol feature.
 19. MCP Apps rendering is a Paperclip core/browser responsibility; neither a runner nor a hosted provider can bypass host authorization and iframe security policy.
 20. Remote providers adopt the normalized runner semantics through either a PRP gateway or Contract B2; they are not forced into a fake local-`runnerd` topology.
+21. `paperclip.interact` is the canonical native issue-thread interaction
+    primitive; `paperclip.ask` is only a lossless legacy question translator.
+22. Resolver policy, continuation, target freshness, status projection,
+    suggested-task materialization, trusted tool actions, and audit remain
+    server-owned.
 
 ---
 
@@ -4822,7 +6229,7 @@ These are real design choices, but none blocks the initial vertical slice.
 >
 > Implement a feature-flagged native runtime path that lets a Paperclip task run through a deterministic daemon inside the realized sandbox rather than through the existing one-shot adapter contract. The daemon must initiate an outbound authenticated WebSocket to the Paperclip control plane, supervise Codex app-server locally over stdio, normalize its thread/turn/item events, persist unacknowledged events for replay, accept durable steer/interrupt/permission commands, and emit a structured terminal result.
 >
-> Preserve the existing environment-run orchestrator, execution workspace realization, issue checkout, budgets, governance, run records, workspace finalization, and legacy adapters. Branch after the execution target is realized. Internally use a session-oriented Native Session Runtime; at terminal completion convert the native result to the additive native-aware adapter-result boundary. Extend run/issue finalization to consume the typed native disposition, and retain the legacy exit-code heuristic only for adapters that omit that discriminator.
+> Preserve the existing environment-run orchestrator, execution workspace realization, issue checkout, budgets, governance, run records, workspace finalization, and legacy adapters. Branch after the execution target is realized. Internally use a session-oriented Native Session Runtime; at terminal completion convert the native facts and reported work disposition to the additive native-aware adapter-result boundary. Extend run/issue finalization to create a work assessment and authoritative status decision, and retain the legacy exit-code heuristic only for adapters that omit the native discriminator.
 >
 > Native mode must not materialize the Paperclip skill or expose a Paperclip/runner credential to the model process. The model receives a compact task envelope plus a structured completion schema or tiny run-scoped semantic completion tools.
 >
