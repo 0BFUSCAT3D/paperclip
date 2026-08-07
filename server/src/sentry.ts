@@ -185,20 +185,18 @@ const REMOVED_HIGH_TRUST_HEADERS = new Set<string>([
 // above drops the session, the primary credential, and the caller IP address in
 // full. The high-trust scrubber keeps every other request header for debug use,
 // so it must still redact the value of a header that carries a secret under a
-// non-standard name, for example `proxy-authorization` or `x-api-key`. The
-// scrubber compares the lower-case header name against these fragments and
-// redacts the value of any match, but it keeps the header name.
+// non-standard name, for example `proxy-authorization`, `x-api-key`, or a
+// vendor auth header such as `x-openclaw-auth`. The `auth` fragment matches any
+// such header name, including `authorization`. The scrubber compares the
+// lower-case header name against these fragments and redacts the value of any
+// match, but it keeps the header name.
 const SENSITIVE_HEADER_FRAGMENTS = [
-  "authorization",
+  "auth",
   "api-key",
   "apikey",
   "api_key",
-  "auth-token",
-  "authtoken",
-  "auth_token",
   "access-token",
   "session-token",
-  "x-auth",
   "secret",
   "credential",
   "token",
@@ -243,6 +241,9 @@ const SECRET_VALUE_PATTERNS: ReadonlyArray<{ regex: RegExp; replacement: string 
   { regex: /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, replacement: REDACTED },
   // A provider API key such as `sk-...` or `sk-ant-...`.
   { regex: /\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g, replacement: REDACTED },
+  // A Slack token. A bot, user, app-configuration, or refresh token starts with
+  // `xox<type>-`. An app-level token starts with `xapp-`.
+  { regex: /\b(?:xox[abprse]|xapp)-[A-Za-z0-9-]{8,}/g, replacement: REDACTED },
   // A JSON Web Token. It always starts with the base64url header prefix `eyJ`.
   {
     regex: /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?/g,
