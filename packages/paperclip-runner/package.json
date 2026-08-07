@@ -1,0 +1,32 @@
+{
+  "name": "@paperclipai/paperclip-runner",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "protocol",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run && node --test scripts/check-forbidden-imports.test.mjs",
+    "check:forbidden-imports": "node scripts/check-forbidden-imports.mjs",
+    "docs:validate": "node scripts/validate-doc-links.mjs && node scripts/validate-okf.mjs",
+    "trace:phase0": "pnpm run build && node dist/tracer/phase0.js",
+    "verify": "pnpm run build && pnpm run test && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run trace:phase0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.10"
+  }
+}

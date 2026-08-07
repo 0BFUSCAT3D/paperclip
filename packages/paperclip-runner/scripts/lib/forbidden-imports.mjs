@@ -1,0 +1,134 @@
+import { readFile, readdir } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const SOURCE_EXTENSIONS = new Set([".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"]);
+const IMPORT_PATTERNS = [
+  /\b(?:import|export)\s+(?:type\s+)?(?:[^"'`;]{0,500}?\s+from\s+)?["']([^"']+)["']/g,
+  /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+  /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+];
+
+const libraryDirectory = dirname(fileURLToPath(import.meta.url));
+export const defaultPackageRoot = resolve(libraryDirectory, "../..");
+
+function extension(path) {
+  const match = path.match(/\.[^.\/]+$/);
+  return match?.[0] ?? "";
+}
+
+function isInside(parent, candidate) {
+  const pathFromParent = relative(parent, candidate);
+  return (
+    pathFromParent === "" ||
+    (!pathFromParent.startsWith("..") && !isAbsolute(pathFromParent))
+  );
+}
+
+async function collectSourceFiles(target) {
+  const entries = await readdir(target, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    if (["dist", "node_modules", ".git"].includes(entry.name)) {
+      continue;
+    }
+    const path = resolve(target, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await collectSourceFiles(path)));
+    } else if (entry.isFile() && SOURCE_EXTENSIONS.has(extension(entry.name))) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+function findSpecifiers(source) {
+  const found = [];
+  for (const pattern of IMPORT_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (let match = pattern.exec(source); match !== null; match = pattern.exec(source)) {
+      found.push({ specifier: match[1], offset: match.index });
+    }
+  }
+  return found;
+}
+
+function violationReason({ file, packageRoot, specifier }) {
+  if (specifier.startsWith("@paperclipai/") && specifier !== "@paperclipai/paperclip-runner") {
+    return "Paperclip workspace packages are outside the standalone boundary";
+  }
+
+  if (["server", "ui", "cli"].some((root) => specifier === root || specifier.startsWith(`${root}/`))) {
+    return "Paperclip application internals are outside the standalone boundary";
+  }
+
+  if (specifier.startsWith(".") || specifier.startsWith("/")) {
+    const resolvedImport = resolve(dirname(file), specifier);
+    if (!isInside(packageRoot, resolvedImport)) {
+      return "relative imports may not escape packages/paperclip-runner";
+    }
+  }
+
+  return null;
+}
+
+async function manifestViolations(packageRoot) {
+  const manifestPath = resolve(packageRoot, "package.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const dependencyGroups = [
+    manifest.dependencies ?? {},
+    manifest.optionalDependencies ?? {},
+    manifest.peerDependencies ?? {},
+    manifest.devDependencies ?? {},
+  ];
+  const dependencies = new Set(dependencyGroups.flatMap((group) => Object.keys(group)));
+  return [...dependencies]
+    .filter(
+      (name) => name.startsWith("@paperclipai/") && name !== "@paperclipai/paperclip-runner",
+    )
+    .map((specifier) => ({
+      file: manifestPath,
+      line: 1,
+      specifier,
+      reason: "workspace dependencies require an explicit standalone-boundary review",
+    }));
+}
+
+export async function checkForbiddenImports({
+  packageRoot = defaultPackageRoot,
+  scanRoots = ["src", "scripts"],
+  checkManifest = true,
+} = {}) {
+  const violations = [];
+  const files = [];
+  for (const root of scanRoots) {
+    files.push(...(await collectSourceFiles(resolve(packageRoot, root))));
+  }
+
+  for (const file of files.sort()) {
+    const source = await readFile(file, "utf8");
+    for (const { specifier, offset } of findSpecifiers(source)) {
+      const reason = violationReason({ file, packageRoot, specifier });
+      if (reason === null) {
+        continue;
+      }
+      violations.push({
+        file,
+        line: source.slice(0, offset).split("\n").length,
+        specifier,
+        reason,
+      });
+    }
+  }
+
+  if (checkManifest) {
+    violations.push(...(await manifestViolations(packageRoot)));
+  }
+  return violations;
+}
+
+export function formatForbiddenImportViolation(violation, packageRoot = defaultPackageRoot) {
+  return `${relative(packageRoot, violation.file)}:${violation.line} imports ${JSON.stringify(
+    violation.specifier,
+  )}: ${violation.reason}`;
+}
