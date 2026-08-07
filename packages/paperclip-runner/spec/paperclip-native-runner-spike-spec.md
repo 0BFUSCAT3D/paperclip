@@ -2453,8 +2453,11 @@ including full suggested-task materialization, question answers, confirmation
 reason/outcome, checkbox selection, and full item-verdict state plus
 `newlyResolvedItemIds` for a progress delivery. Responses remain present until
 the destination delivery cursor is durably acknowledged. A reconnect or retry
-may redeliver an identical response; `interactionId + phase + recordedAt` is
-the stable response identity and reducers must treat redelivery as harmless.
+may redeliver an identical response. The only delivery identity is the
+server-issued `(companyId, interactionId, responseCursor)` tuple;
+`recordedAt` is display/audit metadata and MUST NOT participate in ordering or
+deduplication. Consumers MUST retain the greatest applied cursor per
+company/interaction stream and make reapplication harmless. **[Security S1]**
 
 The server selects same-session versus fresh-session continuation. A target-bound
 plan acceptance may require a fresh native session and workspace refresh. The
@@ -2545,7 +2548,8 @@ interface InteractVariant<K extends InteractionKind, R> {
   continuationHint?:
     | "none"
     | "wake_assignee"
-    | "wake_assignee_on_accept";
+    | "wake_assignee_on_accept"
+    | "wake_assignee_on_terminal";
   request: R;
 }
 
@@ -2588,7 +2592,6 @@ interface SuggestTasksRequestV1 {
 
 interface AskUserQuestionsRequestV1 {
   version: 1;
-  title?: string | null;
   submitLabel?: string | null;
   supersedeOnUserComment?: boolean;
   questions: Array<{
@@ -2664,6 +2667,16 @@ interface ItemVerdictsRequestV1 {
 }
 ```
 
+The common `InteractVariant.title` is the one runner-card header and
+`InteractVariant.summary` is its supporting copy. Runner input for
+`ask_user_questions` MUST reject nested `request.title` with the safe path
+`/request/title`; two competing card headers are never accepted. Existing
+direct REST/CLI callers remain compatible: the legacy request normalizer lifts
+`payload.title` into the common stored title when the common title is absent,
+prefers an explicitly supplied common title when both are present, and removes
+the legacy nested field before canonical hashing. That normalization is outside
+the strict `paperclip.interact.v1` model-input validator. **[UX-1]**
+
 All objects use `additionalProperties: false`. Unknown fields are rejected,
 not stripped. The model-facing union contains no company, issue, agent, run,
 session, source-comment, resolver, status, audit, idempotency, or trusted
@@ -2682,8 +2695,13 @@ unless a registered server resolver recognizes it and never grants authority.
 `resolverHint` and `continuationHint` are advisory. The server stores requested
 and effective policies separately and may narrow, replace, or reject them.
 `request_item_verdicts` is board/user-resolved in v1; an agent cannot resolve its
-own or its source run's request; and `blockingCurrentTurn: true` requires the
-effective `wake_assignee` policy so acceptance and rejection both resume work.
+own or its source run's request. Additive `wake_assignee_on_terminal` wakes only
+when the interaction reaches a terminal status. A blocking item-verdict request
+defaults to this terminal-only policy: partial batches update the same durable
+card/envelope without waking the assignee. Progress wakes are legal only when
+the creator explicitly requests `wake_assignee` and server policy accepts that
+opt-in. Other blocking kinds still require a policy that resumes for each
+applicable terminal outcome; no continuation hint grants resolver authority.
 
 #### 17.3.1 Host binding, idempotency, and failures
 
@@ -2730,6 +2748,29 @@ interface InteractionRequestFailureV1 {
 }
 ```
 
+Before materialization and again before every resolution, all five kinds use
+one centralized, versioned addressee-eligibility predicate. It returns eligible
+only when the candidate resolver already has, independently of the hint:
+
+1. same-company issue and target-resource visibility;
+2. the role/action capability required by the canonical kind and target;
+3. resolver authority under the stored effective resolver policy;
+4. assignment and notification eligibility for the issue at that moment; and
+5. no same-creator, same-source-run, separation-of-duties, low-trust, deleted,
+   paused, or other policy exclusion.
+
+`resolverHint.addresseeAgentId` may select a subset of that already-authorized
+resolver set. It MUST NOT grant issue/resource visibility, role capability,
+resolver authority, assignment or notification eligibility, or weaken
+`board_only`. Creation and resolution use the same predicate revision and
+canonical target classification. An ineligible, hidden, missing, or
+cross-company addressee returns the same generic `interaction_not_allowed`
+failure and creates no interaction, target-visible audit, notification, wake,
+or existence-distinguishing timing branch. Company-side security audit is
+permitted, but its externally observable emission is deduplicated and
+rate-limited by the non-disclosing canonical request family rather than raw
+target identity. **[Security S2]**
+
 Every binding value comes from the authenticated host channel. If the provider
 has no tool-call ID, the driver allocates and durably records one before bridge
 submission. The host computes the route-safe key (at most 255 characters):
@@ -2750,6 +2791,17 @@ that retry reuses the identical proposal and key. Materialization commits the
 interaction, binding receipt, requested/effective policy, target, provenance,
 business activity, and protocol event before success is returned.
 
+There is also a pending-equivalence layer across all five kinds, independent of
+tool-call retry identity. Under the source-agent/issue family lock, an existing
+pending row with the same source agent, kind, canonical normalized payload, and
+canonical authorized target replays its original materialization receipt. A
+different canonical payload or target is a distinct request, subject to the
+family's finite rate and pending-card limits. Equivalence uses only targets the
+caller was already authorized to reference; a rejected addressee/target is
+processed through the generic denial family above, so dedupe, conflicts, and
+rate-limit responses cannot disclose whether that target exists. Resolution or
+expiry releases the pending slot but does not erase its immutable receipt.
+
 The runner and server both enforce current validator limits: 1–50 suggested
 tasks; 1–10 questions with 1–10 options each; 1–200 checkbox options; 1–200
 verdict items; title 240; summary 1,000; reason/free text 4,000; details,
@@ -2769,7 +2821,9 @@ type InteractionResponseV1 =
 
 interface InteractionResponse<K extends InteractionKind, R> {
   schema: "paperclip.interaction-response.v1";
+  companyId: string;
   interactionId: string;
+  responseCursor: string;
   requestId: string;
   kind: K;
   phase: "progress" | "terminal";
@@ -2792,7 +2846,8 @@ interface InteractionResponse<K extends InteractionKind, R> {
     effectiveContinuationPolicy:
       | "none"
       | "wake_assignee"
-      | "wake_assignee_on_accept";
+      | "wake_assignee_on_accept"
+      | "wake_assignee_on_terminal";
   };
   source: {
     runId: string;
@@ -2828,11 +2883,13 @@ interface PendingInteractionContextV1 {
   requestedContinuationPolicy?:
     | "none"
     | "wake_assignee"
-    | "wake_assignee_on_accept";
+    | "wake_assignee_on_accept"
+    | "wake_assignee_on_terminal";
   effectiveContinuationPolicy:
     | "none"
     | "wake_assignee"
-    | "wake_assignee_on_accept";
+    | "wake_assignee_on_accept"
+    | "wake_assignee_on_terminal";
   sourceRunId: string;
   createdAt: string;
 }
@@ -2920,6 +2977,14 @@ type ItemVerdictsResponseV1 =
     }
   | {
       outcome: "superseded_by_comment" | "stale_target" | "cancelled";
+      complete: false;
+      newlyResolvedItemIds: [];
+      items: Array<{
+        id: string;
+        verdict: "approve" | "reject" | "defer";
+        reason?: string | null;
+        resolvedAt: string;
+      }>;
       reason?: string | null;
       commentId?: string | null;
     }
@@ -2931,6 +2996,15 @@ uses only a redacted resolver class when diagnostics require it. Suggested-task
 acceptance materializes selected drafts transactionally in parent-before-child
 order and is at-most-once per `(interactionId, clientKey)`. Item verdicts may
 deliver progress repeatedly, but already resolved IDs are immutable.
+
+`responseCursor` is immutable, opaque, monotonic within the server-owned
+company delivery sequence, and allocated in the same transaction that records
+the progress/terminal result, authoritative continuation decision, delivery
+row, and any wake outbox row. No timestamp, client counter, resolver retry, or
+event sequence may substitute for it. Delivery and ACK rows bind the cursor to
+one destination run, native session, and turn; an ACK from any other
+destination is rejected without advancing delivery. Lost-ACK and restart
+replay returns the byte-equivalent normalized response for that cursor.
 
 #### 17.3.3 Turn-yield and completion coexistence
 
@@ -2973,7 +3047,7 @@ Every interaction row stores its kind and status, requested and effective resolv
 | --- | --- |
 | Creation and idempotency | `POST /api/issues/:issueId/interactions` validates the discriminated union, requires a current agent run for agent creation, denies low-trust control-plane creation, rejects terminal issues, checks company ownership of source references/addressees, and inserts `pending`. An idempotency key is unique within company + issue: an actor-identical, payload-identical retry returns the existing row; different reuse conflicts. Creating an addressed interaction wakes that eligible addressee with `interaction_pending`. |
 | Resolver authority | Defaults are board-only for every kind except `ask_user_questions`, which defaults to board-or-agents. Company governance can select/cap requested policy; the row stores both requested and effective policy. Agent resolution requires a run id, honors an addressed agent, and forbids the creator agent and source run. Item verdict submission additionally requires a user even if policy were configured otherwise. |
-| Continuation | Defaults are `wake_assignee` for `suggest_tasks`, `ask_user_questions`, checkbox confirmation, and item verdicts; plain confirmation defaults to `none`. `wake_assignee` resumes after accepted/rejected/answered/cancelled resolution and after each non-empty partial item-verdict batch even while that card remains `pending`. `wake_assignee_on_accept` resumes only for status `accepted`. `none` does not resume. Closed or unassigned issues do not wake. Normal expiry does not wake through continuation policy; if resolution consumes the only valid `in_review` path, a separate review-path-recovery wake may be queued. |
+| Continuation | Legacy/direct callers keep their existing defaults: `wake_assignee` for `suggest_tasks`, `ask_user_questions`, checkbox confirmation, and item verdicts; plain confirmation defaults to `none`. The additive `wake_assignee_on_terminal` policy resumes only after a terminal status. Native blocking item verdicts default to it, while `wake_assignee` progress delivery requires explicit opt-in. `wake_assignee` otherwise resumes after accepted/rejected/answered/cancelled resolution and each eligible partial verdict batch; `wake_assignee_on_accept` resumes only for status `accepted`; `none` does not resume. Closed or unassigned issues do not wake. Normal expiry does not wake through continuation policy; if resolution consumes the only valid `in_review` path, a separate review-path-recovery wake may be queued. |
 | Target/revision binding | Only confirmation, checkbox confirmation, and item verdicts accept `target`. For `type: "issue_document"`, creation atomically requires the current same-company document revision; resolution rechecks it; publishing/deleting the bound document revision expires the pending card as `stale_target` while recording the prior target. A `custom` target is stored and rendered but has no server-side freshness resolver. Suggested tasks and questions have no target/revision field. |
 | User-comment supersession | Questions, confirmation, checkbox confirmation, and item verdicts normalize `supersedeOnUserComment` to `true`. A genuine later human comment (not a run-attributed comment) expires the pending interaction as `superseded_by_comment`; list-time catch-up applies the same rule to historical comments. `suggest_tasks` is not comment-supersedable. |
 | Newer-request supersession | Creating a newer `request_confirmation` by the same agent on the same issue expires that agent's older pending `request_confirmation` rows as `superseded_by_newer_request`. This automatic replacement does not apply to questions, checkbox confirmations, item verdicts, or suggestions. |
@@ -3126,6 +3200,7 @@ interface ContinuationIntent {
   kind: "same_agent" | "retry" | "delegated_issue" | "response_wake" | "monitor";
   summary: string;
   idempotencyKey: string;
+  waitsOnInteractionIds?: string[];
   notBefore?: string;
   target?: ResolverTarget;
 }
@@ -3220,7 +3295,7 @@ interface InteractionYieldResultV1 {
   requestId: string;
   kind: InteractionKind;
   materialization: "created" | "replayed";
-  effectiveContinuationPolicy: "wake_assignee";
+  effectiveContinuationPolicy: "wake_assignee" | "wake_assignee_on_terminal";
 }
 ```
 
@@ -3228,6 +3303,17 @@ The finalizer converts this receipt into the same durable work-assessment path
 as an explicit yielded result, while preserving that the source was a semantic
 tool rather than model-authored completion prose. The interaction and the
 status decision remain separate records.
+
+`ContinuationIntent.waitsOnInteractionIds` is the only explicit declaration
+that non-blocking finalization depends on pending interaction responses. Every
+listed ID must be a pending same-company interaction on the current issue and
+must be materialized by or visible to the current run. When present and valid,
+the arbiter preserves a live path until those dependencies terminalize. When
+absent, no dependency may be inferred from `summary`, remaining-work prose,
+titles, or comments: policy may close an otherwise complete issue and expire
+the independent pending interactions as `issue_closed`. Empty, duplicate,
+stale, foreign, or unauthorized IDs fail safe validation without status or wake
+side effects.
 
 | Interaction fact | Turn/run disposition | Status-arbiter input | Forbidden inference |
 |---|---|---|---|
@@ -4711,7 +4797,10 @@ host-owned binding field, validates the strict union, derives the idempotency
 key, and returns either the materialized/replayed receipt or
 `InteractionRequestFailureV1`. It cannot accept a general agent bearer token or
 model-supplied company/issue identity. The acknowledgement route can advance
-only a delivery already assigned to that destination run/session/turn.
+only a delivery already assigned to that destination run/session/turn. Its
+lookup identity is exactly `(companyId, interactionId, responseCursor)` plus
+the authenticated destination binding; `recordedAt` is never accepted as a
+cursor or conditional.
 
 Resolution continues to use the existing issue-scoped, kind-specific
 interaction routes and policy service. The bridge does not invent a generic
@@ -4724,13 +4813,16 @@ one shared native response projector that:
 2. validates target freshness and supersession;
 3. stores the complete normalized `InteractionResponseV1` and P0 event;
 4. derives continuation and same/fresh-session routing from server policy;
-5. creates/reuses one response delivery cursor and one idempotent wake; and
+5. atomically allocates/reuses one immutable response cursor, destination-bound
+   delivery, and at most one idempotent wake; and
 6. includes the response in the next task envelope until acknowledged.
 
 Closed or unassigned issues suppress wakes without losing the durable response.
 Plan acceptance may force a fresh session/workspace refresh. Partial item
 verdict submissions produce progress delivery; the final submission produces a
-terminal response. A duplicate webhook, resolver retry, bridge reconnect, or
+terminal response. Blocking item verdicts default to terminal-only resume;
+partial progress wakes require an explicit policy-approved opt-in. A duplicate
+webhook, resolver retry, bridge reconnect, or
 lost delivery acknowledgement cannot repeat domain effects or queue an
 equivalent second continuation.
 
@@ -4807,6 +4899,20 @@ ui/src/lib/native-run/
 7. Issue-thread interaction query invalidation after business interaction activity.
 8. Polling only as a degraded fallback.
 
+The thread and console MUST mount the existing shared interaction-card
+component against the same normalized interaction query/cache and mutation
+state source; a console-only copy of the card or lifecycle reducer is not
+permitted. Resolution updates the existing card in place and atomically
+invalidates or patches both surfaces. Live events, snapshot hydration, REST
+replay, and mutation responses all enter that shared reducer. **[UX-5]**
+
+For interaction responses the reducer orders and deduplicates only by
+`responseCursor`, scoped by company and interaction. It ignores `recordedAt`
+for identity, persists the destination ACK boundary, and attaches a linked
+resume-provenance marker (interaction, cursor, source run/turn, resumed
+run/turn) to the card and resumed timeline. Item-verdict progress updates that
+one card/envelope; it never appends a card per batch. **[UX-6]**
+
 Healthy native mode must not rely on 3-second or 5-second run polling for live state.
 
 ### 23.3 Header
@@ -4824,6 +4930,12 @@ Show:
 - cost/tokens;
 - current phase;
 - last event age.
+
+When the last yielded turn has any pending `blockingCurrentTurn` interaction,
+the primary run chrome reads **Waiting for response** and uses a pending state,
+even if the provider turn itself is `completed`. It MUST NOT show the green
+completed treatment until the interaction dependency is terminal and the
+authoritative run/issue projection is complete. **[UX-3]**
 
 ### 23.4 Phase strip
 
@@ -4848,6 +4960,18 @@ Clicking a phase opens diagnostics, not raw secrets.
 - Issue-thread interaction cards render all five kinds, partial item-verdict
   progress, stale/superseded outcomes, materialized tasks, and delivered
   response state without masquerading as provider permission cards.
+- All five kinds are first-class needs-input items in v1. Every pending card
+  displays its kind label and a deep link to the authoritative issue-thread
+  interaction, even when inline resolution for that kind is not yet offered.
+  **[UX-2]**
+- The shared header is `InteractVariant.title` and supporting copy is
+  `summary`; question prompt text stays inside the body and never competes as a
+  second card title. **[UX-1]**
+- Terminal cards explicitly render `withdrawn`, question `cancelled`,
+  `issue_closed`, `addressee_deleted`, `failed`, and rejected materialization.
+  They retain reason/error copy safe for the viewer, remove every resolver
+  affordance, and remain in replay/history rather than appearing successful or
+  disappearing. **[UX-4]**
 - Formal approval and execution-review cards retain distinct labels, routes,
   authority copy, and actions; the console never presents them as
   `paperclip.interact` results.
@@ -4931,6 +5055,27 @@ For developers/operators:
     expose active resolver actions.
 19. Runtime permission, formal approval, execution review, and issue-thread
     interaction cards are visually and behaviorally distinct.
+
+### 23.10 Interaction screenshot and mockup matrix
+
+The implementation handoff MUST include inspectable desktop and mobile
+screenshots or deterministic Storybook/Playwright mockups for every required
+cell below. Fixtures use the production shared card and reducer; bespoke static
+HTML is not acceptable. **[UX-7] [UX-8] [UX-9]**
+
+| Matrix axis | Required captures/assertions |
+| --- | --- |
+| Five kinds | One recognizable pending needs-input card for each kind, each with kind label and deep link; a mixed all-kind attention view proves no kind is demoted. |
+| Lifecycle | Proposed/materialized, pending, progress where applicable, accepted/answered/resolved, rejected, withdrawn, cancelled question, expired `issue_closed`, `addressee_deleted`, `failed`, stale/superseded, and rejected materialization. |
+| Waiting chrome | Last yielded turn plus pending blocking card shows `Waiting for response`, then transitions only after terminal response/resume. |
+| Provenance and delivery | Linked source-to-resume marker; partial verdict cursor advance on one card; lost-ACK reconnect and byte-equivalent replay without a duplicate card or animation. |
+| Authority distinctness | Issue-thread interaction beside runtime permission, formal approval, and execution-review cards, with visibly different labels, copy, actions, and route families. |
+| Scale edges | 1 and maximum practical visible entries for tasks/questions/options/verdict items, long safe title/summary/reason, wrapping deep link, empty legal checkbox selection, and partial verdict completion. |
+| Responsive surfaces | Thread and Live Run Console at desktop and narrow mobile widths, including actionable, read-only terminal, reconnect, and overflow/keyboard-focus states. |
+
+The artifact index names the fixture, viewport, interaction kind, lifecycle
+state, cursor, expected action family, and corresponding conformance test. A
+single happy-path desktop capture does not satisfy this matrix.
 
 ---
 
@@ -5345,6 +5490,58 @@ schema implementation, deterministic driver, and browser reducer. It must prove:
     never derives `blocked`, `in_review`, `done`, a formal approval, or an
     execution-stage decision solely from the model's request.
 
+#### 27.9.1 Required Phase 4 fixture gates
+
+These are release gates, not illustrative examples. Each fixture records the
+exact response body, safe sorted JSON Pointer paths (maximum 20), database row
+counts before/after, event/outbox counts, effective policy, and cursor/ACK
+state. **[QA G1] [QA G2] [QA G3] [QA G4] [QA G5] [QA G6]**
+
+| Gate | Required table-driven coverage | Non-negotiable assertion |
+| --- | --- | --- |
+| QA G1 — strict validation | For each of the five kinds, exercise `invalid_schema`, `reserved_field`, `limit_exceeded`, `invalid_combination`, `invalid_target`, `stale_target`, `run_binding_invalid`, `interaction_not_allowed`, `issue_not_open`, `idempotency_conflict`, and the retryable `transient_control_plane_failure`. Boundary rows cover 0/51 tasks, 0/11 questions, 0/11 options per question, 0/201 checkbox options, 0/201 verdict items, and one-over-limit title (240), summary (1,000), reason/free text (4,000), details/preview/markdown (20,000), href (2,000), validation paths (20), and `maxEventBytes`. Nested question `request.title` is a reserved safe-path row. | Every deterministic denial asserts the exact public code and safe paths and produces zero interaction, binding, delivery, event, activity, notification, wake, materialized issue, and target-visible audit rows. The transient fixture proves rollback before its retryable error. |
+| QA G2 — withdrawal and expiry | For every kind: creator-authorized, current-assignee-authorized, board-authorized, unauthorized, and idempotent repeated withdrawal. Separately cover `issue_closed`, `addressee_deleted`, trusted-tool expiry, generic `failed`, and a resolver response arriving after each expiry. | Authorized withdrawal has one terminal result/cursor and no duplicate wake; unauthorized is generic and side-effect-free; stale post-expiry response is audit-only. All terminal affordances are absent in reducer output. |
+| QA G3 — finalization and turn lock | Non-blocking finish with valid `waitsOnInteractionIds`; finish with the field absent; invalid/foreign/stale IDs; policy-governed closure causing `issue_closed`; pending dependency preserving a live path; blocking yield followed by model output, finish, and block attempts. | Prose never implies dependency. The explicit dependency branch stays live, independent work may close, and every post-yield terminal attempt returns `turn_already_terminal` with no second assessment, turn terminalization, or side effect. |
+| QA G4 — item verdict policy | User-only resolution; agent, creator, same-run, low-trust, and unauthorized-user denials; partial batches under default `wake_assignee_on_terminal`; explicit policy-approved progress-wake opt-in; repeated/overlapping batches; `cancelled` after prior results. | One card/envelope advances by cursor, prior verdicts remain immutable and present after cancellation, default partial batches create no wake, terminalization creates at most one wake, and agent attempts create zero result rows. |
+| QA G5 — credentialless resume | One resumed native run receives, inline and without an agent API key, full question answers, suggested-task `createdTasks`/skips, confirmation/checkbox outcome, complete verdict state/new-item delta, target/continuation data, and immutable response cursors. | The runner-scoped destination binding is sufficient; no Paperclip/API credential enters the model environment. Every response remains byte-equivalent and redeliverable until its destination ACK commits. |
+| QA G6 — crash/replay exactly once | Resolve progress and terminal responses, lose the ACK, restart the server and runner, reconnect the browser, replay, then ACK from the assigned destination; also attempt an ACK from a different run/session/turn. | For each `(companyId, interactionId, responseCursor)`, replay bytes are identical and there is exactly one domain effect, continuation wake, reducer effect, provenance link, and UI card. Foreign ACK is rejected and does not advance the cursor. |
+
+The same suite also proves the centralized addressee predicate at creation and
+resolution, including a resolver who loses eligibility between those points.
+Every kind has pending-equivalence fixtures: same source agent + kind +
+canonical payload/target replays the receipt, while different payloads remain
+distinct within the rate limit. Hidden/missing/cross-company targets share one
+generic denial and one non-disclosing audit-rate-limit family.
+
+#### 27.9.2 Review-finding traceability
+
+| Finding | Normative contract | Conformance evidence |
+| --- | --- | --- |
+| Security S1 | Sections 17.1, 17.3.2, and 22.4: immutable server cursor, tuple identity, atomic allocation, destination-bound ACK, consumer dedupe; timestamp is metadata. | QA G5–G6 and Section 27.9 cases 8 and 12. |
+| Security S2 | Section 17.3.1: centralized creation/resolution eligibility, hints only narrow, generic side-effect-free denial, company audit family limits. | QA G1–G2 plus the predicate/equivalence paragraph after the gate table. |
+| UX-1 | Sections 17.3 and 23.5: one common card title and supporting summary; nested runner question title denied, legacy REST normalized. | QA G1 nested-title row and screenshot lifecycle/scale fixtures. |
+| UX-2 | Section 23.5: all five first-class needs-input kinds with labels and deep links. | Section 23.10 five-kind and all-kind attention captures. |
+| UX-3 | Section 23.3: `Waiting for response` overrides green completed chrome after blocking yield. | Section 23.10 waiting-chrome capture and QA G3. |
+| UX-4 | Section 23.5: explicit terminal/failure rendering with all affordances removed. | QA G2 and Section 23.10 lifecycle captures. |
+| UX-5 | Section 23.2: shared production card/cache/reducer in thread and console with in-place dual-surface updates. | QA G6 and responsive thread/console captures. |
+| UX-6 | Section 23.2: cursor-only reducer order/dedupe, linked resume provenance, one progress card. | QA G4–G6 and provenance/replay captures. |
+| UX-7 | Section 23.10: five-kind lifecycle and waiting-chrome artifact matrix. | Artifact index cross-linked to the UI suite. |
+| UX-8 | Section 23.10: provenance, reconnect/replay, scale-edge, desktop/mobile captures. | Artifact metadata and reducer assertions for every required viewport/fixture. |
+| UX-9 | Sections 23.5 and 23.10: authority-card distinctness and mixed all-kind attention. | Authority-distinctness and all-kind captures plus route-family UI tests. |
+| QA G1 | Section 27.9.1 strict-validator gate. | Exact code/path and zero-row table assertions across five kinds/all limits. |
+| QA G2 | Section 27.9.1 withdrawal/expiry gate. | Authorized/unauthorized/idempotent fixtures and stale post-expiry responses. |
+| QA G3 | Section 27.9.1 finalization/turn-lock gate. | Dependency-present/absent/invalid closure branches and terminal lockout. |
+| QA G4 | Section 27.9.1 item-verdict gate. | User-only, prior-results cancellation, default terminal wake, explicit progress opt-in. |
+| QA G5 | Section 27.9.1 credentialless-resume gate. | Full five-kind response envelope, no agent key, until-ACK replay. |
+| QA G6 | Section 27.9.1 crash/replay gate. | Lost ACK/restart byte identity and one wake/effect/card per cursor. |
+
+Across every mapped finding, company scope is derived from the authenticated
+run binding; resolver authorization is rechecked at mutation time; formal
+approval and execution-policy gates remain on their existing authority paths;
+and interaction, run, and issue statuses remain server-only fields. Neither a
+model hint, runner lease, response payload, continuation intent, nor replay/ACK
+can bypass those invariants.
+
 ---
 
 ## 28. Rollout and compatibility
@@ -5410,664 +5607,15 @@ Never change an active run from native to legacy mid-session.
 
 ---
 
-## 29. Proposed work breakdown
+## 29. Implementation plan
 
-The issue identifiers below are placeholders. Each issue is intended to be assignable to a Paperclip worker with a narrow contract.
+The implementation phases, dependency policy, package-local documentation layout, human checkpoints, and retained future backlog now live in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md).
 
-### NR-001 — Native runtime protocol package
+The spike specification remains the normative contract. Keep it updated when implementation evidence changes architecture, protocol, security, persistence, API, UI, performance, or exit criteria. Keep sequencing and task-creation details in the implementation plan. Only Phase 0 and Phase 1 tasks may be created initially; revise both documents after their human checkpoints before creating later-phase tasks.
 
-**Goal:** Define PRP v1 schemas, identities, commands, events, results, capabilities, and test vectors.
+## 30. Dependency sequencing
 
-**Primary files:**
-
-```text
-packages/native-runtime-protocol/
-```
-
-**Deliverables:**
-
-- TypeScript types;
-- JSON Schemas;
-- sample envelopes;
-- `CredentialPlan`, work-signal, attention-request, five-kind interaction
-  request/response, host-binding, failure, and delivery schemas;
-- schema validation;
-- protocol-version negotiation rules;
-- fixture corpus for Rust and TypeScript;
-- compatibility rules.
-
-**Acceptance:**
-
-- all examples validate;
-- unknown optional fields are forward-compatible;
-- unknown required command/event versions fail clearly;
-- size limits are testable;
-- event and command IDs are mandatory.
-- credential plans contain only opaque references/capabilities, never secret values.
-
-**Dependencies:** none.
-
----
-
-### NR-002 — Database migrations and transactional event ingestor
-
-**Goal:** Make native event ingestion durable, ordered, and idempotent.
-
-**Primary files:**
-
-```text
-packages/db/src/schema/
-server/src/services/native-runtime/native-event-ingestor.ts
-```
-
-**Deliverables:**
-
-- migrations described in Section 21;
-- atomic canonical sequence allocation;
-- source-event unique constraints;
-- batch insertion;
-- ACK cursor return;
-- replay query;
-- native interaction binding and response-delivery receipts;
-- concurrency tests.
-
-**Acceptance:**
-
-- 100 concurrent insert workers cannot produce duplicate `(run_id, seq)`;
-- replay of the same source batch produces no duplicates;
-- lost ACK replay is harmless;
-- committed batch returns highest contiguous source cursor.
-
-**Dependencies:** NR-001.
-
----
-
-### NR-003 — Runner registry, authentication, and outbound WebSocket
-
-**Goal:** Authenticate and manage runner connections independently of harness behavior.
-
-**Primary files:**
-
-```text
-server/src/realtime/native-runner-ws.ts
-server/src/services/native-runtime/runner-registry.ts
-server/src/services/native-runtime/runner-auth-service.ts
-runner/crates/runner-transport-ws/
-```
-
-**Deliverables:**
-
-- bootstrap ticket;
-- connection lease;
-- hello/welcome;
-- liveness;
-- reconnect;
-- runner state persistence;
-- version/digest validation;
-- drain/revoke.
-
-**Acceptance:**
-
-- runner connects using only outbound WSS;
-- one-time ticket cannot be reused;
-- reconnect preserves runner identity;
-- unapproved digest is rejected;
-- child process does not inherit connection secret.
-
-**Dependencies:** NR-001, NR-002.
-
----
-
-### NR-004 — Runner outbox, command dispatcher, and process supervisor
-
-**Goal:** Make runner delivery and local process control crash-safe and idempotent.
-
-**Primary files:**
-
-```text
-runner/crates/runner-core/
-runner/crates/paperclip-runnerd/
-```
-
-**Deliverables:**
-
-- local spool;
-- cumulative ACK handling;
-- processed-command cache;
-- process groups;
-- bounded logs;
-- signal escalation;
-- backpressure;
-- diagnostic heartbeat.
-- credential-plan materialization for environment and HTTP-broker modes.
-
-**Acceptance:**
-
-- restart runner with unacknowledged events and replay them;
-- duplicate command produces one process effect;
-- TERM/interrupt precedes KILL;
-- outbox limit preserves P0 events;
-- runner reports process exit separately from run result.
-- secret values never enter the local outbox, diagnostics, or canonical events.
-
-**Dependencies:** NR-001, NR-003.
-
----
-
-### NR-005 — Fake driver and conformance kit
-
-**Goal:** Decouple protocol/UI testing from real model calls.
-
-**Primary files:**
-
-```text
-runner/crates/driver-api/
-runner/crates/driver-fake/
-packages/native-runtime-protocol/test-vectors/
-```
-
-**Deliverables:**
-
-- driver trait;
-- capability model;
-- scripted fake;
-- common conformance test suite;
-- reconnect and interrupt scenarios.
-
-**Acceptance:**
-
-- can script every canonical event and runtime request;
-- can force races and failures;
-- all conformance assertions run without network/model dependencies.
-
-**Dependencies:** NR-001, NR-004.
-
----
-
-### NR-006 — Native Session Runtime integration in heartbeat orchestration
-
-**Goal:** Add the feature-flagged native branch while preserving workspace finalization and extending run/issue finalization additively.
-
-**Primary files:**
-
-```text
-server/src/services/native-runtime/native-session-runtime.ts
-server/src/services/heartbeat.ts
-server/src/services/environment-run-orchestrator.ts
-```
-
-**Deliverables:**
-
-- runtime-mode resolver;
-- runner expectation/bootstrap;
-- `NativeSessionRuntime.execute`;
-- terminal conversion to `AdapterExecutionResult`;
-- typed `nativeFinalization` validation and complete terminal/arbitration handling;
-- server-owned status arbiter for completion, blocker, review, attention, and continuation signals;
-- native interaction bridge binding, materialization, continuation projection,
-  and response-delivery integration;
-- native finalizer conformance tests for run status, issue status, continuation/review effects, and cancellation scope;
-- cancellation hook;
-- no behavior change for legacy adapters.
-
-**Acceptance:**
-
-- fake driver run completes through native-aware run/issue finalization and existing workspace finalization;
-- native run can be cancelled through existing board controls;
-- a missing or invalid native finalization discriminator fails closed instead of using the legacy success heuristic;
-- an agent signal cannot move an issue to `blocked` or `in_review` without the required blocker or review path;
-- human-needed requests persist and wake the correct owner without requiring an invalid issue status;
-- a blocking semantic interaction yields only after durable materialization and
-  resumes with a typed response without model-visible Paperclip credentials;
-- legacy integration tests are unchanged;
-- no Paperclip skill materialization occurs in native mode.
-
-**Dependencies:** NR-002 through NR-005.
-
----
-
-### NR-007 — Direct Codex app-server driver
-
-**Goal:** Implement the high-fidelity reference driver.
-
-**Primary files:**
-
-```text
-runner/crates/driver-codex-app-server/
-```
-
-**Deliverables:**
-
-- process startup;
-- JSON-RPC client;
-- thread create/resume/read;
-- turn start/steer/interrupt;
-- item mapping;
-- approval/input mapping;
-- usage mapping;
-- session snapshot/reconciliation;
-- structured completion.
-
-**Acceptance:**
-
-- passes driver conformance;
-- no TUI/stdout parsing for canonical events;
-- active turn can be interrupted without killing session;
-- steering works where app-server reports support;
-- session read/reconciliation survives runner transport reconnect;
-- provider session ID remains stable.
-
-**Dependencies:** NR-004, NR-005.
-
----
-
-### NR-008 — Skillless task envelope and semantic completion
-
-**Goal:** Remove Paperclip operational instructions from model context.
-
-**Primary files:**
-
-```text
-server/src/services/native-runtime/native-task-envelope.ts
-runner/crates/driver-codex-app-server/tools.rs
-```
-
-**Deliverables:**
-
-- compact task envelope;
-- `paperclip.finish`, `paperclip.block`, and the strict five-kind
-  `paperclip.interact` union;
-- provider-generated per-kind aliases that normalize to the canonical union;
-- pending/resolved interaction task-envelope context and response cursors;
-- structured result validator;
-- no Paperclip API credential in harness;
-- model-context test.
-
-**Acceptance:**
-
-- native prompt contains no Paperclip REST routes or heartbeat manual;
-- harness environment contains no runner or broad Paperclip credential;
-- duplicate finish tool call applies once;
-- interaction replay and changed-payload idempotency conflict are deterministic;
-- all five kinds resume with their complete typed response;
-- exit zero without result enters server-owned assessment/recovery rather than
-  granting an issue transition.
-
-**Dependencies:** NR-006, NR-007.
-
----
-
-### NR-009 — Task-page Live Run Console
-
-**Goal:** Render snapshot plus ordered live/replayed events with Codex-like controls.
-
-**Primary files:**
-
-```text
-ui/src/components/native-run/
-ui/src/lib/native-run/
-server/src/routes/native-runs.ts
-```
-
-**Deliverables:**
-
-- snapshot/replay endpoints;
-- native reducer;
-- typed timeline;
-- five-kind interaction cards backed by snapshot/live/replay state;
-- phase strip;
-- connection health;
-- composer;
-- debug inspector;
-- legacy fallback.
-
-**Acceptance:**
-
-- no healthy-state 3/5-second polling;
-- duplicate replay does not duplicate items;
-- gap recovery works;
-- command/file/tool/plan events render live;
-- pending, progress, stale/superseded, and terminal interaction states render
-  without being confused with runtime permissions or formal approvals;
-- task page remains usable with legacy run;
-- composer remains active during turn.
-
-**Dependencies:** NR-002, NR-005, NR-006.
-
----
-
-### NR-010 — Steering, interruption, and runtime requests
-
-**Goal:** Complete the bidirectional human-in-the-loop loop.
-
-**Primary files:**
-
-```text
-server/src/services/native-runtime/runner-command-service.ts
-server/src/services/native-runtime/native-runtime-request-service.ts
-server/src/routes/native-runtime-requests.ts
-ui/src/components/native-run/LiveRunComposer.tsx
-```
-
-**Deliverables:**
-
-- durable commands;
-- steer;
-- interrupt;
-- interrupt-and-send;
-- stop turn;
-- stop run;
-- permission/input resolution;
-- kind-specific issue-interaction response routing and delivery-cursor acknowledgement;
-- optimistic command UI;
-- race handling.
-
-**Acceptance:**
-
-- every operation has command ID and eventual terminal command result;
-- duplicate clicks do not duplicate effects;
-- interrupt/completion race is deterministic;
-- runtime permissions remain separate from governance approvals;
-- runtime permissions, issue-thread interactions, formal approvals, and
-  execution review remain separate authority paths.
-
-**Dependencies:** NR-003, NR-007, NR-009.
-
----
-
-### NR-011 — Reconnect, replay, reconciliation, and chaos suite
-
-**Goal:** Prove liveness and idempotency.
-
-**Primary files:**
-
-```text
-server/src/services/native-runtime/native-run-recovery.ts
-runner/crates/runner-core/
-tests/native-runtime-chaos/
-```
-
-**Deliverables:**
-
-- connection recovery;
-- pending command replay;
-- driver snapshot/reconciliation;
-- control-plane restart test harness;
-- lost-ACK tests;
-- interaction proposal/response/delivery replay and lost-ACK tests;
-- runner/harness kill tests;
-- explicit session-lost behavior.
-
-**Acceptance:**
-
-- reliability targets in Section 24.3;
-- live and replay use the same reducer;
-- no silent new session;
-- terminal state remains exactly once;
-- suggested-task materialization and resumed-run wakes remain at-most-once.
-
-**Dependencies:** NR-002 through NR-010.
-
----
-
-### NR-012 — ACP/acpx driver abstraction proof
-
-**Goal:** Add a second harness path without changing northbound/UI contracts.
-
-**Primary files:**
-
-```text
-runner/crates/driver-acp/
-```
-
-**Deliverables:**
-
-- ACP session and prompt mapping;
-- updates/events;
-- permissions;
-- cancel;
-- resume where supported;
-- capability mapping;
-- acpx configuration/state management.
-
-**Acceptance:**
-
-- passes applicable conformance tests;
-- task UI needs no ACP-specific branch for normal events;
-- unsupported features degrade by capability;
-- session identity is not conflated with Paperclip run.
-
-**Dependencies:** NR-005, NR-011.
-
----
-
-### NR-013 — Daytona and exe.dev provider conformance
-
-**Goal:** Prove the outbound runner model across cold and persistent environments.
-
-**Deliverables:**
-
-- runner image/snapshot/bootstrap for Daytona;
-- systemd or persistent service for exe.dev;
-- workspace/state persistence behavior;
-- cold/warm benchmark report;
-- teardown and token revocation tests.
-
-**Acceptance:**
-
-- neither provider requires a public inbound runner port;
-- cold run and warm run both complete;
-- runner reconnects after environment restart where provider supports persistence;
-- secrets are not baked into snapshots/images.
-
-**Dependencies:** NR-003 through NR-011.
-
----
-
-### NR-014 — Performance and build-vs-adopt comparison
-
-**Goal:** Measure direct driver, ACPX, and sandbox-agent options.
-
-**Deliverables:**
-
-- comparison matrix from Section 24.5;
-- runner RSS/binary/startup report;
-- event fidelity matrix;
-- recommendation recorded as an ADR;
-- flamegraphs or traces for slow startup phases.
-
-**Acceptance:**
-
-- all comparisons use the same task/image/model/warm tier;
-- sandbox and model latency are separated from runner overhead;
-- architecture decision is based on measured data.
-
-**Dependencies:** NR-007, NR-012, NR-013.
-
----
-
-### NR-015 — Standalone workspace and extension-point conformance
-
-**Goal:** Prove that runner development, MCP injection, channel/media boundaries, and remote backends can evolve without booting the full Paperclip product or changing the canonical session model.
-
-**Primary files:**
-
-```text
-packages/paperclip-runner/
-  protocol/
-  fixtures/
-  drivers/fake/
-  backends/fake-remote/
-  devtools/mock-control-plane/
-  devtools/browser/
-  examples/codex/
-  examples/acp/
-  benchmarks/
-```
-
-**Deliverables:**
-
-- language-neutral schemas and fixture corpus;
-- deterministic fake driver and fake remote backend;
-- mock Paperclip control-plane harness;
-- lightweight browser devtools/example page;
-- MCP binding capability and injection fixtures;
-- environment, HTTP-broker, and provider-native credential-plan fixtures;
-- channel and media side-channel fixtures;
-- direct Codex and ACP/acpx standalone examples;
-- phase-level benchmark commands and reports.
-
-**Acceptance:**
-
-- standalone and production integration use the same protocol schemas, fixtures, and reducer behavior;
-- replay and reconnect tests pass without the full Paperclip application;
-- MCP credentials remain outside model-visible configuration;
-- broker fixtures prove that proxy capabilities are short-lived and long-term secret values never enter PRP;
-- simulated voice interruption preserves normalized identities and durable audit events;
-- simulated Slack/email/voice ingress terminates at the mock core gateway and cannot address the fake runner directly;
-- the fake remote backend passes the common native-session conformance suite;
-- benchmarks isolate runner and harness overhead from unrelated application startup.
-
-**Dependencies:** NR-001, NR-004, NR-005; integrates with NR-007, NR-009, NR-010, and NR-012.
-
----
-
-### NR-016 — Hosted-provider API qualification and first connector
-
-**Goal:** Ground `RemoteAgentBackend` in real provider APIs and prove one production connector without changing the normalized session contract.
-
-**Primary files:**
-
-```text
-server/src/services/native-runtime/backends/remote/
-packages/paperclip-runner/backends/fake-remote/
-packages/paperclip-runner/backends/provider-conformance/
-```
-
-**Deliverables:**
-
-- dated, priority-sorted provider capability matrix covering AWS Bedrock AgentCore Runtime, Cloudflare Agents, Google Vertex AI Agent Engine, Microsoft Agent Framework/Foundry Hosted Agents, Cursor, Devin, GitHub Copilot cloud agent, and Jules;
-- source links and captured API schemas/examples for every claimed capability;
-- connector descriptor schema from Section 7.2.2;
-- fake-provider fixtures for polling, webhook duplication, cursor gaps, ambiguous cancellation, and provider retention expiry;
-- AWS AgentCore qualification spike covering runtime creation/versioning, endpoint invocation, HTTP/SSE/WebSocket behavior, session identity, async work, identity/secret binding, restart reconciliation, and cancellation gaps;
-- first managed-runtime connector targeting AWS AgentCore unless access validation identifies a concrete blocker;
-- second connector attempt targeting Cursor Cloud Agents after credential/access validation;
-- reconciliation and terminal-state mapping report;
-- explicit Paperclip-managed versus provider-managed execution ownership tests.
-
-**Acceptance:**
-
-- connector passes the same normalized session/event/result conformance suite as `RunnerBackend` where capabilities overlap;
-- unsupported steering, approval, interrupt, cancel, resume, artifact, MCP, or usage features are declared and visible;
-- provider event/message/activity IDs are preserved for deduplication;
-- Paperclip restart can reconstruct the session from PostgreSQL plus provider reconciliation without relying on an old process or socket;
-- Paperclip cancellation is durable even when provider cancellation is unavailable or unconfirmed;
-- no provider-managed runtime is represented as a Paperclip environment lease or sandbox;
-- Microsoft Agent Framework self-hosting is classified as a driver/host integration while Foundry Hosted Agents is classified as provider-managed execution;
-- Cloudflare's channel primitives cannot bypass Paperclip core authorization, durable input, governance, or audit;
-- provider-native workload identity and secret bindings use opaque `CredentialPlan` references rather than secret values in PRP;
-- raw provider payload retention is bounded independently from canonical control-event retention.
-
-**Dependencies:** NR-001, NR-002, NR-005, NR-006, NR-011, and NR-015.
-
----
-
-### NR-017 — Native issue-thread interaction bridge
-
-**Goal:** Complete the lossless skillless round trip for every current
-issue-thread interaction kind without widening model or runner authority.
-
-**Primary files:**
-
-```text
-packages/native-runtime-protocol/
-packages/paperclip-runner/
-server/src/services/native-runtime/native-interaction-bridge.ts
-server/src/services/issue-thread-interactions.ts
-server/src/services/heartbeat.ts
-server/src/routes/native-runs.ts
-ui/src/components/native-run/
-```
-
-**Deliverables:**
-
-- canonical strict `paperclip.interact.v1` union and generated alias schemas;
-- runner-side strict validation, host binding, payload hashing, and blocking-turn
-  auto-yield;
-- server bridge with current-run/session/turn/tool-call authorization and
-  deterministic idempotency;
-- additive binding and response-delivery persistence;
-- P0 proposed/materialized/rejected/progressed/resolved/delivered events;
-- normalized five-kind response projector and response-cursor acknowledgement;
-- same/fresh-session continuation routing and inline resumed-run envelope data;
-- Live Run Console rendering for all kinds and explicit separation from runtime
-  permission, formal approval, and execution-review cards;
-- cross-language schema, server integration, replay/chaos, security, resumed-run,
-  and UI conformance fixtures from Section 27.9.
-
-**Acceptance:**
-
-- all five kinds complete request -> durable interaction -> authorized response
-  -> resumed skillless run with no model-visible control-plane credential;
-- duplicate proposal, resolver retry, reconnect, restart, or delivery replay
-  causes no duplicate interaction, suggested task, verdict, wake, or UI card;
-- stale target, user-comment/newer-request supersession, partial item verdicts,
-  withdrawal, closure, and addressee deletion produce the typed durable outcome;
-- changed-payload idempotency reuse, forged binding, cross-company references,
-  unauthorized resolution, same-source self-resolution, low-trust creation, and
-  model-authored trusted tool-action fields fail closed and are audited;
-- blocking interaction yield and later resume preserve exactly-once turn
-  terminalization while issue status remains server-owned;
-- formal approvals and execution review keep their existing tables, routes,
-  participants, governance checks, and audit semantics; and
-- legacy adapters and existing dedicated REST/CLI/MCP/UI interaction surfaces
-  remain compatible.
-
-**Dependencies:** NR-001, NR-002, NR-005, NR-006, NR-008, NR-009, NR-010, and NR-011.
-
----
-
-## 30. Suggested issue dependency graph
-
-```text
-NR-001 Protocol
-  ├── NR-002 Event durability
-  ├── NR-003 Runner connection
-  └── NR-005 Driver API/fake
-          |
-NR-003 + NR-004 + NR-005
-          |
-       NR-006 Server integration
-          |
-       NR-007 Codex driver
-          |
-       NR-008 Skillless completion
-          |
-       NR-009 UI
-          |
-       NR-010 Bidirectional controls
-          |
-       NR-011 Chaos/recovery
-          |
-       NR-017 Interaction bridge
-          |
-       ├── NR-012 ACP/acpx
-       ├── NR-013 Providers
-       ├── NR-014 Benchmarks/ADR
-       └── NR-015 Standalone workspace/extensions
-```
-
-Parallelizable branches:
-
-- NR-002, NR-003, and NR-005 after protocol;
-- UI reducer against fake fixtures while Codex driver is built;
-- provider bootstrap after runner handshake is stable;
-- security tests alongside runner auth.
-- standalone mock control plane and browser devtools after NR-001 fixtures stabilize;
-- fake remote backend and channel/MCP conformance alongside the direct driver path.
-- interaction schemas, server response projection, and UI cards against the
-  fake driver while provider drivers are built.
+The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md).
 
 ---
 
