@@ -3497,27 +3497,27 @@ result_schema_rejected
 
 The complete arbitration table is normative. “Preserve” means that the current issue status remains unchanged.
 
-| Case | Authority and required inputs | Authoritative decision | Required atomic side effects and liveness | Reason code |
-|---|---|---|---|---|
-| Run succeeded; contract mechanically satisfied | Arbiter; accepted current-revision evidence, required artifacts, no missing criteria, no pending gate, no remaining completion work | `done` | Persist assessment/decision, compact handoff, release checkout | `completion_contract_satisfied` |
-| Run succeeded; low-risk agent claims done under explicit policy | Arbiter; current claim, policy permits agent authority, no contradictory evidence or pending gate | `done` | Persist policy basis and evidence classifications, release checkout | `completion_claim_policy_accepted` |
-| Run succeeded; agent claims done but required evidence or criteria are incomplete | Arbiter; completion claim plus missing/rejected/unverifiable requirements | `in_progress` only when a live path is created; otherwise preserve | Register continuation/retry/delegated verification; if none can be created, record finalization error and preserve status | `completion_evidence_incomplete` |
-| Run succeeded; completion requires subjective, Security, QA, CTO, board, or governed review | Arbiter; contract gate or risk policy and a real review target | `in_review` | Atomically bind reviewer, approval, interaction, delegated review issue, or monitor that wakes the assignee | `completion_review_required` or `governed_gate_pending` |
-| Structured result is invalid, stale, cross-boundary, or remains uncorrected after the bounded correction policy | Runner/finalizer + arbiter; rejected result, binding/schema failure, runtime facts, safely parsed evidence | Preserve | Persist the rejected input and reason, terminalize the run from runtime facts, and atomically create a bounded correction/recovery path when policy permits; never infer `in_review`, `blocked`, or `done` from rejection | `result_schema_rejected` |
-| Run succeeded; agent reports yielded and continuation is valid | Arbiter; declared continuation with valid target/idempotency and policy budget | `in_progress` | Atomically enqueue continuation, retry, delegated issue, response wake, or monitor | `live_continuation_registered` |
-| Current turn waits for an answer, but another productive track exists | Attention resolver + arbiter; `scope: current_turn` or `current_track`, alternate track and continuation | `in_progress` | Persist/rout attention and enqueue alternate productive track; do not create task-wide blocker | `turn_waiting_other_track_live` |
-| A task-wide blocker prevents all productive progress | Arbiter; blocker `scope: task_wide`, concrete owner, unblock action, evidence, no alternate live track | `blocked` | Atomically bind blocker issue or named owner/action and wake/notify route | `task_wide_blocker_bound` |
-| Agent asks a question answerable from durable context or policy | Attention resolver; context hit bound to request and current revision | `in_progress` only when a response wake is registered; otherwise preserve | Record answer, resolve request, wake current turn/assignee as requested | `attention_resolved_from_context` |
-| Agent asks for expertise another in-company agent can supply | Attention resolver; capability match, company scope, delegation policy | `in_progress` only when delegation creates a live response path; otherwise preserve | Route request or create delegated issue with response binding and wake path | `attention_routed_to_agent` |
-| Agent asks for human help and only human/board authority or intentional judgment can resolve it | Attention resolver + arbiter; authority match, company scope, dedupe/budget checks | `in_review` only for contract review; otherwise `in_progress` only with a response wake; otherwise preserve | Create board interaction/approval and required wake atomically; `scope: current_turn` alone does not set status | `attention_requires_human_authority` |
-| Duplicate or repeated attention request has no new evidence | Attention resolver; same dedupe key or superseded request, no material evidence delta | Preserve | Link duplicate to canonical request; do not notify or create another interaction | `attention_duplicate_suppressed` |
-| Attention retry/escalation budget is exhausted with no valid resolver | Arbiter; attempt history and failed capability routing | Preserve | Record finalization error and named recovery owner/action; never manufacture `blocked` or `in_review` | `attention_budget_exhausted` |
-| Run fails after producing partial work or evidence | Runner/finalizer + arbiter; failed run facts and safely persisted result/evidence | Preserve | Persist claims/evidence, apply retry/recovery policy, schedule live path when allowed | `run_failed_partial_evidence_preserved` |
-| Model reports completion but transport, workspace, or finalization later fails | Runner/finalizer + arbiter; accepted completion claim plus finalization failure | Preserve | Persist claim and evidence, mark run failed, open/schedule reconciliation; never mark done | `finalization_failed_claim_preserved` |
-| Cancellation targets only the active turn | Cancellation authority; authenticated command with `scope: turn` | Preserve | Terminalize turn `cancelled`; continue or await replacement turn according to run policy | `cancellation_turn_only` |
-| Cancellation targets the run, not the issue | Cancellation authority; authenticated command with `scope: run` | Preserve | Terminalize run `cancelled`, release runtime resources, keep issue available for resume | `cancellation_run_only` |
-| Cancellation explicitly targets the issue | Board or otherwise authorized issue-status actor; authenticated command with `scope: issue` | `cancelled` | Cancel active turn/run, record issue transition, release checkout and continuations | `cancellation_issue_authorized` |
-| Later evidence, dependency resolution, interaction response, or authorized resume changes the facts | Arbiter; new assessment, prior decision, authorized trigger | Re-evaluate to any legal status | Append superseding assessment/decision and create the required new liveness path | `decision_superseded_by_new_evidence`, `dependency_resolved`, or `authorized_resume` |
+| ID | Case | Authority and required inputs | Authoritative decision | Required atomic side effects and liveness | Reason code |
+|---|---|---|---|---|---|
+| SD-01 | Run succeeded; contract mechanically satisfied | Arbiter; accepted current-revision evidence, required artifacts, no missing criteria, no pending gate, no remaining completion work | `done` | Persist assessment/decision, compact handoff, release checkout | `completion_contract_satisfied` |
+| SD-02 | Run succeeded; low-risk agent claims done under explicit policy | Arbiter; current claim, policy permits agent authority, no contradictory evidence or pending gate | `done` | Persist policy basis and evidence classifications, release checkout | `completion_claim_policy_accepted` |
+| SD-03 | Run succeeded; agent claims done but required evidence or criteria are incomplete | Arbiter; completion claim plus missing/rejected/unverifiable requirements | `in_progress` only when a live path is created; otherwise preserve | Register continuation/retry/delegated verification; if none can be created, record finalization error and preserve status | `completion_evidence_incomplete` |
+| SD-04 | Run succeeded; completion requires subjective, Security, QA, CTO, board, or governed review | Arbiter; contract gate or risk policy and a real review target | `in_review` | Atomically bind reviewer, approval, interaction, delegated review issue, or monitor that wakes the assignee | `completion_review_required` or `governed_gate_pending` |
+| SD-05 | Structured result is invalid, stale, cross-boundary, or remains uncorrected after the bounded correction policy | Runner/finalizer + arbiter; rejected result, binding/schema failure, runtime facts, safely parsed evidence | Preserve | Persist the rejected input and reason, terminalize the run from runtime facts, and atomically create a bounded correction/recovery path when policy permits; never infer `in_review`, `blocked`, or `done` from rejection | `result_schema_rejected` |
+| SD-06 | Run succeeded; agent reports yielded and continuation is valid | Arbiter; declared continuation with valid target/idempotency and policy budget | `in_progress` | Atomically enqueue continuation, retry, delegated issue, response wake, or monitor | `live_continuation_registered` |
+| SD-07 | Current turn waits for an answer, but another productive track exists | Attention resolver + arbiter; `scope: current_turn` or `current_track`, alternate track and continuation | `in_progress` | Persist/route attention and enqueue alternate productive track; do not create task-wide blocker | `turn_waiting_other_track_live` |
+| SD-08 | A task-wide blocker prevents all productive progress | Arbiter; blocker `scope: task_wide`, concrete owner, unblock action, evidence, no alternate live track | `blocked` | Atomically bind blocker issue or named owner/action and wake/notify route | `task_wide_blocker_bound` |
+| SD-09 | Agent asks a question answerable from durable context or policy | Attention resolver; context hit bound to request and current revision | `in_progress` only when a response wake is registered; otherwise preserve | Record answer, resolve request, wake current turn/assignee as requested | `attention_resolved_from_context` |
+| SD-10 | Agent asks for expertise another in-company agent can supply | Attention resolver; capability match, company scope, delegation policy | `in_progress` only when delegation creates a live response path; otherwise preserve | Route request or create delegated issue with response binding and wake path | `attention_routed_to_agent` |
+| SD-11 | Agent asks for human help and only human/board authority or intentional judgment can resolve it | Attention resolver + arbiter; authority match, company scope, dedupe/budget checks | `in_review` only for contract review; otherwise `in_progress` only with a response wake; otherwise preserve | Create board interaction/approval and required wake atomically; `scope: current_turn` alone does not set status | `attention_requires_human_authority` |
+| SD-12 | Duplicate or repeated attention request has no new evidence | Attention resolver; same dedupe key or superseded request, no material evidence delta | Preserve | Link duplicate to canonical request; do not notify or create another interaction | `attention_duplicate_suppressed` |
+| SD-13 | Attention retry/escalation budget is exhausted with no valid resolver | Arbiter; attempt history and failed capability routing | Preserve | Record finalization error and named recovery owner/action; never manufacture `blocked` or `in_review` | `attention_budget_exhausted` |
+| SD-14 | Run fails after producing partial work or evidence | Runner/finalizer + arbiter; failed run facts and safely persisted result/evidence | Preserve | Persist claims/evidence, apply retry/recovery policy, schedule live path when allowed | `run_failed_partial_evidence_preserved` |
+| SD-15 | Model reports completion but transport, workspace, or finalization later fails | Runner/finalizer + arbiter; accepted completion claim plus finalization failure | Preserve | Persist claim and evidence, mark run failed, open/schedule reconciliation; never mark done | `finalization_failed_claim_preserved` |
+| SD-16 | Cancellation targets only the active turn | Cancellation authority; authenticated command with `scope: turn` | Preserve | Terminalize turn `cancelled`; continue or await replacement turn according to run policy | `cancellation_turn_only` |
+| SD-17 | Cancellation targets the run, not the issue | Cancellation authority; authenticated command with `scope: run` | Preserve | Terminalize run `cancelled`, release runtime resources, keep issue available for resume | `cancellation_run_only` |
+| SD-18 | Cancellation explicitly targets the issue | Board or otherwise authorized issue-status actor; authenticated command with `scope: issue` | `cancelled` | Cancel active turn/run, record issue transition, release checkout and continuations | `cancellation_issue_authorized` |
+| SD-19 | Later evidence, dependency resolution, interaction response, or authorized resume changes the facts | Arbiter; new assessment, prior decision, authorized trigger | Re-evaluate to any legal status | Append superseding assessment/decision and create the required new liveness path | `decision_superseded_by_new_evidence`, `dependency_resolved`, or `authorized_resume` |
 
 Every decision records the arbiter authority, exact input assessment, reason code, side effects, and policy version. An issue transition and its liveness side effects commit in one transaction. A failed side effect means the transition is not applied.
 
@@ -3744,20 +3744,20 @@ The transaction rolls back if any required liveness side effect cannot be create
 
 This matrix is the required Phase 3 design verification. Each row has a bounded terminal routing outcome and no infinite wake edge.
 
-| Scenario | Expected resolver outcome | Status/liveness assertion |
-|---|---|---|
-| Agent asks a question already answered in the current document revision | Context response with versioned source refs | No human route; one response wake at most. |
-| Agent repeats the same question with the same key | Return canonical request | No new attempt, notification, status decision, or wake. |
-| Agent paraphrases the same question with fresh IDs | Match equivalence family and consume the shared budget | Duplicate suppressed; fresh keys cannot reset escalation. |
-| Agent requests a human for ordinary domain expertise | Reclassify to `expertise`; match an in-company agent | No human wait by default; delegation has a bound response path. |
-| Agent claims `task_wide` while an independent acceptance track is runnable | Narrow to `current_turn` or `current_track` and queue the alternate track | Issue remains truthfully `in_progress`; waiting track remains durable. |
-| Retry-safe tool call fails transiently, then succeeds | One bounded idempotent retry resolves it | No delegation or human route. |
-| Retry-safe failure exhausts two retries | Advance once to qualified agent/recovery or truthful fallback | No retry loop and no automatic human escalation without human authority. |
-| Agent labels a governed action as `requiredAuthority: none` | Policy derives the governed minimum authority | Exact approval route; expertise cannot downgrade it. |
-| Candidate names an agent, user, resource, or integration in another company | Generic side-effect-free rejection | No target disclosure, route, notification, or wake. |
-| Selected resolver changes or replies after supersession/expiry | Record stale response only | No issue transition, execution, or wake. |
-| Human interaction expires unanswered | Resolve expiry once; use policy fallback only with a durable new state or authorized resume | At most one fallback wake; no equivalent interaction recreation loop. |
-| No eligible agent, human authority, integration, or safe retry exists | Mark request exhausted and record finalization error/recovery alert | Preserve prior issue status; do not manufacture `blocked` or `in_review`. |
+| ID | Scenario | Expected resolver outcome | Status/liveness assertion |
+|---|---|---|---|
+| ATT-01 | Agent asks a question already answered in the current document revision | Context response with versioned source refs | No human route; one response wake at most. |
+| ATT-02 | Agent repeats the same question with the same key | Return canonical request | No new attempt, notification, status decision, or wake. |
+| ATT-03 | Agent paraphrases the same question with fresh IDs | Match equivalence family and consume the shared budget | Duplicate suppressed; fresh keys cannot reset escalation. |
+| ATT-04 | Agent requests a human for ordinary domain expertise | Reclassify to `expertise`; match an in-company agent | No human wait by default; delegation has a bound response path. |
+| ATT-05 | Agent claims `task_wide` while an independent acceptance track is runnable | Narrow to `current_turn` or `current_track` and queue the alternate track | Issue remains truthfully `in_progress`; waiting track remains durable. |
+| ATT-06 | Retry-safe tool call fails transiently, then succeeds | One bounded idempotent retry resolves it | No delegation or human route. |
+| ATT-07 | Retry-safe failure exhausts two retries | Advance once to qualified agent/recovery or truthful fallback | No retry loop and no automatic human escalation without human authority. |
+| ATT-08 | Agent labels a governed action as `requiredAuthority: none` | Policy derives the governed minimum authority | Exact approval route; expertise cannot downgrade it. |
+| ATT-09 | Candidate names an agent, user, resource, or integration in another company | Generic side-effect-free rejection | No target disclosure, route, notification, or wake. |
+| ATT-10 | Selected resolver changes or replies after supersession/expiry | Record stale response only | No issue transition, execution, or wake. |
+| ATT-11 | Human interaction expires unanswered | Resolve expiry once; use policy fallback only with a durable new state or authorized resume | At most one fallback wake; no equivalent interaction recreation loop. |
+| ATT-12 | No eligible agent, human authority, integration, or safe retry exists | Mark request exhausted and record finalization error/recovery alert | Preserve prior issue status; do not manufacture `blocked` or `in_review`. |
 
 The implementation test plan must turn every row into a deterministic fixture that asserts canonical/equivalence identity, counters, selected route, effective scope, status decision reason, side effects, wake count, and stale-response behavior.
 
@@ -3830,16 +3830,16 @@ interface AdapterExecutionResult {
 
 Native adapters must set `nativeFinalization`. The heartbeat finalizer validates it against `resultJson` and persisted terminal events, derives the heartbeat run status from `runTerminalState`, and then submits a `WorkAssessment` to the arbiter. Compatibility fields are process diagnostics only.
 
-| Native facts | Compatibility fields | Required native behavior |
-|---|---|---|
-| Turn `completed`; run `succeeded`; reported disposition present | Usually `exitCode: 0`, `timedOut: false`; result in `resultJson` | Persist succeeded run and assess the report. No reported disposition maps directly to issue status. |
-| Turn `failed`; run `failed`; partial result/evidence may exist | Nonzero exit when available; error metadata populated | Persist failed run, preserve partial claims/evidence, apply retry/recovery, preserve issue status unless a separate authorized decision applies. |
-| Turn `completed`; run `failed` because workspace/transport/finalization failed after a report | Exit code may still be zero; finalization error identifies failure | Persist failed run and preserve the completion claim for reconciliation. Never mark the issue done. |
-| Turn `interrupted`; run remains active or a replacement turn is accepted | No terminal adapter result yet | Terminalize only the turn; continue the same run/session. |
-| Turn `interrupted`; run `succeeded` with valid `yielded` report and continuation | Usually `exitCode: 0` | Assess yielded work and atomically register continuation; interruption alone grants no issue transition. |
-| Turn `cancelled`; run `cancelled`; scope `turn` or `run` | `exitCode: null`; cancellation diagnostics optional | Preserve issue status. Turn scope may permit replacement work; run scope releases run resources. |
-| Turn/run `cancelled`; scope `issue` and actor is authorized | `exitCode: null`; cancellation command reference persisted | Arbiter applies issue `cancelled` and cancels continuations atomically. |
-| Native finalization missing, inconsistent, stale, or invalid | Any compatibility values | Fail closed as `native_finalization_missing` or `native_finalization_invalid`; never use the legacy heuristic. Preserve safe evidence and create recovery. |
+| ID | Native facts | Compatibility fields | Required native behavior |
+|---|---|---|---|
+| TC-01 | Turn `completed`; run `succeeded`; reported disposition present | Usually `exitCode: 0`, `timedOut: false`; result in `resultJson` | Persist succeeded run and assess the report. No reported disposition maps directly to issue status. |
+| TC-02 | Turn `failed`; run `failed`; partial result/evidence may exist | Nonzero exit when available; error metadata populated | Persist failed run, preserve partial claims/evidence, apply retry/recovery, preserve issue status unless a separate authorized decision applies. |
+| TC-03 | Turn `completed`; run `failed` because workspace/transport/finalization failed after a report | Exit code may still be zero; finalization error identifies failure | Persist failed run and preserve the completion claim for reconciliation. Never mark the issue done. |
+| TC-04 | Turn `interrupted`; run remains active or a replacement turn is accepted | No terminal adapter result yet | Terminalize only the turn; continue the same run/session. |
+| TC-05 | Turn `interrupted`; run `succeeded` with valid `yielded` report and continuation | Usually `exitCode: 0` | Assess yielded work and atomically register continuation; interruption alone grants no issue transition. |
+| TC-06 | Turn `cancelled`; run `cancelled`; scope `turn` or `run` | `exitCode: null`; cancellation diagnostics optional | Preserve issue status. Turn scope may permit replacement work; run scope releases run resources. |
+| TC-07 | Turn/run `cancelled`; scope `issue` and actor is authorized | `exitCode: null`; cancellation command reference persisted | Arbiter applies issue `cancelled` and cancels continuations atomically. |
+| TC-08 | Native finalization missing, inconsistent, stale, or invalid | Any compatibility values | Fail closed as `native_finalization_missing` or `native_finalization_invalid`; never use the legacy heuristic. Preserve safe evidence and create recovery. |
 
 All compatibility results set `signal: null` unless the harness reported a real signal. They preserve usage, cost, session, provider, model, billing, and runtime-service fields without changing their meaning. `resultJson` contains the original structured result when one exists, plus references to the assessment and status decision after arbitration.
 
@@ -4869,6 +4869,234 @@ reason code, criterion table classification, attention card completeness, route
 affordance matrix, duplicate suppression, finalization error truthfulness,
 unknown reason code fallback, clock-skew countdown, legacy fallback, and
 keyboard operation of the response control.
+
+### 18.13 Phase 5 conformance, migration, and rollback contract
+
+Phase 5 turns the authority, resolver, finalizer, and operator contracts into an
+independently executable scenario matrix. The checked-in source of truth is
+[`fixtures/status-authority-phase5.json`](./fixtures/status-authority-phase5.json),
+and `pnpm check:runner-phase5-spec` is the standing spec-level conformance gate.
+The corpus is language-neutral: TypeScript server tests, Rust protocol tests,
+the deterministic driver, migration tests, and QA harnesses consume the same
+fixture IDs and expected facts. An implementation may add transport-specific
+setup, but it must not rewrite an expected status, reason code, effect, count,
+or compatibility mode.
+
+Each fixture names the exact normative rows it covers:
+
+- `SD-01`–`SD-19`: every row of the section 18.3 status-decision table;
+- `TC-01`–`TC-08`: every row of the section 18.5 terminal conversion table;
+- `ATT-01`–`ATT-12`: every row of the section 18.3.7 adversarial-attention table;
+- `LIVE-01`–`LIVE-06`: atomic liveness success and rollback paths below;
+- `REC-01`–`REC-08`: deterministic replay and reconciliation paths below;
+- `COMP-01`–`COMP-08`: native/legacy and existing-state compatibility below;
+- `MIG-01`–`MIG-09`: rollout, migration, rollback, and reconciliation stages below.
+
+The fixture schema separates input facts from assertions:
+
+```ts
+interface StatusAuthorityConformanceFixtureV1 {
+  id: string;
+  mode: "native" | "legacy";
+  covers: {
+    decisionRows: string[];
+    terminalRows: string[];
+    attentionRows: string[];
+    livenessRows: string[];
+    reconciliationRows: string[];
+    compatibilityRows: string[];
+    migrationRows: string[];
+  };
+  tags: string[];
+  given: {
+    priorIssueStatus: AuthoritativeIssueStatus;
+    turnTerminalState: TurnTerminalState | "active" | null;
+    runTerminalState: RunTerminalState | "active" | null;
+    reportedWorkDisposition: ReportedWorkDisposition | null;
+    nativeFinalization: "present" | "missing" | "invalid" | "not_applicable";
+    completionState: string;
+    trigger: string;
+    fault?: string;
+  };
+  expected: {
+    runStatus: "succeeded" | "failed" | "cancelled" | "running" | "legacy_derived";
+    statusAction:
+      | AuthoritativeIssueStatus
+      | "preserve"
+      | "legacy_finalizer";
+    reasonCode: StatusDecisionReasonCode | string | null;
+    requiredEffects: string[];
+    forbiddenEffects: string[];
+    livePathKind: LivePathView["kind"] | null;
+    preserveClaim: boolean;
+    nativeRecords: boolean;
+    decisionCount: number;
+    maxWakeCount: number;
+    maxNotificationCount: number;
+  };
+  replay: {
+    attempts: number;
+    sameDecisionDigest: boolean;
+    maxSemanticDecisions: number;
+    maxDomainEffectsPerKey: number;
+  };
+}
+```
+
+Fixture assertions are database assertions, not only response assertions. Every
+case records the terminal turn/run facts, original result/evidence retention,
+issue `status` and `status_version`, contract/policy version, assessment and
+decision lineage, effect-ledger rows, domain liveness rows, outbox counts,
+notifications, wakes, activity, and the coordinator phase. A failure response
+with a leaked row or a correct row with an extra wake both fail conformance.
+Timestamps and allocated UUIDs may differ; canonical input and decision digests,
+ordered effect kinds, reason codes, and semantic counts may not.
+
+#### 18.13.1 Required adversarial scenario inventory
+
+The corpus must keep at least one fixture carrying each tag below. Tags are
+stable QA selectors; renaming or removing one is a protocol change.
+
+| Tag | Required behavior |
+|---|---|
+| `premature_done_claim` | A `done` claim with missing proof cannot set `done`; accepted claim/evidence remains inspectable. |
+| `incomplete_evidence` | Missing, rejected, and unverifiable evidence stay distinct and choose continuation or truthful preservation. |
+| `required_review` | Subjective/governed completion reaches `in_review` only with the matching reviewer/approval path. |
+| `continuation` | A valid yielded result creates one canonical continuation and keeps the issue `in_progress`. |
+| `partial_progress` | Useful partial work survives a non-terminal result and remains attached to the next run. |
+| `real_blocker` | Only a task-wide stop with an owner/action and no alternate track can set `blocked`. |
+| `excessive_human_request` | Agent-resolvable requests route through context, retry, or another agent before a human route. |
+| `repeated_question` | Same-key and fresh-key equivalents share one canonical family and bounded counters. |
+| `false_blocker` | Claimed task-wide scope is narrowed while another productive track is queued. |
+| `partial_evidence_before_failure` | Failed execution preserves safely parsed evidence and never upgrades the issue from that evidence alone. |
+| `finalization_failure` | A completion claim followed by workspace/transport/finalizer failure remains preserved but unapplied. |
+| `cancellation_scope` | Turn, run, and issue cancellation have three intentionally different issue effects. |
+| `authorized_resume` | Only an authorized trigger can supersede a terminal/waiting decision and it creates a new liveness path. |
+| `supersession` | New evidence produces append-only assessment/decision lineage; stale effects do not replay. |
+| `native_legacy_distinction` | Native rows use contracts/assessments/decisions; legacy rows remain on the existing finalizer and create none. |
+| `existing_issue_state` | Upgrade does not synthesize history or silently rewrite open or terminal issue status. |
+| `atomic_liveness` | A non-terminal status and its durable next-action path commit or roll back together. |
+| `deterministic_replay` | Same canonical input/policy returns one digest and at-most-one semantic effect. |
+| `reconciliation` | Crash/race recovery resumes from durable phase and appends supersession when facts changed. |
+| `rollback` | Disabling native application stops new native dispatch without converting an active native run to legacy. |
+
+#### 18.13.2 Atomic liveness fixtures
+
+| ID | Injection | Required result |
+|---|---|---|
+| LIVE-01 | Valid completion-review target | `in_review`, reviewer/approval/interaction domain row, return owner, and wake outbox commit in one transaction. |
+| LIVE-02 | Reviewer/interaction insert fails | Prior status/version preserved; no reviewer, notification, or wake leaks; `side_effect_planning_failed` recovery is recorded. |
+| LIVE-03 | Valid task-wide blocker | `blocked`, company-scoped blocker relation or unblock descriptor, owner notification intent, and dependency wake identity commit together. |
+| LIVE-04 | Blocker relation/owner binding fails | Prior status/version preserved; no `blocked` projection or owner notification leaks. |
+| LIVE-05 | Valid continuation | Continued `in_progress`, cleared completed-run lock, one canonical queued continuation/response wake/monitor, and attempt budget increment commit together. |
+| LIVE-06 | Continuation/outbox insert fails | Prior status/version preserved; no orphan continuation, wake, or `in_progress` transition; recovery names an owner. |
+
+The failpoint is after validation but before transaction commit. Each failure is
+replayed after the failpoint is removed to prove that rollback did not consume
+the canonical idempotency key. A post-commit websocket or external-notification
+failure is different: the authoritative transition stays committed and only
+the existing effect-ledger row is retried.
+
+#### 18.13.3 Deterministic replay and reconciliation fixtures
+
+| ID | Scenario | Required result |
+|---|---|---|
+| REC-01 | Identical result is ingested twice before acknowledgement | One result fingerprint, assessment, decision digest, status transition, and domain effect per idempotency key. |
+| REC-02 | Equivalent material arrives with fresh caller IDs/dedupe keys | Resolve to the canonical result and shared attention budget; caller keys cannot mint another semantic action. |
+| REC-03 | Caller reuses an ID with changed material | `structured_result_replay_conflict`; no decision, status change, route, notification, or wake. |
+| REC-04 | Finalizer crashes after result preservation and before workspace finalization | Reconciler resumes the existing workspace operation, then assesses once. |
+| REC-05 | Finalizer crashes after decision commit and before outbox acknowledgement | Replay dispatches only pending effect rows; it does not re-arbitrate or duplicate a domain row. |
+| REC-06 | Board update wins the status-row race | Finalizer reloads and appends a superseding assessment; stale effects remain cancelled/preserved and cannot reopen a terminal issue. |
+| REC-07 | Dependency or interaction response wins the race | Superseding assessment includes the resolved fact and emits at most one newly legal continuation. |
+| REC-08 | Contract or policy version changes before replay | Old inputs remain bound to their immutable versions; a new assessment uses the new versions and links, rather than mutating, the old decision. |
+
+Every replay fixture runs once in original order, once with duplicate delivery,
+and once after a simulated control-plane restart. The final database projection
+and ordered semantic-effect identities must be equal. When the authoritative
+facts intentionally change, only the append-only supersession chain may differ.
+
+#### 18.13.4 Native, legacy, and existing-state compatibility
+
+| ID | Starting condition | Compatibility behavior |
+|---|---|---|
+| COMP-01 | Existing adapter omits `nativeFinalization` | Select the legacy finalizer exactly as before; create no contract, result, coordinator, assessment, decision, or attention row. |
+| COMP-02 | Persisted run profile is native and the discriminator is missing/invalid | Fail closed with native finalization failure and recovery; never select the legacy heuristic. |
+| COMP-03 | Adapter result contains a native-looking model-authored field only inside `resultJson` | Ignore it for mode selection; the persisted run profile plus typed adapter boundary are authoritative. |
+| COMP-04 | Existing issue upgraded in `todo`, `in_progress`, `in_review`, or `blocked` | Initialize `status_version = 0` without changing status, owner, blocker, review path, monitor, checkout, or timestamps; create no synthetic history. |
+| COMP-05 | Existing issue upgraded in `done` or `cancelled` | Preserve terminal status/timestamps; late native evidence is audit-only unless an authorized resume/cancellation capability permits a legal new decision. |
+| COMP-06 | Native application flag disabled after shadow records exist | Shadow rows remain inspectable and unapplied; legacy runs keep existing behavior; no shadow decision may dispatch an effect. |
+| COMP-07 | One ledger contains native and legacy runs | Native rows expose four authority layers and decision lineage; legacy rows render the byte-identical pre-change path with `native: false`. |
+| COMP-08 | Existing authorized status route races or runs during rollout | It increments `status_version` in every mode and triggers native reconciliation only when a native coordinator is active. |
+
+There is no implicit “upgrade legacy history” job. A later migration that wants
+native contracts for a legacy adapter must define how the contract is sourced,
+how historical evidence is classified, and who authorizes semantic backfill.
+Until then, native and legacy metrics, UI summaries, audit exports, and QA
+reports carry an explicit `mode` dimension and are never aggregated as though
+their completion semantics were identical.
+
+#### 18.13.5 Rollout and migration sequence
+
+| ID | Stage | Entry gate | Action and exit evidence |
+|---|---|---|---|
+| MIG-01 | Expand schema | Migration dry-run and rollback rehearsal pass on production-shaped data | Add nullable references/new tables plus `status_version default 0`; no behavior or issue-state change. |
+| MIG-02 | Version all writers | Every issue-status mutation test asserts one `status_version` increment | Deploy writer compatibility before any native arbiter can apply decisions. |
+| MIG-03 | Read-only compatibility | Legacy UI/API snapshots and cross-company read tests pass | Ship read types/routes behind flags; missing native rows are an intentional `native: false`/`404`, not an error. |
+| MIG-04 | Shadow materialization | Contract/result redaction, digest, and storage tests pass | Materialize native contracts/results and compute assessments/decisions with effect dispatch disabled. |
+| MIG-05 | Shadow comparison | Complete Phase 5 corpus passes and divergence dashboard labels expected legacy/native differences | Compare proposed native decisions with existing behavior; reconcile or classify every unexplained divergence. |
+| MIG-06 | Internal canary | QA accepts the complete matrix; Security/CTO gates remain satisfied | Enable application for allowlisted company + adapter profile + policy version; keep per-run mode immutable. |
+| MIG-07 | Cohort rollout | Canary has no unreconciled coordinator, liveness-integrity, cross-company, or duplicate-effect failures | Increase cohorts by company/adapter profile; pin policy/algorithm versions for in-flight runs. |
+| MIG-08 | Disable/rollback | Kill-switch drill and active-run inventory are available | Stop new native dispatch/application, retain read visibility, let active native runs finish/reconcile as native, and send later attempts to legacy only when their profile is newly selected as legacy. |
+| MIG-09 | Contract migration or cleanup | Explicit reviewed migration exists for each adapter family | Only then migrate a legacy adapter or remove compatibility columns/flags; never infer contracts from exit codes or delete audit lineage. |
+
+Schema rollback is expand/contract, never destructive in the incident window.
+The application can roll back while the expanded schema remains. New binaries
+must tolerate old rows with no native references, and the immediately previous
+binary must tolerate the added nullable columns/tables. A destructive contract
+phase is forbidden until retention, export, audit, and downgrade compatibility
+are reviewed separately.
+
+Policy compatibility is exact-version, not “latest wins.” A run binds the
+immutable completion-contract, resolver-policy, and arbiter-algorithm versions
+at envelope creation. Replay uses those versions. A policy rollout affects new
+runs and explicit authorized re-assessments only. Emergency policy revocation
+may prevent an undelivered effect from executing, but it records a new
+superseding assessment/reason; it never silently edits the committed decision.
+Unknown contract, fixture, result, or policy schema versions fail closed and
+remain recoverable/readable as preserved input.
+
+Rollback reconciliation is complete only when every native coordinator is in
+`committed` or `terminal_failure` with a named recovery owner, every committed
+effect is delivered or durably retryable, no active native run was converted
+mid-session, and the native/legacy/shadow counts reconcile to the dispatch
+ledger. Re-enablement resumes from coordinator state; it does not bulk replay
+all historical reports.
+
+#### 18.13.6 Independent QA acceptance package
+
+QA receives the fixture corpus, this specification, the Phase 4 operator
+contract, the conformance command output, implementation test output grouped by
+fixture ID, migration rehearsal output, and a failure-injection ledger. The
+matrix is accepted only when:
+
+1. every `SD`, `TC`, `ATT`, `LIVE`, `REC`, `COMP`, and `MIG` ID has at least one
+   passing implementation result;
+2. every required adversarial tag has a passing fixture and no unclassified
+   divergence;
+3. native and legacy results are reported in separate columns and the legacy
+   baseline snapshot is unchanged;
+4. duplicate/replay runs prove bounded wakes, notifications, decisions, and
+   domain effects;
+5. the three non-terminal status families pass both success and transaction
+   rollback failpoints;
+6. a production-shaped upgrade, kill-switch rollback, and re-enable rehearsal
+   reconcile without status loss, synthetic history, or mode conversion; and
+7. Phase 4 rendering fixtures consume the same decision/attention outcomes and
+   preserve OPX-1–OPX-10.
+
+QA records acceptance against the corpus schema version and git revision.
+Changing an expected semantic assertion after acceptance requires a new corpus
+schema or fixture revision and a fresh independent acceptance run.
 
 ---
 
@@ -6216,6 +6444,30 @@ and interaction, run, and issue statuses remain server-only fields. Neither a
 model hint, runner lease, response payload, continuation intent, nor replay/ACK
 can bypass those invariants.
 
+### 27.10 Status-authority Phase 5 conformance
+
+Section 18.13 and
+[`fixtures/status-authority-phase5.json`](./fixtures/status-authority-phase5.json)
+are the sole scenario inventory for status-authority implementation and QA.
+`pnpm check:runner-phase5-spec` must pass before a runtime suite starts. Runtime
+suites then execute the same fixture IDs at these layers:
+
+| Consumer | Required assertions |
+|---|---|
+| Shared/validator | Input schema, enum, contract/policy version, server-owned field rejection, and safe error code. |
+| Status arbiter | Pure decision digest, status/no-op, reason code, ordered effect plan, and supersession lineage. |
+| Server/database | Transactional status version, domain liveness rows, coordinator phase, effect ledger, activity, notification, and wake counts. |
+| Runner/finalizer | Turn/run terminal conversion, claim/evidence preservation, workspace-finalization order, and native discriminator fail-closed behavior. |
+| Legacy regression | Existing finalizer behavior and byte-identical legacy read/UI snapshots with zero native history rows. |
+| Migration harness | Production-shaped expand migration, writer versioning, shadow comparison, canary, kill-switch rollback, reconciliation, and re-enable. |
+| Phase 4 UI | Four authority layers, decision/attention truthfulness, liveness owner, finalization recovery, and native/legacy distinction from the same outcomes. |
+
+Each test result is emitted as `{ corpusRevision, gitRevision, fixtureId,
+consumer, outcome, observedDigests, semanticCounts }`. QA rejects aggregate
+“suite passed” evidence that cannot be joined back to every required fixture
+ID. Failure injection runs record the failpoint and pre/post database counts;
+replay runs record all attempt IDs and the one canonical semantic identity.
+
 ---
 
 ## 28. Rollout and compatibility
@@ -6267,6 +6519,13 @@ them to collapse into one public endpoint.
 9. Warm harness/session.
 10. Five-kind interaction bridge, response replay, and resumed-run gates.
 11. Additional drivers.
+
+Native status application additionally follows the ordered `MIG-01`–`MIG-09`
+sequence in section 18.13.5. The generic runner gates above cannot skip shadow
+comparison, complete Phase 5 fixture acceptance, internal canary, or the
+kill-switch reconciliation drill. A driver may reach a later runner gate while
+its status application remains shadow-only; mode is persisted per run and never
+changes mid-session.
 
 ### 28.4 Kill switch
 

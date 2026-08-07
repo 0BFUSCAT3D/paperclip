@@ -511,6 +511,9 @@ server/src/services/environment-run-orchestrator.ts
 - terminal conversion to `AdapterExecutionResult`;
 - typed `nativeFinalization` validation and complete terminal/arbitration handling;
 - server-owned status arbiter for completion, blocker, review, attention, and continuation signals;
+- the shared Section 18.13 status-authority corpus consumed without changing
+  fixture expectations by arbiter, database, finalizer, migration, legacy, and
+  UI tests;
 - native interaction bridge binding, materialization, continuation projection,
   and response-delivery integration;
 - native finalizer conformance tests for run status, issue status, continuation/review effects, and cancellation scope;
@@ -524,6 +527,8 @@ server/src/services/environment-run-orchestrator.ts
 - a missing or invalid native finalization discriminator fails closed instead of using the legacy success heuristic;
 - an agent signal cannot move an issue to `blocked` or `in_review` without the required blocker or review path;
 - human-needed requests persist and wake the correct owner without requiring an invalid issue status;
+- `pnpm check:runner-phase5-spec` passes and implementation output reports a
+  result for every `SD`, `TC`, `ATT`, `LIVE`, `REC`, `COMP`, and `MIG` fixture;
 - a blocking semantic interaction yields only after durable materialization and
   resumes with a typed response without model-visible Paperclip credentials;
 - legacy integration tests are unchanged;
