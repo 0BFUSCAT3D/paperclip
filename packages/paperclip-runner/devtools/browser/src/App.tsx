@@ -7,7 +7,11 @@ import type {
   Phase2RunTrace,
   Phase2Scenario,
 } from "../../../src/contracts/phase2";
-import type { Phase3RunTrace } from "../../../src/contracts/phase3";
+import {
+  PHASE3_FAULTS,
+  type Phase3Fault,
+  type Phase3RunTrace,
+} from "../../../src/contracts/phase3";
 import {
   applyPhase2LiveEvent,
   createPhase2LiveSnapshot,
@@ -49,14 +53,52 @@ const liveScenarios: Array<{ key: Phase2Scenario; label: string }> = [
   { key: "duplicate-terminal", label: "Duplicate terminal guard" },
 ];
 
+type BrowserMode = "recovery" | "live" | "replay";
+type LiveStatus = "idle" | "starting" | "running" | "terminal" | "error";
+
+const phase3FaultLabels: Record<Phase3Fault, string> = {
+  none: "Normal connection",
+  "socket-drop": "Socket drop",
+  "lost-ack": "Lost ACK",
+  "duplicate-command": "Duplicate command",
+  "runner-restart": "Runner restart",
+  "harness-restart": "Harness restart",
+  "malformed-input": "Malformed input",
+  "lease-expiry": "Lease expiry",
+  "storage-pressure": "Storage pressure",
+  drain: "Drain",
+  revoke: "Revoke",
+};
+
+const modeCopy: Record<
+  BrowserMode,
+  { eyebrow: string; title: string; description: string }
+> = {
+  recovery: {
+    eyebrow: "Paperclip Runner Protocol · Phase 3",
+    title: "Durable recovery diagnostics",
+    description:
+      "Break the outbound transport, recover the same session, and inspect durable state.",
+  },
+  live: {
+    eyebrow: "Paperclip Runner Protocol · Phase 2",
+    title: "Live runner diagnostics",
+    description:
+      "Run the local harness, stream validated events, and compare the live and replayed state.",
+  },
+  replay: {
+    eyebrow: "Paperclip Runner Protocol · Phase 1",
+    title: "Static protocol replay",
+    description:
+      "Validate a protocol fixture, replay its events, and inspect the resulting session state.",
+  },
+};
+
 interface BrowserFixture {
   key: string;
   label: string;
   source: string;
 }
-
-type BrowserMode = "recovery" | "live" | "replay";
-type LiveStatus = "idle" | "starting" | "running" | "terminal" | "error";
 
 type Phase2StreamRecord =
   | { kind: "event"; event: unknown }
@@ -86,11 +128,22 @@ function terminalTone(snapshot: SessionSnapshot) {
 }
 
 function humanizeProtocolLabel(value: string): string {
-  const words = value.replaceAll("_", " ");
+  const words = value.replaceAll(/[_-]/g, " ");
   return words.length === 0 ? words : `${words[0]?.toUpperCase()}${words.slice(1)}`;
 }
 
+function recoveryOutcomeTone(outcome: Phase3RunTrace["diagnostics"]["recovery"]["outcome"]) {
+  if (outcome === "recovered") {
+    return "success" as const;
+  }
+  if (outcome === "unrecoverable") {
+    return "danger" as const;
+  }
+  return "warning" as const;
+}
+
 function RecoveryDiagnostics() {
+  const [fault, setFault] = useState<Phase3Fault>("lost-ack");
   const [trace, setTrace] = useState<Phase3RunTrace | null>(null);
   const [status, setStatus] = useState<"idle" | "running" | "complete" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +155,7 @@ function RecoveryDiagnostics() {
       const response = await fetch("/api/phase3/recovery", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ fault: "lost-ack" }),
+        body: JSON.stringify({ fault }),
       });
       const result = (await response.json()) as Phase3RunTrace & { error?: string };
       if (!response.ok) throw new Error(result.error ?? "The recovery trace failed.");
@@ -124,6 +177,19 @@ function RecoveryDiagnostics() {
           </CardDescription>
         </CardHeader>
         <CardContent className="editor-content">
+          <label htmlFor="recovery-fault">Fault</label>
+          <select
+            id="recovery-fault"
+            value={fault}
+            disabled={status === "running"}
+            onChange={(event) => setFault(event.target.value as Phase3Fault)}
+          >
+            {PHASE3_FAULTS.map((candidate) => (
+              <option key={candidate} value={candidate}>
+                {phase3FaultLabels[candidate]}
+              </option>
+            ))}
+          </select>
           <Button type="button" disabled={status === "running"} onClick={() => void runRecovery()}>
             {status === "running" ? "Running recovery…" : "Run Phase 3 recovery"}
           </Button>
@@ -151,17 +217,118 @@ function RecoveryDiagnostics() {
           ) : (
             <>
               <dl className="recovery-grid" data-testid="phase3-diagnostics">
-                <div><dt>Connection</dt><dd>{trace.diagnostics.connection.state}</dd></div>
-                <div><dt>Lease</dt><dd>{trace.diagnostics.connection.leaseId ?? "closed"}</dd></div>
-                <div><dt>Outbox</dt><dd>{trace.diagnostics.outbox.events}</dd></div>
-                <div><dt>Last ACK</dt><dd>{trace.diagnostics.cursors.runnerAckedSourceSeq}</dd></div>
-                <div><dt>Replayed</dt><dd>{trace.diagnostics.recovery.replayDeliveries}</dd></div>
-                <div><dt>Duplicate commands</dt><dd>{trace.diagnostics.commands.duplicateDeliveries}</dd></div>
-                <div><dt>Storage</dt><dd>{trace.diagnostics.outbox.bytes} bytes</dd></div>
-                <div><dt>Peak storage</dt><dd>{trace.diagnostics.outbox.peakBytes} bytes</dd></div>
-                <div><dt>Drain or revoke</dt><dd>{trace.diagnostics.recovery.outcome}</dd></div>
-                <div><dt>Secrets</dt><dd>{trace.diagnostics.security.secretLeakCount} leaks</dd></div>
+                <div>
+                  <dt>Connection</dt>
+                  <dd data-testid="phase3-connection-state">
+                    {humanizeProtocolLabel(trace.diagnostics.connection.state)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Connections</dt>
+                  <dd data-testid="phase3-connections">
+                    {trace.diagnostics.connection.connectionCount}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Reconnects</dt>
+                  <dd data-testid="phase3-reconnects">
+                    {trace.diagnostics.connection.reconnectCount}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Lease</dt>
+                  <dd>{trace.diagnostics.connection.leaseId ?? "closed"}</dd>
+                </div>
+                <div>
+                  <dt>Outbox</dt>
+                  <dd>{trace.diagnostics.outbox.events}</dd>
+                </div>
+                <div>
+                  <dt>Last ACK</dt>
+                  <dd>{trace.diagnostics.cursors.runnerAckedSourceSeq}</dd>
+                </div>
+                <div>
+                  <dt>At-least-once redeliveries</dt>
+                  <dd>{trace.diagnostics.recovery.replayDeliveries}</dd>
+                </div>
+                <div>
+                  <dt>Runner restarts</dt>
+                  <dd data-testid="phase3-runner-restarts">
+                    {trace.diagnostics.recovery.runnerRestarts}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Harness restarts</dt>
+                  <dd>{trace.diagnostics.recovery.harnessRestarts}</dd>
+                </div>
+                <div>
+                  <dt>Fresh bootstraps</dt>
+                  <dd data-testid="phase3-fresh-bootstraps">
+                    {trace.diagnostics.recovery.freshBootstraps}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Duplicate commands</dt>
+                  <dd>{trace.diagnostics.commands.duplicateDeliveries}</dd>
+                </div>
+                <div>
+                  <dt>Storage</dt>
+                  <dd className="storage-diagnostic" data-testid="phase3-storage">
+                    <span>
+                      {trace.diagnostics.outbox.bytes} bytes of {trace.diagnostics.outbox.maxBytes}{" "}
+                      max
+                    </span>
+                    {trace.diagnostics.outbox.backpressure ? (
+                      <Badge tone="warning">Backpressure</Badge>
+                    ) : null}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Peak storage</dt>
+                  <dd>{trace.diagnostics.outbox.peakBytes} bytes</dd>
+                </div>
+                <div>
+                  <dt>Outcome</dt>
+                  <dd className="outcome-diagnostic">
+                    <Badge
+                      tone={recoveryOutcomeTone(trace.diagnostics.recovery.outcome)}
+                      data-testid="phase3-outcome"
+                    >
+                      {humanizeProtocolLabel(trace.diagnostics.recovery.outcome)}
+                    </Badge>
+                    {trace.diagnostics.recovery.outcome !== "recovered" ? (
+                      <span>{humanizeProtocolLabel(trace.diagnostics.recovery.reason)}</span>
+                    ) : null}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Secrets</dt>
+                  <dd>{trace.diagnostics.security.secretLeakCount} leaks</dd>
+                </div>
               </dl>
+              <p className="diagnostic-note">
+                At-least-once redeliveries include normal in-flight outbox resends. Use reconnects
+                and the per-event history to identify injected recovery.
+              </p>
+              <div className="timeline-heading">
+                <h3>Recovery history</h3>
+                <span>{trace.diagnostics.committedEvents.length} committed events</span>
+              </div>
+              <ol className="timeline" data-testid="recovery-history">
+                {trace.diagnostics.committedEvents.map((event) => (
+                  <li key={event.sourceEventId}>
+                    <span className="sequence" aria-hidden="true">
+                      {event.sourceSeq}
+                    </span>
+                    <div className="timeline-title">
+                      <code>{event.eventType}</code>
+                      {event.deliveryCount > 1 ? (
+                        <span className="delivery-marker">delivered {event.deliveryCount}×</span>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ol>
               <div className="parity-line">
                 <span>Same runner and session</span>
                 <Badge tone={trace.assertions.stableIdentity ? "success" : "danger"}>{trace.assertions.stableIdentity ? "Preserved" : "Changed"}</Badge>
@@ -655,16 +822,15 @@ function StaticReplay() {
 
 export function App() {
   const [mode, setMode] = useState<BrowserMode>("live");
+  const header = modeCopy[mode];
 
   return (
     <main className="app-shell">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Paperclip Runner Protocol · Phase 3</p>
-          <h1>Durable recovery diagnostics</h1>
-          <p>
-            Break the outbound transport, recover the same session, and inspect durable state.
-          </p>
+          <p className="eyebrow">{header.eyebrow}</p>
+          <h1>{header.title}</h1>
+          <p>{header.description}</p>
         </div>
         <Badge tone="neutral">Standalone · no Paperclip core</Badge>
       </header>

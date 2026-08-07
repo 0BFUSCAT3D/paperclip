@@ -160,13 +160,34 @@ Run:
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 ```
 
-Open `http://127.0.0.1:4179/`. Select **Recovery**. Select
-**Run Phase 3 recovery**.
+Open `http://127.0.0.1:4179/` and select **Recovery**. Use the **Fault** selector
+to run these cases with **Run Phase 3 recovery**:
+
+1. **Normal connection**
+2. **Socket drop**
+3. **Lost ACK**
+4. **Runner restart**
+5. **Revoke**
+
+Also run **Storage pressure** when checking the bounded-storage state.
 
 Confirm:
 
-- recovery status becomes **complete**;
-- connection, lease, outbox, ACK, replay, storage, and outcome fields appear;
+- recovery status becomes **complete** after every run;
+- **Outcome** is **Recovered** for the normal, socket-drop, lost-ACK, and
+  runner-restart cases, while revoke shows the warning-toned **Revoked** outcome
+  and its reason;
+- **Connections**, **Reconnects**, **Runner restarts**, and **Fresh bootstraps**
+  distinguish the normal, reconnect, process-restart, and lease-bootstrap paths;
+- **Recovery history** lists every committed source sequence and event type, with
+  a `delivered N×` marker on events delivered more than once;
+- **At-least-once redeliveries** can be non-zero for a normal connection because
+  the runner may resend a still-unacknowledged in-flight outbox batch. Use the
+  reconnect counters and per-event delivery markers to identify injected
+  recovery; a lost ACK adds an extra delivery to the affected event;
+- **Storage** reports current bytes and the maximum, and storage pressure shows a
+  warning-toned **Backpressure** badge;
+- the connection lifecycle is human-readable, such as **Stopped**;
 - **Same runner and session** says **Preserved**;
 - **Secrets redacted** says **Yes**;
 - no bootstrap ticket or connection lease token appears.

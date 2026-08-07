@@ -356,8 +356,32 @@ select {
   font-size: var(--font-size-sm);
 }
 
-.snapshot-grid div {
+.snapshot-grid div,
+.recovery-grid > div {
   min-width: 0;
+}
+
+.storage-diagnostic {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  overflow: visible;
+  white-space: normal;
+}
+
+.outcome-diagnostic {
+  display: grid;
+  gap: var(--space-1);
+  overflow: visible;
+  white-space: normal;
+}
+
+.outcome-diagnostic > span:not(.ui-badge),
+.delivery-marker {
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
 }
 
 dd {
