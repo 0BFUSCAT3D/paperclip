@@ -2611,24 +2611,384 @@ interface AdapterExecutionResult {
 }
 ```
 
-Legacy adapters omit `nativeFinalization` and keep the current exit-code heuristic. Native adapters must set it. The heartbeat finalizer must validate it against `resultJson`, select the run outcome and issue action from it, and only then use the compatibility fields for process diagnostics. `errorCode`, a null exit code, or a zero exit code is not a native disposition signal.
+Native adapters must set `nativeFinalization`. The heartbeat finalizer validates it against `resultJson` and persisted terminal events, derives the heartbeat run status from `runTerminalState`, and then submits a `WorkAssessment` to the arbiter. Compatibility fields are process diagnostics only.
 
-The native finalizer must use this table:
+| Native facts | Compatibility fields | Required native behavior |
+|---|---|---|
+| Turn `completed`; run `succeeded`; reported disposition present | Usually `exitCode: 0`, `timedOut: false`; result in `resultJson` | Persist succeeded run and assess the report. No reported disposition maps directly to issue status. |
+| Turn `failed`; run `failed`; partial result/evidence may exist | Nonzero exit when available; error metadata populated | Persist failed run, preserve partial claims/evidence, apply retry/recovery, preserve issue status unless a separate authorized decision applies. |
+| Turn `completed`; run `failed` because workspace/transport/finalization failed after a report | Exit code may still be zero; finalization error identifies failure | Persist failed run and preserve the completion claim for reconciliation. Never mark the issue done. |
+| Turn `interrupted`; run remains active or a replacement turn is accepted | No terminal adapter result yet | Terminalize only the turn; continue the same run/session. |
+| Turn `interrupted`; run `succeeded` with valid `yielded` report and continuation | Usually `exitCode: 0` | Assess yielded work and atomically register continuation; interruption alone grants no issue transition. |
+| Turn `cancelled`; run `cancelled`; scope `turn` or `run` | `exitCode: null`; cancellation diagnostics optional | Preserve issue status. Turn scope may permit replacement work; run scope releases run resources. |
+| Turn/run `cancelled`; scope `issue` and actor is authorized | `exitCode: null`; cancellation command reference persisted | Arbiter applies issue `cancelled` and cancels continuations atomically. |
+| Native finalization missing, inconsistent, stale, or invalid | Any compatibility values | Fail closed as `native_finalization_missing` or `native_finalization_invalid`; never use the legacy heuristic. Preserve safe evidence and create recovery. |
 
-| Native disposition | Native terminal state | `AdapterExecutionResult` compatibility fields | Finalizer action |
+All compatibility results set `signal: null` unless the harness reported a real signal. They preserve usage, cost, session, provider, model, billing, and runtime-service fields without changing their meaning. `resultJson` contains the original structured result when one exists, plus references to the assessment and status decision after arbitration.
+
+Legacy adapters are a separate compatibility mode. They omit `nativeFinalization` and retain the current exit-code heuristic and existing integration behavior. Legacy success may continue to feed the legacy finalizer, but it must not be documented or implemented as the native authority model. Native code must never fall back to legacy inference, and legacy code must not fabricate native `CompletionContract`, `WorkAssessment`, or `StatusDecision` records unless a later migration explicitly defines that behavior.
+
+Native-mode enablement is gated on conformance tests for every row in sections 18.3 and 18.5. Each test proves turn terminal state, persisted run status, preserved report/evidence, authoritative issue status, reason code, side effects, liveness path, cancellation scope, and supersession behavior.
+
+### 18.6 Phase 2 service boundaries and ownership
+
+Native finalization is a control-plane workflow with one status authority. It is not an adapter callback that performs a collection of best-effort issue mutations. The implementation uses the following boundaries:
+
+| Component | Owns | May read | Must not do |
 |---|---|---|---|
-| `done` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`, then ask the status arbiter to apply the legal `done` transition after completion policy passes. |
-| `blocked` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result and blocker in `resultJson` | Persist the run as `succeeded`. The status arbiter applies `blocked` only when the blocker payload and unblock owner/action are valid and productive progress cannot continue. Otherwise it records attention and chooses `in_progress` or `needs_review` according to the available live path. |
-| `needs_review` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`. Create or bind a real reviewer, approval, interaction, delegated review, or monitor path atomically, then let the status arbiter apply `in_review`. If no review path can be created, keep the issue `in_progress` and record a finalization error. |
-| `yielded` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`. Keep the issue `in_progress` and enqueue the declared continuation or delegated follow-up. If no live continuation can be scheduled, convert to `needs_review`. |
-| `failed` | `failed` | `nativeFinalization` carries both values; nonzero driver exit code when available, otherwise `exitCode: 1`; set `errorMessage`, `errorCode`, and error metadata; include the failure disposition in `resultJson` | Persist the run as `failed` and apply the existing retry and recovery policy. Do not directly change the issue to a terminal status. |
-| `cancelled` | `cancelled` | `nativeFinalization` carries both values; `exitCode: null`, `timedOut: false`, optional cancellation diagnostics in `errorCode` and `resultJson` | Persist the run as `cancelled` from `nativeFinalization`, without relying on `errorCode` or the null-exit fallback. Change the issue to `cancelled` only when the cancellation scope explicitly includes the issue; otherwise leave the issue unchanged. |
+| `CompletionContractService` | Materializing and retrieving immutable, company-scoped contract revisions | Issue, acceptance criteria, required work products, execution/review policy, governed gates | Infer completion or edit a contract revision after a run has bound to it |
+| `NativeResultIngestor` | Authenticating the runner lease, validating run/turn/issue binding, canonicalizing the report, preserving accepted and rejected claims | P0 events, runner lease, contract reference, persisted evidence records | Trust caller company IDs, accept caller fingerprints as authoritative, set run or issue status |
+| `NativeRunFinalizer` | Runtime and workspace terminal facts; exactly-once workspace finalization; run terminal state | Persisted result, runtime diagnostics, workspace operations | Decide semantic completion or mutate issue status |
+| `EvidenceClassifier` | Classifying each criterion/evidence reference as accepted, missing, rejected, or unverifiable from authoritative records | Immutable contract/result snapshots, tests, work products, approvals, external checks | Treat a model-authored `passed` field as mechanical proof |
+| `AttentionResolver` | Producing durable routing facts and liveness proposals | Current attention request, policy, company-scoped resolver inventory | Grant status authority or lower a policy-derived authority gate; Phase 3 owns its detailed routing algorithm |
+| `WorkAssessmentService` | Building one immutable assessment from canonical facts | Finalized run facts, contract/result, classifications, gates, attention routes, prior issue snapshot | Apply an issue transition |
+| `StatusArbiter` | Pure, versioned decision from an assessment and policy | Immutable assessment plus legal transition policy | Perform I/O, use wall-clock time not supplied as an input, or inspect mutable state not captured in the assessment |
+| `StatusDecisionCommitter` | Serialized compare-and-swap, legal transition, durable side effects, audit/outbox commit | Proposed decision and freshly locked issue/control rows | Re-decide on stale inputs or publish an effect before commit |
+| `NativeFinalizationReconciler` | Lease recovery, retry, stale-CAS reload, and superseding assessment creation | Incomplete finalization rows and authoritative current state | Re-run a committed effect or overwrite an assessment/decision |
 
-All compatibility results set `signal: null` unless the harness reported a real signal. They preserve usage, cost, session, provider, model, billing, and runtime-service fields without changing their meaning. `resultJson` always contains `schema`, `disposition`, `summary`, and the validated structured result when one exists.
+`NativeRunFinalizer` calls the classifier, assessment service, arbiter, and committer through a server-internal interface. There is no public “set arbiter result” API. The runner can submit runtime facts and an advisory report only. The status arbiter is the sole writer of native-mode issue status; existing board/user status routes remain separately authorized organizational commands and become triggers for a later assessment when they race native finalization.
 
-`failed` and `cancelled` are runtime-owned dispositions, so the model-facing `StructuredRunResult` and semantic tools do not accept them. The runtime constructs them from an explicit driver, policy, timeout, interrupt, or cancellation event. `done`, `blocked`, `needs_review`, and `yielded` require a valid `StructuredRunResult`; they all produce a successful process exit, but `nativeFinalization.disposition` preserves their distinct issue and continuation behavior.
+The existing heartbeat service remains the orchestration entry point during migration, but native logic moves behind these services. `server/src/services/heartbeat.ts` selects the native path only when the persisted run profile and adapter result both identify native mode. It cannot select the path from a model-authored field inside `resultJson`.
 
-Native-mode enablement is gated on finalizer conformance tests for all six rows. Each test must prove the persisted heartbeat run status, issue status, continuation/review side effect, and cancellation scope. A native adapter result without a valid `nativeFinalization` object is rejected as `native_finalization_missing`; it never falls back to the legacy success heuristic.
+### 18.7 Persistence model
+
+Phase 2 adds immutable source records and a small mutable coordinator. JSON snapshots preserve the exact protocol payload; indexed scalar columns enforce company scope, ordering, idempotency, and reconciliation.
+
+#### Completion contracts
+
+`completion_contracts` stores one immutable contract revision:
+
+```text
+id uuid primary key
+company_id uuid not null references companies
+issue_id uuid not null references issues on delete cascade
+revision integer not null
+schema_version text not null
+policy_version text not null
+risk text not null
+completion_authority text not null
+incomplete_criteria_policy text not null
+contract_json jsonb not null
+canonical_sha256 text not null
+created_by_actor_type text not null
+created_by_actor_id text null
+created_at timestamptz not null
+supersedes_contract_id uuid null references completion_contracts
+unique (company_id, issue_id, revision)
+unique (company_id, id)
+```
+
+Contract creation validates criterion IDs, criterion-level authority ceilings, gate targets, and company ownership before canonicalization. A run stores `completion_contract_id` and `completion_contract_sha256` when its task envelope is created. Updating an issue creates a new revision; it never mutates the revision used by an active or historical run. A stale result remains bound to its original contract and is reconciled against the new revision explicitly.
+
+Criteria remain in `contract_json` for the first implementation because arbitration always reads the immutable snapshot as a unit. A later read-optimized projection may normalize them, but it cannot replace the snapshot used for digest verification.
+
+#### Preserved structured results
+
+`native_run_results` is the append-only boundary between caller claims and authoritative assessment:
+
+```text
+id uuid primary key
+company_id uuid not null references companies
+issue_id uuid not null references issues on delete cascade
+run_id uuid not null references heartbeat_runs on delete cascade
+turn_id text not null
+completion_contract_id uuid not null references completion_contracts
+caller_result_id text null
+caller_dedupe_key text null
+server_fingerprint text not null
+schema_status text not null                 -- accepted | rejected | partial
+rejection_code text null
+result_json jsonb not null                  -- original safe payload, never rewritten
+canonical_sha256 text not null
+created_at timestamptz not null
+unique (company_id, run_id, turn_id, server_fingerprint)
+unique (company_id, id)
+```
+
+If a caller reuses `caller_result_id` or `caller_dedupe_key` with different canonical material, ingestion records `structured_result_replay_conflict` and does not create effects. Equivalent retries with fresh caller keys resolve to the same `server_fingerprint` and return the canonical row. Safely parsed evidence and the original completion claim are retained even when `schema_status` is `rejected` or later assessment downgrades the claim.
+
+#### Finalization coordinator
+
+`native_run_finalizations` is one mutable, row-locked coordinator per native run:
+
+```text
+run_id uuid primary key references heartbeat_runs on delete cascade
+company_id uuid not null references companies
+issue_id uuid not null references issues on delete cascade
+phase text not null                       -- observed | workspace_finalizing |
+                                           -- ready_for_assessment | arbitrating |
+                                           -- committed | retryable_failure | terminal_failure
+attempt integer not null default 0
+lease_owner text null
+lease_expires_at timestamptz null
+result_id uuid null references native_run_results
+assessment_id uuid null references work_assessments
+decision_id uuid null references status_decisions
+failure_code text null
+failure_detail jsonb null                  -- redacted, non-secret diagnostics
+next_attempt_at timestamptz null
+created_at timestamptz not null
+updated_at timestamptz not null
+unique (company_id, run_id)
+```
+
+The coordinator is not the audit record. A reconciler may update its lease, phase, attempt, and error fields, but committed result, assessment, and decision rows remain immutable. A crashed worker resumes from the first missing durable phase. It never repeats workspace finalization after the existing workspace-operation idempotency record says it completed.
+
+#### Assessments and decisions
+
+`work_assessments` stores all decision inputs as an immutable snapshot:
+
+```text
+id uuid primary key
+company_id uuid not null references companies
+issue_id uuid not null references issues on delete cascade
+run_id uuid null references heartbeat_runs on delete set null
+turn_id text null
+contract_id uuid not null references completion_contracts
+result_id uuid null references native_run_results
+trigger_kind text not null
+trigger_ref text not null
+trigger_capability text null
+trigger_actor_company_id uuid not null references companies
+prior_issue_status text not null
+prior_status_version bigint not null
+prior_decision_id uuid null
+policy_version text not null
+assessment_json jsonb not null
+input_digest text not null
+supersedes_assessment_id uuid null references work_assessments
+created_at timestamptz not null
+unique (company_id, issue_id, input_digest)
+unique (company_id, id)
+```
+
+`assessment_json` contains runtime facts, criterion classifications, accepted/missing/rejected/unverifiable evidence, pending governed gates, remaining work, attention routes, live paths, and redacted finalization diagnostics. `input_digest` is SHA-256 over the canonical serialization defined in section 18.8.
+
+`status_decisions` records the pure arbiter output and its application state:
+
+```text
+id uuid primary key
+company_id uuid not null references companies
+issue_id uuid not null references issues on delete cascade
+assessment_id uuid not null references work_assessments
+decision_version bigint not null
+policy_version text not null
+from_status text not null
+to_status text not null
+reason_code text not null
+decision_json jsonb not null
+decision_digest text not null
+application_state text not null             -- proposed | applied | superseded | rejected
+supersedes_decision_id uuid null references status_decisions
+applied_at timestamptz null
+created_at timestamptz not null
+unique (company_id, issue_id, decision_version)
+unique (company_id, assessment_id)
+unique (company_id, issue_id, decision_digest)
+```
+
+`status_decision_effects` is the durable transactional outbox and effect ledger:
+
+```text
+id uuid primary key
+company_id uuid not null references companies
+issue_id uuid not null references issues on delete cascade
+decision_id uuid not null references status_decisions on delete cascade
+ordinal integer not null
+effect_kind text not null
+target_type text not null
+target_id text null
+idempotency_key text not null
+payload jsonb not null
+delivery_state text not null default 'pending' -- pending | delivered | failed | cancelled
+attempt_count integer not null default 0
+next_attempt_at timestamptz null
+last_error text null
+delivered_at timestamptz null
+created_at timestamptz not null
+updated_at timestamptz not null
+unique (company_id, idempotency_key)
+unique (decision_id, ordinal)
+```
+
+Effects that are themselves durable domain rows—blocker relations, interactions, approvals, recovery actions, delegated issues, monitor state, and queued `agent_wakeup_requests`—are inserted or updated in the same transaction. `status_decision_effects` records their canonical identity and carries only delivery work that must happen after commit, such as websocket publication or an external integration notification. Consumers acknowledge by `idempotency_key`; at-least-once delivery cannot duplicate the underlying domain action.
+
+The `issues` table adds:
+
+```text
+status_version bigint not null default 0
+last_status_decision_id uuid null
+```
+
+Every authoritative status mutation, including separately authorized board/user mutations, increments `status_version`. Native arbitration compares `status`, `status_version`, and `last_status_decision_id` after locking the issue. Existing `checkout_run_id`, `execution_run_id`, execution lock fields, `unblock_descriptor`, blocker relations, execution state, monitor fields, and terminal timestamps remain the operational projections; the decision record explains why they changed.
+
+`heartbeat_runs.result_json` remains a compatibility/read projection and receives only IDs plus a compact native summary. It is not the source of truth for contracts, original reports, assessments, or decisions.
+
+### 18.8 Canonical identity, deterministic replay, and lineage
+
+Canonical serialization is UTF-8 JSON with recursively sorted object keys, arrays retained in protocol-defined order, timestamps normalized to UTC RFC 3339 with millisecond precision, UUIDs lower-cased, absent optional values omitted, and numbers serialized in the protocol's bounded integer/decimal form. Arbitrary prose is preserved byte-for-byte after schema normalization; no locale-sensitive or Unicode compatibility folding is applied to evidence text.
+
+The server computes these identities:
+
+```text
+resultFingerprint = SHA256(
+  companyId, issueId, runId, turnId, contractId, contractSha256,
+  resultKind, normalizedMaterialResultPayload
+)
+
+assessmentInputDigest = SHA256(
+  immutableContractSnapshot, immutableStructuredResultOrRejection,
+  authoritativeRuntimeAndWorkspaceFacts, criterionEvidenceClassifications,
+  priorIssueStatus, priorStatusVersion, priorDecisionId,
+  triggerKind, triggerRef, triggerActorCompanyId, triggerCapability,
+  policyVersion, plannedLivenessInputs
+)
+
+decisionDigest = SHA256(
+  assessmentInputDigest, arbiterAlgorithmVersion, fromStatus, toStatus,
+  reasonCode, canonicalPlannedEffects
+)
+```
+
+Secrets, credentials, raw approval tokens, and unredacted tool arguments never enter a stored digest payload. Their immutable server-owned resource ID and a resource-version/content digest enter instead. Tool approvals retain the existing exact-argument signature in the tool gateway and expose only its non-secret digest to arbitration.
+
+Determinism means that the same canonical assessment inputs and policy version produce the same `decisionDigest`, transition/no-op, reason code, and ordered effect plan. A policy version resolves an immutable policy bundle that includes the arbiter algorithm version; changing the algorithm requires a new policy version. Database-generated IDs and current time are allocated after the pure decision; they cannot influence it. Effect order is a fixed enum order, not object iteration order.
+
+A replay first looks up `(company_id, issue_id, input_digest)` and then the decision. If it exists, the server returns the canonical assessment/decision and dispatches only undelivered effect rows. If the issue snapshot has changed, the old decision is not replayed: the reconciler captures the new facts in a new assessment with `supersedes_assessment_id`, and the new decision names `supersedes_decision_id`. Supersession never deletes or mutates the original result, assessment, decision, or delivered-effect record.
+
+The minimum Phase 2 reason-code additions are:
+
+```text
+native_finalization_missing
+native_finalization_invalid
+structured_result_replay_conflict
+contract_revision_stale
+prior_status_terminal_preserved
+illegal_transition_rejected
+arbitration_conflict_reloaded
+side_effect_planning_failed
+finalization_retry_exhausted
+```
+
+`native_finalization_missing`, `native_finalization_invalid`, `structured_result_replay_conflict`, `side_effect_planning_failed`, and `finalization_retry_exhausted` are also valid `failure_code` values on the coordinator. They do not authorize an issue transition. `arbitration_conflict_reloaded` is recorded on the superseding assessment; its eventual status decision uses the reason for the newly evaluated facts. A terminal issue is preserved unless the trigger carries an explicit capability for a legal terminal transition, such as authorized issue cancellation; late runner results cannot reopen it.
+
+### 18.9 Serialized arbitration and atomic side effects
+
+The committer executes this algorithm in one database transaction:
+
+1. Lock `native_run_finalizations` when the trigger is run finalization, then lock the issue row with `SELECT ... FOR UPDATE`.
+2. Resolve the issue company from the locked issue and verify that the run, contract, result, assessment trigger, resolver targets, and effect targets all share it. A mismatch fails generically before any target-specific read is exposed.
+3. Compare locked `status`, `status_version`, and `last_status_decision_id` with the assessment snapshot.
+4. On mismatch, write no decision or domain effect. Mark the coordinator for reconciliation and return a conflict that causes a new superseding assessment from reloaded facts.
+5. Run the pure arbiter and validate the proposed transition against the legal issue-state machine and terminal-state rules.
+6. Materialize and validate the complete ordered effect plan. Policy derives required authority and effective resolver; caller suggestions cannot reduce it.
+7. If any required liveness effect cannot be created, replace the proposal with a preserve-status finalization failure. Never commit a waiting status first and repair its liveness later.
+8. Insert assessment and decision, apply the issue projection and timestamps, increment `status_version`, create/update all durable domain side effects, insert effect-ledger/outbox rows, append activity, and advance the coordinator to `committed`.
+9. Commit. Only after commit may workers publish websocket events, deliver external notifications, or claim queued wakeups.
+
+The issue transition, checkout release, and liveness path are therefore indivisible. A database rollback leaves the prior issue projection intact and exposes no wake. A post-commit delivery failure leaves `status_decision_effects.delivery_state = 'pending'` or `failed` for retry; it does not roll back or duplicate the committed decision.
+
+The legal effect plan by outcome is:
+
+| Decision | Required in-transaction projection and domain effects | Post-commit effects |
+|---|---|---|
+| `done` | Set status/completion time; clear execution lock and checkout; close or cancel obsolete continuations; persist handoff reference; record dependency-wake candidates only after workspace finalization is successful | Publish issue/run updates; dispatch idempotent dependency wakes and summary generation |
+| `in_review` | Set status; create or bind exactly one named reviewer path, execution-policy stage, governed approval, interaction, delegated review issue, or monitor; store return owner/wake policy; clear completed run lock | Notify the selected resolver and publish review state |
+| `blocked` | Set status/blocked time; create company-scoped blocker relation or `unblock_descriptor` with concrete owner and action; prove no alternate productive track; create owner notification/wake intent; clear completed run lock | Notify unblock owner; dependency resolution later triggers a fresh assessment |
+| continued `in_progress` | Keep/set status; clear the completed run lock; create exactly one canonical queued continuation, bounded retry, delegated child, response wake, or monitor; increment the applicable attempt budget | Claim/dispatch the queued continuation and publish liveness state |
+| preserve after failed finalization | Do not change issue status/version; mark run/coordinator failed; preserve result/evidence; create a company-scoped recovery action or bounded reconciliation wake when policy permits | Retry finalization/reconciliation; surface operator diagnostic after budget exhaustion |
+| turn cancellation | Terminalize the turn only; preserve run/issue; record replacement-turn or wait policy if needed | Continue or accept a replacement turn |
+| run cancellation | Terminalize run and release runtime/execution lock; preserve issue; create a resume path only when cancellation policy authorizes one | Tear down resources; optionally dispatch resume |
+| issue cancellation | Verify board/authorized issue capability; set issue `cancelled`/timestamp; cancel active turn/run, queued continuations, pending native attention, and non-independent monitors; release checkout/lock | Publish cancellation and deliver idempotent cancellation notifications |
+
+“Exactly one” above means one canonical liveness identity, not necessarily one physical row: a delegated issue may also enqueue the response wake that is defined as part of the same path. The ordered effect plan declares this composition, and all components use keys derived from `decision_id`, effect kind, target, and ordinal.
+
+Status effects are fail-closed. In particular:
+
+- failure to create a reviewer path preserves the prior status and records `side_effect_planning_failed`; it does not leave `in_review` without a reviewer;
+- failure to persist a blocker relation/owner preserves the prior status; it does not use a comment as the blocker;
+- failure to enqueue a continuation preserves the prior status and records a recovery action; it does not strand `in_progress`;
+- failure to finalize the workspace makes the run `failed`, preserves completion claims, and prevents `done`;
+- failure to publish a committed outbox effect is retryable and cannot cause a second status decision.
+
+### 18.10 Disconnect recovery, reconciliation, and races
+
+The server may disconnect at any point without losing the report or applying an ambiguous status:
+
+| Last durable phase | Recovery action |
+|---|---|
+| Terminal event received, no result row | Resume event ingestion by server sequence; request retransmit when the runner lease is live; otherwise record missing/invalid finalization and recovery |
+| Result preserved, workspace not finalized | Resume the existing idempotent workspace operation; never reassess completion first |
+| Workspace finalized, no assessment | Rebuild the assessment from immutable result/contract and authoritative persisted facts |
+| Assessment stored, no decision | Re-run the pure arbiter with the stored policy/algorithm version |
+| Proposed decision, transaction not committed | Re-enter the CAS transaction; an absent applied decision/effects means no issue mutation occurred |
+| Decision committed, delivery pending | Dispatch only pending effect-ledger rows; do not re-arbitrate |
+| Issue changed concurrently | Reload, append a superseding assessment/decision, and cancel only still-pending stale effects |
+
+The coordinator lease is time-bounded and claimed with `FOR UPDATE SKIP LOCKED`. Startup reconciliation and a periodic worker scan `retryable_failure`, expired leases, and non-committed phases by `(next_attempt_at, updated_at)`. Retry budgets are policy-owned. Exhaustion records `finalization_retry_exhausted`, retains all claims/evidence, creates a named recovery action, and preserves issue status.
+
+Concurrency cases use the same serialization point:
+
+- **two finalizers:** one commits; the second finds the canonical input/decision or creates no new effect;
+- **finalizer versus board cancellation:** whichever locks first commits. The loser reloads; a late result is preserved but cannot reopen a cancelled issue;
+- **finalizer versus dependency/interaction response:** the loser creates a superseding assessment containing the new resolved fact;
+- **lost acknowledgement:** the retry returns the canonical assessment/decision and dispatches only pending effects;
+- **caller ID/key mutation:** canonical fingerprinting collapses equivalent material and conflicts on changed material;
+- **stale contract response:** retained for audit, assessed as stale, and never applied to the newer contract without reconciliation;
+- **superseded response:** retained as audit-only; no wake or status effect is emitted from it.
+
+### 18.11 API, shared-contract, UI, and implementation change map
+
+Native finalization uses server-internal commands; board/agent APIs expose read models, not arbiter authority.
+
+Read/API additions:
+
+- `GET /api/issues/:issueId/completion-contracts/current` and `/completion-contracts` return company-authorized current/history summaries;
+- `GET /api/issues/:issueId/status-decisions` returns assessment/decision summaries, disagreement reasons, supersession, and liveness references with sensitive payloads redacted;
+- `GET /api/heartbeat-runs/:runId/finalization` returns turn/run facts, coordinator phase, preserved result reference, assessment, decision, and retry-safe failure details;
+- existing issue and heartbeat-run responses gain compact `reportedWorkDisposition`, `latestStatusDecision`, and `nativeFinalization` summaries;
+- runner ingestion uses the authenticated native runner/session channel and its bound run/turn. No public request body may select `companyId`, prior status, policy version, effective resolver, reason code, or authoritative transition.
+
+Mutation/API behavior:
+
+- existing board/user issue-status routes continue to enforce their current permissions and execution-policy rules, increment `status_version`, and enqueue reconciliation when a native finalization is active;
+- agent API keys cannot call an arbiter-application endpoint;
+- read routes authorize through the parent issue/run company and return generic not-found/denial behavior across companies;
+- activity and websocket payloads carry decision IDs and reason codes, not unredacted evidence, secrets, or tool arguments.
+
+Implementation-ready file map:
+
+| Layer | Changes |
+|---|---|
+| DB | Add `completion_contracts.ts`, `native_run_results.ts`, `native_run_finalizations.ts`, `work_assessments.ts`, `status_decisions.ts`, and `status_decision_effects.ts` under `packages/db/src/schema/`; export them from `schema/index.ts`; add `issues.status_version`/`last_status_decision_id` and run contract/finalization references; generate a migration with company/issue/run indexes and the unique keys above. Do not overload `issue_execution_decisions`, which records participant verdicts rather than arbiter decisions. |
+| Shared | Add native completion/finalization/assessment/decision types and stable enums under `packages/shared/src/types/`; add strict Zod validators under `packages/shared/src/validators/`; export canonical event/reason/failure codes from constants. Keep wire inputs separate from server-derived fields. |
+| Adapter boundary | Extend `packages/adapter-utils/src/types.ts` with `nativeFinalization?: NativeFinalizationResult`. Native runner adapters populate it; existing adapters omit it and remain legacy. Validate the discriminator again at the server boundary. |
+| Runner protocol | Add the result/terminal messages and canonical binding fields to `packages/native-runtime-protocol`; make P0 event sequencing persist before acknowledgement; ensure the runner never receives an agent API key or status mutation capability. |
+| Server services | Add `completion-contracts.ts`, `native-result-ingestion.ts`, `native-run-finalizer.ts`, `work-assessments.ts`, `status-arbiter.ts`, `status-decision-committer.ts`, and `native-finalization-reconciler.ts`. Reuse existing workspace-operation idempotency, issue-transition helpers, interaction/approval services, recovery actions, wakeup requests, activity log, and live updates through transaction-aware entry points. |
+| Heartbeat integration | In `server/src/services/heartbeat.ts`, replace the native-mode exit-code outcome branch and the later sequence of independent issue liveness handlers with the coordinator. Keep usage/cost/session/runtime diagnostics and the legacy branch intact. Workspace finalization completes before native run success and arbitration. |
+| Routes/OpenAPI | Add company-authorized read routes in `server/src/routes/issues.ts` and `server/src/routes/agents.ts`; document them in `server/src/routes/openapi.ts`. Native ingestion stays on the runner transport/internal service boundary. |
+| UI API | Add read types/fetchers in `ui/src/api/issues.ts` and `ui/src/api/heartbeats.ts`; invalidate issue, run, assessment, and decision queries from the existing live-update provider. |
+| UI surfaces | Phase 4 renders run outcome separately from issue status, the agent claim separately from the arbiter decision, reason/evidence classification, supersession history, finalization failure, and the concrete current liveness owner/path. This phase supplies data contracts only; it does not pre-empt the approved UX task. |
+| CLI/MCP | Expose read-only finalization/decision inspection if operator parity requires it. Do not expose status-decision creation or arbitrary replay inputs. |
+
+Migration and rollout sequence:
+
+1. Add tables, columns, shared types, and read models behind a disabled native-finalization feature flag.
+2. Initialize `issues.status_version = 0`; do not synthesize historical `CompletionContract`, `WorkAssessment`, or `StatusDecision` rows for legacy runs.
+3. Make every existing authorized issue-status mutation increment `status_version` before enabling native arbitration.
+4. Ship contract materialization and result preservation in shadow mode. Compute assessments/decisions, but compare them with existing behavior without applying status effects.
+5. Run deterministic replay, race, cross-company, forged-authority, fresh-key spam, stale-contract, superseded-response, digest-mutation, and finalization-disconnect conformance fixtures.
+6. Enable native application per company/adapter profile. A native-marked run fails closed if its finalization discriminator or contract binding is absent; it never falls back to the legacy heuristic.
+7. Keep legacy adapters on the existing finalizer until an explicit, separately reviewed migration defines their completion contract. Native and legacy metrics remain labeled separately.
+
+Structural consistency gate before implementation handoff:
+
+- every persisted DB field has a shared read type and validator ownership;
+- every server-derived authority/tenant/digest field is absent from caller-writable schemas;
+- every non-terminal decision row names a durable liveness entity created in the same transaction;
+- every public read is authorized from the source issue/run company;
+- every UI state can distinguish runtime terminal state, reported work disposition, authoritative issue status, and failed/pending finalization;
+- every native side effect has a server-derived idempotency key and a conformance assertion proving at-most-one domain effect under retry.
 
 It does not create an issue comment for every tool call or token delta.
 
