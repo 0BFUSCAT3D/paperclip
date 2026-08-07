@@ -1,0 +1,62 @@
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::time::Duration;
+
+use paperclip_runner_core::phase2::{run_local_runner, Phase2Error, RunnerConfig};
+
+fn value(args: &[String], name: &str) -> Result<String, Phase2Error> {
+    let index = args
+        .iter()
+        .position(|argument| argument == name)
+        .ok_or_else(|| Phase2Error::invalid(format!("missing required argument {name}")))?;
+    args.get(index + 1)
+        .cloned()
+        .ok_or_else(|| Phase2Error::invalid(format!("missing value for {name}")))
+}
+
+fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, Phase2Error> {
+    let Some(index) = args.iter().position(|argument| argument == name) else {
+        return Ok(None);
+    };
+    let value = args
+        .get(index + 1)
+        .ok_or_else(|| Phase2Error::invalid(format!("missing value for {name}")))?;
+    value
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|error| Phase2Error::invalid(format!("invalid {name}: {error}")))
+}
+
+fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, Phase2Error> {
+    optional_u64(args, name)?.map_or(Ok(default), |value| {
+        usize::try_from(value)
+            .map_err(|error| Phase2Error::invalid(format!("invalid {name}: {error}")))
+    })
+}
+
+fn run() -> Result<(), Phase2Error> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    run_local_runner(RunnerConfig {
+        run_id: value(&args, "--run-id")?,
+        normalized_session_id: value(&args, "--session-id")?,
+        runner_instance_id: value(&args, "--runner-id")?,
+        fake_harness_path: PathBuf::from(value(&args, "--fake-harness")?),
+        script_path: PathBuf::from(value(&args, "--script")?),
+        delay_override_ms: optional_u64(&args, "--delay-ms")?,
+        log_max_lines: usize_value(&args, "--log-max-lines", 32)?,
+        log_max_bytes: usize_value(&args, "--log-max-bytes", 16_384)?,
+        shutdown_grace: Duration::from_millis(
+            optional_u64(&args, "--shutdown-grace-ms")?.unwrap_or(100),
+        ),
+    })
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("paperclip-runnerd: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}

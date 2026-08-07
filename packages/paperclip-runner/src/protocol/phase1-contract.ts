@@ -85,6 +85,11 @@ if (registeredFixtureValidator === undefined) {
   throw new Error("PRP fixture validator was not registered");
 }
 const fixtureValidator = registeredFixtureValidator as ValidateFunction<PrpFixture>;
+const registeredEventValidator = ajv.getSchema(eventSchema.$id);
+if (registeredEventValidator === undefined) {
+  throw new Error("PRP event validator was not registered");
+}
+const eventValidator = registeredEventValidator as ValidateFunction<PrpEvent>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -260,6 +265,36 @@ export function parsePrpFixtureText(text: string): ProtocolValidationResult {
       ],
     };
   }
+}
+
+export type EventValidationResult =
+  | { ok: true; event: PrpEvent; issues: [] }
+  | { ok: false; event: null; issues: ProtocolValidationIssue[] };
+
+export function validatePrpEvent(value: unknown): EventValidationResult {
+  const record = asRecord(value);
+  const schemaVersion = record?.schemaVersion;
+  if (typeof schemaVersion === "number" && schemaVersion !== 1) {
+    return {
+      ok: false,
+      event: null,
+      issues: [
+        {
+          code: "unsupported_required_version",
+          path: "/schemaVersion",
+          message: `event schemaVersion ${schemaVersion} is unsupported; this implementation requires 1`,
+        },
+      ],
+    };
+  }
+  if (!eventValidator(value)) {
+    return {
+      ok: false,
+      event: null,
+      issues: (eventValidator.errors ?? []).map(ajvIssue),
+    };
+  }
+  return { ok: true, event: value, issues: [] };
 }
 
 export function negotiateProtocolVersion(

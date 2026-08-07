@@ -12,3 +12,11 @@ serde_json.workspace = true
 [[bin]]
 name = "phase0-tracer"
 path = "src/bin/phase0-tracer.rs"
+
+[[bin]]
+name = "paperclip-runnerd"
+path = "src/bin/paperclip-runnerd.rs"
+
+[[bin]]
+name = "fake-harness"
+path = "src/bin/fake-harness.rs"

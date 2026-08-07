@@ -60,6 +60,7 @@ body {
 }
 
 button,
+input,
 select,
 textarea {
   font: inherit;
@@ -92,6 +93,25 @@ p {
 .page-header {
   align-items: flex-start;
   margin-bottom: var(--space-8);
+}
+
+.mode-switch,
+.scenario-actions,
+.live-status,
+.parity-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.mode-switch {
+  margin-bottom: var(--space-6);
+}
+
+.mode-switch .ui-button[aria-pressed="false"],
+.scenario-actions .ui-button + .ui-button {
+  background: var(--muted);
+  color: var(--muted-foreground);
 }
 
 .page-header > div {
@@ -173,8 +193,14 @@ dt {
   opacity: 0.88;
 }
 
+.ui-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .ui-button:focus-visible,
 select:focus-visible,
+.request-card input:focus-visible,
 .ui-textarea:focus-visible {
   outline: 0.125rem solid var(--ring);
   outline-offset: 0.125rem;
@@ -217,6 +243,7 @@ dt {
 }
 
 select,
+.request-card input,
 .ui-textarea {
   width: 100%;
   border: 0.0625rem solid var(--border);
@@ -226,6 +253,11 @@ select,
 }
 
 select {
+  min-height: var(--control-height);
+  padding: var(--space-2) var(--space-3);
+}
+
+.request-card input {
   min-height: var(--control-height);
   padding: var(--space-2) var(--space-3);
 }
@@ -243,6 +275,53 @@ select {
 .replay-panel {
   display: grid;
   gap: var(--space-6);
+}
+
+.live-status,
+.parity-line {
+  justify-content: space-between;
+  padding-block: var(--space-2);
+}
+
+.live-status > span,
+.parity-line > span {
+  color: var(--muted-foreground);
+  font-size: var(--font-size-xs);
+  font-weight: var(--weight-semibold);
+}
+
+.request-card {
+  display: grid;
+  gap: var(--space-3);
+  padding-block: var(--space-4);
+  border-block: 0.0625rem solid var(--border);
+}
+
+.request-card > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.process-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding-block: var(--space-3);
+}
+
+.empty-live-state {
+  display: grid;
+  gap: var(--space-3);
+  padding-block: var(--space-6);
+}
+
+.empty-live-state h2 {
+  font-size: var(--font-size-lg);
+}
+
+.empty-live-state p:last-child {
+  color: var(--muted-foreground);
 }
 
 .snapshot-heading {

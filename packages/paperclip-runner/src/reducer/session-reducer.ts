@@ -240,11 +240,23 @@ function addGap(snapshot: SessionSnapshot, event: PrpEvent, expected: number): v
 }
 
 export function createSessionSnapshot(fixture: PrpFixture): SessionSnapshot {
+  return createSessionSnapshotFromMetadata({
+    fixtureName: fixture.name,
+    identity: fixture.identity,
+    capabilities: fixture.capabilities,
+  });
+}
+
+export function createSessionSnapshotFromMetadata(input: {
+  fixtureName: string;
+  identity: PrpIdentity;
+  capabilities: PrpCapabilities;
+}): SessionSnapshot {
   return {
     schema: "paperclip.prp.session-snapshot.v1",
-    fixtureName: fixture.name,
-    identity: structuredClone(fixture.identity),
-    capabilities: structuredClone(fixture.capabilities),
+    fixtureName: input.fixtureName,
+    identity: structuredClone(input.identity),
+    capabilities: structuredClone(input.capabilities),
     runPhase: "queued",
     sessionState: "not_started",
     turnState: "not_started",

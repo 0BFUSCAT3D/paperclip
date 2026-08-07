@@ -4,11 +4,13 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+import { phase2BrowserServerPlugin } from "./scripts/phase2-browser-server.mjs";
+
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   root: resolve(packageRoot, "devtools/browser"),
-  plugins: [react()],
+  plugins: [react(), phase2BrowserServerPlugin()],
   build: {
     outDir: resolve(packageRoot, "dist-browser"),
     emptyOutDir: true,

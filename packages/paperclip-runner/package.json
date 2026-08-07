@@ -24,10 +24,11 @@
     "typecheck:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
     "typecheck:rust": "cargo check --manifest-path runner/Cargo.toml --locked --workspace",
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
-    "test": "pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs",
+    "test": "pnpm run build:phase2-binaries && pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs",
     "test:typescript": "vitest run",
     "test:rust": "cargo test --manifest-path runner/Cargo.toml --locked --workspace",
-    "test:browser": "pnpm run build:browser && playwright test --config devtools/browser/playwright.config.ts",
+    "test:browser": "pnpm run build:typescript && pnpm run build:phase2-binaries && pnpm run build:browser && playwright test --config devtools/browser/playwright.config.ts",
+    "build:phase2-binaries": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
     "generate:protocol-types": "node scripts/generate-protocol-schema-module.mjs",
     "check:protocol-types": "node scripts/generate-protocol-schema-module.mjs --check",
     "generate:phase1-goldens": "pnpm run build:typescript && node scripts/generate-phase1-goldens.mjs",
@@ -41,9 +42,11 @@
     "trace:phase0:rust": "pnpm run build:rust && cargo run --quiet --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin phase0-tracer",
     "trace:phase0:typescript": "pnpm run build:typescript && node dist/tracer/phase0.js",
     "replay:phase1": "pnpm run build:typescript && node dist/cli/phase1-replay.js",
-    "browser:dev": "vite --config vite.config.ts",
+    "trace:phase2": "pnpm run build:typescript && pnpm run build:phase2-binaries && node dist/cli/phase2-mock-core.js",
+    "record:phase2": "pnpm run trace:phase2 -- --quiet --output knowledge/evidence/phase-02-happy-path.json",
+    "browser:dev": "pnpm run build:typescript && pnpm run build:phase2-binaries && vite --config vite.config.ts",
     "browser:preview": "vite preview --config vite.config.ts",
-    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1"
+    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
