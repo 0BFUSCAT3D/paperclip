@@ -1761,8 +1761,8 @@ All six event families are P0 and are never coalesced or dropped.
   v1; output-only trusted tool-action execution updates may use the same event
   family.
 - `interaction.response.resolved` carries the complete terminal typed response,
-  target freshness, effective policies, redacted resolver class, and
-  continuation decision.
+  response cursor, target freshness, effective policies, redacted resolver
+  class, and continuation decision.
 - `interaction.response.delivered` binds one response cursor to its destination
   run/session/turn and acknowledgement state.
 
@@ -2381,6 +2381,10 @@ Do not require all of them in the first spike.
 The initial turn contains a compact, task-focused envelope:
 
 ```ts
+// Canonical unsigned 64-bit decimal with no leading zeros except "0".
+// Compare numerically, never lexicographically or as a timestamp.
+type ResponseCursorV1 = string;
+
 interface NativeTaskEnvelope {
   task: {
     id: string;
@@ -2409,12 +2413,12 @@ interface NativeTaskEnvelope {
     interactions: {
       pending: PendingInteractionContextV1[];
       resolved: InteractionResponseV1[];
-      deliveryCursor?: string | null;
+      deliveryCursor?: ResponseCursorV1 | null;
       resumeCause?: {
         interactionId: string;
         kind: InteractionKind;
         phase: "progress" | "terminal";
-        responseCursor: string;
+        responseCursor: ResponseCursorV1;
       } | null;
     };
   };
@@ -2823,7 +2827,7 @@ interface InteractionResponse<K extends InteractionKind, R> {
   schema: "paperclip.interaction-response.v1";
   companyId: string;
   interactionId: string;
-  responseCursor: string;
+  responseCursor: ResponseCursorV1;
   requestId: string;
   kind: K;
   phase: "progress" | "terminal";
@@ -2997,14 +3001,16 @@ acceptance materializes selected drafts transactionally in parent-before-child
 order and is at-most-once per `(interactionId, clientKey)`. Item verdicts may
 deliver progress repeatedly, but already resolved IDs are immutable.
 
-`responseCursor` is immutable, opaque, monotonic within the server-owned
+`responseCursor` is immutable, server-issued, numerically monotonic within the
 company delivery sequence, and allocated in the same transaction that records
 the progress/terminal result, authoritative continuation decision, delivery
 row, and any wake outbox row. No timestamp, client counter, resolver retry, or
-event sequence may substitute for it. Delivery and ACK rows bind the cursor to
-one destination run, native session, and turn; an ACK from any other
-destination is rejected without advancing delivery. Lost-ACK and restart
-replay returns the byte-equivalent normalized response for that cursor.
+event sequence may substitute for it. Reducers compare its canonical decimal
+value as an unsigned 64-bit integer, never by string or timestamp. Delivery and
+ACK rows bind the cursor to one destination run, native session, and turn; an
+ACK from any other destination is rejected without advancing delivery.
+Lost-ACK and restart replay returns the byte-equivalent normalized response for
+that cursor.
 
 #### 17.3.3 Turn-yield and completion coexistence
 
