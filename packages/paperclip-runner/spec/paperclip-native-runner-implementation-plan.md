@@ -6,7 +6,7 @@ This document is the implementation-phase plan for [`paperclip-native-runner-spi
 
 All implementation starts inside `packages/paperclip-runner/` with protocol and mock-control-plane layers. These standalone phases do not modify Paperclip control-plane semantics. A real Paperclip bridge is a late, separately reviewed phase after the standalone contract passes conformance tests.
 
-Phase 0, Phase 1, and Phase 2 are complete. Their runnable demos, tests, package-local documentation, tutorials, journal entries, screenshots, and evidence satisfy the first three task-creation gates. The human accepted Phase 2 and authorized Phase 3 on August 7, 2026. Create only the Phase 3 task graph now. Keep Phase 4 and later issues deferred until the Phase 3 human checkpoint is complete.
+Phase 0, Phase 1, and Phase 2 are complete. The Phase 3 tracer is implemented and awaits Security, UX, QA, and human acceptance. Keep Phase 4 and later issues deferred until the Phase 3 human checkpoint is complete.
 
 ## Non-negotiable delivery rules
 

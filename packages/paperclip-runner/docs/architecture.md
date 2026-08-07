@@ -169,6 +169,33 @@ Every browser event passes `validatePrpEvent` and `applyPrpEvent`. When the run
 ends, the browser reduces the complete event list again and compares the replay
 snapshot with the live snapshot.
 
+## Phase 3 durable transport boundary
+
+```text
+TypeScript mock core
+  | one-time ticket -> short-lived connection lease
+  | PRP v1 hello/welcome, commands, events, cumulative ACKs
+  v
+paperclip-runnerd (Rust WebSocket client)
+  | atomic private JSON state
+  +-- durable outbox and processed-command cache
+  +-- stable runner/session/turn/item identities
+  +-- Phase 2 fake-harness process for restart proof
+```
+
+The runner initiates the loopback WebSocket. The bootstrap ticket is present
+only in the runner process environment. The returned connection-lease token is
+kept only in runner memory. The mock core stores SHA-256 digests of capabilities
+and the runner state stores neither capability. The runner writes each event and
+command result before network delivery, then removes outbox events only after a
+valid cumulative ACK.
+
+The TypeScript peer is a package-local test controller, not production
+Paperclip. It injects lost ACKs, socket loss, malformed input, process restarts,
+lease expiry, storage pressure, drain, and revoke. The browser recovery page
+calls that peer through guarded package-local Vite middleware and renders only
+safe trace fields.
+
 ## Future integration rule
 
 The [implementation plan](../spec/paperclip-native-runner-implementation-plan.md)

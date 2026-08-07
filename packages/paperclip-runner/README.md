@@ -8,10 +8,12 @@ Phase 0 runs both implementations against one language-neutral fixture. Phase 1
 adds executable PRP schemas, a cross-language conformance corpus, deterministic
 static replay, and a standalone browser reference page. Phase 2 adds the Rust
 runner process, process-group supervision, a scripted fake harness over stdio
-JSONL, a TypeScript mock core, and validated live browser replay. These phases do
-not import or start Paperclip's server, UI, CLI, or production database.
+JSONL, a TypeScript mock core, and validated live browser replay. Phase 3 adds
+the Rust outbound WebSocket client, private durable state, replay and restart
+recovery, and safe CLI/browser diagnostics. These phases do not import or start
+Paperclip's server, UI, CLI, or production database.
 
-## Phase 0–2 quick start
+## Phase 0–3 quick start
 
 From the repository root:
 
@@ -49,6 +51,7 @@ devtool:
 ```sh
 pnpm --filter @paperclipai/paperclip-runner replay:phase1
 pnpm --filter @paperclipai/paperclip-runner trace:phase2 -- --scenario happy-path
+pnpm --filter @paperclipai/paperclip-runner trace:phase3 -- --fault lost-ack
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 ```
 
@@ -68,12 +71,13 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 | `trace:phase0` | Run the Rust mock-core tracer, print the stable result, and exit. |
 | `trace:phase0:typescript` | Run the TypeScript reference tracer directly. |
 | `replay:phase1` | Validate and reduce a fixture to a final snapshot. |
-| `browser:dev` | Open the editable fixture/static replay reference page. |
 | `trace:phase2` | Run one native local session through the Rust runner and fake harness. |
 | `record:phase2` | Capture a validated happy-path live trace as a replay fixture. |
-| `browser:dev` | Start the standalone live/replay browser devtool. |
+| `trace:phase3` | Run the Rust runner against the mock core with a selected recovery fault. |
+| `record:phase3` | Regenerate the complete Phase 3 fault matrix and exact per-fault traces. |
+| `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
 | `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
-| `verify` | Run the complete Phase 0, Phase 1, and Phase 2 acceptance sequence. |
+| `verify` | Run the complete Phase 0 through Phase 3 acceptance sequence. |
 | `verify:rootless` | Extract Debian/Ubuntu browser libraries without root, then run `verify`. |
 
 ## Navigate
@@ -84,6 +88,8 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Phase 1 hand-run tutorial](docs/tutorials/phase-01-static-replay.md)
 - [Phase 2 hand-run tutorial](docs/tutorials/phase-02-local-runner.md)
 - [Phase 2 local protocol reference](docs/phase-02-local-protocol.md)
+- [Phase 3 break-it-on-purpose tutorial](docs/tutorials/phase-03-break-recovery.md)
+- [Phase 3 durable transport reference](docs/phase-03-durable-transport.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
@@ -91,6 +97,4 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Implementation plan](spec/paperclip-native-runner-implementation-plan.md)
 - [Normative spike specification](spec/paperclip-native-runner-spike-spec.md)
 
-Phase 2 is local and deterministic. It does not add durable network transport,
-reconnect, production Paperclip integration, or a real model harness. Those
-capabilities remain behind later checkpoints in the implementation plan.
+Phase 3 adds package-local durable network recovery. Production Paperclip integration and a real model harness remain deferred.

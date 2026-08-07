@@ -6,3 +6,4 @@
 * [Phase 0 Rust correction verification](2026-08-07-phase-00-rust-correction-verification.md) - Rust build/tests, cross-language parity, and corrected boundary evidence.
 * [Phase 1 verification](2026-08-07-phase-01-verification.md) - Schema, golden, reducer, Rust parity, CLI, browser, token, boundary, and screenshot evidence.
 * [Phase 2 verification](2026-08-07-phase-02-verification.md) - Rust supervisor, fake-driver scenarios, cleanup, live/replay parity, browser flows, screenshots, and complete package verification.
+* [Phase 3 verification](2026-08-07-phase-03-verification.md) - Lost-ACK replay, restart recovery, command deduplication, storage, and redacted diagnostics.

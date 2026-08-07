@@ -75,9 +75,30 @@ two surfaces.
 - The live browser rejects an event with an invalid schema, run ID, or session
   ID before it reaches the reducer.
 
-These envelopes are local Phase 2 implementation contracts. Phase 3 may add a
-durable outbound transport, but it must preserve the canonical PRP event and
-command semantics.
+These envelopes are local Phase 2 implementation contracts.
+
+## Phase 3 durable wire rules
+
+- The runner opens an outbound WebSocket and sends PRP v1 `hello` before any
+  command result or event.
+- A one-use bootstrap bearer capability returns a short-lived connection lease
+  in `welcome`. Later connections use that lease. Neither raw capability is
+  durable state.
+- `hello.resume` reports the last processed controller sequence, next source
+  sequence, cumulative ACK cursor, and current unacknowledged range.
+- `welcome` selects the one overlapping protocol version, returns the core's
+  cumulative ACK cursor, and carries at most one durable pending command.
+- An event is durable before send. Event IDs and source sequences stay stable
+  across replay and process restart.
+- An ACK is cumulative. The runner rejects a cursor behind its durable ACK or
+  beyond its produced source cursor.
+- An equal repeated command ID and canonical digest returns its stored result.
+  Reuse with different bytes fails closed and cannot repeat an effect.
+- Frames are bounded at 1 MiB and upgrade headers at 16 KiB. Unknown or invalid
+  required protocol data fails closed; malformed JSON is a bounded diagnostic.
+
+These are package-local Phase 3 rules. Production TLS, control-plane admission,
+and deployment policy remain separately reviewed work.
 
 ## Change policy
 

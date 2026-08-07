@@ -2,16 +2,19 @@
 
 ## What this tutorial is
 
-This tutorial combines each implemented Native Runner phase into one procedure. It currently includes Phase 0, Phase 1, and Phase 2.
+This tutorial combines each implemented Native Runner phase into one procedure.
+It currently includes Phase 0 through Phase 3.
 
 ## What this tutorial proves
 
 This tutorial proves that the standalone package boundary, static replay path,
-and local live-run path work together. It does not use Paperclip or a real model.
+local live-run path, and durable recovery path work together. It does not use
+Paperclip or a real model.
 
 The current system includes the Rust mock-core tracer, shared protocol fixtures,
 the Rust supervisor, a scripted fake harness, CLI live runs, and browser live and
-replay modes.
+replay modes. It also includes the Rust outbound WebSocket client, durable
+outbox, package-local mock core, recovery CLI, and recovery browser view.
 
 ## Current end-to-end path
 
@@ -32,6 +35,10 @@ replay modes.
 12. Open the browser live mode and confirm the completed run says `Match` for live and replay output.
 13. Open the [Phase 2 journal entry](../../knowledge/journal/2026-08-07-phase-02.md)
     and its linked verification evidence and screenshots.
+14. Follow [Phase 3: Break Recovery on Purpose](phase-03-break-recovery.md).
+15. Confirm that the recovered runner and session IDs stay the same.
+16. Confirm that the outbox is empty after replay and cumulative acknowledgement.
+17. Open the [Phase 3 journal entry](../../knowledge/journal/2026-08-07-phase-03.md).
 
 The one-command form after installation is:
 
@@ -67,6 +74,14 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
 - exactly one terminal event closes every completed local trace;
 - every live browser event passes the Phase 1 validator and reducer before display;
 - replaying the completed live event list produces the same final snapshot.
+- a lost cumulative ACK replays the same durable event ID without a second
+  logical event;
+- repeated commands return the stored result and cause one logical effect;
+- runner and harness restarts preserve runner, session, turn, and item IDs;
+- backpressure bounds local storage without dropping P0 events;
+- lease expiry, drain, revoke, and unrecoverable storage outcomes are explicit;
+- CLI and browser diagnostics do not expose bootstrap or connection-lease
+  tokens.
 
-Phase 3 may extend this tutorial only after the Phase 2 human checkpoint is
-accepted and the next phase is authorized.
+Phase 4 remains uncreated until the Phase 3 review and human checkpoint are
+complete.
