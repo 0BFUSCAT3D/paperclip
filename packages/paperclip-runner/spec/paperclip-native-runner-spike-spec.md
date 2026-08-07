@@ -3381,7 +3381,8 @@ The approved operator-facing presentation of these four authorities — the
 layered outcome vocabulary, components, desktop board flows, reason-code copy,
 and token mapping — is maintained in
 [`paperclip-runner-status-attention-ux.md`](./paperclip-runner-status-attention-ux.md)
-(PAP-16712) and is normative for Phase 4 UI work.
+(PAP-16712) and is normative for Phase 4 UI work. Section 18.12 binds that
+design to concrete read models, routes, derivation rules, and release gates.
 
 The arbiter consumes a durable assessment rather than raw prose:
 
@@ -4162,6 +4163,7 @@ Read/API additions:
 - `GET /api/issues/:issueId/completion-contracts/current` and `/completion-contracts` return company-authorized current/history summaries;
 - `GET /api/issues/:issueId/status-decisions` returns assessment/decision summaries, disagreement reasons, supersession, and liveness references with sensitive payloads redacted;
 - `GET /api/heartbeat-runs/:runId/finalization` returns turn/run facts, coordinator phase, preserved result reference, assessment, decision, and retry-safe failure details;
+- `GET /api/issues/:issueId/attention-requests` and `/attention-requests/:requestId` return canonical attention records with owner, derived authority, effective scope, attempt history, expiry, duplicate state, and response binding; suppressed duplicates never appear as top-level records;
 - existing issue and heartbeat-run responses gain compact `reportedWorkDisposition`, `latestStatusDecision`, and `nativeFinalization` summaries;
 - runner ingestion uses the authenticated native runner/session channel and its bound run/turn. No public request body may select `companyId`, prior status, policy version, effective resolver, reason code, or authoritative transition.
 
@@ -4184,7 +4186,7 @@ Implementation-ready file map:
 | Heartbeat integration | In `server/src/services/heartbeat.ts`, replace the native-mode exit-code outcome branch and the later sequence of independent issue liveness handlers with the coordinator. Keep usage/cost/session/runtime diagnostics and the legacy branch intact. Workspace finalization completes before native run success and arbitration. |
 | Routes/OpenAPI | Add company-authorized read routes in `server/src/routes/issues.ts` and `server/src/routes/agents.ts`; document them in `server/src/routes/openapi.ts`. Native ingestion stays on the runner transport/internal service boundary. |
 | UI API | Add read types/fetchers in `ui/src/api/issues.ts` and `ui/src/api/heartbeats.ts`; invalidate issue, run, assessment, and decision queries from the existing live-update provider. |
-| UI surfaces | Phase 4 renders run outcome separately from issue status, the agent claim separately from the arbiter decision, reason/evidence classification, supersession history, finalization failure, and the concrete current liveness owner/path. This phase supplies data contracts only; the approved operator UX for these surfaces is [`paperclip-runner-status-attention-ux.md`](./paperclip-runner-status-attention-ux.md), and the read models above MUST carry every field that design renders (turn/run/claim/decision layers, criterion assessments, side-effect links, attention owner/authority/scope/attempts/expiry, resume consequence, supersession chain). |
+| UI surfaces | Phase 4 renders run outcome separately from issue status, the agent claim separately from the arbiter decision, reason/evidence classification, supersession history, finalization failure, and the concrete current liveness owner/path. This phase supplies data contracts only; the approved operator UX for these surfaces is [`paperclip-runner-status-attention-ux.md`](./paperclip-runner-status-attention-ux.md), and the read models above MUST carry every field that design renders (turn/run/claim/decision layers, criterion assessments, side-effect links, attention owner/authority/scope/attempts/expiry, resume consequence, supersession chain). Section 18.12 is the normative binding of those two documents: view types, read routes, derivation rules, component data contracts, and release gates. |
 | CLI/MCP | Expose read-only finalization/decision inspection if operator parity requires it. Do not expose status-decision creation or arbitrary replay inputs. |
 
 Migration and rollout sequence:
@@ -4207,6 +4209,663 @@ Structural consistency gate before implementation handoff:
 - every native side effect has a server-derived idempotency key and a conformance assertion proving at-most-one domain effect under retry.
 
 It does not create an issue comment for every tool call or token delta.
+
+### 18.12 Operator and reviewer read models and presentation contract
+
+Sections 18.3–18.11 define what Paperclip decides. The approved operator
+design in
+[`paperclip-runner-status-attention-ux.md`](./paperclip-runner-status-attention-ux.md)
+defines how that decision must read on screen. This section is the binding
+contract between them and is normative for the read routes, the view types, the
+client derivation rules, the component data requirements, and the release gates
+of section 18.3 Phase 4. Phase-numbering note: this is Phase 4 of the status
+authority track (PAP-16713). It is unrelated to the Phase 4 driver milestone in
+the implementation plan and to the interaction-bridge gates in section 27.9.1.
+
+Two rules govern everything below.
+
+1. **The server ships facts and codes; the UI ships language.** Every
+   authoritative value crosses the wire as a stable enum, identifier, integer,
+   or timestamp. Operator sentences are composed on the client from those codes.
+   The server never sends a rendered status sentence, and the UI never invents a
+   fact that has no field.
+2. **Presentation never re-derives authority.** Eligibility to respond, resolver
+   selection, minimum authority, effective scope, resumability, and duplicate
+   status are computed server-side and read as booleans/enums. A client that
+   loses those fields degrades to read-only (section 18.12.12); it never guesses.
+
+#### 18.12.1 Operator presentation invariants
+
+These are enforceable review and test criteria, referenced as `[OPX-n]`
+throughout this section and in section 18.12.13.
+
+| ID | Invariant | Failure it prevents |
+|---|---|---|
+| OPX-1 | Every finalized native run renders turn outcome, run outcome, agent claim, and authoritative issue status as four separately labeled values in the default (unexpanded) view. | The single-badge collapse that lets process success read as work completion. |
+| OPX-2 | The agent claim is always attributed, past-tense, and visually non-authoritative (dashed outline + quote glyph, never a filled status color). The composed strings "agent succeeded", "agent failed", and "agent completed" never appear in copy constants or fixtures. | An unverified model claim reading as an organizational fact. |
+| OPX-3 | Any decision whose `toStatus` is non-terminal renders at least one named live path with an owner and a link. If the server reports no live path and no finalization error, the UI renders the recovery treatment, never a silent waiting state. | Invisible dead tasks that appear to be "in progress". |
+| OPX-4 | A board-routed attention card renders owner, derived authority, effective scope, attempt/budget position, expiry, duplicate state, and the resume consequence *before* the response control. | Answering blind; not knowing what the button fires. |
+| OPX-5 | Suppressed duplicates never create an inbox row, a notification, or a second card. Non-board routes never render a human response affordance. | Alarm fatigue and spurious escalation, the parent issue's core complaint. |
+| OPX-6 | Finalization, reconciliation, and schema-rejection errors preserve and display the original claim, keep issue status unchanged, and name a recovery owner plus retry position. | Manufactured `blocked`/`in_review`, or a silently discarded work report. |
+| OPX-7 | Model-authored prose is only ever rendered quoted, attributed, length-capped, and as plain text. It never occupies a label, chip, title, tone, link target, or status position. | Copy spoofing: a model writing text that imitates an arbiter verdict. |
+| OPX-8 | Every read is authorized from the source issue/run company; cross-company and hidden references produce the same generic not-found and render nothing. | Cross-tenant disclosure through an operator surface. |
+| OPX-9 | Countdowns, relative times, and expiry tones derive from the response envelope's `asOf`, not the client clock. | Skewed clocks showing a live request as expired, or the reverse. |
+| OPX-10 | No new raw color, spacing, or shadow values. Every tone pairs color with a distinct glyph, and no state is conveyed by color alone. | Token drift and color-only signaling. |
+
+#### 18.12.2 Persistence prerequisites for the operator read model
+
+Section 18.3.1 defines the canonical attention record and section 18.7 defines
+the contract/result/assessment/decision tables, but no table currently persists
+attention records, their attempt history, or their budgets. The operator surface
+cannot render owner, attempts, expiry, or duplicate state without them, so
+Phase 4 requires these additions alongside the section 18.7 set.
+
+```text
+attention_requests
+  id uuid primary key
+  company_id uuid not null references companies
+  issue_id uuid not null references issues on delete cascade
+  run_id uuid null references heartbeat_runs on delete set null
+  turn_id text null
+  version integer not null
+  completion_contract_id uuid not null references completion_contracts
+  classification text not null
+  canonical_action text null
+  canonical_resource_ref text null
+  required_expertise text[] not null default '{}'
+  requested_authority text null              -- untrusted caller hint, display-only
+  minimum_authority text not null            -- policy-derived
+  requested_scope text not null
+  effective_scope text not null
+  blocking_current_turn boolean not null
+  alternate_track_ref text null
+  request_fingerprint text not null
+  equivalence_fingerprint text not null
+  material_evidence_digest text not null
+  urgency text not null
+  state text not null
+  selected_route text null
+  selected_resolver_json jsonb null          -- resolved target class + id, no secrets
+  route_ref text null
+  request_json jsonb not null                -- canonical record, redacted at read
+  expires_at timestamptz not null
+  resolved_at timestamptz null
+  policy_version text not null
+  supersedes_request_id uuid null references attention_requests
+  canonical_request_id uuid null references attention_requests  -- set on suppressed duplicates
+  created_at timestamptz not null
+  updated_at timestamptz not null
+  unique (company_id, id)
+  unique (company_id, request_fingerprint, version)
+  index (company_id, issue_id, state, selected_route)
+  index (company_id, equivalence_fingerprint)
+
+attention_request_attempts
+  id uuid primary key
+  company_id uuid not null references companies
+  request_id uuid not null references attention_requests on delete cascade
+  ordinal integer not null
+  route text not null                        -- context | retry | agent | board | external | recovery
+  outcome text not null                      -- resolved | failed | exhausted | skipped | routed
+  reason_code text not null                  -- AttentionResolutionReasonCode
+  resolver_ref text null
+  occurred_at timestamptz not null
+  unique (request_id, ordinal)
+
+attention_budgets
+  company_id uuid not null references companies
+  equivalence_fingerprint text not null
+  context_passes integer not null default 0
+  transient_retries integer not null default 0
+  distinct_agent_resolvers integer not null default 0
+  human_or_external_routes integer not null default 0
+  resolution_transitions integer not null default 0
+  emitted_wakes integer not null default 0
+  first_attempt_at timestamptz not null
+  last_attempt_at timestamptz not null
+  policy_version text not null
+  primary key (company_id, equivalence_fingerprint)
+```
+
+`attention_request_attempts` is append-only and is the sole source of the
+attempt history the operator sees; the UI never reconstructs history from
+activity prose. `attention_budgets` is the shared counter set of section 18.3.3,
+so a suppressed duplicate increments the family it joined rather than starting a
+new one. Suppressed duplicates persist as rows with `canonical_request_id` set
+and never appear as top-level records in any read route `[OPX-5]`.
+
+`native_run_finalizations.failure_detail` additionally carries the redacted
+recovery owner reference and the retry schedule, because section 18.12.4 renders
+both `[OPX-6]`.
+
+#### 18.12.3 Layered outcome read model
+
+One embedded object carries the four authority layers of section 18.3. Every
+surface that shows any layer embeds this whole object, which is what makes
+`[OPX-1]` checkable rather than aspirational.
+
+```ts
+interface NativeOutcomeLayers {
+  schema: "paperclip.native-outcome-layers.v1";
+  runId: string;
+  turnId: string | null;
+
+  // Layer 1 — harness driver authority.
+  turnTerminalState: TurnTerminalState | null;
+
+  // Layer 2 — runner/finalizer authority.
+  runTerminalState: RunTerminalState | null;
+
+  // Layer 3 — model work-report authority. Never a status.
+  claim: {
+    reportedWorkDisposition: ReportedWorkDisposition | null;
+    reportedAt: string | null;
+    // Server-resolved from the run's execution agent, not from the report body.
+    claimedBy: { kind: "agent" | "user"; ref: string; displayName: string } | null;
+    // Optional model prose, plain text, server-truncated to 1,000 characters.
+    quotedSummary: string | null;
+    quotedSummaryTruncated: boolean;
+    // Present when the report failed validation but was preserved (18.7).
+    schemaStatus: "accepted" | "rejected" | "partial";
+    preservedResultRef: string | null;
+  } | null;
+
+  // Layer 4 — arbiter authority. The only authoritative status on this object.
+  status: {
+    current: AuthoritativeIssueStatus;
+    statusVersion: number;
+    latestDecisionId: string | null;
+  };
+
+  // Compatibility marker. Legacy runs set false and render the existing path.
+  native: boolean;
+}
+```
+
+Rules:
+
+- `claim.quotedSummary` is the only free-text field on this object and is
+  governed by `[OPX-7]`: rendered as plain text with a quote glyph, never
+  markdown, never linkified, never used as a card title.
+- A null `claim` means the run produced no report. It is not a failure and must
+  not render as one.
+- `native: false` freezes the surface to today's rendering; no chip row, decision
+  card, or attention card is added to a legacy run (section 28.2).
+
+#### 18.12.4 Status decision and finalization read models
+
+```ts
+interface StatusDecisionView {
+  schema: "paperclip.status-decision-view.v1";
+  id: string;
+  issueId: string;
+  runId: string | null;
+  outcome: NativeOutcomeLayers;
+
+  fromStatus: AuthoritativeIssueStatus;
+  toStatus: AuthoritativeIssueStatus;
+  transitionApplied: boolean;
+  reasonCode: StatusDecisionReasonCode;
+  applicationState: "proposed" | "applied" | "superseded" | "rejected";
+  decidedAt: string;
+
+  trigger: {
+    kind: "runner_finalizer" | "board_user" | "authorized_agent" | "interaction" | "dependency" | "monitor";
+    actorRef: string | null;
+    actorDisplayName: string | null;
+  };
+
+  // Rendered as the criterion table. Descriptions come from the immutable
+  // contract snapshot, never from the model report.
+  criterionAssessments: Array<{
+    criterionId: string;
+    description: string;
+    required: boolean;
+    assessmentMode: "mechanical" | "policy_backed_agent_claim" | "named_reviewer" | "board";
+    claimStatus: "satisfied" | "not_satisfied" | "unknown" | null;
+    outcome: "accepted" | "missing" | "rejected" | "unverifiable";
+    reasonCode: string;
+    evidence: EvidenceRefView[];
+  }>;
+
+  missingRequirements: string[];
+  pendingGovernedActions: Array<{
+    kind: "approval" | "security_review" | "qa_review" | "board_decision";
+    ownerRef: string | null;
+    ownerDisplayName: string | null;
+    targetRef: string | null;
+  }>;
+  remainingWork: Array<{ description: string; blocksCompletion: boolean }>;
+
+  // "What happens next". Required non-empty whenever the decision is
+  // non-terminal and no finalizationError is present [OPX-3].
+  livePaths: LivePathView[];
+  sideEffects: Array<{
+    kind: StatusDecisionEffectKind;
+    target: TargetRefView | null;
+    deliveryState: "pending" | "delivered" | "failed" | "cancelled";
+  }>;
+
+  // Truthfulness escape hatch. "missing" forces the recovery treatment.
+  livePathIntegrity: "satisfied" | "not_required" | "missing";
+
+  supersession: {
+    supersedesDecisionId: string | null;
+    supersededByDecisionId: string | null;
+  };
+
+  audit: {
+    reasonCode: StatusDecisionReasonCode;
+    decisionId: string;
+    policyVersion: string;
+    completionContractRevision: string;
+    decisionVersion: number;
+  };
+}
+
+interface LivePathView {
+  kind: "continuation" | "retry" | "delegated_issue" | "interaction" | "review" | "monitor" | "blocker" | "recovery";
+  ref: string;
+  owner: { kind: "agent" | "user" | "system"; ref: string; displayName: string };
+  target: TargetRefView | null;
+  // Rendered by the client as the "who owns the next move" sentence.
+  expectedBy: string | null;
+}
+
+interface TargetRefView {
+  type: "issue" | "interaction" | "approval" | "run" | "work_product" | "document" | "monitor" | "agent" | "user";
+  id: string;
+  identifier: string | null;   // e.g. "PAP-16713"
+  displayName: string | null;
+}
+
+interface EvidenceRefView {
+  ref: string;
+  kind: "test" | "artifact" | "diff" | "observation" | "external_check";
+  description: string;         // from the authoritative evidence record
+  status: "passed" | "failed" | "unknown";
+  target: TargetRefView | null;
+  // True when the model asserted this evidence but no authoritative record
+  // backs it. Rendered with the claim treatment, never as proof [OPX-7].
+  claimOnly: boolean;
+}
+
+interface RunFinalizationView {
+  schema: "paperclip.run-finalization-view.v1";
+  runId: string;
+  issueId: string;
+  outcome: NativeOutcomeLayers;
+  phase:
+    | "observed" | "workspace_finalizing" | "ready_for_assessment"
+    | "arbitrating" | "committed" | "retryable_failure" | "terminal_failure";
+  failureCode: string | null;             // stable enum, never raw exception text
+  failureSummary: string | null;          // redacted, non-secret, ≤ 240 chars
+  retry: {
+    attempt: number;
+    maxAttempts: number;
+    nextAttemptAt: string | null;
+    exhausted: boolean;
+  } | null;
+  recoveryOwner: { kind: "agent" | "user" | "system"; ref: string; displayName: string } | null;
+  preservedResultRef: string | null;
+  assessmentId: string | null;
+  decisionId: string | null;
+  // Status is unchanged by definition here; surfaced so the card can say so.
+  issueStatusUnchanged: true;
+}
+```
+
+`StatusDecisionEffectKind` is the section 18.3 `sideEffects[].kind` enum. The
+server never returns unredacted evidence payloads, tool arguments, secrets, or
+cross-company references in any of these views (section 18.11).
+
+The `livePathIntegrity` field is what makes `[OPX-3]` enforceable at the
+contract level rather than by inspection: the server itself declares whether the
+"who owns the next move" answer exists. `missing` is only legal together with a
+`prior_status_preserved_no_live_path`, `attention_budget_exhausted`, or
+finalization-error reason code, and it renders as recovery, never as waiting.
+
+#### 18.12.5 Attention read model
+
+```ts
+interface AttentionRequestView {
+  schema: "paperclip.attention-request-view.v1";
+  id: string;
+  issueId: string;
+  runId: string | null;
+  version: number;
+  state: "pending" | "routed" | "resolved" | "expired" | "superseded" | "rejected" | "exhausted";
+  classification: CanonicalAttentionRequest["classification"];
+  urgency: "normal" | "high";
+  createdAt: string;
+
+  // Header copy. Server-normalized, plain text, ≤ 240 chars, model-authored →
+  // rendered under the claim rules [OPX-7].
+  summary: string;
+
+  // Owner — always a named resolver, never "someone" [OPX-4].
+  route: "context" | "retry" | "agent" | "board" | "external" | "recovery" | null;
+  resolver: { kind: "agent" | "user" | "role" | "external_system" | "system"; ref: string; displayName: string } | null;
+
+  authority: {
+    minimum: CanonicalAttentionRequest["minimumAuthority"];   // policy-derived, authoritative
+    requested: CanonicalAttentionRequest["minimumAuthority"] | null;  // untrusted caller hint
+    corrected: boolean;   // requested !== minimum → render the "asked → resolved as" pattern
+  };
+
+  scope: {
+    requested: "current_turn" | "current_track" | "task_wide";
+    effective: "current_turn" | "current_track" | "task_wide";
+    narrowed: boolean;
+    blockingCurrentTurn: boolean;
+    alternateTrack: TargetRefView | null;
+  };
+
+  attempts: {
+    used: number;              // resolution transitions consumed
+    limit: number;             // policy budget for the equivalence family
+    history: Array<{
+      ordinal: number;
+      route: "context" | "retry" | "agent" | "board" | "external" | "recovery";
+      outcome: "resolved" | "failed" | "exhausted" | "skipped" | "routed";
+      reasonCode: AttentionResolutionReasonCode;
+      resolverDisplayName: string | null;
+      occurredAt: string;
+    }>;
+  };
+
+  expiry: { expiresAt: string; expired: boolean; remainingMs: number };  // remainingMs relative to envelope asOf [OPX-9]
+
+  duplicates: {
+    suppressedCount: number;
+    recent: Array<{ requestId: string; createdAt: string; variant: "repeated" | "reworded" }>;
+  };
+
+  // Response affordance. Server-evaluated with the centralized addressee
+  // predicate of section 17.3.1; the client never computes eligibility [OPX-5].
+  response: {
+    canRespondInline: boolean;
+    interaction: TargetRefView | null;
+    // Exact continuation consequence, derived server-side because only the
+    // server knows whether the provider session still advertises resumability.
+    resumeBinding:
+      | "resume_current_turn"
+      | "wake_assignee_next_turn"
+      | "agent_route_no_action"
+      | "external_route_no_action"
+      | "recovery_owner_action"
+      | "audit_only_superseded"
+      | "expired_fallback_sent";
+    resumeSubject: { kind: "agent" | "user" | "system"; ref: string; displayName: string } | null;
+  };
+
+  delegatedIssue: TargetRefView | null;
+  supersedesRequestId: string | null;
+  supersededByRequestId: string | null;
+  policyVersion: string;
+}
+```
+
+Rules:
+
+- Suppressed duplicates are never top-level `AttentionRequestView` records. They
+  appear only inside `duplicates` on their canonical request `[OPX-5]`.
+- `response.canRespondInline` is `true` only when `route === "board"`, `state` is
+  `pending` or `routed`, the request is unexpired and non-superseded, and the
+  viewer passes the addressee predicate. Every other combination renders
+  read-only, including a board-routed request owned by a different person.
+- `authority.requested` is display-only and is always labeled as what the agent
+  asked for. It is never used to select a route, a tone, or an affordance.
+- `resumeBinding` values map one-to-one to the resume sentences in the UX
+  document; adding a value requires adding its sentence in the same change.
+
+#### 18.12.6 Compact summaries for list and board surfaces
+
+Board rows and the properties panel need bounded, batchable data. Existing issue
+and heartbeat-run responses gain:
+
+```ts
+interface IssueStatusAuthoritySummary {
+  schema: "paperclip.issue-status-authority-summary.v1";
+  reportedWorkDisposition: ReportedWorkDisposition | null;
+  latestDecision: {
+    id: string;
+    reasonCode: StatusDecisionReasonCode;
+    toStatus: AuthoritativeIssueStatus;
+    transitionApplied: boolean;
+    decidedAt: string;
+    disagreesWithClaim: boolean;
+  } | null;
+  waitingOn: {
+    kind: "attention" | "review" | "approval" | "blocker" | "monitor" | "delegated_issue";
+    owner: { kind: "agent" | "user" | "system"; ref: string; displayName: string };
+    since: string;
+  } | null;
+  boardAttention: { pending: boolean; viewerIsResolver: boolean; ownerDisplayName: string | null };
+  reconciliationPending: boolean;
+  native: boolean;
+}
+
+interface HeartbeatRunNativeSummary {
+  schema: "paperclip.heartbeat-run-native-summary.v1";
+  outcome: NativeOutcomeLayers;
+  finalizationPhase: RunFinalizationView["phase"] | null;
+  latestDecisionId: string | null;
+}
+```
+
+The issues-board list route returns exactly the two chip conditions of the UX
+document — `boardAttention` and `reconciliationPending` — plus `latestDecision`
+and `waitingOn`. It adds no column and no per-row fan-out: summaries are
+produced by one batched join on `issues.last_status_decision_id` and one grouped
+query over `attention_requests` using the
+`(company_id, issue_id, state, selected_route)` index. `boardAttention` is
+viewer-scoped, which is what lets one chip slot render "Needs you" for the
+resolver and "Needs {name}" for everyone else.
+
+#### 18.12.7 Read routes, authorization, and redaction
+
+Section 18.11 lists three read routes. The attention surface needs a fourth,
+without which the approved `AttentionRequestCard` has no source.
+
+| Route | Returns | Ordering and limits |
+|---|---|---|
+| `GET /api/issues/:issueId/status-decisions` | `{ asOf, decisions: StatusDecisionView[], nextCursor }` | `decision_version` descending, default limit 20, maximum 100. Supports `runId` and `includeSuperseded` filters. |
+| `GET /api/issues/:issueId/completion-contracts/current` and `/completion-contracts` | Current revision summary and revision history with criteria, gates, authority, and risk | History descending by revision, default limit 20. |
+| `GET /api/heartbeat-runs/:runId/finalization` | `{ asOf, finalization: RunFinalizationView }` | Single record. `404` when the run is legacy or has no coordinator row. |
+| `GET /api/issues/:issueId/attention-requests` **(new)** | `{ asOf, requests: AttentionRequestView[], nextCursor }` | Pending/routed first, then `created_at` descending. Default limit 25, maximum 100. Filters: `state`, `route`, `runId`. Suppressed duplicates are excluded as top-level rows. |
+| `GET /api/issues/:issueId/attention-requests/:requestId` **(new)** | `{ asOf, request: AttentionRequestView }` | Deep-link target for inbox rows and activity references. |
+
+Envelope and authorization rules:
+
+- Every response carries `asOf` (server RFC 3339, millisecond precision). All
+  countdowns and relative times derive from it `[OPX-9]`.
+- Company is derived from the parent issue/run binding. Cross-company,
+  hidden-resource, and unknown-ID requests return one generic not-found with no
+  timing or body differences `[OPX-8]`.
+- These are read models only. No route accepts a status, reason code, policy
+  version, resolver, or authority field; there is no public arbiter-application
+  endpoint, and agent API keys cannot reach one (section 18.11).
+- Responding to a board-routed attention request continues to use the existing
+  interaction/approval mutation identified by `response.interaction`. Phase 4
+  adds no new mutation surface.
+
+Redaction is a whitelist, not a filter:
+
+| Never returned | Returned instead |
+|---|---|
+| Secret material, credential values, tool arguments | An authorized binding reference and its display name |
+| Raw evidence payloads, command output, file contents | `EvidenceRefView` with description, status, and a company-scoped link |
+| Request/equivalence fingerprints, input digests, canonical serializations | `decisionId`, `decisionVersion`, `policyVersion`, `completionContractRevision` for the audit footer |
+| Cross-company agents, users, issues, integrations | Nothing; the reference is omitted and the parent read still succeeds |
+| Raw exception text and stack traces | `failureCode` plus a redacted `failureSummary` ≤ 240 characters |
+| Resolver inventory, capability scores, routing internals | The selected resolver and the attempt history only |
+
+#### 18.12.8 Live updates and cache invalidation
+
+Native surfaces reuse the existing live-update provider (section 23.2) and add
+no polling. Published payloads carry identifiers and reason codes only, never
+evidence or payload bodies (section 18.11).
+
+| Event | Carries | Invalidates |
+|---|---|---|
+| `status_decision.committed` | `issueId`, `decisionId`, `reasonCode`, `toStatus`, `transitionApplied` | Issue detail, issue list row, `status-decisions`, run finalization |
+| `status_decision.superseded` | `issueId`, `decisionId`, `supersededByDecisionId` | `status-decisions` |
+| `native_finalization.updated` | `runId`, `issueId`, `phase`, `failureCode` | Run finalization, issue list row |
+| `attention_request.updated` | `issueId`, `requestId`, `state`, `route`, `version` | `attention-requests`, attention inbox, issue list row |
+| `attention_request.suppressed` | `issueId`, `canonicalRequestId`, `suppressedCount` | Canonical request only. Emits no notification and creates no inbox row `[OPX-5]` |
+
+Query keys are `["issue", issueId, "status-decisions"]`,
+`["issue", issueId, "attention-requests"]`, and
+`["run", runId, "finalization"]`. A resolved attention response patches the
+existing shared interaction card in place (section 23.2 `[UX-5]`) rather than
+appending a second card.
+
+#### 18.12.9 Client derivation rules
+
+These are pure functions in `ui/src/lib/native-status/`, unit-tested
+independently of rendering. They are the entire licensed surface for turning
+codes into language.
+
+| Function | Rule |
+|---|---|
+| `decisionVerb(view)` | `transitionApplied ? "Moved to " + statusLabel(toStatus) : "Kept " + statusLabel(fromStatus)`. No other verb form is permitted. |
+| `reasonCopy(reasonCode)` | Lookup in `STATUS_DECISION_REASON_COPY`, a total map over the section 18.3 enum. Unknown code returns `{ text: "Decision recorded — open details", tone: "preserved" }` and the audit footer shows the raw code. Never blank, never a guessed tone. |
+| `decisionTone(reasonCode)` | Lookup in the decision tone map of the UX document §5 item 1 (`accepted`, `review`, `progress`, `downgraded`, `recovery`, `preserved`, `blocked`). Tone is a function of the reason code only — never of the model report, the run outcome, or free text. |
+| `toneGlyph(tone)` | Total map to distinct lucide glyphs so no tone is color-only `[OPX-10]`. |
+| `claimLabel(claim)` | `"{displayName} reported {disposition}"`, past tense, plus relative time from `asOf`. Returns null when `claim` is null. Banned-string lint applies `[OPX-2]`. |
+| `livePathSentence(path)` | `"{ownerDisplayName} owns the next move"` specialized per `kind`, always with the target link. Called only when `livePathIntegrity !== "missing"` `[OPX-3]`. |
+| `resumeSentence(view)` | Total map over `response.resumeBinding` to the UX document's resume lines, interpolating `resumeSubject.displayName`. A missing subject falls back to the role noun, never to "someone" `[OPX-4]`. |
+| `expiryTone(expiry, totalWindowMs)` | Neutral above 25% remaining; amber below; expired renders inert text plus a clock glyph. Uses `remainingMs` from the envelope `[OPX-9]`. |
+| `authorityCorrection(authority)` | Renders `asked: {requested} → resolved as: {minimum}` only when `corrected`; otherwise renders `minimum` alone. |
+| `scopeCorrection(scope)` | Renders the struck requested scope and the effective scope only when `narrowed`, with the alternate track link when present. |
+| `attentionChip(summary)` | `viewerIsResolver ? "Needs you" : "Needs " + ownerDisplayName`. Suppressed duplicates and non-board routes return null. |
+
+A reason code added to the protocol enum without a `STATUS_DECISION_REASON_COPY`
+row fails the totality test in section 18.12.13; this is the mechanism behind
+the UX document's rule that new reason codes cannot reach a UI surface
+uncaptioned.
+
+#### 18.12.10 Component data contracts and surface map
+
+Components live under `ui/src/components/native-status/`, refining the UX
+document's `ui/src/components/` placement to match the section 23.1 convention.
+Each is registered in `/design-guide`.
+
+| Component | File | Source | Required fields | Notes |
+|---|---|---|---|---|
+| `OutcomeChipRow` | `native-status/OutcomeChipRow.tsx` | `NativeOutcomeLayers` | `turnTerminalState`, `runTerminalState`, `claim.reportedWorkDisposition`, `claim.claimedBy`, `status.current` | Renders all four layers unexpanded `[OPX-1]`. Run/turn failure uses red text, never a red fill. |
+| `StatusDecisionCard` | `native-status/StatusDecisionCard.tsx` | `StatusDecisionView` | all of §18.12.4 | Collapsed row + expanded claim/decision strip, criterion table, live paths, audit footer. |
+| `AttentionRequestCard` | `native-status/AttentionRequestCard.tsx` | `AttentionRequestView` | all of §18.12.5 | Response control renders only when `canRespondInline`. |
+| `FinalizationErrorCard` | `native-status/FinalizationErrorCard.tsx` | `RunFinalizationView` | `phase`, `failureCode`, `retry`, `recoveryOwner`, `outcome.claim`, `issueStatusUnchanged` | Recovery tone; claim stays visible `[OPX-6]`. |
+| `ClaimChip` | `native-status/ClaimChip.tsx` | `NativeOutcomeLayers["claim"]` | disposition, attribution, time | The named "claim chip" pattern; reused anywhere a model asserts an unverified value. |
+| `IssueRunLedger` (extend) | existing | `HeartbeatRunNativeSummary` | `outcome`, `latestDecisionId` | Native runs gain the chip row and nested decision card; `native: false` renders exactly as today. |
+| `AttentionQueueRow` (extend) | existing | `AttentionRequestView` | owner, authority, expiry, `canRespondInline` | New source kind for board-routed pending requests only. |
+| `IssueDetail` properties panel (extend) | existing | `IssueStatusAuthoritySummary` | `latestDecision`, `waitingOn` | Two rows: "Decision" and "Waiting on". No new panel. |
+| Issues board row (extend) | existing | `IssueStatusAuthoritySummary` | `boardAttention`, `reconciliationPending` | One secondary chip slot, two conditions, no new column. |
+
+`AttentionInteractionResolver` and `DecisionTriageStrip` are reused unchanged;
+Phase 4 adds no second resolver implementation (section 23.2 `[UX-5]`).
+
+#### 18.12.11 Requirement coverage matrix
+
+Every requirement of the approved UX document maps to a field and a component.
+This matrix is the structural gate for implementation handoff.
+
+| UX requirement | Read-model field(s) | Component | Gate |
+|---|---|---|---|
+| Turn outcome distinct from status | `outcome.turnTerminalState` | `OutcomeChipRow` | OPX-F1 |
+| Run outcome distinct from status | `outcome.runTerminalState` | `OutcomeChipRow` | OPX-F1 |
+| Agent claim distinct and attributed | `outcome.claim.reportedWorkDisposition`, `claim.claimedBy`, `claim.reportedAt` | `ClaimChip` | OPX-F1, OPX-F7 |
+| Authoritative status unchanged in meaning | `outcome.status.current` | existing `StatusBadge` | OPX-F1 |
+| Decision verb and reason sentence | `transitionApplied`, `fromStatus`, `toStatus`, `reasonCode` | `StatusDecisionCard` | OPX-F2 |
+| Claim-vs-decision strip on disagreement | `outcome.claim`, `toStatus`, `reasonCode` | `StatusDecisionCard` | OPX-F2 |
+| Criterion table with classifications | `criterionAssessments[]` | `StatusDecisionCard` | OPX-F2 |
+| Evidence gaps | `missingRequirements`, `criterionAssessments[].outcome`, `EvidenceRefView.claimOnly` | `StatusDecisionCard` | OPX-F2 |
+| Pending governed actions | `pendingGovernedActions[]` | `StatusDecisionCard` | OPX-F2 |
+| "What happens next" side effects as links | `livePaths[]`, `sideEffects[]` | `StatusDecisionCard` | OPX-F2, OPX-F6 |
+| Audit footer and supersession chain | `audit`, `supersession` | `StatusDecisionCard` | OPX-F2 |
+| Attention owner | `resolver`, `route` | `AttentionRequestCard` | OPX-F3 |
+| Attention authority incl. correction | `authority.minimum`, `authority.requested`, `authority.corrected` | `AttentionRequestCard` | OPX-F3, OPX-F4 |
+| Attention scope incl. narrowing | `scope.*` | `AttentionRequestCard` | OPX-F3 |
+| Attempts and budget position | `attempts.used`, `attempts.limit`, `attempts.history[]` | `AttentionRequestCard` | OPX-F3, OPX-F4 |
+| Expiry countdown and expired state | `expiry.*`, envelope `asOf` | `AttentionRequestCard` | OPX-F3, OPX-F8 |
+| Deduplication state | `duplicates.suppressedCount`, `duplicates.recent[]` | `AttentionRequestCard` | OPX-F5 |
+| Resolver route determines affordances | `response.canRespondInline`, `route` | `AttentionRequestCard` | OPX-F4 |
+| Exact continuation action | `response.resumeBinding`, `response.resumeSubject` | `AttentionRequestCard` | OPX-F3 |
+| Delegated issue link | `delegatedIssue` | `AttentionRequestCard` | OPX-F4 |
+| Reconciliation/finalization error | `RunFinalizationView.*` | `FinalizationErrorCard` | OPX-F6 |
+| Status unchanged during error | `issueStatusUnchanged`, `outcome.status.current` | `FinalizationErrorCard` | OPX-F6 |
+| Recovery owner and retry position | `recoveryOwner`, `retry.*` | `FinalizationErrorCard` | OPX-F6 |
+| Board `Needs you` chip | `boardAttention.*` | issues board row | OPX-F3, OPX-F5 |
+| Board `Reconciliation` chip | `reconciliationPending` | issues board row | OPX-F6 |
+| Properties "Decision" and "Waiting on" | `latestDecision`, `waitingOn` | `IssueDetail` | OPX-F2, OPX-F3 |
+| Legacy runs unchanged | `native: false` | `IssueRunLedger` | OPX-F9 |
+| Reason-code copy completeness | `STATUS_DECISION_REASON_COPY` | derivation layer | OPX-F7 |
+| Company scoping | route authorization | all | OPX-F10 |
+| Token and accessibility rules | none (styling) | all | OPX-F11 |
+
+#### 18.12.12 Degraded, legacy, and error states
+
+The failure mode this phase exists to prevent is a UI that invents a state. Each
+row below is a required rendering, not a suggestion.
+
+| Condition | Renders | Must not |
+|---|---|---|
+| Read route loading | Skeleton in the card slot; the authoritative `StatusBadge` renders immediately from the issue record | Block the status badge behind decision data |
+| Read route fails | Inline "Decision details unavailable — retry" with a retry control | Imply `blocked`, `in_review`, or completion; hide the claim |
+| Legacy run (`native: false`) | Today's ledger rendering, unchanged | Add chips, decision cards, or attention cards |
+| Native run, no decision yet | Chip row with the layers that exist; "Decision pending finalization" | Show a decision that has not committed |
+| Unknown reason code | Generic caption, `preserved` tone, raw code in the audit footer | Blank text or a guessed tone |
+| `livePathIntegrity: "missing"` | Recovery treatment naming the recovery owner and the operational alert | A waiting state with no owner `[OPX-3]` |
+| Attention expired | Inert card, "expired unanswered · one fallback wake sent" | Any active response control |
+| Attention exhausted | Card with full attempt history and the recovery owner | A synthesized human ask or a `blocked` chip `[OPX-6]` |
+| Board-routed request owned by another person | Read-only card, "Waiting on {name}" | A response control for a non-resolver `[OPX-5]` |
+| Agent- or external-routed request | Read-only card with the delegated target | Any human affordance `[OPX-5]` |
+| Suppressed duplicate | One collapsed link row under the canonical card | A second card, inbox row, or notification `[OPX-5]` |
+| Superseded decision | Collapsed, with links in both directions of the chain | Deletion or silent replacement |
+| Cross-company or hidden reference | Reference omitted; parent view still renders | A broken link or a disclosing error |
+| Board user overrides status manually | New superseding decision card with `trigger.kind: "board_user"`; prior card shows the chain | Presenting the override as the arbiter's own conclusion |
+
+#### 18.12.13 Phase 4 verification gates
+
+Fixtures are table-driven against the production components and the shared
+query cache; static mockups do not satisfy any gate (section 23.10).
+
+| Gate | Coverage | Non-negotiable assertion |
+|---|---|---|
+| OPX-F1 — layer separation | Every row of the section 18.5 terminal conversion table rendered through `OutcomeChipRow` | All four layers are present and separately labeled in the unexpanded DOM; the claim node never carries a status-fill class `[OPX-1] [OPX-2]` |
+| OPX-F2 — decision rendering | One fixture per `StatusDecisionReasonCode` | Correct verb, caption, tone, glyph, criterion rows, audit footer; disagreement fixtures render the claim-vs-decision strip |
+| OPX-F3 — attention completeness | Board-routed pending request | Owner, authority, scope, attempts, expiry, duplicates, and resume sentence all appear above the response control in DOM order `[OPX-4]` |
+| OPX-F4 — route affordances | `context`, `retry`, `agent`, `board`, `external`, `recovery` routes; board request owned by another user; authority-corrected request | Only the eligible board case exposes a response control; the correction pattern renders exactly when `corrected` `[OPX-5]` |
+| OPX-F5 — duplicate suppression | Canonical request plus repeated and reworded duplicates | Exactly one card, one inbox row, zero notifications, incremented visible counter `[OPX-5]` |
+| OPX-F6 — error truthfulness | `finalization_failed_claim_preserved`, `result_schema_rejected`, `attention_budget_exhausted`, `prior_status_preserved_no_live_path`, `livePathIntegrity: "missing"` | Status badge value is unchanged from the fixture's prior status; claim still visible; recovery owner and retry position named; no `blocked` or `in_review` node `[OPX-6]` |
+| OPX-F7 — copy law | Static scan of `ui/src/**` copy constants, fixtures, and rendered fixture DOM | Zero matches for `/agent (succeeded\|failed\|completed)/i`; `STATUS_DECISION_REASON_COPY` is total over the protocol enum; every entry ≤ 70 characters and contains no agent name `[OPX-2] [OPX-7]` |
+| OPX-F8 — clock independence | Fixture with client clock skewed ±6 hours | Countdown and relative times match the envelope `asOf`, not the client clock `[OPX-9]` |
+| OPX-F9 — legacy compatibility | Legacy run in the same ledger as a native run | Legacy row DOM is byte-identical to the pre-change snapshot |
+| OPX-F10 — company scoping | Cross-company issue, run, decision, and attention IDs | One generic not-found for each; no identifier, name, or timing disclosure `[OPX-8]` |
+| OPX-F11 — token and accessibility gate | `pnpm check:tokens`, `pnpm check:token-gates`, axe pass over all new components at 1440×900 | No new raw color/spacing/shadow values; every tone has a distinct glyph; AA contrast in light and dark; reduced-motion has no pulse `[OPX-10]` |
+
+Ahead of any implementation, `pnpm check:runner-phase4-spec` is the standing
+structural gate over the two documents themselves. It proves reason-code copy
+totality, read-model coverage of every operator field, gate reachability from
+the coverage matrix, invariant enforcement, route agreement between sections
+18.11 and 18.12, backing persistence for the attention read model, and the
+copy law of `[OPX-2]`. A new reason code, component field, or gate that breaks
+any of those relationships fails the check before it can reach a UI surface.
+
+Screenshot matrix (adds to section 23.10, all at 1440×900 desktop; mobile is
+deferred by the source ticket): flows A–E of the UX document, the board row with
+each chip, the properties panel rows, the legacy-run ledger, the expired and
+exhausted attention states, and the superseded-decision chain. The artifact
+index names the fixture, the flow, the reason code, the route, and the gate it
+satisfies.
+
+Section 27.6 gains these UI cases: layered outcome rendering, decision card per
+reason code, criterion table classification, attention card completeness, route
+affordance matrix, duplicate suppression, finalization error truthfulness,
+unknown reason code fallback, clock-skew countdown, legacy fallback, and
+keyboard operation of the response control.
 
 ---
 

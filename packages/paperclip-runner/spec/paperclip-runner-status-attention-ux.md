@@ -2,6 +2,7 @@
 
 **Document status:** Approved Phase 4 UX input (PAP-16712, approved by the board 2026-08-07)<br>
 **Relationship to the spike specification:** [`paperclip-native-runner-spike-spec.md`](./paperclip-native-runner-spike-spec.md) §18.3–§18.11 remains the normative status-authority, arbitration, and attention-resolution contract. This document is the normative operator-facing presentation of that contract: vocabulary, components, board flows, copy, and token mapping. Phase 4 data contracts (spec §18.11) MUST satisfy the read requirements here; UI implementation tasks consume this document directly.<br>
+**Phase 4 binding:** spec §18.12 (PAP-16713) is the contract that joins the two documents — view types, read routes, client derivation rules, component data contracts, and the `OPX-1…OPX-10` presentation invariants with their `OPX-F1…OPX-F11` release gates. Every requirement in this document appears as a row in the §18.12.11 coverage matrix with its backing field, component, and gate. Implementation reads both documents; a requirement here with no §18.12 field is a spec bug, not an implementation decision.<br>
 **Scope:** desktop board (1440×900) — task page, issues board, attention inbox. Mobile is deferred by the source ticket.<br>
 **Mockups:** six flow screenshots and one inspectable single-file HTML mockup (per-flow rendering via `?only=a|b|c|d|e|board`) are attached to PAP-16712.
 
