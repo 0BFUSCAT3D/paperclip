@@ -823,7 +823,9 @@ export class VitestInvocationSupervisor {
     if (this.cgroupPath) {
       await fs.rmdir(this.cgroupPath).catch(() => undefined);
     }
-    if (!guardianArmed) await fs.rm(this.registryPath, { force: true });
+    if (!guardianArmed && !invariantFailureReason) {
+      await fs.rm(this.registryPath, { force: true });
+    }
     const cleanupDurationMs = Date.now() - cleanupStarted;
     structuredRecord({
       event: "vitest_invocation_cleanup",

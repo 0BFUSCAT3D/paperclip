@@ -228,6 +228,28 @@ test("active cwd guard prevents premature root deletion", { skip: process.platfo
   assert.equal(cleanup.removed, true);
 });
 
+test("an invariant failure without a guardian keeps its recovery record", { skip: process.platform !== "linux" }, async (t) => {
+  const parent = await withTempParent(t);
+  const run = supervisor(parent, "unguarded-cwd-reference");
+  await run.initialize();
+  await run.stopGuardian();
+  const holder = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+    cwd: run.root,
+    stdio: "ignore",
+  });
+  t.after(() => holder.kill("SIGKILL"));
+  await waitFor(async () => (await findRootReferences(run.root)).some((reference) => reference.pid === holder.pid));
+  await assert.rejects(run.cleanup(), /active_root_reference/);
+  await fs.access(run.registryPath);
+  const report = await diagnoseStableInvocations({ env: { PAPERCLIP_TEST_TMPDIR: parent } });
+  assert.ok(report.invocations.some((invocation) => invocation.invocationId === run.invocationId));
+  holder.kill("SIGKILL");
+  await new Promise((resolve) => holder.once("close", resolve));
+  const cleanup = await run.cleanup();
+  assert.equal(cleanup.removed, true);
+  await assert.rejects(fs.access(run.registryPath));
+});
+
 test("cleanup waits for transient root references to drain", { skip: process.platform !== "linux" }, async (t) => {
   const parent = await withTempParent(t);
   const run = supervisor(parent, "transient-cwd-reference", { graceMs: 1_000 });
