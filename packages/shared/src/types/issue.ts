@@ -1072,6 +1072,14 @@ export interface AskUserQuestionsQuestionOption {
   id: string;
   label: string;
   description?: string | null;
+  /**
+   * When true, selecting this option reveals an inline free-text field instead
+   * of acting as an inert choice. The typed answer is submitted as the
+   * question's `otherText`. Author at most one free-text option per question and
+   * do not add dead "I'll describe it" options that only duplicate the built-in
+   * free-text affordance.
+   */
+  freeText?: boolean;
 }
 
 export interface AskUserQuestionsQuestion {

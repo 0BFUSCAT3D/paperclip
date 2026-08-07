@@ -56,6 +56,7 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
@@ -164,6 +165,10 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  buildOnboardingGreeting,
+  ONBOARDING_GREETING_AUTHORIZATION_REASON,
+} from "../services/onboarding-greeting.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
@@ -7520,7 +7525,30 @@ export function issueRoutes(
       surface: "issues.create",
     });
     if (!sanitizedBody) return;
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
+    const {
+      watchdogDiscovery: rawWatchdogDiscovery,
+      onboardingFirstTask: rawOnboardingFirstTask,
+      ...rawCreateBody
+    } = sanitizedBody;
+    // The onboarding first-task marker grants privileged, server-owned behavior:
+    // it stamps the onboarding origin (which suppresses the seeded description in
+    // the UI) and seeds a comment authored *as the assigned agent*. Honor it only
+    // when the request is genuinely the onboarding wizard creating a company's
+    // very first task, verified server-side so a client marker alone cannot
+    // trigger it:
+    //   1. the caller is a human board/user session (the wizard never runs as an
+    //      agent), and
+    //   2. the company has no existing issues yet — i.e. this really is the first
+    //      task. An established company creating an ordinary issue can never reach
+    //      the greeting/description-suppression path, so no board caller can
+    //      fabricate a statement attributed to an assigned agent on a normal task.
+    // Fails closed: if it is not verifiably the first task, the flag is ignored
+    // and an ordinary issue is created.
+    const onboardingFirstTaskRequested =
+      rawOnboardingFirstTask === true && req.actor.type === "board";
+    const isOnboardingFirstTask = onboardingFirstTaskRequested
+      ? (await svc.count(companyId)) === 0
+      : false;
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
@@ -7574,6 +7602,9 @@ export function issueRoutes(
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
+        : {}),
+      ...(isOnboardingFirstTask && !watchdogProductBugFollowUp
+        ? { originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }
         : {}),
       ...(watchdogProductBugFollowUp
         ? {
@@ -7742,6 +7773,39 @@ export function issueRoutes(
           source: "issue.create",
         },
       });
+    }
+
+    // Seed the onboarding first-task greeting as an agent-authored comment so the
+    // user lands on a waiting greeting (instead of a right-aligned "user" bubble
+    // showing the seeded description). Deterministic template — no LLM call — and
+    // best-effort: a greeting failure must not fail issue creation.
+    if (isOnboardingFirstTask && issue.assigneeAgentId) {
+      try {
+        const [company, goal, assigneeAgent] = await Promise.all([
+          companiesSvc.getById(companyId),
+          createBody.goalId ? goalsSvc.getById(createBody.goalId) : Promise.resolve(null),
+          agentsSvc.getById(issue.assigneeAgentId),
+        ]);
+        const greetingBody = buildOnboardingGreeting({
+          agentName: assigneeAgent?.name ?? null,
+          teamName: company?.name ?? null,
+          goals: goal?.description ?? goal?.title ?? null,
+        });
+        await svc.addComment(
+          issue.id,
+          greetingBody,
+          { agentId: issue.assigneeAgentId },
+          {
+            authorType: "agent",
+            authorizationReason: ONBOARDING_GREETING_AUTHORIZATION_REASON,
+          },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, companyId },
+          "failed to seed onboarding first-task greeting",
+        );
+      }
     }
 
     void queueIssueAssignmentWakeup({

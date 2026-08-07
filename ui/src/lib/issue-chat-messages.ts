@@ -13,6 +13,7 @@ import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
+  isDegenerateAskUserQuestions,
   type IssueThreadInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
@@ -1086,6 +1087,11 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const interaction of sortByCreated(interactions)) {
+    // A degenerate `ask_user_questions` card (e.g. the onboarding `Test / A`
+    // placeholder) is never rendered by IssueThreadInteractionCard — skip it here
+    // so it leaves no empty message slot in the thread (PAP-424, plan from
+    // PAP-420).
+    if (isDegenerateAskUserQuestions(interaction)) continue;
     const createdAtMs = toTimestamp(interaction.createdAt);
     const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
       ? latestSameRunHandoffTimestamp({

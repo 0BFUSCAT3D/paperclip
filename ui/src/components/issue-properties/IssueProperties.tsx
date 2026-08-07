@@ -205,6 +205,20 @@ export function IssueProperties({
   const hasPlanTab = Boolean(paneTabPlanDocument) || (paneTabAcceptedPlans?.length ?? 0) > 0;
   const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
   const [paneTab, setPaneTab] = useState("properties");
+  // Once a plan document exists, surface it: switch the pane to the Plan tab so
+  // the write-up is exposed alongside the plan-approval card, instead of leaving
+  // the user on Properties. Only auto-switch until the user picks a tab by hand —
+  // after that their choice wins. Ref-guarded so it fires once per mount.
+  const paneTabUserChosenRef = useRef(false);
+  const handlePaneTabChange = useCallback((value: string) => {
+    paneTabUserChosenRef.current = true;
+    setPaneTab(value);
+  }, []);
+  useEffect(() => {
+    if (hasPlanTab && !paneTabUserChosenRef.current) {
+      setPaneTab("plans");
+    }
+  }, [hasPlanTab]);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -2544,7 +2558,7 @@ export function IssueProperties({
     </TabsList>
   );
   return (
-    <Tabs value={activePaneTab} onValueChange={setPaneTab} className="flex min-h-0 flex-col gap-3">
+    <Tabs value={activePaneTab} onValueChange={handlePaneTabChange} className="flex min-h-0 flex-col gap-3">
       {paneHeaderSlot
         ? createPortal(
             // Portals keep React context but break the DOM tree the Tailwind

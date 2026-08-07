@@ -19,9 +19,17 @@ import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescri
 import type {
   TaskChatInteractionItem,
   TaskChatItem,
+  TaskChatMessageItem,
   TaskChatTurnItem,
 } from "@/components/task-chat/task-chat-model";
 import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
+import {
+  interactionThreadAnchorMs,
+  isSuppressedThreadInteraction,
+} from "@/components/task-chat/interaction-thread-order";
+import { isDegenerateAskUserQuestions } from "@/lib/issue-thread-interactions";
+import { TaskChatBubbleActions } from "@/components/task-chat/TaskChatBubbleActions";
+import type { FeedbackVoteValue } from "@paperclipai/shared";
 import { TaskChatThreadView, taskChatContentKey } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
@@ -108,6 +116,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     threadHeader,
     workModeChanges,
     issueBrief,
+    feedbackVotes,
+    feedbackDataSharingPreference = "prompt",
+    feedbackTermsUrl = null,
+    onVote,
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -219,6 +231,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       entries.push({ ms: toMs(comment.createdAt), order: 1, id: item.id, item });
     });
     for (const interaction of interactions ?? []) {
+      // Withdrawn/superseded confirmations are retracted calls to action — drop
+      // them so a dead card never stacks above the one that replaced it
+      // (PAP-416).
+      if (isSuppressedThreadInteraction(interaction)) continue;
+      // A degenerate `ask_user_questions` card (e.g. the onboarding `Test / A`
+      // placeholder) is never rendered — filter it here so it leaves no empty
+      // slot or gap in the ordered backbone (PAP-424, plan from PAP-420).
+      if (isDegenerateAskUserQuestions(interaction)) continue;
       const createdAtMs = toMs(interaction.createdAt);
       const handoffAtMs =
         interaction.kind === "request_confirmation" && interaction.sourceRunId
@@ -233,7 +253,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : null;
       const id = `interaction:${interaction.id}`;
       entries.push({
-        ms: handoffAtMs ?? createdAtMs,
+        // A resolved card settles at its resolution time so it never reads
+        // above a message written before the user answered (PAP-416); pending
+        // cards keep the request-time (handoff/createdAt) slot.
+        ms: interactionThreadAnchorMs(interaction, handoffAtMs ?? createdAtMs),
         order: 2,
         id,
         item: { id, kind: "interaction", interaction },
@@ -388,6 +411,43 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     );
   }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun, hasBrief]);
 
+  // Feedback votes keyed by the comment they target (targetType
+  // "issue_comment"), mirroring IssueChatThread — the redesign attaches the
+  // 👍/👎 state to each agent bubble by its comment id (PAP-413).
+  const feedbackVoteByTargetId = useMemo(() => {
+    const map = new Map<string, FeedbackVoteValue>();
+    for (const feedbackVote of feedbackVotes ?? []) {
+      if (feedbackVote.targetType !== "issue_comment") continue;
+      map.set(feedbackVote.targetId, feedbackVote.vote);
+    }
+    return map;
+  }, [feedbackVotes]);
+
+  // copy · 👍 · 👎 cluster for an agent bubble's footer line (PAP-413). Human
+  // and system bubbles get nothing; copy is always available, and the feedback
+  // buttons render only when the host wired a vote handler.
+  const renderMessageActions = useCallback(
+    (item: TaskChatMessageItem) => {
+      if (item.author !== "agent" || item.optimistic) return null;
+      return (
+        <TaskChatBubbleActions
+          copyText={item.text}
+          feedback={
+            onVote
+              ? {
+                  activeVote: feedbackVoteByTargetId.get(item.id) ?? null,
+                  sharingPreference: feedbackDataSharingPreference,
+                  termsUrl: feedbackTermsUrl,
+                  onVote: (vote, options) => onVote(item.id, vote, options),
+                }
+              : null
+          }
+        />
+      );
+    },
+    [onVote, feedbackVoteByTargetId, feedbackDataSharingPreference, feedbackTermsUrl],
+  );
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
@@ -450,6 +510,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             header={threadHeader}
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
+            renderMessageActions={renderMessageActions}
             scroll={!isMobile}
           />
         )}

@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, Issue, IssueAttachment, IssueComment, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
@@ -39,6 +40,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
+  getDocument: vi.fn(),
 }));
 
 const mockActivityApi = vi.hoisted(() => ({
@@ -1029,6 +1031,9 @@ describe("IssueDetail", () => {
       enableExternalObjects: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
+    mockIssuesApi.getDocument.mockResolvedValue(null);
+    mockOpenPanel.mockClear();
+    mockClosePanel.mockClear();
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
@@ -1652,6 +1657,83 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("2 of 2 child tasks created");
     expect(container.textContent).toContain("First child issue");
     expect(mockIssuesApi.listAcceptedPlanDecompositions).toHaveBeenCalledWith("issue-1");
+  });
+
+  it("hides the properties sidebar on the first onboarding task until a plan document exists", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableTaskChatRedesign: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
+    );
+    // No plan yet: the hook's 404 resolves to null.
+    mockIssuesApi.getDocument.mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await flushReact();
+    await flushReact();
+
+    // Panel content is withheld — openPanel is never invoked, so the sidebar
+    // stays hidden without touching the persisted panelVisible preference.
+    expect(mockOpenPanel).not.toHaveBeenCalled();
+    expect(mockClosePanel).toHaveBeenCalled();
+  });
+
+  it("reveals the properties sidebar on the first onboarding task once a plan document exists", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableTaskChatRedesign: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND }),
+    );
+    mockIssuesApi.getDocument.mockResolvedValue({ id: "doc-1", key: "plan" });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockOpenPanel).toHaveBeenCalled();
+    });
+  });
+
+  it("shows the properties sidebar immediately on a non-first task", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIssuePlanDecompositions: false,
+      enableExperimentalFileViewer: false,
+      enableExternalObjects: false,
+      enableTaskChatRedesign: true,
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ originKind: "manual" }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForAssertion(() => {
+      expect(mockOpenPanel).toHaveBeenCalled();
+    });
   });
 
   it("renders sibling previous and next navigation at the chat footer", async () => {
