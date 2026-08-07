@@ -328,6 +328,22 @@ function structuredRecord(record) {
   console.log(`[test:run] ${JSON.stringify(record)}`);
 }
 
+async function writeJsonAtomically(destination, value) {
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    try {
+      await fs.rename(temporary, destination);
+    } catch (error) {
+      if (process.platform !== "win32" || !["EEXIST", "EPERM"].includes(error?.code)) throw error;
+      await fs.rm(destination, { force: true });
+      await fs.rename(temporary, destination);
+    }
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
 async function retainWithinLimit(parent, limit) {
   const entries = await fs.readdir(parent, { withFileTypes: true }).catch(() => []);
   const retained = [];
@@ -503,7 +519,7 @@ export class VitestInvocationSupervisor {
       startedAt: new Date(this.startedAt).toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    await fs.writeFile(this.registryPath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+    await writeJsonAtomically(this.registryPath, record);
   }
 
   async ownedProcesses() {
@@ -751,7 +767,14 @@ export async function diagnoseStableInvocations({ env = process.env } = {}) {
   const entries = await fs.readdir(registryDir).catch(() => []);
   const invocations = [];
   for (const entry of entries.filter((name) => name.endsWith(".json")).sort()) {
-    const record = JSON.parse(await fs.readFile(path.join(registryDir, entry), "utf8").catch(() => "null"));
+    const raw = await fs.readFile(path.join(registryDir, entry), "utf8").catch(() => "null");
+    let record = null;
+    try {
+      record = JSON.parse(raw);
+    } catch {
+      // Ignore records created by older/non-atomic writers while they are incomplete.
+      continue;
+    }
     if (!record?.invocationId) continue;
     const processes = await listTaggedProcesses(record.invocationId);
     const rootReferences = record.tempRoot

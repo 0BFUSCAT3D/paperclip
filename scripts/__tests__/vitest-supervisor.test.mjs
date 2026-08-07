@@ -242,12 +242,15 @@ test("diagnostics redact secret-bearing command arguments", { skip: process.plat
   const secret = "super-secret-token-value";
   const run = supervisor(parent, "redaction-check");
   const running = run.run(process.execPath, ["-e", "setInterval(()=>{},1000)", "--", "--token", secret]);
-  await waitFor(() => run.child?.pid);
-  const report = await diagnoseStableInvocations({ env: { PAPERCLIP_TEST_TMPDIR: parent } });
-  assert.equal(JSON.stringify(report).includes(secret), false);
-  run.requestStop("redaction_test_done");
-  await running;
-  await run.cleanup();
+  try {
+    await waitFor(() => run.child?.pid);
+    const report = await diagnoseStableInvocations({ env: { PAPERCLIP_TEST_TMPDIR: parent } });
+    assert.equal(JSON.stringify(report).includes(secret), false);
+  } finally {
+    run.requestStop("redaction_test_done");
+    await running;
+    await run.cleanup();
+  }
 });
 
 test("parent SIGTERM drains the active boundary and does not launch the next suite", { skip: process.platform !== "linux" }, async (t) => {
