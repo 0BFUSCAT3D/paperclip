@@ -128,6 +128,31 @@ afterEach(async () => {
 });
 
 describe("Phase 2 browser transport hardening", () => {
+  it("applies the same loopback and origin guards to Phase 3 recovery", async () => {
+    let recoveryCalls = 0;
+    const loadRecoveryRunner = async () => ({
+      async runPhase3Recovery() {
+        recoveryCalls += 1;
+        return { schema: "paperclip.runner.phase3.trace.v1" };
+      },
+    });
+    const { port } = await startServer({ loadRecoveryRunner });
+
+    const denied = await sendRequest(port, {
+      path: "/api/phase3/recovery",
+      origin: "https://attacker.example",
+      body: JSON.stringify({ fault: "lost-ack" }),
+    });
+    const accepted = await sendRequest(port, {
+      path: "/api/phase3/recovery",
+      body: JSON.stringify({ fault: "lost-ack" }),
+    });
+
+    expect(denied.status).toBe(403);
+    expect(accepted.status).toBe(200);
+    expect(recoveryCalls).toBe(1);
+  });
+
   it("denies cross-origin starts and applies the guard before route lookup", async () => {
     const runner = fakeRunner();
     const { port } = await startServer({ loadRunner: () => runner.load() });

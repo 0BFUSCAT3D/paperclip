@@ -342,6 +342,20 @@ select {
   border-block: 0.0625rem solid var(--border);
 }
 
+.recovery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding-block: var(--space-5);
+  border-block: 0.0625rem solid var(--border);
+}
+
+.diagnostic-note {
+  color: var(--muted-foreground);
+  font-size: var(--font-size-sm);
+}
+
 .snapshot-grid div {
   min-width: 0;
 }

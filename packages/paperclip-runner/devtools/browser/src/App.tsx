@@ -7,6 +7,7 @@ import type {
   Phase2RunTrace,
   Phase2Scenario,
 } from "../../../src/contracts/phase2";
+import type { Phase3RunTrace } from "../../../src/contracts/phase3";
 import {
   applyPhase2LiveEvent,
   createPhase2LiveSnapshot,
@@ -54,7 +55,7 @@ interface BrowserFixture {
   source: string;
 }
 
-type BrowserMode = "live" | "replay";
+type BrowserMode = "recovery" | "live" | "replay";
 type LiveStatus = "idle" | "starting" | "running" | "terminal" | "error";
 
 type Phase2StreamRecord =
@@ -87,6 +88,94 @@ function terminalTone(snapshot: SessionSnapshot) {
 function humanizeProtocolLabel(value: string): string {
   const words = value.replaceAll("_", " ");
   return words.length === 0 ? words : `${words[0]?.toUpperCase()}${words.slice(1)}`;
+}
+
+function RecoveryDiagnostics() {
+  const [trace, setTrace] = useState<Phase3RunTrace | null>(null);
+  const [status, setStatus] = useState<"idle" | "running" | "complete" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function runRecovery() {
+    setStatus("running");
+    setError(null);
+    try {
+      const response = await fetch("/api/phase3/recovery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fault: "lost-ack" }),
+      });
+      const result = (await response.json()) as Phase3RunTrace & { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "The recovery trace failed.");
+      setTrace(result);
+      setStatus("complete");
+    } catch (cause) {
+      setStatus("error");
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+
+  return (
+    <div className="workspace-grid recovery-workspace">
+      <Card aria-labelledby="recovery-title">
+        <CardHeader>
+          <CardTitle id="recovery-title">Break recovery on purpose</CardTitle>
+          <CardDescription>
+            Lose one ACK, drop the socket, restart the runner, and finish the same session.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="editor-content">
+          <Button type="button" disabled={status === "running"} onClick={() => void runRecovery()}>
+            {status === "running" ? "Running recovery…" : "Run Phase 3 recovery"}
+          </Button>
+          <div className="live-status" aria-live="polite">
+            <span>Recovery status</span>
+            <Badge tone={status === "error" ? "danger" : status === "complete" ? "success" : "neutral"}>
+              {status}
+            </Badge>
+          </div>
+          {error ? <div className="validation-errors" role="alert">{error}</div> : null}
+          <p className="diagnostic-note">
+            Diagnostics show IDs and counters only. Bootstrap tickets and lease tokens are hidden.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card aria-labelledby="recovery-state-title">
+        <CardHeader>
+          <CardTitle id="recovery-state-title">Recovery state</CardTitle>
+          <CardDescription>Inspect connection, lease, outbox, ACK, replay, storage, drain, and revoke state.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {trace === null ? (
+            <div className="empty-live-state"><p>Run the trace to collect recovery diagnostics.</p></div>
+          ) : (
+            <>
+              <dl className="recovery-grid" data-testid="phase3-diagnostics">
+                <div><dt>Connection</dt><dd>{trace.diagnostics.connection.state}</dd></div>
+                <div><dt>Lease</dt><dd>{trace.diagnostics.connection.leaseId ?? "closed"}</dd></div>
+                <div><dt>Outbox</dt><dd>{trace.diagnostics.outbox.events}</dd></div>
+                <div><dt>Last ACK</dt><dd>{trace.diagnostics.cursors.runnerAckedSourceSeq}</dd></div>
+                <div><dt>Replayed</dt><dd>{trace.diagnostics.recovery.replayDeliveries}</dd></div>
+                <div><dt>Duplicate commands</dt><dd>{trace.diagnostics.commands.duplicateDeliveries}</dd></div>
+                <div><dt>Storage</dt><dd>{trace.diagnostics.outbox.bytes} bytes</dd></div>
+                <div><dt>Peak storage</dt><dd>{trace.diagnostics.outbox.peakBytes} bytes</dd></div>
+                <div><dt>Drain or revoke</dt><dd>{trace.diagnostics.recovery.outcome}</dd></div>
+                <div><dt>Secrets</dt><dd>{trace.diagnostics.security.secretLeakCount} leaks</dd></div>
+              </dl>
+              <div className="parity-line">
+                <span>Same runner and session</span>
+                <Badge tone={trace.assertions.stableIdentity ? "success" : "danger"}>{trace.assertions.stableIdentity ? "Preserved" : "Changed"}</Badge>
+              </div>
+              <div className="parity-line">
+                <span>Secrets redacted</span>
+                <Badge tone={trace.assertions.secretsRedacted ? "success" : "danger"}>{trace.assertions.secretsRedacted ? "Yes" : "No"}</Badge>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
 }
 
 function liveStatusTone(status: LiveStatus, snapshot: SessionSnapshot | null) {
@@ -571,16 +660,23 @@ export function App() {
     <main className="app-shell">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Paperclip Runner Protocol · Phase 2</p>
-          <h1>Live local runner</h1>
+          <p className="eyebrow">Paperclip Runner Protocol · Phase 3</p>
+          <h1>Durable recovery diagnostics</h1>
           <p>
-            Run the Rust supervisor and fake harness, then compare the live state with replay.
+            Break the outbound transport, recover the same session, and inspect durable state.
           </p>
         </div>
         <Badge tone="neutral">Standalone · no Paperclip core</Badge>
       </header>
 
       <nav className="mode-switch" aria-label="Runner devtool mode">
+        <Button
+          type="button"
+          aria-pressed={mode === "recovery"}
+          onClick={() => setMode("recovery")}
+        >
+          Recovery
+        </Button>
         <Button
           type="button"
           aria-pressed={mode === "live"}
@@ -597,7 +693,7 @@ export function App() {
         </Button>
       </nav>
 
-      {mode === "live" ? <LiveRunner /> : <StaticReplay />}
+      {mode === "recovery" ? <RecoveryDiagnostics /> : mode === "live" ? <LiveRunner /> : <StaticReplay />}
     </main>
   );
 }

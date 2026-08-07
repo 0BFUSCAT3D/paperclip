@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 test("validates and renders the shared Phase 1 fixture", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Static replay" }).click();
-  await expect(page.getByRole("heading", { name: "Live local runner" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Durable recovery diagnostics" })).toBeVisible();
   await expect(page.getByTestId("terminal-badge")).toHaveText("Succeeded");
   await expect(page.getByTestId("timeline").getByRole("listitem")).toHaveCount(9);
   await expect(page.getByTestId("timeline")).not.toContainText("workspace_preparing");
@@ -14,6 +14,20 @@ test("validates and renders the shared Phase 1 fixture", async ({ page }, testIn
     path: testInfo.outputPath("phase-01-static-replay.png"),
     fullPage: true,
   });
+});
+
+test("shows Phase 3 recovery diagnostics without secrets", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Recovery", exact: true }).click();
+  await page.getByRole("button", { name: "Run Phase 3 recovery" }).click();
+  await expect(page.getByText("complete", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("phase3-diagnostics")).toContainText("Replayed");
+  await expect(page.getByTestId("phase3-diagnostics")).toContainText("Duplicate commands");
+  await expect(page.getByText("Preserved", { exact: true })).toBeVisible();
+  await expect(page.getByText("Yes", { exact: true })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("leaseToken");
+  await expect(page.locator("body")).not.toContainText("bootstrapTicket");
+  await page.screenshot({ path: testInfo.outputPath("phase-03-recovery-diagnostics.png"), fullPage: true });
 });
 
 test("shows duplicate and unsupported-version replay states", async ({ page }) => {

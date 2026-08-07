@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export const PHASE2_BROWSER_LIMITS = Object.freeze({
   maxActiveRuns: 4,
@@ -230,9 +233,18 @@ async function loadPhase2Runner() {
   return import(runnerModuleUrl);
 }
 
+async function loadPhase3Runner() {
+  const runnerModuleUrl = new URL(
+    "../dist/mock-core/phase3-recovery.js",
+    import.meta.url,
+  ).href;
+  return import(runnerModuleUrl);
+}
+
 export function createPhase2BrowserMiddleware(options = {}) {
   const limits = normalizeLimits(options.limits);
   const loadRunner = options.loadRunner ?? loadPhase2Runner;
+  const loadRecoveryRunner = options.loadRecoveryRunner ?? loadPhase3Runner;
   const runs = new Map();
   let startingRuns = 0;
 
@@ -252,8 +264,36 @@ export function createPhase2BrowserMiddleware(options = {}) {
 
   return async function middleware(request, response, next) {
     const url = new URL(request.url ?? "/", "http://phase2.local");
-    if (!url.pathname.startsWith("/api/phase2/")) {
+    if (!url.pathname.startsWith("/api/phase2/") && url.pathname !== "/api/phase3/recovery") {
       next();
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/phase3/recovery") {
+      let storageDirectory = null;
+      try {
+        assertTrustedTransport(request);
+        rejectDeclaredOversize(request, limits.maxRequestBodyBytes);
+        const body = await readJson(request, limits.maxRequestBodyBytes);
+        const recovery = await loadRecoveryRunner();
+        const scratchRoot =
+          process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
+          process.env.PAPERCLIP_SCRATCH_DIR ??
+          tmpdir();
+        storageDirectory = await mkdtemp(
+          join(scratchRoot, "paperclip-runner-browser-phase3-"),
+        );
+        json(response, 200, await recovery.runPhase3Recovery({
+          fault: body.fault ?? "lost-ack",
+          stateDirectory: storageDirectory,
+        }));
+      } catch (error) {
+        sendError(response, error);
+      } finally {
+        if (storageDirectory !== null) {
+          await rm(storageDirectory, { recursive: true, force: true });
+        }
+      }
       return;
     }
 
