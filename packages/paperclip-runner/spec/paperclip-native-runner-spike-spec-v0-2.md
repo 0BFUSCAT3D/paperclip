@@ -1,7 +1,7 @@
 # Paperclip Native Runner Mode
 ## Minimal spike specification and production-compatible design
 
-**Document status:** Draft v0.2<br>
+**Document status:** Draft v0.3<br>
 **Date:** 2026-08-07<br>
 **Audience:** Paperclip control-plane, runtime, sandbox, adapter, and UI workers<br>
 **Primary goal:** Prove that Paperclip can deliver a Codex-TUI-quality live agent experience without loading the Paperclip skill into the model and without making the model operate Paperclip's control-plane API.
@@ -48,7 +48,7 @@ The essential architectural choices are:
 8. **Live and replay use the same ordered event reducer.**
 9. **The implementation is additive.** Existing adapters continue to use the legacy `execute()` path until migrated.
 10. **Direct Codex app-server is the reference driver.** ACP/acpx is the first portability driver. The two should share the same Paperclip-side conformance suite.
-11. **The database is authoritative.** A connected runner or remote backend is an active producer, not the sole owner of session truth.
+11. **The durable control record is authoritative.** PostgreSQL owns normalized lifecycle, control, audit, result, and replay metadata; it does not need every token delta, terminal byte, audio frame, or large artifact body.
 12. **MCP remains a separate tool plane.** Paperclip resolves run-scoped MCP bindings and the runner injects them through capable harness drivers; PRP does not tunnel general MCP traffic.
 13. **Native sessions have pluggable backends.** The first backend uses `paperclip-runnerd`; hosted agent platforms can implement the same normalized contract without pretending to be Paperclip-managed sandboxes.
 14. **Durable control events and transient media use different paths.** Channel adapters consume the normalized event model, while low-latency audio or media can use an authenticated side channel bound to the same identities.
@@ -630,6 +630,76 @@ That is the proof that the abstraction is real.
 7. Reconnect and recovery use the same durable snapshot, cursor, request, result, and terminal-state rules as the runner backend.
 
 The first spike needs a fake remote backend that passes conformance tests. It does not need a production connector for every hosted platform.
+
+#### 7.2.1 Initial hosted-provider targets
+
+As of 2026-08-07, the first connector investigations should target providers with documented, automation-safe session APIs rather than every product that has a cloud UI:
+
+| Provider | Documented create primitive | Observe primitive | Follow-up/control | Output | Initial disposition |
+| --- | --- | --- | --- | --- | --- |
+| Cursor Cloud Agents | `POST /v0/agents` with repository/ref, prompt, model, images, target, and optional webhook | agent status and conversation reads; webhook support | follow-up and stop operations | branch/PR target and conversation | **First implementation candidate** because it exposes the closest session-shaped API, follow-ups, stop, status, conversation, and webhook configuration. |
+| Devin v3 | create organization session with prompt and optional user attribution | session detail plus cursor-paginated messages carrying stable `event_id` values | send message; terminate/archive/delete according to RBAC | session URL, messages, status, PR metadata | **First implementation candidate** because it has explicit organization scoping, service-user RBAC, stable message event IDs, cursor pagination, and lifecycle controls. |
+| Google Jules v1alpha | create session from a connected source, branch, prompt, plan-approval mode, and automation mode | poll session and cursor/page through activities | approve plan and send message | pull-request outputs and activities | **Conformance/experimental candidate** because the API is alpha and currently documents polling rather than push delivery or cancellation. |
+| GitHub Copilot cloud agent tasks | `POST /agents/repos/{owner}/{repo}/tasks` or assign Copilot to an issue | list/get task with documented task states | no general follow-up or cancel primitive documented in the task API reviewed for this revision | GitHub task/issue/PR state | **Output-oriented candidate**, not the reference interactive backend. It is useful for asynchronous issue-to-PR delegation but currently exposes less session control. |
+
+Products are not initial `RemoteAgentBackend` targets when they lack a public hosted-task API even if they have a cloud UI. In particular, the Codex SDK and Claude Agent SDK are harness/runtime integrations that Paperclip can run in an environment it controls; they must not be described as hosted-provider connectors unless a separate public cloud-task API supplies create, observe, control, and reconciliation primitives.
+
+#### 7.2.2 Provider connector contract
+
+Each production connector must implement and document these operations even when some return `unsupported`:
+
+```ts
+interface RemoteAgentConnector {
+  describe(): ProviderDescriptor;
+  createSession(input: CreateRemoteSession): Promise<RemoteSessionRef>;
+  getSession(ref: RemoteSessionRef): Promise<RemoteSessionSnapshot>;
+  listEvents(ref: RemoteSessionRef, cursor?: ProviderCursor): Promise<ProviderEventPage>;
+  sendMessage(ref: RemoteSessionRef, input: RemoteMessage): Promise<ProviderCommandRef>;
+  approveRequest(ref: RemoteSessionRef, input: RemoteApproval): Promise<ProviderCommandRef>;
+  interrupt(ref: RemoteSessionRef, reason: string): Promise<ProviderCommandRef>;
+  cancel(ref: RemoteSessionRef, reason: string): Promise<ProviderCommandRef>;
+  reconcile(ref: RemoteSessionRef, checkpoint: ProviderCheckpoint): Promise<RemoteReconciliation>;
+}
+```
+
+The descriptor must declare:
+
+- authentication model and organizational/account scope;
+- repository/source binding and branch semantics;
+- create idempotency support;
+- provider session, task, message/activity, command, branch, and PR identities;
+- streaming, webhook, or polling observation mode;
+- cursor/event-ID guarantees and ordering limits;
+- follow-up, approval, interrupt, cancel, retry, resume, and fork support;
+- artifact/image input and output support;
+- provider-managed environment controls, network policy, secrets, MCP/tools, setup scripts, snapshots, and retention;
+- terminal states, ambiguous states, rate limits, and reconciliation rules;
+- billing/usage visibility and provider data-retention policy.
+
+Provider-specific payloads may be retained in bounded raw envelopes or object storage for diagnostics, but the UI and orchestration path consume normalized capabilities, events, requests, results, and terminal states.
+
+#### 7.2.3 Execution ownership and sandbox semantics
+
+The Paperclip protocol is stable across two execution-ownership modes:
+
+```text
+Paperclip-managed execution
+  Paperclip environment lease -> paperclip-runnerd -> local harness
+
+Provider-managed execution
+  RemoteAgentConnector -> provider session/task -> provider-controlled runtime
+```
+
+Both modes implement `NativeSessionBackend`; only the first implements the runner-specific PRP transport and Paperclip environment lease lifecycle. A provider-managed runtime is not a Paperclip sandbox, does not receive a fake environment lease, and must not claim controls that the provider API cannot enforce.
+
+Paperclip remains authoritative for task checkout, run/session binding, command intent, approvals, budget gates, normalized event ingestion, result acceptance, audit, and issue finalization. The provider remains authoritative for facts inside its execution boundary, such as VM/container placement, repository clone, process state, network policy, provider-side secrets, and raw provider logs. The connector reconciles those facts into Paperclip; it does not make Paperclip pretend it owns the machine.
+
+Cancellation therefore has two layers:
+
+1. Paperclip durably records that execution is no longer authorized and prevents further accepted results or budget use.
+2. The connector requests provider cancellation/termination when supported and records `cancel_requested`, `cancel_confirmed`, or `cancel_unconfirmed` rather than assuming process death.
+
+This preserves one Paperclip session protocol while allowing runtimes that Paperclip does not control.
 
 ### 7.3 Warm runner path
 
@@ -2427,6 +2497,72 @@ Optional later:
 
 A reconnectable remote runner cannot rely on `MAX(seq) + 1` allocation or merely an index on `(run_id, seq)`. Concurrent server events, replayed runner events, and lost ACKs can produce duplicates or sequence races.
 
+#### 21.1.1 What “authoritative” means
+
+“The database is authoritative” does **not** mean “put every byte from every agent in PostgreSQL forever.” It means:
+
+- every legal run/session/turn state can be reconstructed from durable records without asking the currently connected producer;
+- every accepted control intent, approval, terminal result, cost fact, and consequential artifact reference survives producer and control-plane restarts;
+- replay and browser snapshots have a durable cursor and cannot depend on an in-memory socket buffer;
+- provider or runner claims are normalized, deduplicated, and accepted by Paperclip before they become control-plane truth;
+- large or high-rate payloads can live outside PostgreSQL as long as PostgreSQL durably stores their identity, integrity, ownership, retention, and retrieval metadata.
+
+The authoritative record should use three storage tiers:
+
+| Tier | Examples | Storage rule |
+| --- | --- | --- |
+| Canonical control events | lifecycle transitions, normalized messages/items, tool/request boundaries, approvals, steering, cancellation, usage totals, results, provider reconciliation | PostgreSQL rows with stable IDs, ordering, schema version, company/run scope, and retention class. |
+| Bulk trace payloads | verbose raw provider envelopes, large stdout/stderr chunks, screenshots, patches, audio/video, model snapshots | artifact/blob storage with content hash, byte length, media type, encryption/retention metadata, and a PostgreSQL reference. Small bounded payloads may remain inline. |
+| Transient delivery data | token deltas already compacted into a message, terminal repaint frames, audio packets, presence/typing, duplicate heartbeats | bounded relay/buffer only unless promoted into a durable semantic event. |
+
+This model permits full-fidelity debugging where required without making the primary relational tables an unbounded packet capture.
+
+#### 21.1.2 Centaur storage finding
+
+Centaur does persist its durable session trail in PostgreSQL, but the format is compact and structured rather than a database row for every raw terminal byte. Its current open-source core schema uses:
+
+- `sessions` for durable thread/harness/sandbox identity and status;
+- `session_messages` for role plus JSONB parts;
+- `session_executions` for queued/running/terminal execution state, including a unique partial index allowing one active execution per thread;
+- `session_events` with an identity `event_id`, `thread_key`, optional `execution_id`, `event_type`, JSONB payload, and creation time;
+- an index on `(thread_key, event_id)` for cursor replay;
+- PostgreSQL `NOTIFY` after insert as a wake-up hint, while the row remains the durable event source.
+
+The lesson is not “copy every trace forever.” The lesson is “persist a cursor-addressable semantic event trail and use notifications/streams as acceleration, never as the only copy.” Centaur also separates its Postgres-backed control plane from Kubernetes sandbox execution and credential-safe egress.
+
+#### 21.1.3 ActiveGraph storage finding
+
+The ActiveGraph repository was cloned and inspected for this revision. Its core design is an append-only per-run `EventStore`; the event log is the source of truth and the graph is a rebuildable projection. The SQLite schema stores `seq`, logical event ID, type, actor, JSON payload, frame/causal linkage, timestamp, and run ID, with WAL enabled and sequence—not wall-clock time—as ordering authority. The PostgreSQL backend implements the same event-store contract. Run rows store fork lineage and metadata.
+
+Useful durability properties for Paperclip are:
+
+- a minimal append/iterate/get/count contract that can be conformance-tested across stores;
+- stable per-run ordering independent of clocks;
+- explicit causal links such as `caused_by` and frame/sub-context identity;
+- projections that are disposable and rebuildable from the log;
+- deterministic replay plus divergence detection;
+- fork lineage, structural diff, and promotion recorded as auditable events;
+- content-hashed LLM/tool replay caches;
+- structured corruption, duplicate-event, schema-version, and replay-divergence errors;
+- retention as a policy over durable events, not accidental deletion from an in-memory transcript.
+
+Paperclip should adopt the ordering, causality, replay, conformance, and rebuildable-projection properties. It should **not** copy ActiveGraph's assumption that all application state is one graph log: Paperclip already has normalized operational tables and business entities whose constraints remain authoritative in their own tables.
+
+#### 21.1.4 Volume controls
+
+The implementation must define measurable limits before production:
+
+- maximum inline event payload and mandatory blob offload threshold;
+- per-run and per-company retained bytes by retention class;
+- compaction from token/terminal deltas into canonical completed items;
+- raw-envelope sampling or expiry independent of canonical control retention;
+- artifact lifecycle and deletion propagation;
+- partition/index strategy for the high-volume event table;
+- export/archive path for compliance or deep debugging;
+- metrics for events/sec, bytes/sec, replay depth, compaction lag, and storage cost.
+
+The default should retain enough normalized history to explain and reconstruct the run while expiring replaceable transport detail.
+
 ### 21.2 Extend heartbeat runs
 
 Proposed fields:
@@ -2629,7 +2765,10 @@ The projection must be rebuildable from the event log.
 ### 21.8 Retention
 
 - Keep terminal result, completed item snapshots, artifact references, usage, and phase timings durably.
-- Raw deltas can have a configurable shorter retention window.
+- Keep accepted control intents, approvals, reconciliation decisions, and terminal-state evidence durably.
+- Compact token, terminal, and progress deltas after their canonical item/message projection is durable.
+- Raw provider envelopes and diagnostic chunks have a configurable shorter retention window or move to blob/archive storage.
+- Never delete a blob without updating or tombstoning its durable reference and retention reason.
 - Do not emit organization activity-log records for every token delta.
 - Promote consequential runtime facts into the business/event graph: run started, artifact created, verification passed, result accepted, cost incurred, blocker declared.
 
@@ -3749,6 +3888,42 @@ packages/paperclip-runner/
 
 ---
 
+### NR-016 — Hosted-provider API qualification and first connector
+
+**Goal:** Ground `RemoteAgentBackend` in real provider APIs and prove one production connector without changing the normalized session contract.
+
+**Primary files:**
+
+```text
+server/src/services/native-runtime/backends/remote/
+packages/paperclip-runner/backends/fake-remote/
+packages/paperclip-runner/backends/provider-conformance/
+```
+
+**Deliverables:**
+
+- dated provider capability matrix for Cursor, Devin, Jules, GitHub Copilot cloud agent, and any newly qualified provider;
+- source links and captured API schemas/examples for every claimed capability;
+- connector descriptor schema from Section 7.2.2;
+- fake-provider fixtures for polling, webhook duplication, cursor gaps, ambiguous cancellation, and provider retention expiry;
+- first production connector, choosing Cursor or Devin after credential/access validation;
+- reconciliation and terminal-state mapping report;
+- explicit Paperclip-managed versus provider-managed execution ownership tests.
+
+**Acceptance:**
+
+- connector passes the same normalized session/event/result conformance suite as `RunnerBackend` where capabilities overlap;
+- unsupported steering, approval, interrupt, cancel, resume, artifact, MCP, or usage features are declared and visible;
+- provider event/message/activity IDs are preserved for deduplication;
+- Paperclip restart can reconstruct the session from PostgreSQL plus provider reconciliation without relying on an old process or socket;
+- Paperclip cancellation is durable even when provider cancellation is unavailable or unconfirmed;
+- no provider-managed runtime is represented as a Paperclip environment lease or sandbox;
+- raw provider payload retention is bounded independently from canonical control-event retention.
+
+**Dependencies:** NR-001, NR-002, NR-005, NR-006, NR-011, and NR-015.
+
+---
+
 ## 30. Suggested issue dependency graph
 
 ```text
@@ -3874,7 +4049,7 @@ Unless implementation evidence forces a change:
 10. Paperclip owns task state and governance.
 11. The model receives no Paperclip operational skill in native mode.
 12. Legacy execution remains available behind a feature flag.
-13. The database is authoritative; connected producers are not the sole owners of session truth.
+13. The durable control record is authoritative; PostgreSQL is not an unbounded byte-level trace archive.
 14. MCP policy and credentials remain in Paperclip core; PRP only carries resolved binding configuration and canonical events.
 15. JSON Schema and fixtures are language-neutral protocol authority.
 16. Hosted agent platforms use `NativeSessionBackend` rather than being modeled as fake sandboxes.
@@ -3934,6 +4109,12 @@ A second test is:
 
 If yes, the Paperclip skill has been replaced by a real runtime contract rather than merely shortened.
 
+A third test is:
+
+> Could Paperclip operate a provider-managed Cursor, Devin, Jules, or Copilot task through the same normalized session state machine while clearly showing which controls and environment guarantees the provider actually exposes?
+
+If yes, `RemoteAgentBackend` is a real integration boundary rather than a generic abstraction that assumes Paperclip owns every sandbox.
+
 ---
 
 ## Appendix A — Recommended repository observations to verify before implementation
@@ -3973,8 +4154,23 @@ The spec was designed around these current Paperclip seams. Workers should re-op
 - **Codex app-server:** reference typed session/turn/item contract and direct steer/interrupt path.
 - **ACP:** portable local agent/client protocol with sessions, updates, permission requests, cancellation, and capability negotiation.
 - **acpx:** useful ACP runtime/bridge; keep its state and lifecycle below Paperclip's runner protocol.
-- **Centaur:** durable event cursor, isolated execution, and credential-safe egress.
+- **Centaur:** compact PostgreSQL session/message/execution/event tables, durable event cursor, isolated execution, and credential-safe egress; `NOTIFY` accelerates delivery but the stored event row is the replay source.
+- **ActiveGraph:** append-only per-run event-store contract, sequence-based ordering, causal linkage, rebuildable projections, deterministic replay, explicit divergence/corruption errors, and auditable fork/diff/promote behavior.
 - **Conductor OSS:** real PTY, worktree/diff surfaces, Rust runtime, and paired remote bridge.
 - **Rivet sandbox-agent:** small static sandbox daemon and universal harness adapter; possible southbound implementation, not Paperclip's northbound authority.
 - **Daytona:** outbound worker connection and snapshot/warm-sandbox pattern.
 - **exe.dev:** persistent VM and system service pattern.
+
+## Appendix C — Sources reviewed for v0.3
+
+Source review date: 2026-08-07.
+
+- Centaur source: `https://github.com/paradigmxyz/centaur`, especially `services/api-rs/crates/centaur-session-sqlx/migrations/0001_session_control_plane.sql` and `0002_session_event_notifications.sql`.
+- Centaur production architecture: `https://centaur.run/architecture` and `https://centaur.run/deploying-in-production`.
+- ActiveGraph source: `https://github.com/yoheinakajima/activegraph`, especially `activegraph/store/base.py`, `activegraph/store/sqlite.py`, `activegraph/store/postgres.py`, store conformance tests, and replay/fork documentation.
+- ActiveGraph product and documentation: `https://activegraph.ai/` and `https://docs.activegraph.ai/`.
+- Cursor Cloud Agents API overview and background-agent environment/security documentation: `https://docs.cursor.com/background-agent/api/overview` and `https://docs.cursor.com/background-agent`.
+- Devin v3 API overview, common flows, session detail, session messages, create/send/terminate/archive endpoints, and RBAC documentation: `https://docs.devin.ai/api-reference/overview`.
+- Jules REST API quickstart and reference: `https://jules.google/docs/api/reference/` and `https://developers.google.com/jules/api/reference/rest`.
+- GitHub Copilot cloud agent task API: `https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-cloud-agent-via-the-api`.
+- OpenAI Codex cloud/SDK distinction: `https://openai.com/index/codex-now-generally-available/`.
