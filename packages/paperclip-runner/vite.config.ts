@@ -11,6 +11,12 @@ const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   root: resolve(packageRoot, "devtools/browser"),
   plugins: [react(), phase2BrowserServerPlugin()],
+  server: {
+    host: "127.0.0.1",
+  },
+  preview: {
+    host: "127.0.0.1",
+  },
   build: {
     outDir: resolve(packageRoot, "dist-browser"),
     emptyOutDir: true,

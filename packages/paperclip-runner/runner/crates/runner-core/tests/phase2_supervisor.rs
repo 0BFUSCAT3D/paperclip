@@ -29,6 +29,7 @@ fn process_group_cleanup_stops_harness_and_worker() {
             "1".to_owned(),
         ],
         Duration::from_millis(50),
+        64 * 1024,
     )
     .expect("fake harness should start");
     let harness_pid = process.id();
@@ -79,4 +80,69 @@ fn process_group_cleanup_stops_harness_and_worker() {
     std::thread::sleep(Duration::from_millis(20));
     assert!(!process_exists(u64::from(harness_pid)));
     assert!(!process_exists(worker_pid));
+}
+
+#[test]
+fn oversized_harness_stdout_frame_is_rejected() {
+    let harness = PathBuf::from(env!("CARGO_BIN_EXE_fake-harness"));
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../protocol/fixtures/phase-02/scripts/oversized-line.json");
+    let mut process = SupervisedProcess::spawn(
+        &harness,
+        &[
+            "--script".to_owned(),
+            script.display().to_string(),
+            "--delay-ms".to_owned(),
+            "1".to_owned(),
+        ],
+        Duration::from_millis(50),
+        512,
+    )
+    .expect("fake harness should start");
+    process
+        .receive_stdout_line(Duration::from_secs(1))
+        .expect("ready frame should fit")
+        .expect("ready frame should exist");
+    process
+        .send(&HarnessCommand {
+            schema: "paperclip.fake_harness.command.v1".to_owned(),
+            command_id: "open".to_owned(),
+            command_type: "session.open".to_owned(),
+            payload: json!({}),
+        })
+        .expect("session.open should send");
+    process
+        .receive_stdout_line(Duration::from_secs(1))
+        .expect("session frame should fit")
+        .expect("session frame should exist");
+    process
+        .send(&HarnessCommand {
+            schema: "paperclip.fake_harness.command.v1".to_owned(),
+            command_id: "turn".to_owned(),
+            command_type: "turn.start".to_owned(),
+            payload: json!({ "turnId": "turn_oversized" }),
+        })
+        .expect("turn.start should send");
+    process
+        .receive_stdout_line(Duration::from_secs(1))
+        .expect("turn frame should fit")
+        .expect("turn frame should exist");
+
+    let mut oversized_error = None;
+    for _ in 0..3 {
+        match process.receive_stdout_line(Duration::from_secs(1)) {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(error) => {
+                oversized_error = Some(error);
+                break;
+            }
+        }
+    }
+    let error = oversized_error.expect("oversized harness frame must be rejected");
+    assert!(error.to_string().contains("exceeded 512 bytes"));
+
+    process
+        .terminate_group()
+        .expect("oversized-frame harness should be cleaned up");
 }

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -46,6 +46,7 @@ pub struct RunnerConfig {
     pub delay_override_ms: Option<u64>,
     pub log_max_lines: usize,
     pub log_max_bytes: usize,
+    pub harness_max_line_bytes: usize,
     pub shutdown_grace: Duration,
 }
 
@@ -134,8 +135,103 @@ pub enum FakeHarnessStep {
 enum ProcessOutput {
     Stdout(String),
     Stderr(String),
+    StdoutError(String),
     StdoutClosed,
     StderrClosed,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedLine {
+    Line(String),
+    TooLong,
+    Eof,
+}
+
+fn read_bounded_line<R: BufRead>(reader: &mut R, max_bytes: usize) -> io::Result<BoundedLine> {
+    let max_bytes = max_bytes.max(1);
+    let mut bytes = Vec::with_capacity(max_bytes.min(8 * 1024));
+    let mut too_long = false;
+
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            if too_long {
+                return Ok(BoundedLine::TooLong);
+            }
+            if bytes.is_empty() {
+                return Ok(BoundedLine::Eof);
+            }
+            return String::from_utf8(bytes)
+                .map(BoundedLine::Line)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+        }
+
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let content_len = newline.unwrap_or(buffer.len());
+        if !too_long {
+            let remaining = max_bytes.saturating_sub(bytes.len());
+            let copy_len = remaining.min(content_len);
+            bytes.extend_from_slice(&buffer[..copy_len]);
+            if content_len > remaining {
+                too_long = true;
+                bytes.clear();
+            }
+        }
+        let consumed = newline.map_or(buffer.len(), |index| index + 1);
+        reader.consume(consumed);
+
+        if newline.is_some() {
+            if too_long {
+                return Ok(BoundedLine::TooLong);
+            }
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            return String::from_utf8(bytes)
+                .map(BoundedLine::Line)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+        }
+    }
+}
+
+fn forward_bounded_output<R: io::Read + Send + 'static>(
+    reader: R,
+    sender: mpsc::Sender<ProcessOutput>,
+    stdout: bool,
+    max_line_bytes: usize,
+) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        loop {
+            let output = match read_bounded_line(&mut reader, max_line_bytes) {
+                Ok(BoundedLine::Line(line)) if stdout => ProcessOutput::Stdout(line),
+                Ok(BoundedLine::Line(line)) => ProcessOutput::Stderr(line),
+                Ok(BoundedLine::TooLong) if stdout => ProcessOutput::StdoutError(format!(
+                    "harness stdout frame exceeded {max_line_bytes} bytes"
+                )),
+                Ok(BoundedLine::TooLong) => ProcessOutput::Stderr(format!(
+                    "[harness stderr frame exceeded {max_line_bytes} bytes]"
+                )),
+                Ok(BoundedLine::Eof) => break,
+                Err(error) if stdout => {
+                    ProcessOutput::StdoutError(format!("failed to read harness stdout: {error}"))
+                }
+                Err(error) => {
+                    ProcessOutput::Stderr(format!("[failed to read harness stderr: {error}]"))
+                }
+            };
+            let terminal_output = matches!(&output, ProcessOutput::StdoutError(_));
+            if sender.send(output).is_err() || terminal_output {
+                return;
+            }
+        }
+        let closed = if stdout {
+            ProcessOutput::StdoutClosed
+        } else {
+            ProcessOutput::StderrClosed
+        };
+        let _ = sender.send(closed);
+    });
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -218,6 +314,7 @@ impl SupervisedProcess {
         program: &Path,
         args: &[String],
         shutdown_grace: Duration,
+        max_line_bytes: usize,
     ) -> Result<Self, Phase2Error> {
         let mut command = Command::new(program);
         command
@@ -252,43 +349,8 @@ impl SupervisedProcess {
             .take()
             .ok_or_else(|| Phase2Error::invalid("supervised process stderr was not piped"))?;
         let (sender, output) = mpsc::channel();
-        let stdout_sender = sender.clone();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(line) => {
-                        if stdout_sender.send(ProcessOutput::Stdout(line)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = stdout_sender.send(ProcessOutput::Stderr(format!(
-                            "failed to read harness stdout: {error}"
-                        )));
-                        break;
-                    }
-                }
-            }
-            let _ = stdout_sender.send(ProcessOutput::StdoutClosed);
-        });
-        thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                match line {
-                    Ok(line) => {
-                        if sender.send(ProcessOutput::Stderr(line)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = sender.send(ProcessOutput::Stderr(format!(
-                            "failed to read harness stderr: {error}"
-                        )));
-                        break;
-                    }
-                }
-            }
-            let _ = sender.send(ProcessOutput::StderrClosed);
-        });
+        forward_bounded_output(stdout, sender.clone(), true, max_line_bytes.max(1));
+        forward_bounded_output(stderr, sender, false, max_line_bytes.max(1));
 
         Ok(Self {
             child,
@@ -334,6 +396,9 @@ impl SupervisedProcess {
             match self.recv_timeout(remaining) {
                 Ok(ProcessOutput::Stdout(line)) => return Ok(Some(line)),
                 Ok(ProcessOutput::Stderr(_)) | Ok(ProcessOutput::StderrClosed) => {}
+                Ok(ProcessOutput::StdoutError(message)) => {
+                    return Err(Phase2Error::invalid(message));
+                }
                 Ok(ProcessOutput::StdoutClosed) => return Ok(None),
                 Err(RecvTimeoutError::Timeout) => return Ok(None),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -453,6 +518,115 @@ enum RunnerStreamMessage<'a> {
     },
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum TerminalIntent {
+    #[default]
+    Natural,
+    Interrupted,
+    Cancelled,
+    ControllerClosed,
+    ProtocolViolation,
+}
+
+fn enum_field<'a>(value: &'a Value, key: &str, allowed: &[&str]) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|candidate| allowed.contains(candidate))
+}
+
+fn valid_terminal_proposal(value: &Value) -> bool {
+    value.get("schema").and_then(Value::as_str) == Some("paperclip.prp.terminal.v1")
+        && enum_field(
+            value,
+            "turnTerminalState",
+            &["completed", "failed", "interrupted", "cancelled"],
+        )
+        .is_some()
+        && enum_field(
+            value,
+            "runTerminalState",
+            &["succeeded", "failed", "cancelled"],
+        )
+        .is_some()
+        && enum_field(
+            value,
+            "reportedWorkDisposition",
+            &["done", "blocked", "needs_review", "yielded"],
+        )
+        .is_some()
+}
+
+fn reconcile_terminal(
+    proposal: Option<Value>,
+    exit: &ProcessExitFact,
+    semantic_result: Option<&Value>,
+    intent: TerminalIntent,
+) -> Value {
+    let (turn_terminal_state, run_terminal_state, reason) = match intent {
+        TerminalIntent::Interrupted => ("interrupted", "cancelled", "turn_interrupted"),
+        TerminalIntent::Cancelled => ("cancelled", "cancelled", "run_cancelled"),
+        TerminalIntent::ControllerClosed => ("cancelled", "cancelled", "controller_closed"),
+        TerminalIntent::ProtocolViolation => ("failed", "failed", "harness_protocol_violation"),
+        TerminalIntent::Natural if exit.success && semantic_result.is_some() => {
+            ("completed", "succeeded", "successful_process_and_result")
+        }
+        TerminalIntent::Natural if !exit.success => ("failed", "failed", "harness_process_failed"),
+        TerminalIntent::Natural => ("failed", "failed", "semantic_result_missing"),
+    };
+
+    let proposal_valid = proposal.as_ref().is_some_and(valid_terminal_proposal);
+    let proposal_contradicted = proposal.as_ref().is_some_and(|value| {
+        proposal_valid
+            && (value.get("turnTerminalState").and_then(Value::as_str) != Some(turn_terminal_state)
+                || value.get("runTerminalState").and_then(Value::as_str)
+                    != Some(run_terminal_state))
+    });
+    let proposed_disposition = proposal.as_ref().and_then(|value| {
+        enum_field(
+            value,
+            "reportedWorkDisposition",
+            &["done", "blocked", "needs_review", "yielded"],
+        )
+        .map(str::to_owned)
+    });
+    let result_disposition = semantic_result.and_then(|value| {
+        enum_field(
+            value,
+            "reportedWorkDisposition",
+            &["done", "blocked", "needs_review", "yielded"],
+        )
+        .map(str::to_owned)
+    });
+    let reported_work_disposition = if run_terminal_state == "succeeded" {
+        result_disposition
+            .or(proposed_disposition)
+            .unwrap_or_else(|| "done".to_owned())
+    } else {
+        result_disposition
+            .filter(|value| value != "done")
+            .or_else(|| proposed_disposition.filter(|value| value != "done"))
+            .unwrap_or_else(|| "yielded".to_owned())
+    };
+    let harness_terminal_proposal = proposal.unwrap_or(Value::Null);
+
+    json!({
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": turn_terminal_state,
+        "runTerminalState": run_terminal_state,
+        "reportedWorkDisposition": reported_work_disposition,
+        "harnessTerminalProposal": harness_terminal_proposal,
+        "reconciliation": {
+            "authority": "runner",
+            "reason": reason,
+            "proposalValid": proposal_valid,
+            "proposalContradicted": proposal_contradicted,
+            "processExit": exit,
+            "semanticResultObserved": semantic_result.is_some(),
+        }
+    })
+}
+
 struct RunnerState {
     config: RunnerConfig,
     source_seq: u64,
@@ -462,6 +636,7 @@ struct RunnerState {
     logs: BoundedLogBuffer,
     semantic_result: Option<Value>,
     pending_terminal: Option<Value>,
+    terminal_intent: TerminalIntent,
     terminal_emitted: bool,
     stdout_closed: bool,
 }
@@ -477,6 +652,7 @@ impl RunnerState {
             harness: None,
             semantic_result: None,
             pending_terminal: None,
+            terminal_intent: TerminalIntent::Natural,
             terminal_emitted: false,
             stdout_closed: false,
         }
@@ -584,6 +760,7 @@ impl RunnerState {
             &self.config.fake_harness_path,
             &args,
             self.config.shutdown_grace,
+            self.config.harness_max_line_bytes,
         )?;
         let ready_deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -612,6 +789,9 @@ impl RunnerState {
                     ));
                 }
                 Ok(ProcessOutput::Stderr(line)) => self.logs.push(format!("stderr: {line}")),
+                Ok(ProcessOutput::StdoutError(message)) => {
+                    return Err(Phase2Error::invalid(message));
+                }
                 Ok(ProcessOutput::StdoutClosed) => {
                     return Err(Phase2Error::invalid("fake harness exited before ready"));
                 }
@@ -676,7 +856,15 @@ impl RunnerState {
                 )?;
                 self.send_harness_command(&command)?;
             }
-            "request.resolve" | "turn.interrupt" | "turn.stop" | "session.close" | "run.cancel" => {
+            "request.resolve" | "session.close" => {
+                self.send_harness_command(&command)?;
+            }
+            "turn.interrupt" | "turn.stop" => {
+                self.terminal_intent = TerminalIntent::Interrupted;
+                self.send_harness_command(&command)?;
+            }
+            "run.cancel" => {
+                self.terminal_intent = TerminalIntent::Cancelled;
                 self.send_harness_command(&command)?;
             }
             unsupported => {
@@ -717,6 +905,12 @@ impl RunnerState {
             match output {
                 ProcessOutput::Stdout(line) => self.handle_harness_line(&line)?,
                 ProcessOutput::Stderr(line) => self.logs.push(format!("stderr: {line}")),
+                ProcessOutput::StdoutError(message) => {
+                    self.logs.push(format!("stdout: [{message}]"));
+                    self.terminal_intent = TerminalIntent::ProtocolViolation;
+                    self.terminate_harness()?;
+                    return Ok(());
+                }
                 ProcessOutput::StdoutClosed => self.stdout_closed = true,
                 ProcessOutput::StderrClosed => {}
             }
@@ -854,21 +1048,19 @@ impl RunnerState {
         self.emit_event(
             "harness.exited",
             json!({
-                "processExit": exit,
+                "processExit": &exit,
                 "semanticResultObserved": self.semantic_result.is_some(),
                 "logs": self.logs.snapshot(),
             }),
             None,
             None,
         )?;
-        let terminal = self.pending_terminal.take().unwrap_or_else(|| {
-            json!({
-                "schema": "paperclip.prp.terminal.v1",
-                "turnTerminalState": "failed",
-                "runTerminalState": "failed",
-                "reportedWorkDisposition": "yielded"
-            })
-        });
+        let terminal = reconcile_terminal(
+            self.pending_terminal.take(),
+            &exit,
+            self.semantic_result.as_ref(),
+            self.terminal_intent,
+        );
         self.emit_event("run.terminal", terminal, None, None)
     }
 }
@@ -904,11 +1096,15 @@ pub fn run_local_runner(config: RunnerConfig) -> Result<(), Phase2Error> {
                 if state.harness.is_none() {
                     return Err(Phase2Error::invalid("controller closed before run.prepare"));
                 }
+                state.terminal_intent = TerminalIntent::ControllerClosed;
                 state.terminate_harness()?;
                 return Ok(());
             }
         }
         state.drain_harness_output()?;
+        if state.terminal_emitted {
+            return Ok(());
+        }
         if state.stdout_closed {
             state.finish_harness()?;
             return Ok(());
@@ -1210,6 +1406,76 @@ mod tests {
     }
 
     #[test]
+    fn bounded_line_reader_rejects_an_oversized_frame_and_recovers() {
+        let mut source = vec![b'x'; 4_096];
+        source.extend_from_slice(b"\nnext\n");
+        let mut reader = BufReader::new(std::io::Cursor::new(source));
+
+        assert_eq!(
+            read_bounded_line(&mut reader, 64).expect("oversized line should be classified"),
+            BoundedLine::TooLong
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, 64).expect("reader should continue after the frame"),
+            BoundedLine::Line("next".to_owned())
+        );
+    }
+
+    #[test]
+    fn nonzero_exit_overrides_a_success_terminal_proposal() {
+        let terminal = reconcile_terminal(
+            Some(json!({
+                "schema": "paperclip.prp.terminal.v1",
+                "turnTerminalState": "completed",
+                "runTerminalState": "succeeded",
+                "reportedWorkDisposition": "done"
+            })),
+            &ProcessExitFact {
+                exit_code: Some(7),
+                success: false,
+                signal: None,
+            },
+            Some(&json!({ "reportedWorkDisposition": "done" })),
+            TerminalIntent::Natural,
+        );
+
+        assert_eq!(terminal["turnTerminalState"], "failed");
+        assert_eq!(terminal["runTerminalState"], "failed");
+        assert_eq!(terminal["reportedWorkDisposition"], "yielded");
+        assert_eq!(terminal["reconciliation"]["authority"], "runner");
+        assert_eq!(terminal["reconciliation"]["proposalValid"], true);
+        assert_eq!(terminal["reconciliation"]["proposalContradicted"], true);
+        assert_eq!(
+            terminal["harnessTerminalProposal"]["runTerminalState"],
+            "succeeded"
+        );
+    }
+
+    #[test]
+    fn successful_process_and_result_override_a_failed_terminal_proposal() {
+        let terminal = reconcile_terminal(
+            Some(json!({
+                "schema": "paperclip.prp.terminal.v1",
+                "turnTerminalState": "failed",
+                "runTerminalState": "failed",
+                "reportedWorkDisposition": "yielded"
+            })),
+            &ProcessExitFact {
+                exit_code: Some(0),
+                success: true,
+                signal: None,
+            },
+            Some(&json!({ "reportedWorkDisposition": "done" })),
+            TerminalIntent::Natural,
+        );
+
+        assert_eq!(terminal["turnTerminalState"], "completed");
+        assert_eq!(terminal["runTerminalState"], "succeeded");
+        assert_eq!(terminal["reportedWorkDisposition"], "done");
+        assert_eq!(terminal["reconciliation"]["proposalContradicted"], true);
+    }
+
+    #[test]
     fn canonical_json_sorts_object_keys_without_reordering_arrays() {
         assert_eq!(
             canonical_json(&json!({ "z": [2, 1], "a": { "b": true } })),
@@ -1228,6 +1494,7 @@ mod tests {
             "error",
             "duplicate-terminal",
             "linger",
+            "oversized-line",
         ] {
             let script = load_fake_harness_script(&scripts.join(format!("{name}.json")))
                 .expect("Phase 2 script should load");

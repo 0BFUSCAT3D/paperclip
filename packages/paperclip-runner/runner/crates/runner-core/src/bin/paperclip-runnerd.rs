@@ -45,6 +45,7 @@ fn run() -> Result<(), Phase2Error> {
         delay_override_ms: optional_u64(&args, "--delay-ms")?,
         log_max_lines: usize_value(&args, "--log-max-lines", 32)?,
         log_max_bytes: usize_value(&args, "--log-max-bytes", 16_384)?,
+        harness_max_line_bytes: usize_value(&args, "--harness-max-line-bytes", 64 * 1024)?,
         shutdown_grace: Duration::from_millis(
             optional_u64(&args, "--shutdown-grace-ms")?.unwrap_or(100),
         ),

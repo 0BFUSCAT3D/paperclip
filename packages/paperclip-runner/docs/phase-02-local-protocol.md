@@ -69,9 +69,13 @@ model keys, and AgentMail keys are not forwarded.
 
 ## Bounded diagnostics
 
-The runner keeps only the configured number of lines and bytes. It reports the
-retained lines, retained bytes, and dropped-line count with `harness.exited`.
-This log tail is separate from canonical events and the semantic result.
+The supervisor frames harness stdout and stderr with a 64 KiB per-line default
+before it creates a `String`; a newline-free or otherwise oversized stdout
+frame is a protocol violation and fails the run. Oversized stderr frames are
+drained with bounded memory and represented by a short diagnostic marker. The
+separate log-tail buffer then keeps only the configured number of lines and
+bytes. It reports retained lines, retained bytes, and the dropped-line count
+with `harness.exited`.
 
 ## Result and terminal authority
 
@@ -85,6 +89,16 @@ A scripted error can report useful yielded work and exit 7. An interruption can
 report yielded work and exit 130. Neither process fact silently replaces the
 semantic result.
 
+The fake harness terminal object is only a proposal. The runner preserves it as
+`harnessTerminalProposal`, validates its enum fields, and derives the canonical
+turn/run terminal states from runner-owned facts: the process exit, whether a
+semantic result was observed, an accepted interrupt/cancel command, controller
+closure, and protocol violations. `reconciliation` records the decision and
+whether the proposal contradicted those facts. A success proposal followed by a
+non-zero exit therefore becomes a failed canonical terminal; the reverse
+contradiction becomes succeeded only when both the process and semantic result
+succeeded.
+
 ## Browser live mode
 
 The Vite middleware starts the same TypeScript mock-core controller used by
@@ -95,6 +109,34 @@ snapshots.
 
 The browser reuses package-local shadcn-style Button, Badge, Card, and Textarea
 components. All visual values remain in `styles.css`.
+
+### Local transport trust model
+
+The browser server is a developer-only loopback transport, not an authenticated
+Paperclip API. Vite dev and preview default to `127.0.0.1`. Every
+`/api/phase2/*` request is checked before route lookup or process startup:
+
+- both ends of the accepted socket and the HTTP `Host` must be loopback;
+- an `Origin`, when a browser supplies one, must exactly match the request
+  origin, and cross-site Fetch Metadata values are rejected;
+- JSON actions require `application/json` and bodies are capped at 16 KiB,
+  including streamed/chunked requests;
+- the server permits at most 4 active runs, retains at most 16 total runs (old
+  completed entries are evicted), and permits at most 8 live stream clients per
+  run.
+
+These are secure defaults plus defense in depth: even if Vite is accidentally
+started with a broad `--host`, non-loopback Phase 2 API traffic is rejected.
+There is intentionally no user identity, session cookie, or reusable bearer
+credential in this spike.
+
+Residual risk: another process running as the same local user is inside this
+trust boundary and can make loopback requests. The scripted Phase 2 event set is
+finite, but the retained event history inside one active run is not yet a
+general-purpose per-session byte budget. A later real harness/network phase must
+add authenticated capabilities, per-session event/byte budgets, durable
+backpressure, and production authorization instead of widening this local
+transport.
 
 ## Deferred work
 
