@@ -1,9 +1,9 @@
 # Paperclip Native Runner Mode
 ## Minimal spike specification and production-compatible design
 
-**Document status:** Draft v0.1  
-**Date:** 2026-08-06  
-**Audience:** Paperclip control-plane, runtime, sandbox, adapter, and UI workers  
+**Document status:** Draft v0.2<br>
+**Date:** 2026-08-07<br>
+**Audience:** Paperclip control-plane, runtime, sandbox, adapter, and UI workers<br>
 **Primary goal:** Prove that Paperclip can deliver a Codex-TUI-quality live agent experience without loading the Paperclip skill into the model and without making the model operate Paperclip's control-plane API.
 
 ---
@@ -48,6 +48,11 @@ The essential architectural choices are:
 8. **Live and replay use the same ordered event reducer.**
 9. **The implementation is additive.** Existing adapters continue to use the legacy `execute()` path until migrated.
 10. **Direct Codex app-server is the reference driver.** ACP/acpx is the first portability driver. The two should share the same Paperclip-side conformance suite.
+11. **The database is authoritative.** A connected runner or remote backend is an active producer, not the sole owner of session truth.
+12. **MCP remains a separate tool plane.** Paperclip resolves run-scoped MCP bindings and the runner injects them through capable harness drivers; PRP does not tunnel general MCP traffic.
+13. **Native sessions have pluggable backends.** The first backend uses `paperclip-runnerd`; hosted agent platforms can implement the same normalized contract without pretending to be Paperclip-managed sandboxes.
+14. **Durable control events and transient media use different paths.** Channel adapters consume the normalized event model, while low-latency audio or media can use an authenticated side channel bound to the same identities.
+15. **The protocol is language-neutral and independently testable.** JSON Schema, fixtures, and conformance behavior are authoritative for Rust, TypeScript, and future implementations.
 
 The minimal vertical slice is:
 
@@ -131,6 +136,8 @@ Keep Paperclip authoritative for:
 - governance approvals and board controls.
 
 The harness must not become authoritative for any of these.
+
+The database is authoritative. A connected runner or remote backend is an active producer, not the sole owner of session truth. If a provider cannot resume state that was never durably exposed, the normalized session must become explicitly degraded or unrecoverable; Paperclip must not manufacture a replacement provider session and label it resumed.
 
 ### 2.3 Existing live-event infrastructure
 
@@ -421,6 +428,9 @@ These tools are capability-scoped to the current run. They do not expose the gen
 
 ```text
 NativeSessionRuntime
+  ├── NativeSessionBackend
+  │     ├── RunnerBackend
+  │     └── RemoteAgentBackend
   ├── RunnerRegistry
   ├── RunnerCommandService
   ├── NativeEventIngestor
@@ -430,6 +440,13 @@ NativeSessionRuntime
   ├── NativeResultFinalizer
   └── NativeRunRecoveryService
 ```
+
+`NativeSessionBackend` is the control-plane boundary for normalized session behavior. Both initial backend types expose the same sessions, turns, capabilities, events, runtime requests, results, and recovery states:
+
+- `RunnerBackend` sends PRP commands to `paperclip-runnerd`, which delegates to a local harness driver.
+- `RemoteAgentBackend` connects to a hosted agent platform through streaming HTTP, WebSocket, webhook, polling, or a provider SDK hidden behind the connector.
+
+Remote connectors preserve provider event IDs for deduplication and explicitly report unsupported capabilities. Environment placement and agent-session execution remain separate concepts; a hosted agent is not represented as a Paperclip sandbox unless Paperclip actually manages that environment.
 
 ### 5.3 Sandbox components
 
@@ -470,6 +487,36 @@ NativeRunBoundary
   └── NativeRunInspectorDrawer
 ```
 
+The browser subscription is a logical per-run stream. One company-scoped physical connection may carry many run topics, but every snapshot, cursor, command state, and event projection remains isolated by company and run identity.
+
+### 5.5 Interaction channels and transient media
+
+A channel adapter connects a human or external system to a normalized Paperclip session. Initial and future examples include the browser, voice gateways, Slack, Discord, email, and CopilotKit-style channel adapters.
+
+Channel adapters send normalized input and consume the durable event stream for control state, transcripts, tool events, runtime requests, approvals, results, and reconnect behavior. Audio frames and other latency-sensitive transient media may use a separate authenticated media channel bound to the same company, run, session, and turn identities.
+
+The database stores durable media metadata, transcripts, consent records, important markers, and artifact references. It does not need to store every audio frame as a normal run event. Paperclip remains authoritative for authorization, session binding, interruption, audit, and terminal state.
+
+### 5.6 MCP injection boundary
+
+MCP is separate from PRP and the harness driver protocol. Paperclip core owns the MCP gateway, catalog, authentication, authorization, policy, credentials, audit rules, and proxy behavior.
+
+Paperclip passes resolved, run-scoped MCP bindings to the native session backend. A binding may reference an authenticated MCP server, a Paperclip-controlled MCP proxy, or an approved local MCP server definition. A capable local driver translates that binding into the harness-native form, such as a server URL, command configuration, environment reference, or session initialization field.
+
+The runner may expose loopback transport or start an approved workspace-local MCP process when a harness requires it, but it does not become the authority for MCP permissions or long-term secrets. General MCP traffic must not be tunneled through PRP event messages.
+
+### 5.7 Standalone runner workspace
+
+The `packages/paperclip-runner` workspace must support protocol and driver development without booting the full Paperclip product. It includes:
+
+- a deterministic fake harness driver;
+- a minimal mock Paperclip control-plane harness that sends commands, ingests events, acknowledges cursors, and simulates reconnects;
+- a lightweight browser devtools/example page using the production schemas and reducer behavior;
+- standalone examples for real drivers, beginning with direct Codex and then ACP/acpx;
+- phase-level latency and throughput instrumentation that excludes unrelated Paperclip startup cost.
+
+These surfaces use the public runner protocol, fixtures, and reducer. They must not create a second control-plane contract or a test-only runner API.
+
 ---
 
 ## 6. Scope of the minimal spike
@@ -494,6 +541,11 @@ A detailed architecture does not require building every production feature in th
 14. Existing workspace finalization and issue/run finalization.
 15. Native run UI mounted inside the current task page.
 16. Instrumentation that separates sandbox, runner, harness, model, and UI latency.
+17. Language-neutral schemas and fixtures consumed by Rust and TypeScript conformance tests.
+18. Resolved MCP binding injection through an advertised driver capability.
+19. `NativeSessionBackend` with a runner backend and a fake remote-backend conformance implementation.
+20. Standalone fake driver, mock control plane, browser devtools page, real-driver examples, and performance harness inside the runner workspace.
+21. Channel and media extension points proven by conformance fixtures without requiring a production voice integration.
 
 ### 6.2 Explicit non-goals
 
@@ -510,6 +562,10 @@ A detailed architecture does not require building every production feature in th
 11. Broad Paperclip REST access from the model.
 12. Deleting the legacy skill or legacy adapter path.
 13. Designing manager delegation tools in the first vertical slice.
+14. Implementing every hosted agent platform connector.
+15. Shipping a production voice, telephony, Slack, Discord, email, or CopilotKit gateway.
+16. Storing transient audio frames in the canonical run-event log.
+17. Defining a separate fleet protocol or first-spike fleet product; fleet remains a future control-plane projection over existing runner, session, run, health, capability, event, and cursor primitives.
 
 ### 6.3 Architecture proof after the first vertical slice
 
@@ -532,7 +588,7 @@ That is the proof that the abstraction is real.
 1. A wake or user action requests execution.
 2. Paperclip validates agent invokability, budgets, policy, and assignment.
 3. Paperclip atomically checks out the issue and creates the heartbeat run.
-4. Paperclip resolves the runner profile and native driver.
+4. Paperclip resolves the native session backend, runner profile, native driver, and run-scoped MCP bindings.
 5. Environment orchestration acquires a lease.
 6. Workspace orchestration realizes the workspace.
 7. Paperclip creates a `runner_instance` expectation bound to the lease and run.
@@ -548,9 +604,9 @@ That is the proof that the abstraction is real.
 11. The runner and control plane negotiate protocol and capabilities.
 12. The control plane sends `run.prepare`.
 13. The runner validates the requested working directory and resource constraints.
-14. The control plane sends `session.open`.
+14. The control plane sends `session.open` with the resolved driver configuration and MCP bindings.
 15. The Codex driver starts `codex app-server` over local stdio.
-16. The driver initializes app-server and creates or resumes a thread.
+16. The driver injects supported MCP bindings, initializes app-server, and creates or resumes a thread.
 17. The runner emits `session.ready`.
 18. The control plane sends `turn.start` with the task envelope.
 19. The runner emits normalized typed events.
@@ -562,7 +618,19 @@ That is the proof that the abstraction is real.
 25. Paperclip applies issue status, handoff, cost, and work-product behavior.
 26. The run and environment lease are released or retained according to warm policy.
 
-### 7.2 Warm runner path
+### 7.2 Remote agent backend path
+
+1. Paperclip validates the run and creates the same durable run/session records used by the runner backend.
+2. `RemoteAgentBackend` opens or resumes the provider session through its connector.
+3. The connector reports normalized capabilities and preserves provider event IDs.
+4. Paperclip sends normalized turn and control commands through the backend.
+5. The connector consumes streaming responses, WebSocket events, webhooks, polling results, or SDK callbacks and emits canonical events through the normal ingestor.
+6. Unsupported steering, interruption, permissions, media, or MCP behavior is explicit in capabilities and UI degradation.
+7. Reconnect and recovery use the same durable snapshot, cursor, request, result, and terminal-state rules as the runner backend.
+
+The first spike needs a fake remote backend that passes conformance tests. It does not need a production connector for every hosted platform.
+
+### 7.3 Warm runner path
 
 If the environment lease and runner are still valid:
 
@@ -584,7 +652,7 @@ Warm reuse must never be inferred solely because a process exists. The runner re
 
 Paperclip decides whether reuse is legal.
 
-### 7.3 Browser reconnect path
+### 7.4 Browser reconnect path
 
 1. Browser fetches `native-snapshot`.
 2. Snapshot includes `lastSeq`.
@@ -593,7 +661,9 @@ Paperclip decides whether reuse is legal.
 5. The same reducer applies replay and live events.
 6. Items remain deduplicated by stable item ID and canonical event sequence.
 
-### 7.4 Control-plane restart path
+This is a logical per-run stream, not a requirement for one physical WebSocket per run.
+
+### 7.5 Control-plane restart path
 
 1. Runner WebSocket disconnects.
 2. Runner continues the harness unless its lease policy says otherwise.
@@ -885,6 +955,7 @@ Promote runner profiles to normalized tables only when at least one of these bec
 - enforcing command preconditions;
 - keeping Paperclip credentials out of child processes;
 - validating working directory boundaries;
+- injecting Paperclip-resolved MCP bindings through drivers that advertise the required capability;
 - shutting down or draining on lease revocation.
 
 It is not responsible for:
@@ -897,6 +968,7 @@ It is not responsible for:
 - issue state transitions;
 - deciding that prose means success;
 - autonomous retry policy across Paperclip attempts.
+- MCP catalog, gateway policy, long-term credentials, or authorization decisions.
 
 ### 9.2 Language and packaging
 
@@ -911,6 +983,8 @@ Recommended production implementation:
 - no package install at run time;
 - optional embedded SQLite for the local outbox;
 - protocol types generated or validated from shared JSON Schema.
+
+JSON Schema and the shared protocol fixture corpus are the language-neutral source of truth. TypeScript and Rust types must be generated from or checked against that source, and both implementations must pass the same conformance and fault tests. No TypeScript or Rust implementation detail may become required wire behavior.
 
 Keep the Paperclip control plane and browser in TypeScript.
 
@@ -1555,6 +1629,8 @@ cancelled
 13. Control-plane commands are durable before transmission.
 14. Event ACK is sent only after transaction commit.
 15. Paperclip remains the source of truth for task and run status.
+16. The database remains authoritative across runner, connector, control-plane, and browser restarts.
+17. Transient media delivery cannot bypass Paperclip authorization or create terminal state outside the durable event path.
 
 ---
 
@@ -1606,6 +1682,12 @@ interface DriverCapabilities {
   interaction: {
     permissions: boolean;
     elicitation: boolean;
+  };
+
+  mcp: {
+    injectRemoteServers: boolean;
+    injectPaperclipProxy: boolean;
+    launchApprovedLocalServer: boolean;
   };
 
   completion: {
@@ -3043,6 +3125,20 @@ Run at deterministic points:
 - legacy fallback;
 - accessibility and keyboard operation.
 
+### 27.7 Extension-point and standalone tests
+
+- inject an authenticated remote MCP server binding through a capable fake driver;
+- inject a Paperclip MCP proxy binding without exposing its long-term credential to the harness;
+- reject an MCP binding when the driver lacks the required capability;
+- prove that PRP carries binding configuration and canonical tool events, not general MCP traffic;
+- drive start, steer, interrupt, permission resolution, stop, replay, and reconnect through the standalone browser page and mock control plane;
+- run the same fixtures and reducer assertions in standalone and production-integration tests;
+- preserve channel, run, session, and turn identity across a simulated voice interrupt;
+- keep transient media frames off the canonical event log while persisting transcript and consent metadata;
+- run the fake remote backend through session, turn, event, request, result, deduplication, and recovery conformance;
+- report unsupported remote-backend capabilities without presenting non-functional UI controls;
+- compare cold start, warm start, command acknowledgement, first event, replay, and terminalization without full Paperclip startup cost.
+
 ---
 
 ## 28. Rollout and compatibility
@@ -3544,6 +3640,49 @@ runner/crates/driver-acp/
 
 ---
 
+### NR-015 — Standalone workspace and extension-point conformance
+
+**Goal:** Prove that runner development, MCP injection, channel/media boundaries, and remote backends can evolve without booting the full Paperclip product or changing the canonical session model.
+
+**Primary files:**
+
+```text
+packages/paperclip-runner/
+  protocol/
+  fixtures/
+  drivers/fake/
+  backends/fake-remote/
+  devtools/mock-control-plane/
+  devtools/browser/
+  examples/codex/
+  examples/acp/
+  benchmarks/
+```
+
+**Deliverables:**
+
+- language-neutral schemas and fixture corpus;
+- deterministic fake driver and fake remote backend;
+- mock Paperclip control-plane harness;
+- lightweight browser devtools/example page;
+- MCP binding capability and injection fixtures;
+- channel and media side-channel fixtures;
+- direct Codex and ACP/acpx standalone examples;
+- phase-level benchmark commands and reports.
+
+**Acceptance:**
+
+- standalone and production integration use the same protocol schemas, fixtures, and reducer behavior;
+- replay and reconnect tests pass without the full Paperclip application;
+- MCP credentials remain outside model-visible configuration;
+- simulated voice interruption preserves normalized identities and durable audit events;
+- the fake remote backend passes the common native-session conformance suite;
+- benchmarks isolate runner and harness overhead from unrelated application startup.
+
+**Dependencies:** NR-001, NR-004, NR-005; integrates with NR-007, NR-009, NR-010, and NR-012.
+
+---
+
 ## 30. Suggested issue dependency graph
 
 ```text
@@ -3568,7 +3707,8 @@ NR-003 + NR-004 + NR-005
           |
        ├── NR-012 ACP/acpx
        ├── NR-013 Providers
-       └── NR-014 Benchmarks/ADR
+       ├── NR-014 Benchmarks/ADR
+       └── NR-015 Standalone workspace/extensions
 ```
 
 Parallelizable branches:
@@ -3577,6 +3717,8 @@ Parallelizable branches:
 - UI reducer against fake fixtures while Codex driver is built;
 - provider bootstrap after runner handshake is stable;
 - security tests alongside runner auth.
+- standalone mock control plane and browser devtools after NR-001 fixtures stabilize;
+- fake remote backend and channel/MCP conformance alongside the direct driver path.
 
 ---
 
@@ -3599,6 +3741,9 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Existing finalization and legal issue transition still run.
 - [ ] Legacy adapters are unchanged.
 - [ ] Runtime permission and governance approval are separate.
+- [ ] Database state remains authoritative when the active producer disconnects.
+- [ ] Runner and fake remote backends expose the same normalized session contract.
+- [ ] Fleet remains a future projection and does not require a separate first-spike protocol.
 
 ### Sandbox/network
 
@@ -3616,6 +3761,8 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Interruption preserves session.
 - [ ] Accepted turns terminalize exactly once.
 - [ ] No silent replacement session.
+- [ ] Driver MCP capabilities are negotiated and resolved bindings are injected without exposing long-term credentials.
+- [ ] Unsupported remote-backend capabilities degrade explicitly.
 
 ### UI
 
@@ -3626,6 +3773,8 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] No duplicate items after replay.
 - [ ] No healthy-state polling is required.
 - [ ] Final result is unambiguous.
+- [ ] The run subscription behaves as a logical per-run stream over a shared company connection.
+- [ ] A simulated channel/voice interrupt uses the same durable command and event state.
 
 ### Reliability and performance
 
@@ -3635,6 +3784,11 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Interrupt/completion race is deterministic.
 - [ ] Startup phases and transport latency are measured.
 - [ ] Direct Codex and ACPX paths can be compared fairly.
+- [ ] Rust and TypeScript implementations pass the same language-neutral fixtures.
+- [ ] Standalone mock-control-plane replay and reconnect tests pass.
+- [ ] The lightweight browser devtools page exercises start, steer, interrupt, permission resolution, stop, replay, and reconnect.
+- [ ] Fake remote-backend conformance passes.
+- [ ] Transient media stays off the canonical event log while durable transcript and consent metadata remain recoverable.
 
 ---
 
@@ -3654,6 +3808,12 @@ Unless implementation evidence forces a change:
 10. Paperclip owns task state and governance.
 11. The model receives no Paperclip operational skill in native mode.
 12. Legacy execution remains available behind a feature flag.
+13. The database is authoritative; connected producers are not the sole owners of session truth.
+14. MCP policy and credentials remain in Paperclip core; PRP only carries resolved binding configuration and canonical events.
+15. JSON Schema and fixtures are language-neutral protocol authority.
+16. Hosted agent platforms use `NativeSessionBackend` rather than being modeled as fake sandboxes.
+17. Transient media may use a side channel, but control, audit, transcript, and terminal state remain durable.
+18. Fleet is a future control-plane projection, not a first-spike protocol feature.
 
 ---
 
@@ -3752,4 +3912,3 @@ The spec was designed around these current Paperclip seams. Workers should re-op
 - **Rivet sandbox-agent:** small static sandbox daemon and universal harness adapter; possible southbound implementation, not Paperclip's northbound authority.
 - **Daytona:** outbound worker connection and snapshot/warm-sandbox pattern.
 - **exe.dev:** persistent VM and system service pattern.
-
