@@ -1,7 +1,7 @@
 # Paperclip Native Runner Mode
 ## Minimal spike specification and production-compatible design
 
-**Document status:** Draft v0.4<br>
+**Document status:** Canonical working draft<br>
 **Date:** 2026-08-07<br>
 **Audience:** Paperclip control-plane, runtime, sandbox, adapter, and UI workers<br>
 **Primary goal:** Prove that Paperclip can deliver a Codex-TUI-quality live agent experience without loading the Paperclip skill into the model and without making the model operate Paperclip's control-plane API.
@@ -36,6 +36,22 @@ Harness Driver
 Raw agent harness
 ```
 
+Provider-managed services use the sibling path:
+
+```text
+Paperclip control plane and task UI
+          |
+          | NativeSessionBackend
+          v
+RemoteAgentBackend
+          |
+          | Contract B2: provider API / SDK / stream / webhook
+          v
+AWS AgentCore, Cursor Cloud Agents, or another managed service
+```
+
+A provider-side Paperclip gateway may speak PRP instead when the platform can host it. The normalized session contract stays the same in both paths.
+
 The essential architectural choices are:
 
 1. **The sandbox runner initiates the network connection.** Paperclip does not require an inbound port into Daytona, exe.dev, or another provider.
@@ -56,6 +72,8 @@ The essential architectural choices are:
 16. **Agent-reported dispositions are advisory inputs, not status mutations.** Paperclip validates evidence, blockers, reviewer paths, continuations, and transition legality before changing an issue status.
 17. **Credential delivery has two explicit local modes plus provider-native binding.** Paperclip may materialize narrowly scoped environment values for compatibility, provision a short-lived broker/proxy session so the workload can call approved services without possessing long-term credentials, or bind identity/secrets through a managed runtime's control plane.
 18. **The protocol is language-neutral and independently testable.** JSON Schema, fixtures, and conformance behavior are authoritative for Rust, TypeScript, and future implementations.
+19. **MCP Apps are a negotiated interactive-UI extension, not generic tool text.** Paperclip preserves app resource declarations, capability negotiation, lifecycle, tool input/results, and auditable user actions so the browser can host supported apps in a sandbox without coupling PRP to iframe transport.
+20. **Remote services have an explicit connector contract.** A managed runtime can either host a PRP-speaking Paperclip gateway or use a control-plane connector that implements the same normalized session semantics without running `paperclip-runnerd`.
 
 The minimal vertical slice is:
 
@@ -236,9 +254,12 @@ The task page must render, as first-class typed objects:
 - usage and cost updates;
 - artifacts;
 - verification/test evidence;
+- MCP App views and their loading, ready, interaction, error, and teardown states;
 - terminal result.
 
 A raw terminal remains useful for debugging or harnesses with no typed protocol, but it is not the canonical model for the native path.
+
+MCP App fidelity is more than displaying the text result of an MCP tool call. When the MCP Apps extension is negotiated, the host must preserve the tool-to-`ui://` resource association, fetch and validate the declared app resource, render supported HTML in a sandboxed iframe, exchange the extension's JSON-RPC messages over a controlled `postMessage` bridge, and deliver tool input/results and host-context updates to the same stable view. Text-only fallback remains available when the extension or MIME type is unsupported.
 
 ### 3.3 Responsiveness
 
@@ -267,7 +288,8 @@ The UI does not reconstruct identity from text. It receives stable IDs for:
 - command;
 - permission request;
 - input request;
-- artifact.
+- artifact;
+- MCP App resource and view instance.
 
 Items appear once. Streaming updates mutate the same item. Reconnect does not duplicate them.
 
@@ -327,6 +349,7 @@ Use these terms consistently.
 | **Runtime request** | A pending permission or elicitation request from the harness. |
 | **Control-plane approval** | A Paperclip governance decision. It is not a runtime request. |
 | **Artifact** | A durable file, diff, report, test result, URL, or other output referenced by the run. |
+| **MCP App view** | A stable browser-hosted instance of a negotiated MCP `ui://` resource, linked to its run, session, turn, item, and tool call. |
 
 ### 4.1 Required identity graph
 
@@ -366,7 +389,7 @@ The spike should implement `new_per_run` and `reuse_per_issue`. `reuse_per_works
 
 ### 5.1 Northbound and southbound contracts
 
-There are three separate contracts.
+There are three separate contracts. Contract B has local and remote profiles because a provider-managed service does not necessarily contain `paperclip-runnerd`.
 
 #### Contract A: Paperclip Runner Protocol
 
@@ -389,7 +412,7 @@ This protocol owns:
 
 This is the durable WAN protocol.
 
-#### Contract B: Harness Driver API
+#### Contract B1: Harness Driver API
 
 Between `paperclip-runnerd` and a local harness.
 
@@ -405,6 +428,26 @@ Examples:
 - PTY fallback.
 
 This is local and replaceable.
+
+#### Contract B2: Remote Provider Connector API
+
+Between the Paperclip control plane and a provider-managed runtime or coding-agent service that Paperclip does not launch as a local harness.
+
+Examples:
+
+- AWS Bedrock AgentCore Runtime invoke, stream, session, and control APIs;
+- Cursor Cloud Agents create, follow-up, status, conversation, webhook, and stop APIs;
+- Devin, Jules, or GitHub Copilot cloud-agent task APIs;
+- a Paperclip-managed gateway deployed inside a cloud runtime.
+
+Every connector implements the same normalized session, turn, event, request, capability, result, and recovery semantics exposed by `NativeSessionBackend`. Provider-specific polling, webhooks, event IDs, SDK callbacks, and cancellation states remain behind the connector.
+
+There are two valid adoption modes:
+
+1. **Native PRP gateway.** When the remote platform can run Paperclip software, deploy a small provider-side gateway that speaks Contract A and adapts the provider locally. The control plane treats it as a remote runner connection, but environment ownership remains explicit.
+2. **Control-plane connector.** When the provider exposes only a hosted API, implement Contract B2 in Paperclip core. The connector does not speak PRP on the wire, but it must preserve PRP-equivalent command intent, ordered/idempotent event ingestion, acknowledgements or provider cursors, liveness, capability advertisement, recovery, and terminal semantics.
+
+Contract B2 is remote and replaceable. It must not assume local process supervision, filesystem access, a PTY, or Paperclip-owned sandbox controls. The UI exposes only capabilities the provider can actually enforce.
 
 #### Contract C: Optional model-facing semantic tools
 
@@ -485,13 +528,21 @@ NativeRunBoundary
   │     ├── ApprovalItem
   │     ├── InputRequestItem
   │     ├── UsageItem
+  │     ├── McpAppItem
   │     └── ResultItem
   ├── LiveRunComposer
+  ├── McpAppHost
+  │     ├── UiResourceResolver
+  │     ├── SandboxedAppFrame
+  │     ├── AppBridge
+  │     └── AppPermissionBoundary
   ├── RunArtifactPanel
   └── NativeRunInspectorDrawer
 ```
 
 The browser subscription is a logical per-run stream. One company-scoped physical connection may carry many run topics, but every snapshot, cursor, command state, and event projection remains isolated by company and run identity.
+
+`McpAppHost` is a Paperclip web capability, not code supplied by a harness driver. It advertises supported MCP Apps extension versions and MIME types, creates the sandboxed iframe, enforces resource CSP and permission policy, proxies only authorized app requests, and binds every app view to company, run, normalized session, turn, item, tool-call, and UI-resource identity.
 
 ### 5.5 Interaction channels and transient media
 
@@ -549,6 +600,19 @@ MCP is separate from PRP and the harness driver protocol. Paperclip core owns th
 Paperclip passes resolved, run-scoped MCP bindings to the native session backend. A binding may reference an authenticated MCP server, a Paperclip-controlled MCP proxy, or an approved local MCP server definition. A capable local driver translates that binding into the harness-native form, such as a server URL, command configuration, environment reference, or session initialization field.
 
 The runner may expose loopback transport or start an approved workspace-local MCP process when a harness requires it, but it does not become the authority for MCP permissions or long-term secrets. General MCP traffic must not be tunneled through PRP event messages.
+
+MCP Apps uses the optional `io.modelcontextprotocol/ui` extension. Paperclip must negotiate support explicitly and advertise the MIME types its browser host can render. A tool's `_meta.ui.resourceUri` association, the referenced `ui://` resource, `text/html;profile=mcp-app` content, resource CSP, requested browser permissions, tool visibility, and app protocol version are typed data; they must not be discarded into an opaque log string.
+
+The boundary is:
+
+- the MCP server remains authoritative for tool definitions, UI resources, and tool results;
+- Paperclip core remains authoritative for extension negotiation, resource authorization, audit, tool-call proxying, host capabilities, and durable run linkage;
+- the browser `McpAppHost` remains authoritative for iframe sandboxing, `postMessage` origin/channel validation, CSP/permission enforcement, display mode, and view teardown;
+- `paperclip-runnerd`, a harness driver, or a remote provider connector only reports normalized MCP App discovery and lifecycle data that it can observe; it does not render third-party HTML or grant browser capabilities.
+
+The canonical run stream stores enough typed lifecycle and linkage data to reconstruct the app item after browser refresh. The high-volume iframe message stream does not automatically become durable PRP traffic. Paperclip durably records security- and workflow-relevant actions such as resource selection, initialization outcome, app-initiated tool calls, user-approved capability use, context-update requests, errors, and teardown. Ephemeral size, animation, and presentation messages may stay browser-local.
+
+If a local harness or hosted provider already acts as an MCP Apps host, its connector must expose whether Paperclip receives the original UI resource and protocol messages, a provider-rendered surface, or only a text/structured fallback. Paperclip must never label a fallback as an interactive app. The preferred mode is host handoff: Paperclip receives the resource declaration and tool data and renders the app in its own browser boundary.
 
 ### 5.8 Standalone runner workspace
 
@@ -670,8 +734,10 @@ That is the proof that the abstraction is real.
 3. The connector reports normalized capabilities and preserves provider event IDs.
 4. Paperclip sends normalized turn and control commands through the backend.
 5. The connector consumes streaming responses, WebSocket events, webhooks, polling results, or SDK callbacks and emits canonical events through the normal ingestor.
-6. Unsupported steering, interruption, permissions, media, or MCP behavior is explicit in capabilities and UI degradation.
-7. Reconnect and recovery use the same durable snapshot, cursor, request, result, and terminal-state rules as the runner backend.
+6. If the provider can host a Paperclip gateway, that gateway may use PRP directly; otherwise the control-plane connector preserves PRP-equivalent ordering, idempotency, liveness, recovery, and terminal semantics behind Contract B2.
+7. MCP Apps capability reporting distinguishes Paperclip-hostable UI resources from provider-rendered or text-only fallbacks.
+8. Unsupported steering, interruption, permissions, media, MCP, or MCP Apps behavior is explicit in capabilities and UI degradation.
+9. Reconnect and recovery use the same durable snapshot, cursor, request, result, and terminal-state rules as the runner backend.
 
 The first spike needs a fake remote backend that passes conformance tests. It does not need a production connector for every hosted platform.
 
@@ -1557,6 +1623,24 @@ item.completed
 item.failed
 ```
 
+#### MCP App view
+
+```text
+mcp_app.discovered
+mcp_app.resource.resolved
+mcp_app.initializing
+mcp_app.ready
+mcp_app.tool_input
+mcp_app.tool_result
+mcp_app.action.requested
+mcp_app.action.resolved
+mcp_app.host_context.changed
+mcp_app.failed
+mcp_app.teardown
+```
+
+These events describe durable run-visible lifecycle and security-relevant actions. They do not mirror every iframe `postMessage`. Each event carries stable `viewId`, `resourceUri`, `toolCallId`, `itemId`, and negotiated extension/MIME-type fields when applicable. Resource content is referenced by an authorized content handle plus digest rather than copied into every event.
+
 `item.started` includes a typed item descriptor:
 
 ```ts
@@ -1573,6 +1657,7 @@ type NativeItemKind =
   | "input_request"
   | "usage"
   | "artifact"
+  | "mcp_app"
   | "verification"
   | "diagnostic";
 ```
@@ -1812,6 +1897,13 @@ interface DriverCapabilities {
     injectRemoteServers: boolean;
     injectPaperclipProxy: boolean;
     launchApprovedLocalServer: boolean;
+    apps: {
+      discoverUiResources: boolean;
+      preserveToolUiLinkage: boolean;
+      relayToolInputAndResults: boolean;
+      paperclipHostHandoff: boolean;
+      providerRenderedSurface: boolean;
+    };
   };
 
   completion: {
@@ -1882,6 +1974,47 @@ interface DriverSession {
 The UI only renders controls that the active driver supports.
 
 The spike target for direct Codex is L5.
+
+MCP Apps support is an orthogonal negotiated capability. A backend can be L5 for normal typed events while still reporting no interactive UI support. The browser renders an interactive app only when `paperclipHostHandoff` is true and the negotiated extension version, MIME type, resource policy, and content integrity checks pass.
+
+### 13.5 Remote Provider Connector API
+
+Contract B2 uses a control-plane connector rather than the local `HarnessDriver` process interface:
+
+```ts
+interface RemoteProviderConnector {
+  descriptor(): Promise<RemoteProviderDescriptor>;
+
+  openSession(
+    input: OpenRemoteProviderSessionInput,
+  ): Promise<RemoteProviderSession>;
+
+  recoverSession?(
+    snapshot: PersistedRemoteProviderSession,
+  ): Promise<RemoteProviderRecoveryResult>;
+}
+
+interface RemoteProviderSession {
+  ids(): {
+    providerResourceId?: string | null;
+    providerSessionId: string;
+    displayId?: string | null;
+  };
+
+  capabilities(): Promise<NativeSessionCapabilities>;
+  events(input: { afterCursor?: string | null }): AsyncIterable<ProviderEvent>;
+  startTurn(input: StartNativeTurnInput): Promise<{ providerTurnId?: string | null }>;
+  steer?(input: NativeSteerInput): Promise<void>;
+  interrupt?(input: NativeInterruptInput): Promise<ProviderControlOutcome>;
+  cancel?(input: NativeCancelInput): Promise<ProviderControlOutcome>;
+  resolveRequest?(input: ResolveNativeRequestInput): Promise<void>;
+  snapshot(): Promise<RemoteProviderSessionSnapshot>;
+  reconcile(): Promise<RemoteProviderReconciliation>;
+  close(input: { reason: string }): Promise<ProviderControlOutcome>;
+}
+```
+
+The descriptor states how the connector observes work (`stream`, `webhook`, `poll`, or `sdk_callback`), the provider event-ID and cursor model, retention limits, cancellation guarantees, environment ownership, artifact access, MCP/MCP Apps fidelity, and which controls are advisory versus confirmed. A connector must pass the same normalized session conformance suite as `RunnerBackend`, with provider-specific fixtures for duplicate webhooks, cursor gaps, expired history, ambiguous cancellation, and restart reconciliation.
 
 ---
 
@@ -2512,6 +2645,7 @@ Runner: trusted Paperclip runtime component
 Harness/model process: untrusted workload
 Repository/task content: potentially adversarial
 External tools/content: potentially adversarial
+MCP App HTML/scripts/resources: untrusted active content
 ```
 
 ### 20.2 Credential rules
@@ -2582,6 +2716,7 @@ Minimum:
 - request rate limits;
 - egress policy inherited from sandbox provider or environment configuration.
 - support for a run-scoped credential broker configuration and fail-closed launch when policy requires brokered egress.
+- sandboxed MCP App iframes with no same-origin access to the Paperclip application, allowlisted `postMessage` channels, enforced resource CSP, least-privilege permission policy, and explicit teardown.
 
 Optional later:
 
@@ -4123,6 +4258,8 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] Accepted turns terminalize exactly once.
 - [ ] No silent replacement session.
 - [ ] Driver MCP capabilities are negotiated and resolved bindings are injected without exposing long-term credentials.
+- [ ] MCP Apps support is negotiated through `io.modelcontextprotocol/ui`; unsupported clients receive an honest text/structured fallback.
+- [ ] Tool-to-`ui://` resource linkage, app lifecycle, tool input/results, and security-relevant app actions survive replay without persisting every iframe message.
 - [ ] Unsupported remote-backend capabilities degrade explicitly.
 
 ### UI
@@ -4134,6 +4271,8 @@ The spike is successful only if all of the following are demonstrated.
 - [ ] No duplicate items after replay.
 - [ ] No healthy-state polling is required.
 - [ ] Final result is unambiguous.
+- [ ] Supported MCP Apps render in a sandboxed Paperclip browser host and reconstruct after refresh with the same stable view/item identity.
+- [ ] Provider-rendered or text-only MCP App fallbacks are labeled accurately and never presented as Paperclip-hosted interactive views.
 - [ ] The run subscription behaves as a logical per-run stream over a shared company connection.
 - [ ] A simulated channel/voice interrupt uses the same durable command and event state.
 - [ ] Slack, email, voice, webhook, and provider-owned channel ingress cannot bypass Paperclip core authorization, durable acceptance, or audit.
@@ -4176,6 +4315,8 @@ Unless implementation evidence forces a change:
 16. Hosted agent platforms use `NativeSessionBackend` rather than being modeled as fake sandboxes.
 17. Transient media may use a side channel, but control, audit, transcript, and terminal state remain durable.
 18. Fleet is a future control-plane projection, not a first-spike protocol feature.
+19. MCP Apps rendering is a Paperclip core/browser responsibility; neither a runner nor a hosted provider can bypass host authorization and iframe security policy.
+20. Remote providers adopt the normalized runner semantics through either a PRP gateway or Contract B2; they are not forced into a fake local-`runnerd` topology.
 
 ---
 
@@ -4282,7 +4423,7 @@ The spec was designed around these current Paperclip seams. Workers should re-op
 - **Daytona:** outbound worker connection and snapshot/warm-sandbox pattern.
 - **exe.dev:** persistent VM and system service pattern.
 
-## Appendix C — Sources reviewed for v0.4
+## Appendix C — Sources reviewed
 
 Source review date: 2026-08-07.
 
@@ -4300,3 +4441,6 @@ Source review date: 2026-08-07.
 - Google Vertex AI Agent Engine managed runtime, custom query/stream operations, sessions, and bidirectional streaming: `https://cloud.google.com/vertex-ai/generative-ai/docs/reasoning-engine/overview`, `https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/develop/custom`, `https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/sessions/manage-sessions-api`, and `https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/bidirectional-streaming`.
 - Microsoft Agent Framework hosting, self-hosting, durable extension, and Foundry Hosted Agents: `https://learn.microsoft.com/en-us/agent-framework/get-started/hosting`, `https://learn.microsoft.com/en-us/agent-framework/hosting/self-hosting`, `https://learn.microsoft.com/en-us/agent-framework/integrations/durable-extension`, and `https://learn.microsoft.com/en-us/agent-framework/hosting/foundry-hosted-agent`.
 - Infisical Agent Vault credential-broker and HTTP/HTTPS proxy model: `https://github.com/Infisical/agent-vault` and `https://docs.agent-vault.dev/reference/cli`.
+- MCP Apps overview and host behavior: `https://modelcontextprotocol.io/extensions/apps/overview`.
+- Stable MCP Apps extension specification (SEP-1865, dated 2026-01-26), including `io.modelcontextprotocol/ui` capability negotiation, `ui://` resources, `text/html;profile=mcp-app`, sandboxing, lifecycle messages, tool input/results, and app-to-host JSON-RPC: `https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx`.
+- MCP Apps App Bridge API for host-side iframe rendering, message routing, tool proxying, and policy enforcement: `https://apps.extensions.modelcontextprotocol.io/api/modules/app-bridge.html`.
