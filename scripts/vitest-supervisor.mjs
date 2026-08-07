@@ -692,6 +692,17 @@ export class VitestInvocationSupervisor {
     return current;
   }
 
+  async waitForRootReferences(waitMs) {
+    if (!this.root) return [];
+    const deadline = Date.now() + waitMs;
+    let current = await findRootReferences(this.root, this.invocationId);
+    while (current.length > 0 && Date.now() < deadline) {
+      await delay(100);
+      current = await findRootReferences(this.root, this.invocationId);
+    }
+    return current;
+  }
+
   async terminateBoundary() {
     if (this.cleanupPromise) return this.cleanupPromise;
     this.cleanupPromise = (async () => {
@@ -723,7 +734,7 @@ export class VitestInvocationSupervisor {
   async cleanup({ retainReason = null, retainedLimit = 3 } = {}) {
     const cleanupStarted = Date.now();
     const survivors = await this.terminateBoundary();
-    const references = this.root ? await findRootReferences(this.root, this.invocationId) : [];
+    const references = await this.waitForRootReferences(this.graceMs);
     let invariantFailureReason = null;
     let removed = false;
     if (this.identityMismatches.length > 0) {

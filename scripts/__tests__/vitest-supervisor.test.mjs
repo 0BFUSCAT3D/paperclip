@@ -210,6 +210,21 @@ test("active cwd guard prevents premature root deletion", { skip: process.platfo
   assert.equal(cleanup.removed, true);
 });
 
+test("cleanup waits for transient root references to drain", { skip: process.platform !== "linux" }, async (t) => {
+  const parent = await withTempParent(t);
+  const run = supervisor(parent, "transient-cwd-reference", { graceMs: 1_000 });
+  await run.initialize();
+  const holder = spawn(process.execPath, ["-e", "setTimeout(()=>process.exit(0),150)"], {
+    cwd: run.root,
+    stdio: "ignore",
+  });
+  t.after(() => holder.kill("SIGKILL"));
+  await waitFor(async () => (await findRootReferences(run.root)).some((reference) => reference.pid === holder.pid));
+  const cleanup = await run.cleanup();
+  assert.equal(cleanup.removed, true);
+  assert.deepEqual(cleanup.references, []);
+});
+
 test("host-wide slots enforce the configured cap", async (t) => {
   const parent = await withTempParent(t);
   const env = { PAPERCLIP_TEST_CONTROL_DIR: path.join(parent, "control") };
