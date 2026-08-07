@@ -6,7 +6,7 @@ This document is the implementation-phase plan for [`paperclip-native-runner-spi
 
 All implementation starts inside `packages/paperclip-runner/` with protocol and mock-control-plane layers. These standalone phases do not modify Paperclip control-plane semantics. A real Paperclip bridge is a late, separately reviewed phase after the standalone contract passes conformance tests.
 
-Phase 0 and Phase 1 are complete. Their runnable demos, tests, package-local documentation, tutorials, journal entries, and evidence satisfy the first task-creation gate. The human authorized Phase 2 on August 7, 2026. Create only the Phase 2 implementation issue now. Keep Phase 3 and later issues deferred until the Phase 2 human checkpoint is complete.
+Phase 0, Phase 1, and Phase 2 are complete. Their runnable demos, tests, package-local documentation, tutorials, journal entries, screenshots, and evidence satisfy the first three task-creation gates. The human accepted Phase 2 and authorized Phase 3 on August 7, 2026. Create only the Phase 3 task graph now. Keep Phase 4 and later issues deferred until the Phase 3 human checkpoint is complete.
 
 ## Non-negotiable delivery rules
 
@@ -169,13 +169,36 @@ Every phase child issue uses the same completion checklist:
 - reconnect, replay, reconciliation, drain, and revoke behavior;
 - fault-injection commands for lost ACK, socket drop, runner restart, harness restart, and malformed input.
 
+The Phase 3 implementation remains package-local. The mock core acts as the
+remote control-plane peer and owns only test bootstrap tickets, leases,
+commands, acknowledgements, and diagnostics. Phase 3 must not modify or import
+`server/`, `ui/`, `packages/db/`, or production control-plane behavior.
+
+The runnable proof must establish these recovery invariants:
+
+- one stable runner, session, turn, item, command, and event identity survives reconnect;
+- replay starts from durable acknowledgement and source-cursor state rather than creating a replacement session;
+- a lost acknowledgement may repeat transport delivery but not the logical event or command effect;
+- P0 lifecycle, request, artifact, verification, and terminal events are never dropped by backpressure;
+- restart recovery either resumes the same durable session or reports an explicit recoverable failure;
+- drain and revoke stop new work without silently discarding durable events;
+- diagnostics explain connection, lease, outbox, acknowledgement, replay, and storage state without exposing secrets.
+
 **Tests/evidence:** reconnect matrix, lost-ACK idempotency, command deduplication, source cursor continuity, P0 event preservation, bounded storage, secret-redaction tests.
+
+The evidence bundle must include exact command output for each fault, a browser
+screenshot of recovery diagnostics, a package verification record, and an OKF
+journal entry that links decisions, failures, and fixes. The Phase 3 tutorial
+must start with Simplified English sections that explain what the phase is and
+what the runnable proof establishes. It must guide a human through at least a
+socket drop, a lost acknowledgement, and one restart scenario. Add the tutorial
+to the package index and cumulative end-to-end tutorial.
 
 **Owners/review:** CodexCoder implementation; SecurityEngineer mandatory auth, secret, filesystem, and network review; QA executes the failure tutorial.
 
 **Depends on:** Phase 2.
 
-**Human checkpoint:** follow a “break it on purpose” tutorial and verify recovery status in both CLI diagnostics and browser UI.
+**Human checkpoint:** follow a “break it on purpose” tutorial and verify recovery status in both CLI diagnostics and browser UI. Do not create Phase 4 tasks until the human accepts this checkpoint.
 
 ## Phase 4 — Skillless Codex reference driver
 
