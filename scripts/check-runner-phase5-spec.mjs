@@ -121,6 +121,9 @@ check("fixture IDs and required fields are valid", () => {
     if (!fixture.given || requiredGiven.some((key) => !(key in fixture.given))) {
       throw new Error(`${fixture.id}: incomplete given facts`);
     }
+    if (fixture.given.reviewGate !== undefined && !["completion", "mid_work"].includes(fixture.given.reviewGate)) {
+      throw new Error(`${fixture.id}: invalid reviewGate`);
+    }
     if (!fixture.expected || requiredExpected.some((key) => !(key in fixture.expected))) {
       throw new Error(`${fixture.id}: incomplete expected facts`);
     }
@@ -208,16 +211,29 @@ check("non-terminal status fixtures carry an atomic liveness path", () => {
   return "in_review, blocked, and in_progress paths validated";
 });
 
-check("duplicate attention cannot create an unbounded loop", () => {
+check("duplicate attention creates no status decision or unbounded loop", () => {
   const duplicates = corpus.fixtures.filter((fixture) => fixture.expected.reasonCode === "attention_duplicate_suppressed");
   if (duplicates.length === 0) throw new Error("no duplicate-attention fixture");
   const unsafe = duplicates.filter((fixture) =>
+    fixture.expected.decisionCount !== 0 ||
     fixture.expected.maxWakeCount !== 0 ||
     fixture.expected.maxNotificationCount !== 0 ||
-    fixture.replay.maxSemanticDecisions > 1 ||
+    fixture.replay.maxSemanticDecisions !== 0 ||
     fixture.replay.maxDomainEffectsPerKey > 1);
-  if (unsafe.length) throw new Error(`unbounded duplicate fixture(s): ${unsafe.map((fixture) => fixture.id).join(", ")}`);
-  return `${duplicates.length} duplicate fixture(s) bounded at zero wakes/notifications`;
+  if (unsafe.length) throw new Error(`unsafe duplicate fixture(s): ${unsafe.map((fixture) => fixture.id).join(", ")}`);
+  return `${duplicates.length} duplicate fixture(s) bounded at zero decisions/wakes/notifications`;
+});
+
+check("completion-gating human judgment is explicit", () => {
+  const fixture = corpus.fixtures.find((candidate) => candidate.id === "human-authority-required");
+  if (!fixture) throw new Error("missing human-authority-required fixture");
+  if (!fixture.covers.decisionRows.includes("SD-11") ||
+      fixture.given.completionState !== "intentional_human_judgment" ||
+      fixture.given.reviewGate !== "completion" ||
+      fixture.expected.statusAction !== "in_review") {
+    throw new Error("human-authority-required does not pin the SD-11 completion-review branch");
+  }
+  return "human-authority-required pins reviewGate=completion";
 });
 
 check("replay effects are at-most-once per semantic key", () => {

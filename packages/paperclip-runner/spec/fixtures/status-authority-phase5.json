@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.status-authority-conformance.v1",
-  "corpusRevision": 1,
+  "corpusRevision": 2,
   "policyVersion": "status-authority-v1",
   "fixtures": [
     {
@@ -143,7 +143,7 @@
       "mode": "native",
       "covers": { "decisionRows": ["SD-11"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["required_review"],
-      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "nativeFinalization": "present", "completionState": "intentional_human_judgment", "trigger": "attention_candidate" },
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "nativeFinalization": "present", "completionState": "intentional_human_judgment", "reviewGate": "completion", "trigger": "attention_candidate" },
       "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "attention_requires_human_authority", "requiredEffects": ["create_interaction", "notify_owner"], "forbiddenEffects": ["bind_blocker"], "livePathKind": "interaction", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 1 },
       "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
@@ -153,8 +153,8 @@
       "covers": { "decisionRows": ["SD-12"], "terminalRows": [], "attentionRows": ["ATT-02", "ATT-03"], "livenessRows": [], "reconciliationRows": ["REC-02"], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["repeated_question", "excessive_human_request", "deterministic_replay"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "equivalent_attention_family", "trigger": "attention_candidate" },
-      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "attention_duplicate_suppressed", "requiredEffects": ["link_canonical_request"], "forbiddenEffects": ["create_interaction", "notify_owner", "enqueue_continuation"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
-      "replay": { "attempts": 6, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "attention_duplicate_suppressed", "requiredEffects": ["link_canonical_request"], "forbiddenEffects": ["create_interaction", "notify_owner", "enqueue_continuation"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 6, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
     },
     {
       "id": "attention-budget-exhausted",

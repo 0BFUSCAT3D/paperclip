@@ -4915,6 +4915,7 @@ interface StatusAuthorityConformanceFixtureV1 {
     reportedWorkDisposition: ReportedWorkDisposition | null;
     nativeFinalization: "present" | "missing" | "invalid" | "not_applicable";
     completionState: string;
+    reviewGate?: "completion" | "mid_work";
     trigger: string;
     fault?: string;
   };
@@ -4942,6 +4943,14 @@ interface StatusAuthorityConformanceFixtureV1 {
   };
 }
 ```
+
+`reviewGate` disambiguates an intentional human-judgment interaction that gates
+completion from one raised while productive work remains. A completion gate may
+resolve to `in_review` under SD-11; a mid-work interaction still requires the
+response-wake or preserve branches from that row. `decisionCount` counts status
+decisions newly persisted for the fixture stimulus. Linking an equivalent
+request to a pre-existing canonical family does not count that family's earlier
+decision.
 
 Fixture assertions are database assertions, not only response assertions. Every
 case records the terminal turn/run facts, original result/evidence retention,
