@@ -3,15 +3,16 @@
 ## Authority
 
 The JSON Schema files in [`protocol/schemas/`](../protocol/schemas/) are the
-language-neutral source of truth for the Phase 1 executable contract. The
+language-neutral source of truth for the Phase 1 and Phase 2 executable contract. The
 generated TypeScript schema module is checked against those files before every
 TypeScript typecheck. Rust consumes the same fixtures and must produce the same
 golden parity summaries.
 
 The broader normative protocol remains the
 [native-runner spike specification](../spec/paperclip-native-runner-spike-spec.md).
-Phase 1 intentionally implements only validation and static replay; it does not
-add transport, persistence, or live control-plane behavior.
+Phase 2 reuses this contract for local live events. It adds package-local stdio
+and stream envelopes, but it does not add durable transport, persistence, or
+production control-plane behavior.
 
 ## Version fields
 
@@ -58,6 +59,25 @@ required v2 protocol cannot be replayed by this consumer.
 The CLI and browser import the same `replayPhase1FixtureText` function, so
 validation, compatibility errors, and final snapshots cannot drift between the
 two surfaces.
+
+## Phase 2 local envelope rules
+
+- Mock-core commands use `paperclip.prp.command.v1` over stdin JSONL.
+- Runner output uses `paperclip.runner.stream.v1` over stdout JSONL.
+- Fake-harness commands use `paperclip.fake_harness.command.v1`.
+- Fake-harness output uses `paperclip.fake_harness.message.v1`.
+- An equivalent repeated `commandId` returns a duplicate receipt and has no
+  second driver effect. Reuse with different data is rejected.
+- A new command must use the next contiguous `controllerSeq`.
+- Harness logs are bounded diagnostic data. They are not canonical PRP events.
+- `run.result.proposed`, `harness.exited`, and `run.terminal` are separate facts
+  and appear in that order when a semantic result exists.
+- The live browser rejects an event with an invalid schema, run ID, or session
+  ID before it reaches the reducer.
+
+These envelopes are local Phase 2 implementation contracts. Phase 3 may add a
+durable outbound transport, but it must preserve the canonical PRP event and
+command semantics.
 
 ## Change policy
 

@@ -49,8 +49,9 @@ TypeScript schema constants/types -> validator -> deterministic reducer
 ```
 
 The Rust `runner-core` crate establishes the production language/package
-boundary and checks the same fixture summaries; it is not yet the Phase 2 runner
-daemon.
+boundary and checks the same fixture summaries. Phase 2 adds the package-local
+`paperclip-runnerd` and `fake-harness` binaries without changing that dependency
+direction.
 
 ## Language ownership
 
@@ -130,6 +131,43 @@ The browser is a Vite application under `devtools/browser/`. Its Button, Badge,
 Card, and Textarea are source-compatible adaptations of shadcn primitives; all
 visual values live in its local `styles.css` token layer. It imports the same
 replay module as the CLI and does not create a browser-only protocol model.
+
+## Phase 2 local process boundary
+
+```text
+TypeScript mock core
+  | PRP commands over stdin JSONL
+  v
+paperclip-runnerd (Rust supervisor)
+  | fake-harness commands over stdin JSONL
+  v
+fake-harness (Rust scripted driver)
+  | typed messages over stdout JSONL
+  v
+paperclip-runnerd -> canonical PRP events -> mock core
+                                      |
+                                      v
+                              browser NDJSON stream
+```
+
+The mock core starts one runner process. The runner creates a new process group
+for one fake harness and its workers. The runner clears the inherited
+environment and restores only the path needed to launch local executables. It
+captures stderr and scripted log messages in a bounded tail.
+
+The controller and harness links use newline-delimited JSON over stdio. This is
+the smallest local transport that keeps process ownership clear. The browser
+does not connect to the runner. A package-local Vite middleware exposes an HTTP
+start/action API and an NDJSON event stream from the TypeScript mock core.
+
+The runner publishes the structured semantic result before it publishes the
+harness process exit fact. It then emits one `run.terminal` event. A non-zero
+harness exit can coexist with a valid yielded result. Duplicate commands and
+duplicate terminal messages cannot repeat side effects or close the run twice.
+
+Every browser event passes `validatePrpEvent` and `applyPrpEvent`. When the run
+ends, the browser reduces the complete event list again and compares the replay
+snapshot with the live snapshot.
 
 ## Future integration rule
 

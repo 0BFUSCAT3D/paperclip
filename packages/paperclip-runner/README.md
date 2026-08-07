@@ -6,10 +6,12 @@ production runner direction is Rust; `runner/` is its Cargo workspace. The
 TypeScript surface remains a control-plane/client reference implementation.
 Phase 0 runs both implementations against one language-neutral fixture. Phase 1
 adds executable PRP schemas, a cross-language conformance corpus, deterministic
-static replay, and a standalone browser reference page. Neither phase imports or
-starts Paperclip's server, UI, CLI, or production database.
+static replay, and a standalone browser reference page. Phase 2 adds the Rust
+runner process, process-group supervision, a scripted fake harness over stdio
+JSONL, a TypeScript mock core, and validated live browser replay. These phases do
+not import or start Paperclip's server, UI, CLI, or production database.
 
-## Phase 0–1 quick start
+## Phase 0–2 quick start
 
 From the repository root:
 
@@ -33,10 +35,12 @@ Run only the tracer with:
 pnpm --filter @paperclipai/paperclip-runner trace:phase0
 ```
 
-Replay the Phase 1 happy path in the CLI or open the browser devtool:
+Replay the Phase 1 happy path, run a Phase 2 local session, or open the browser
+devtool:
 
 ```sh
 pnpm --filter @paperclipai/paperclip-runner replay:phase1
+pnpm --filter @paperclipai/paperclip-runner trace:phase2 -- --scenario happy-path
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 ```
 
@@ -44,9 +48,9 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 
 | Command | Purpose |
 |---|---|
-| `build` | Compile the TypeScript public surface, Rust workspace, and browser replay. |
+| `build` | Compile the TypeScript public surface, Rust workspace, and browser devtool. |
 | `typecheck` | Check TypeScript, Rust, generated schema sources, and browser types. |
-| `test` | Run Rust/TypeScript fixture, mock-contract, stable-output, and negative-boundary tests. |
+| `test` | Run Rust/TypeScript fixture, supervisor, fake-driver, live/replay, and boundary tests. |
 | `check:forbidden-imports` | Reject TypeScript imports and Cargo path dependencies that cross into Paperclip core. |
 | `check:phase0-parity` | Require byte-for-byte equivalent Rust and TypeScript tracer output. |
 | `check:phase1-goldens` | Require all reducer snapshots and cross-language summaries to match checked goldens. |
@@ -57,8 +61,11 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 | `trace:phase0:typescript` | Run the TypeScript reference tracer directly. |
 | `replay:phase1` | Validate and reduce a fixture to a final snapshot. |
 | `browser:dev` | Open the editable fixture/static replay reference page. |
-| `test:browser` | Build the browser page, exercise replay states, and capture the screenshot. |
-| `verify` | Run the complete Phase 0 and Phase 1 acceptance sequence. |
+| `trace:phase2` | Run one native local session through the Rust runner and fake harness. |
+| `record:phase2` | Capture a validated happy-path live trace as a replay fixture. |
+| `browser:dev` | Start the standalone live/replay browser devtool. |
+| `test:browser` | Exercise static replay and live scenarios, then capture screenshots. |
+| `verify` | Run the complete Phase 0, Phase 1, and Phase 2 acceptance sequence. |
 
 ## Navigate
 
@@ -66,6 +73,8 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Tutorial index](docs/index.md)
 - [Phase 0 hand-run tutorial](docs/tutorials/phase-00-standalone-tracer.md)
 - [Phase 1 hand-run tutorial](docs/tutorials/phase-01-static-replay.md)
+- [Phase 2 hand-run tutorial](docs/tutorials/phase-02-local-runner.md)
+- [Phase 2 local protocol reference](docs/phase-02-local-protocol.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
@@ -73,7 +82,6 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Implementation plan](spec/paperclip-native-runner-implementation-plan.md)
 - [Normative spike specification](spec/paperclip-native-runner-spike-spec.md)
 
-Phase 1 remains a static replay checkpoint, not the `paperclip-runnerd` daemon.
-Network transport, process supervision, live browser transport, production
-Paperclip integration, and real model harnesses remain behind later phase
-checkpoints in the implementation plan.
+Phase 2 is local and deterministic. It does not add durable network transport,
+reconnect, production Paperclip integration, or a real model harness. Those
+capabilities remain behind later checkpoints in the implementation plan.

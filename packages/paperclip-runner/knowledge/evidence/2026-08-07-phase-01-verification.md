@@ -115,8 +115,8 @@ parity, the Rust Phase 0 tracer, and the Phase 1 CLI replay all passed.
 
 [Phase 1 static replay screenshot](phase-01-static-replay.png)
 
-- PNG: 1440 × 1137, RGB
-- SHA-256: `eecdc71e35c76764916317239c2fd3dd1e2f60ab609ee48d12c2a1b6b67897ce`
+- PNG: 1440 × 1201, RGB (refreshed by the Phase 2 browser suite)
+- SHA-256: `9e77087e6bc16d3f8b7e730bde70eb2da11e359b71e24cd8ad7402a28f6680d0`
 - Shows editable happy-path fixture input, validated terminal snapshot, result
   summary, ordered nine-event timeline, and snapshot JSON disclosure.
 
