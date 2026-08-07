@@ -31,9 +31,26 @@ The standalone package does not reach backward into a Paperclip implementation.
 
 The Phase 0 TypeScript contracts are deliberately sketches: they name
 responsibility and dependency direction without prematurely implementing the
-Phase 1 protocol. The Rust `runner-core` crate establishes the production
-language/package boundary and executes the same fixture; it is not yet the
-Phase 2 runner daemon.
+runtime transport. Phase 1 adds this executable static path:
+
+```text
+protocol/schemas/*.json
+        | generate/check                 | shared fixtures
+        v                                v
+TypeScript schema constants/types -> validator -> deterministic reducer
+                                                |              |
+                                                v              v
+                                               CLI        browser devtool
+                                                |
+                                      golden parity summaries
+                                                |
+                                                v
+                                      Rust runner-core oracle
+```
+
+The Rust `runner-core` crate establishes the production language/package
+boundary and checks the same fixture summaries; it is not yet the Phase 2 runner
+daemon.
 
 ## Language ownership
 
@@ -42,10 +59,12 @@ Phase 2 runner daemon.
 - TypeScript owns the control-plane/browser side and remains a useful reference
   client/test oracle.
 - JSON Schema and shared fixtures are the language-neutral authority. Phase 0
-  begins with one checked JSON fixture; Phase 1 replaces its narrow validation
-  shape with the full PRP schema and conformance corpus.
+  keeps its narrow tracer fixture; Phase 1 adds the executable PRP v1 schema and
+  conformance corpus without silently changing the accepted Phase 0 path.
 - `check:phase0-parity` prevents either implementation from introducing a
   language-specific observable result.
+- `check:phase1-parity` prevents TypeScript replay and the Rust production
+  direction from disagreeing on identity, terminal state, duplicates, or gaps.
 
 ## Allowed dependencies
 
@@ -76,6 +95,7 @@ must fail the checker.
 ```sh
 pnpm --filter @paperclipai/paperclip-runner check:forbidden-imports
 pnpm --filter @paperclipai/paperclip-runner test
+pnpm --filter @paperclipai/paperclip-runner check:phase1-parity
 ```
 
 The first command scans the package source, scripts, and manifest. The test
@@ -97,6 +117,19 @@ changes local object state. The tracer performs this sequence:
 No socket, database, browser, Paperclip process, or model process is started.
 The default command executes this sequence in Rust. The TypeScript reference
 executes the same sequence, and the parity check compares their complete stdout.
+
+## Phase 1 static replay boundary
+
+`replayPhase1FixtureText` is the single entry point used by the CLI and browser.
+It parses JSON, validates JSON Schema plus cross-record bindings, and only then
+calls the reducer. The reducer is pure: it clones input state, applies an event
+at most once by source event ID, records source gaps/out-of-order deliveries,
+and never performs I/O.
+
+The browser is a Vite application under `devtools/browser/`. Its Button, Badge,
+Card, and Textarea are source-compatible adaptations of shadcn primitives; all
+visual values live in its local `styles.css` token layer. It imports the same
+replay module as the CLI and does not create a browser-only protocol model.
 
 ## Future integration rule
 

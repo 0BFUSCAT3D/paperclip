@@ -1385,6 +1385,28 @@ PRP v1 guarantees:
 
 Exactly-once network delivery is not claimed. Exactly-once **effects** are obtained through IDs, unique constraints, and transactional reducers.
 
+#### 10.2.1 Phase 1 executable compatibility profile
+
+The Phase 1 standalone tracer makes the PRP v1 static contract executable under
+`packages/paperclip-runner/protocol/`. JSON Schema is authoritative for identity,
+capability, command, event, request, result, terminal, and scripted-fixture
+shapes. TypeScript types are derived from the checked schema module; the Rust
+reference reducer consumes the same fixtures and golden parity summaries.
+
+Required version fields and schema discriminators fail closed when unknown.
+Unknown optional object fields are accepted and preserved, but have no reducer
+effect until a later schema revision defines one. Scripted fixtures require one
+unique `run.result.proposed` event whose payload matches the fixture result and
+one unique `run.terminal` event. Repeated `sourceEventId` deliveries must be
+byte-equivalent after canonical JSON key ordering.
+
+Static replay orders each source by `(sourceKind, sourceInstanceId, sourceSeq)`,
+deduplicates before projection, records rather than fills source-sequence gaps,
+and leaves an already-applied snapshot unchanged on replay. The package CLI and
+standalone browser must import the same validator/reducer entry point. These
+rules clarify the v1 compatibility contract; they do not add transport,
+persistence, or control-plane authority in Phase 1.
+
 ### 10.3 Common envelope
 
 ```ts
