@@ -4855,9 +4855,12 @@ copy law of `[OPX-2]`. A new reason code, component field, or gate that breaks
 any of those relationships fails the check before it can reach a UI surface.
 
 Screenshot matrix (adds to section 23.10, all at 1440×900 desktop; mobile is
-deferred by the source ticket): flows A–E of the UX document, the board row with
-each chip, the properties panel rows, the legacy-run ledger, the expired and
-exhausted attention states, and the superseded-decision chain. The artifact
+deferred by the source ticket): the accepted happy path
+(`completion_contract_satisfied` applied, issue moved to Done, all four layers
+in agreement — the state where a claim chip sits next to a green badge and the
+layers must still read separately), flows A–E of the UX document, the board row
+with each chip, the properties panel rows, the legacy-run ledger, the expired
+and exhausted attention states, and the superseded-decision chain. The artifact
 index names the fixture, the flow, the reason code, the route, and the gate it
 satisfies.
 
