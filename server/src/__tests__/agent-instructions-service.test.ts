@@ -611,7 +611,7 @@ describe("agent instructions service", () => {
     await fs.mkdir(lockPath, { recursive: true });
     await fs.writeFile(
       path.join(lockPath, "owner.json"),
-      `${JSON.stringify({ pid: process.pid, token: "live", createdAt: "1970-01-01T00:00:00.000Z" })}\n`,
+      `${JSON.stringify({ pid: process.pid, token: "live", createdAt: new Date().toISOString() })}\n`,
       "utf8",
     );
 
@@ -668,6 +668,87 @@ describe("agent instructions service", () => {
 
     expect(result.materialization.action).toBe("added");
     await expect(fs.stat(lockPath)).rejects.toThrow();
+  });
+
+  it("recovers a probe-less legacy lock after its PID is reused", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-legacy-stale-lock-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    const lockPath = `${managedRoot}.paperclip-materialize.lock`;
+    const token = randomUUID();
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, "owner.json"),
+      `${JSON.stringify({ pid: process.pid, token, createdAt: "1970-01-01T00:00:00.000Z" })}\n`,
+      "utf8",
+    );
+    const heartbeatPath = path.join(lockPath, `heartbeat-${token}`);
+    await fs.writeFile(heartbeatPath, "", "utf8");
+    const staleHeartbeat = new Date(Date.now() - 60_000);
+    await fs.utimes(heartbeatPath, staleHeartbeat, staleHeartbeat);
+
+    const result = await svc.materializeManagedBundle(agent, { "AGENTS.md": "# Stock\n" });
+
+    expect(result.materialization.action).toBe("added");
+    await expect(fs.stat(lockPath)).rejects.toThrow();
+  });
+
+  it("preserves a probe-less legacy lock when its live owner heartbeat is stale", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-legacy-live-lock-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+    const managedRoot = path.join(
+      paperclipHome,
+      "instances",
+      "test-instance",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "instructions",
+    );
+    const lockPath = `${managedRoot}.paperclip-materialize.lock`;
+    const token = randomUUID();
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, "owner.json"),
+      `${JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() })}\n`,
+      "utf8",
+    );
+    const heartbeatPath = path.join(lockPath, `heartbeat-${token}`);
+    await fs.writeFile(heartbeatPath, "", "utf8");
+    const staleHeartbeat = new Date(Date.now() - 60_000);
+    await fs.utimes(heartbeatPath, staleHeartbeat, staleHeartbeat);
+
+    const materialization = svc.materializeManagedBundle(agent, { "AGENTS.md": "# Stock\n" });
+    const firstOutcome = await Promise.race([
+      materialization.then(() => "materialized"),
+      new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 75)),
+    ]);
+
+    expect(firstOutcome).toBe("waiting");
+    const releasedLockPath = `${lockPath}.released`;
+    await fs.rename(lockPath, releasedLockPath);
+    await fs.rm(releasedLockPath, { recursive: true, force: true });
+    await expect(materialization).resolves.toMatchObject({
+      materialization: { action: "added" },
+    });
   });
 
   it.skipIf(process.platform !== "linux")(

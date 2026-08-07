@@ -357,6 +357,20 @@ function processStartMarkersComparable(left: string, right: string): boolean {
     && left.slice(0, leftSeparator) === right.slice(0, rightSeparator);
 }
 
+function processStartMarkerTimestamp(marker: string | null): number | null {
+  if (!marker?.startsWith("ps:")) return null;
+  const timestamp = Date.parse(marker.slice("ps:".length));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+async function processStartedAfterLockCreation(pid: number, createdAt: unknown): Promise<boolean> {
+  if (typeof createdAt !== "string") return false;
+  const lockCreatedAt = Date.parse(createdAt);
+  if (!Number.isFinite(lockCreatedAt)) return false;
+  const processStartedAt = processStartMarkerTimestamp(await processStartMarker(pid, "ps"));
+  return processStartedAt !== null && processStartedAt > lockCreatedAt;
+}
+
 async function removeStaleManagedBundleLock(lockPath: string): Promise<boolean> {
   let shouldRemove = false;
   let ownerSnapshot: string | null = null;
@@ -368,6 +382,7 @@ async function removeStaleManagedBundleLock(lockPath: string): Promise<boolean> 
       token?: unknown;
       probePath?: unknown;
       processStartMarker?: unknown;
+      createdAt?: unknown;
     };
     const pid = typeof owner.pid === "number" && Number.isInteger(owner.pid) && owner.pid > 0
       ? owner.pid
@@ -395,10 +410,11 @@ async function removeStaleManagedBundleLock(lockPath: string): Promise<boolean> 
       ) {
         shouldRemove = recordedStart !== currentStart;
       } else {
-        // A delayed heartbeat does not prove that a live process has stopped
-        // materializing. Only a comparable process-start marker can safely
-        // distinguish a reused PID from the original owner.
-        shouldRemove = false;
+        // Probe-less legacy locks still record when they were created. A live
+        // process that started later cannot be the original owner, which lets
+        // us recover a reused PID without ever evicting an owner merely because
+        // its heartbeat was delayed.
+        shouldRemove = await processStartedAfterLockCreation(pid, owner.createdAt);
       }
     } else if (pid !== null) {
       shouldRemove = true;
