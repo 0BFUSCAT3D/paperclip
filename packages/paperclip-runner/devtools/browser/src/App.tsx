@@ -84,6 +84,27 @@ function terminalTone(snapshot: SessionSnapshot) {
   return "neutral" as const;
 }
 
+function humanizeProtocolLabel(value: string): string {
+  const words = value.replaceAll("_", " ");
+  return words.length === 0 ? words : `${words[0]?.toUpperCase()}${words.slice(1)}`;
+}
+
+function liveStatusTone(status: LiveStatus, snapshot: SessionSnapshot | null) {
+  if (status === "error") {
+    return "danger" as const;
+  }
+  if (status !== "terminal") {
+    return "neutral" as const;
+  }
+  if (snapshot?.terminal?.runTerminalState === "succeeded") {
+    return "success" as const;
+  }
+  if (snapshot?.terminal?.runTerminalState === "failed") {
+    return "danger" as const;
+  }
+  return "neutral" as const;
+}
+
 function SnapshotSummary({
   snapshot,
   label = "Session snapshot",
@@ -99,9 +120,11 @@ function SnapshotSummary({
           <h2>{snapshot.fixtureName}</h2>
         </div>
         <Badge tone={terminalTone(snapshot)} data-testid="terminal-badge">
-          {snapshot.integrity === "gap_detected"
-            ? "Gap detected"
-            : (snapshot.terminal?.runTerminalState ?? snapshot.runPhase)}
+          {humanizeProtocolLabel(
+            snapshot.integrity === "gap_detected"
+              ? "Gap detected"
+              : (snapshot.terminal?.runTerminalState ?? snapshot.runPhase),
+          )}
         </Badge>
       </div>
 
@@ -126,7 +149,9 @@ function SnapshotSummary({
 
       {snapshot.proposedResult ? (
         <div className="result-summary" data-testid="result-summary">
-          <span>Reported {snapshot.proposedResult.reportedWorkDisposition}</span>
+          <span>
+            Reported {humanizeProtocolLabel(snapshot.proposedResult.reportedWorkDisposition)}
+          </span>
           <p>{snapshot.proposedResult.summary}</p>
         </div>
       ) : null}
@@ -366,10 +391,10 @@ function LiveRunner() {
           <div className="live-status" aria-live="polite">
             <span>Runner status</span>
             <Badge
-              tone={status === "error" ? "danger" : status === "terminal" ? "success" : "neutral"}
+              tone={liveStatusTone(status, snapshot)}
               data-testid="live-status"
             >
-              {status}
+              {humanizeProtocolLabel(status)}
             </Badge>
           </div>
 

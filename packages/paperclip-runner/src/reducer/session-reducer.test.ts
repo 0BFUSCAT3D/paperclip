@@ -2,8 +2,13 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { parsePrpFixtureText, type PrpFixture } from "../protocol/phase1-contract.js";
 import {
+  parsePrpFixtureText,
+  type PrpEvent,
+  type PrpFixture,
+} from "../protocol/phase1-contract.js";
+import {
+  createSessionSnapshot,
   reducePrpFixture,
   reduceSessionEvents,
   type SessionSnapshot,
@@ -68,6 +73,36 @@ describe("deterministic PRP session reducer", () => {
         received: 4,
         missing: [3],
       },
+    ]);
+  });
+
+  it("summarizes runtime request creation and resolution with type and prompt", async () => {
+    const fixture = await loadFixture("interrupted-run");
+    const fixtureRequest = fixture.events.find(
+      (event) => event.eventType === "runtime_request.created",
+    );
+    if (fixtureRequest === undefined) {
+      throw new Error("interrupted-run fixture must create a runtime request");
+    }
+    const created: PrpEvent = {
+      ...fixtureRequest,
+      sourceEventId: "event_request_summary_01",
+      sourceSeq: 1,
+    };
+    const resolved: PrpEvent = {
+      ...fixtureRequest,
+      sourceEventId: "event_request_summary_02",
+      sourceSeq: 2,
+      eventType: "runtime_request.resolved",
+      payload: { requestId: "request_interrupted_permission" },
+    };
+
+    const snapshot = reduceSessionEvents(createSessionSnapshot(fixture), [created, resolved]);
+
+    expect(snapshot.requests[0]).toMatchObject({ type: "permission" });
+    expect(snapshot.timeline.map((entry) => entry.summary)).toEqual([
+      "permission: Allow the fake command?",
+      "Resolved permission: Allow the fake command?",
     ]);
   });
 });

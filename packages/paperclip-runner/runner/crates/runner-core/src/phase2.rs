@@ -775,7 +775,10 @@ impl RunnerState {
                 } else {
                     self.emit_event(
                         "harness.diagnostic",
-                        json!({ "code": "duplicate_semantic_result_ignored" }),
+                        json!({
+                            "code": "duplicate_semantic_result_ignored",
+                            "message": "Duplicate semantic result ignored; the first result remains authoritative."
+                        }),
                         None,
                         None,
                     )?;
@@ -791,7 +794,10 @@ impl RunnerState {
                 } else {
                     self.emit_event(
                         "harness.diagnostic",
-                        json!({ "code": "duplicate_terminal_ignored" }),
+                        json!({
+                            "code": "duplicate_terminal_ignored",
+                            "message": "Duplicate terminal event ignored; the first terminal event remains authoritative."
+                        }),
                         None,
                         None,
                     )?;
@@ -1019,6 +1025,12 @@ pub fn run_fake_harness(
         None,
         None,
         json!({ "driverSessionId": "driver_phase2_fake" }),
+    )?;
+    output.send_event(
+        "runtime.phase.changed",
+        None,
+        None,
+        json!({ "phase": "executing" }),
     )?;
     let turn = receive_harness_command(&command_receiver, "turn.start", None)?;
     let turn_id = turn

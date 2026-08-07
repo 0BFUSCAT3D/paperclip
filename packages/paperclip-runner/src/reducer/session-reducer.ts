@@ -27,6 +27,7 @@ export interface SessionItemSnapshot {
 export interface SessionRequestSnapshot {
   requestId: string;
   requestKind: string;
+  type: string;
   status: string;
   prompt: string;
 }
@@ -80,10 +81,23 @@ function sourceKey(event: PrpEvent): string {
   return `${event.sourceKind}:${event.sourceInstanceId}`;
 }
 
-function timelineSummary(event: PrpEvent): string {
+function humanizeProtocolValue(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
+function sentenceCase(value: string): string {
+  return value.length === 0 ? value : `${value[0]?.toUpperCase()}${value.slice(1)}`;
+}
+
+function requestSummary(type: string, prompt: string, action?: string): string {
+  const detail = prompt.length > 0 ? `${type}: ${prompt}` : `${type} request`;
+  return action === undefined ? detail : `${action} ${detail}`;
+}
+
+function timelineSummary(snapshot: SessionSnapshot, event: PrpEvent): string {
   const payload = record(event.payload);
   if (event.eventType === "runtime.phase.changed") {
-    return `Phase changed to ${stringValue(payload.phase, "unknown")}`;
+    return `Phase changed to ${humanizeProtocolValue(stringValue(payload.phase, "unknown"))}`;
   }
   if (event.eventType === "item.started") {
     return `Started ${stringValue(payload.kind, "item")}`;
@@ -102,6 +116,40 @@ function timelineSummary(event: PrpEvent): string {
   }
   if (event.eventType === "run.terminal") {
     return `Run ${stringValue(payload.runTerminalState, "terminal")}`;
+  }
+  if (
+    event.eventType === "runner.diagnostic" ||
+    event.eventType === "harness.diagnostic"
+  ) {
+    const message = stringValue(payload.message);
+    if (message.length > 0) {
+      return message;
+    }
+    const code = stringValue(payload.code);
+    if (code.length > 0) {
+      return sentenceCase(humanizeProtocolValue(code));
+    }
+  }
+  if (event.eventType === "runtime_request.created") {
+    const request = record(payload.request ?? payload);
+    return requestSummary(
+      stringValue(request.type, "runtime"),
+      stringValue(request.prompt),
+    );
+  }
+  if (
+    event.eventType === "runtime_request.resolved" ||
+    event.eventType === "runtime_request.expired" ||
+    event.eventType === "runtime_request.cancelled"
+  ) {
+    const requestId = stringValue(payload.requestId);
+    const request = snapshot.requests.find((candidate) => candidate.requestId === requestId);
+    const action = sentenceCase(
+      humanizeProtocolValue(event.eventType.split(".").at(-1) ?? "updated"),
+    );
+    return request === undefined
+      ? `${action} runtime request ${requestId}`.trim()
+      : requestSummary(request.type, request.prompt, action);
   }
   return event.eventType.replaceAll(".", " ");
 }
@@ -191,6 +239,7 @@ function applyProjection(snapshot: SessionSnapshot, event: PrpEvent): void {
         snapshot.requests.push({
           requestId,
           requestKind: stringValue(request.requestKind, "runtime"),
+          type: stringValue(request.type, "runtime"),
           status: stringValue(request.status, "pending"),
           prompt: stringValue(request.prompt),
         });
@@ -307,7 +356,7 @@ export function applyPrpEvent(
     eventType: event.eventType,
     emittedAt: event.emittedAt,
     ...(event.itemId === undefined ? {} : { itemId: event.itemId }),
-    summary: timelineSummary(event),
+    summary: timelineSummary(snapshot, event),
   });
   applyProjection(snapshot, event);
   snapshot.integrity =

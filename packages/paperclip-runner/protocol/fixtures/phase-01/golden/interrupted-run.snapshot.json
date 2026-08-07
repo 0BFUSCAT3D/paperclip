@@ -34,6 +34,7 @@
     {
       "requestId": "request_interrupted_permission",
       "requestKind": "runtime",
+      "type": "permission",
       "status": "pending",
       "prompt": "Allow the fake command?"
     }
@@ -92,7 +93,7 @@
       "sourceSeq": 3,
       "eventType": "runtime_request.created",
       "emittedAt": "2026-08-07T12:20:00.040Z",
-      "summary": "runtime_request created"
+      "summary": "permission: Allow the fake command?"
     },
     {
       "position": 4,

@@ -8,8 +8,9 @@ test("validates and renders the shared Phase 1 fixture", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Static replay" }).click();
   await expect(page.getByRole("heading", { name: "Live local runner" })).toBeVisible();
-  await expect(page.getByTestId("terminal-badge")).toHaveText("succeeded");
+  await expect(page.getByTestId("terminal-badge")).toHaveText("Succeeded");
   await expect(page.getByTestId("timeline").getByRole("listitem")).toHaveCount(9);
+  await expect(page.getByTestId("timeline")).not.toContainText("workspace_preparing");
   await expect(page.getByTestId("result-summary")).toContainText(
     "The scripted run completed successfully.",
   );
@@ -34,8 +35,8 @@ test("shows duplicate and unsupported-version replay states", async ({ page }) =
 test("streams a live run and proves replay parity", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Start local run" }).click();
-  await expect(page.getByTestId("live-status")).toHaveText("terminal");
-  await expect(page.getByTestId("terminal-badge")).toHaveText("succeeded");
+  await expect(page.getByTestId("live-status")).toHaveText("Terminal");
+  await expect(page.getByTestId("terminal-badge")).toHaveText("Succeeded");
   await expect(page.getByTestId("process-facts")).toContainText("Harness process exit");
   await expect(page.getByTestId("process-facts")).toContainText("done");
   await expect(page.getByTestId("parity-result")).toContainText("Match");
@@ -50,15 +51,26 @@ test("resolves live permission and input requests", async ({ page }) => {
   await page.getByLabel("Scenario").selectOption("permission-input");
   await page.getByRole("button", { name: "Start local run" }).click();
   await expect(page.getByTestId("runtime-request")).toContainText("permission request");
+  await expect(page.getByTestId("terminal-badge")).toHaveText("Executing");
+  await expect(
+    page.getByTestId("timeline").getByRole("listitem").filter({
+      hasText: "runtime_request.created",
+    }).first(),
+  ).toContainText("permission: Allow the fake driver to write its local fixture?");
   await page.screenshot({
     path: resolve(packageRoot, "knowledge/evidence/phase-02-live-permission.png"),
     fullPage: true,
   });
   await page.getByRole("button", { name: "Allow" }).click();
   await expect(page.getByTestId("runtime-request")).toContainText("input request");
+  await expect(
+    page.getByTestId("timeline").getByRole("listitem").filter({
+      hasText: "runtime_request.resolved",
+    }).first(),
+  ).toContainText("Resolved permission: Allow the fake driver to write its local fixture?");
   await page.getByLabel("Response").fill("phase-02-browser-trace");
   await page.getByRole("button", { name: "Send input" }).click();
-  await expect(page.getByTestId("live-status")).toHaveText("terminal");
+  await expect(page.getByTestId("live-status")).toHaveText("Terminal");
   await expect(page.getByTestId("parity-result")).toContainText("Match");
 });
 
@@ -69,11 +81,34 @@ test("interrupts a live turn without duplicating terminal state", async ({ page 
   const interrupt = page.getByRole("button", { name: "Interrupt turn" });
   await expect(interrupt).toBeEnabled();
   await interrupt.click();
-  await expect(page.getByTestId("live-status")).toHaveText("terminal");
-  await expect(page.getByTestId("terminal-badge")).toHaveText("cancelled");
+  await expect(page.getByTestId("live-status")).toHaveText("Terminal");
+  await expect(page.getByTestId("terminal-badge")).toHaveText("Cancelled");
+  await expect(page.getByTestId("live-status")).toHaveAttribute("data-tone", "neutral");
+  await expect(page.getByTestId("terminal-badge")).toHaveAttribute("data-tone", "neutral");
   await expect(page.getByTestId("timeline").getByText("run.terminal")).toHaveCount(1);
   await page.screenshot({
     path: resolve(packageRoot, "knowledge/evidence/phase-02-live-interrupted.png"),
     fullPage: true,
   });
+});
+
+test("shows failed outcomes as danger and names the duplicate-terminal guard", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("Scenario").selectOption("error");
+  await page.getByRole("button", { name: "Start local run" }).click();
+  await expect(page.getByTestId("live-status")).toHaveText("Terminal");
+  await expect(page.getByTestId("live-status")).toHaveAttribute("data-tone", "danger");
+  await expect(page.getByTestId("terminal-badge")).toHaveText("Failed");
+  await expect(page.getByTestId("terminal-badge")).toHaveAttribute("data-tone", "danger");
+
+  await page.getByLabel("Scenario").selectOption("duplicate-terminal");
+  await page.getByRole("button", { name: "Start local run" }).click();
+  await expect(page.getByTestId("live-status")).toHaveText("Terminal");
+  await expect(
+    page.getByTestId("timeline").getByRole("listitem").filter({
+      hasText: "harness.diagnostic",
+    }),
+  ).toContainText(
+    "Duplicate terminal event ignored; the first terminal event remains authoritative.",
+  );
 });

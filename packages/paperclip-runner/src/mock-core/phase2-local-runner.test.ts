@@ -20,6 +20,14 @@ describe.sequential("Phase 2 local runner and fake harness", () => {
 
     expect(eventTypes).toContain("harness.ready");
     expect(eventTypes).toContain("item.completed");
+    const sessionStartedIndex = eventTypes.indexOf("session.started");
+    const executingIndex = trace.events.findIndex(
+      (event) =>
+        event.eventType === "runtime.phase.changed" &&
+        (event.payload as Record<string, unknown>).phase === "executing",
+    );
+    expect(executingIndex).toBeGreaterThan(sessionStartedIndex);
+    expect(executingIndex).toBeLessThan(eventTypes.indexOf("turn.started"));
     expect(trace.events.some((event) => event.itemId === "item_phase2_file")).toBe(true);
     expect(trace.result?.reportedWorkDisposition).toBe("done");
     expect(trace.harnessProcessExit).toEqual({ exitCode: 0, success: true, signal: null });
@@ -99,6 +107,13 @@ describe.sequential("Phase 2 local runner and fake harness", () => {
             "duplicate_terminal_ignored",
       ),
     ).toBe(true);
+    expect(
+      replayPhase2Events(trace, trace.events).timeline.find(
+        (event) => event.eventType === "harness.diagnostic",
+      )?.summary,
+    ).toBe(
+      "Duplicate terminal event ignored; the first terminal event remains authoritative.",
+    );
   });
 
   it("keeps an error process exit distinct from its semantic result", async () => {

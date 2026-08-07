@@ -75,7 +75,7 @@
       "sourceSeq": 1,
       "eventType": "runtime.phase.changed",
       "emittedAt": "2026-08-07T12:00:00.030Z",
-      "summary": "Phase changed to workspace_preparing"
+      "summary": "Phase changed to workspace preparing"
     },
     {
       "position": 2,
