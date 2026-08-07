@@ -2188,6 +2188,29 @@ The finalizer:
 - releases checkout/lock according to policy;
 - finalizes workspace and environment.
 
+### 18.4 Complete terminal conversion contract
+
+The three vocabularies describe different layers. They are not independent outcome sets:
+
+- `StructuredRunResult.disposition` is the accepted work disposition produced by the model or semantic tool;
+- `NativeExecutionResult.terminalState` is the native runtime lifecycle result;
+- `AdapterExecutionResult` is the legacy heartbeat compatibility record.
+
+The native finalizer must use this table. It must not infer a disposition from a process exit code.
+
+| Native disposition | Native terminal state | `AdapterExecutionResult` compatibility fields | Finalizer action |
+|---|---|---|---|
+| `done` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result in `resultJson` | Apply the legal `done` issue transition. |
+| `blocked` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result and blocker in `resultJson` | Apply `blocked` only when the blocker payload and unblock owner/action are valid. Otherwise convert to `needs_review`. |
+| `needs_review` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result in `resultJson` | Create or bind a real reviewer, approval, interaction, or monitor path, then apply `in_review`. If no review path can be created, keep the issue `in_progress` and record a finalization error. |
+| `yielded` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result in `resultJson` | Keep the issue `in_progress` and enqueue the declared continuation or delegated follow-up. If no live continuation can be scheduled, convert to `needs_review`. |
+| `failed` | `failed` | Nonzero driver exit code when available, otherwise `exitCode: 1`; set `errorMessage`, `errorCode`, and error metadata; include the failure disposition in `resultJson` | Apply the existing retry and recovery policy. Do not directly change the issue to a terminal status. |
+| `cancelled` | `cancelled` | `exitCode: null`, `timedOut: false`, `errorCode: "cancelled"`, and the cancellation disposition in `resultJson` | Commit the heartbeat run cancellation before returning the adapter result. Change the issue to `cancelled` only when the cancellation scope explicitly includes the issue; otherwise leave the issue unchanged. |
+
+All compatibility results set `signal: null` unless the harness reported a real signal. They preserve usage, cost, session, provider, model, billing, and runtime-service fields without changing their meaning. `resultJson` always contains `schema`, `disposition`, `summary`, and the validated structured result when one exists.
+
+`failed` and `cancelled` are runtime-owned dispositions, so the model-facing `StructuredRunResult` and semantic tools do not accept them. The runtime constructs them from an explicit driver, policy, timeout, interrupt, or cancellation event. `done`, `blocked`, `needs_review`, and `yielded` require a valid `StructuredRunResult`; they all produce a successful compatibility exit because the run finalizer, not the legacy exit-code heuristic, applies their distinct issue and continuation behavior.
+
 It does not create an issue comment for every tool call or token delta.
 
 ---
@@ -2438,24 +2461,43 @@ CREATE INDEX heartbeat_run_events_run_item_idx
 
 ### 21.4 Transactional sequence allocation
 
-Allocate canonical run sequence in the same transaction as insertion.
+Allocate a canonical run sequence only after deduplication, in the same transaction as insertion. Lock the owning run row first so concurrent ingestion for one run is serialized.
 
 For one event:
 
 ```sql
+BEGIN;
+
+SELECT next_event_seq
+FROM heartbeat_runs
+WHERE id = $1
+FOR UPDATE;
+
+SELECT seq
+FROM heartbeat_run_events
+WHERE run_id = $1
+  AND source_event_id = $2;
+
+-- If the source event exists, COMMIT and return its canonical seq.
+-- Do not update next_event_seq and do not insert another event.
+
 WITH allocated AS (
   UPDATE heartbeat_runs
   SET next_event_seq = next_event_seq + 1
   WHERE id = $1
   RETURNING next_event_seq - 1 AS seq
 )
-INSERT INTO heartbeat_run_events (..., seq, ...)
-SELECT ..., allocated.seq, ...
+INSERT INTO heartbeat_run_events (..., seq, source_event_id, ...)
+SELECT ..., allocated.seq, $2, ...
 FROM allocated
-ON CONFLICT (run_id, source_event_id) DO NOTHING;
+RETURNING seq;
+
+COMMIT;
 ```
 
-For batches, reserve N contiguous values atomically and insert ordered events.
+Under PostgreSQL `READ COMMITTED`, the statement after the row lock gets a new snapshot. A transaction that waited for another ingestor therefore sees the committed source event before it allocates a sequence. The unique source-event index remains a safety constraint; an unexpected conflict rolls back the transaction instead of discarding an already allocated sequence.
+
+For batches, acquire the same run-row lock, remove source events that are already persisted, preserve the source order of the remaining unique events, and then reserve exactly that count of contiguous values. An empty deduplicated batch reserves no values. Duplicate replay returns the previously committed canonical sequences in the ACK.
 
 A source event and canonical sequence are different:
 
