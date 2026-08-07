@@ -142,6 +142,27 @@ Keep the existing environment-run orchestration responsible for:
 
 The native branch should begin **after the execution target and workspace have been realized**, not before.
 
+#### 2.1.1 Workspace compatibility contract
+
+Native Runner Mode must consume the workspace that Paperclip realizes today; it must not introduce a second checkout, clone, upload, mount, or sync subsystem.
+
+The compatibility boundary is the realized execution target plus its server-owned workspace-realization record. The native runtime receives, without reinterpretation:
+
+- the environment lease and provider lease identity already acquired for the run;
+- the realized working directory selected by the environment driver;
+- `mode`, where `in_place` means the provider path is already authoritative and `copy` means Paperclip owns synchronization around execution;
+- `authoritativeRoot`, which is the only default root from which the runner may launch the harness;
+- `pathAliases`, which describe approved equivalent paths rather than new writable roots;
+- `outboundRestorePaths`, which limit exceptional paths Paperclip may restore during finalization;
+- the provider-neutral execution target and its existing command and native file-sync capabilities;
+- referenced workspace hints already resolved by Paperclip, including the current limitation that remote realization synchronizes only the anchor workspace unless the provider contract explicitly adds referenced-source transfer.
+
+The runner must treat those values as an immutable run-preparation input. It may validate that the paths exist inside its lease and may create runner-private state outside the project tree, but it must not change workspace mode, choose another checkout, infer a different sync direction, or make a provider-local path authoritative.
+
+Paperclip remains responsible for all pre-run preparation and post-run finalization. For a copied sandbox workspace, Paperclip uploads or otherwise realizes the local workspace before native execution and synchronizes the allowed result set back afterward through the existing execution-target operations. For an in-place workspace, the runner operates directly at `authoritativeRoot` and Paperclip does not perform a redundant copy-back. A native run is not terminally successful until existing workspace finalization succeeds.
+
+This contract intentionally supports the current local, SSH, sandbox, and plugin-backed realization paths. A provider may optimize transfer internally, but Native Runner Mode must observe the same realized files and produce the same finalized local workspace that the legacy adapter path would for the same lease and execution-workspace policy.
+
 ### 2.2 Run, issue, budget, and governance state
 
 Keep Paperclip authoritative for:
@@ -700,8 +721,8 @@ That is the proof that the abstraction is real.
 3. Paperclip atomically checks out the issue and creates the heartbeat run.
 4. Paperclip resolves the native session backend, runner profile, native driver, and run-scoped MCP bindings.
 5. Environment orchestration acquires a lease.
-6. Workspace orchestration realizes the workspace.
-7. Paperclip creates a `runner_instance` expectation bound to the lease and run.
+6. Workspace orchestration realizes the workspace and produces the server-owned realization record and provider-neutral execution target.
+7. Paperclip creates a `runner_instance` expectation bound to the lease and run, then binds the immutable realized working directory, workspace mode, authoritative root, path aliases, and finalization policy to `run.prepare`.
 8. Paperclip mints a one-time runner bootstrap ticket.
 9. The provider-specific execution target starts `paperclip-runnerd` with:
    - control-plane URL;
@@ -713,7 +734,7 @@ That is the proof that the abstraction is real.
 10. The runner establishes outbound WSS over port 443.
 11. The runner and control plane negotiate protocol and capabilities.
 12. The control plane sends `run.prepare`.
-13. The runner validates the requested working directory and resource constraints.
+13. The runner validates that the requested working directory is the realized `authoritativeRoot` or an approved alias inside the current lease, and validates resource constraints without cloning, mounting, or synchronizing another workspace.
 14. The control plane sends `session.open` with the resolved driver configuration and MCP bindings.
 15. The Codex driver starts `codex app-server` over local stdio.
 16. The driver injects supported MCP bindings, initializes app-server, and creates or resumes a thread.
@@ -2570,6 +2591,8 @@ Preferred production flow:
 
 For development, Paperclip may copy or install the binary through the existing execution target. Production must avoid downloading and installing it on every run.
 
+Runner bootstrap is separate from workspace realization. Installing or starting `paperclip-runnerd` must not replace, precede, or bypass the existing `realizeWorkspace` result. The bootstrap target receives the already-realized working directory and must preserve the existing sync-in/sync-out and finalization behavior.
+
 ### 19.3 Warm tiers
 
 Record one of:
@@ -3577,6 +3600,23 @@ Run at deterministic points:
 - report unsupported remote-backend capabilities without presenting non-functional UI controls;
 - compare cold start, warm start, command acknowledgement, first event, replay, and terminalization without full Paperclip startup cost.
 
+### 27.8 Existing workspace compatibility tests
+
+Run the same deterministic file-mutation fixture through the legacy adapter path and Native Runner Mode for each supported realization shape, then assert equivalent observable results:
+
+- local in-place workspace uses the existing realized cwd and performs no redundant copy;
+- isolated or operator-branch execution uses the existing `execution_workspace` identity and branch/worktree selected by Paperclip;
+- copied sandbox workspace receives the anchor workspace before harness launch and synchronizes allowed mutations back during existing finalization;
+- plugin-native file sync uses the existing `environmentSyncIn` and `environmentSyncOut` operations rather than a runner-specific transport;
+- `authoritativeRoot` is the harness cwd and an unapproved cwd or symlink escape is rejected before launch;
+- `pathAliases` permit only the recorded equivalent paths and do not create additional writable roots;
+- referenced workspace hints remain available exactly as they are today, and a remote run does not claim that referenced trees were transferred when only the anchor source was realized;
+- `outboundRestorePaths` and existing workspace-operation policy constrain copy-back;
+- workspace-finalization failure prevents a clean native success and enters the existing recovery path;
+- lease release or retention occurs only after native execution and workspace finalization reach a consistent state.
+
+The initial sandbox spike is compatible only when these assertions pass without changing the current project-workspace, execution-workspace, environment-lease, realization, or sync contracts.
+
 ---
 
 ## 28. Rollout and compatibility
@@ -3610,7 +3650,7 @@ native
 
 1. Fake driver local loopback.
 2. Direct Codex local execution target.
-3. Direct Codex in one cold sandbox provider.
+3. Direct Codex in one cold sandbox provider with legacy/native workspace-equivalence tests passing.
 4. UI steering/interrupt.
 5. Reconnect/replay fault suite.
 6. Second provider.
