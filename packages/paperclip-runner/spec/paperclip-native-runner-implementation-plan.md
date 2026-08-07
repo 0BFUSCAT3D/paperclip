@@ -6,7 +6,7 @@ This document is the implementation-phase plan for [`paperclip-native-runner-spi
 
 All implementation starts inside `packages/paperclip-runner/` with protocol and mock-control-plane layers. These standalone phases do not modify Paperclip control-plane semantics. A real Paperclip bridge is a late, separately reviewed phase after the standalone contract passes conformance tests.
 
-Only Phase 0 and Phase 1 implementation issues may be created initially. After both phases have runnable demos, tests, package-local documentation, tutorials, journal entries, QA evidence, and human checkpoints, update this plan and the spike specification with what was learned before creating tasks for later phases. Later phase tasks are intentionally deferred.
+Phase 0 and Phase 1 are complete. Their runnable demos, tests, package-local documentation, tutorials, journal entries, and evidence satisfy the first task-creation gate. The human authorized Phase 2 on August 7, 2026. Create only the Phase 2 implementation issue now. Keep Phase 3 and later issues deferred until the Phase 2 human checkpoint is complete.
 
 ## Non-negotiable delivery rules
 
@@ -18,6 +18,7 @@ Only Phase 0 and Phase 1 implementation issues may be created initially. After b
 6. **Tracer bullet in every phase:** each phase ends with a useful executable path, even if it is intentionally narrow.
 7. **Evidence in every phase:** record the exact commands run, versions used, results, known gaps, and links to artifacts/screenshots.
 8. **Documentation in every phase:** add reference documentation plus a hand-run tutorial. Add each tutorial to a Native Runner tutorial index and to a cumulative end-to-end tutorial.
+   Start each tutorial with short sections that explain what the phase is and what its runnable proof establishes. Use Simplified English for these sections and for the procedure.
 9. **OKF engineering journal:** maintain a Google Open Knowledge Format journal using current OKF v0.2 conventions: Markdown files, YAML frontmatter, typed entries, timestamps, links, and index pages. Add a journal usage guide before implementation begins.
 10. **Human checkpoint in every phase:** the board/user can run the tutorial and accept or request changes before the next dependent phase starts.
 11. **Commit by phase:** create small, reviewable commits during each phase. Each phase ends with a named checkpoint commit after QA and human acceptance.

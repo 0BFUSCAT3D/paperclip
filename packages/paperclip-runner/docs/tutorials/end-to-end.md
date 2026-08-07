@@ -1,10 +1,14 @@
 # Native Runner Cumulative End-to-End Tutorial
 
-This tutorial grows with each accepted phase. At Phase 1, the complete runnable
-system includes the Phase 0 Rust mock-core tracer plus a language-neutral PRP
-schema/fixture corpus, deterministic TypeScript reducer, Rust parity oracle, CLI
-replay, and standalone browser replay. There is intentionally no daemon, network
-connection, live harness, or Paperclip bridge.
+## What this tutorial is
+
+This tutorial combines each accepted Native Runner phase into one procedure. It currently includes Phase 0 and Phase 1.
+
+## What this tutorial proves
+
+This tutorial proves that the standalone package boundary and static replay path work together. It does not use a live harness or Paperclip.
+
+The current system includes the Rust mock-core tracer and the shared protocol fixtures. It also includes CLI replay and browser replay.
 
 ## Current end-to-end path
 

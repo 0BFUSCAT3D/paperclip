@@ -1,8 +1,14 @@
 # Phase 1: Validate and Replay a PRP Fixture
 
-This tutorial exercises the complete Phase 1 tracer bullet from a clean checkout:
-validate a language-neutral fixture, reduce its events in the CLI, and inspect
-the same snapshot in the standalone browser page.
+## What this phase is
+
+Phase 1 is a static replay path for a Paperclip Runner Protocol fixture. It uses the same reducer in the CLI and browser.
+
+## What this phase proves
+
+This phase proves that Rust and TypeScript accept the same protocol data. It also proves that duplicate events do not change the result.
+
+The tutorial validates one fixture. It reduces the events in the CLI. It then shows the same snapshot in the browser.
 
 ## Prerequisites
 

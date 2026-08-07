@@ -6575,7 +6575,7 @@ Never change an active run from native to legacy mid-session.
 
 The implementation phases, dependency policy, package-local documentation layout, human checkpoints, and retained future backlog now live in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md).
 
-The spike specification remains the normative contract. Keep it updated when implementation evidence changes architecture, protocol, security, persistence, API, UI, performance, or exit criteria. Keep sequencing and task-creation details in the implementation plan. Only Phase 0 and Phase 1 tasks may be created initially; revise both documents after their human checkpoints before creating later-phase tasks.
+The spike specification remains the normative contract. Keep it updated when implementation evidence changes architecture, protocol, security, persistence, API, UI, performance, or exit criteria. Keep sequencing and task-creation details in the implementation plan. Phase 0 and Phase 1 are complete. The human authorized the Phase 2 task on August 7, 2026. Keep Phase 3 and later tasks deferred until the Phase 2 human checkpoint is complete.
 
 ## 30. Dependency sequencing
 

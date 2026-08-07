@@ -1,11 +1,16 @@
 # Phase 0: Run the Standalone Tracer
 
-## Outcome
+## What this phase is
 
-You will install only the runner workspace's declared Node tools, compile its
-Rust and TypeScript surfaces, run their tests and static checks, start the Rust
-in-memory mock core, validate the minimal shared fixture, print a deterministic
-result, and return to the shell. Paperclip itself does not start.
+Phase 0 is the smallest standalone runner path. It uses a mock control plane and does not start Paperclip.
+
+## What this phase proves
+
+This phase proves that the package has an independent Rust boundary. It also proves that Rust and TypeScript accept the same fixture.
+
+You will install the package tools. You will compile the Rust and TypeScript code. You will run the tests and checks.
+
+You will start the Rust mock core. The tracer validates one fixture and prints a deterministic result. The process then stops.
 
 ## Prerequisites
 

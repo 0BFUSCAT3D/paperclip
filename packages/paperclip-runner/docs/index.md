@@ -1,6 +1,7 @@
 # Native Runner Tutorials
 
 The tutorials are cumulative and are always run from the repository root.
+Each tutorial starts with an explanation of what the phase is and what the phase proves.
 
 ## Accepted implementation phases
 
@@ -16,4 +17,5 @@ The tutorials are cumulative and are always run from the repository root.
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Package README](../README.md)
 
+Phase 2 is authorized and in progress. Add its tutorial when its runnable tracer is ready.
 Later tutorials are added only after their phase is authorized and implemented.
