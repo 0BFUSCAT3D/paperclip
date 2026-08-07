@@ -98,8 +98,9 @@ pnpm --filter @paperclipai/paperclip-runner check:browser-tokens
 pnpm --filter @paperclipai/paperclip-runner test:browser
 ```
 
-Expected: two Playwright tests pass and the happy-path screenshot is written to
-`packages/paperclip-runner/knowledge/evidence/phase-01-static-replay.png`.
+Expected: the Playwright tests pass and temporary screenshots are written under
+the ignored `packages/paperclip-runner/test-results/` directory. The regression
+suite does not rewrite committed evidence images.
 
 ## What this proves
 

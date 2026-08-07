@@ -23,6 +23,14 @@ pnpm --filter @paperclipai/paperclip-runner verify
 The verification command requires a stable Rust toolchain with `cargo` on
 `PATH`, in addition to Node.js 20+ and pnpm 9+.
 
+Minimal Debian/Ubuntu hosts without root access can extract the required
+Playwright browser libraries into a user-owned cache and run the same acceptance
+sequence with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner verify:rootless
+```
+
 The tracer's final line is stable:
 
 ```json
@@ -64,8 +72,9 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 | `trace:phase2` | Run one native local session through the Rust runner and fake harness. |
 | `record:phase2` | Capture a validated happy-path live trace as a replay fixture. |
 | `browser:dev` | Start the standalone live/replay browser devtool. |
-| `test:browser` | Exercise static replay and live scenarios, then capture screenshots. |
+| `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
 | `verify` | Run the complete Phase 0, Phase 1, and Phase 2 acceptance sequence. |
+| `verify:rootless` | Extract Debian/Ubuntu browser libraries without root, then run `verify`. |
 
 ## Navigate
 

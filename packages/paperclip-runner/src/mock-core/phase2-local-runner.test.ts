@@ -143,6 +143,21 @@ describe.sequential("Phase 2 local runner and fake harness", () => {
       .toHaveLength(1);
   });
 
+  it("rejects commands after completion with an operator-safe restart message", async () => {
+    const handle = await startPhase2Scenario({
+      scenario: "happy-path",
+      delayMs: 1,
+    });
+
+    await handle.completion;
+
+    await expect(
+      handle.resolveRequest("request_after_completion", { text: "too late" }),
+    ).rejects.toThrow(
+      "This request expired because the local run already finished. Start a new run.",
+    );
+  });
+
   it("produces the same snapshot for validated live events and replay", async () => {
     const trace = await runPhase2Scenario({ scenario: "happy-path", delayMs: 1 });
     let live = createPhase2LiveSnapshot(trace);

@@ -34,6 +34,16 @@ On a minimal Linux host, install the browser libraries too:
 pnpm --filter @paperclipai/paperclip-runner exec playwright install-deps chromium
 ```
 
+`playwright install-deps` requires root. On a Debian or Ubuntu host where root
+is unavailable, use the package's rootless verification command instead. It
+downloads the required browser-library packages into a user-owned cache,
+extracts them without installing system packages, and scopes `LD_LIBRARY_PATH`
+to the verification process:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner verify:rootless
+```
+
 ## 1. Run the package verification path
 
 ```sh
@@ -52,7 +62,7 @@ pnpm --filter @paperclipai/paperclip-runner trace:phase2 -- --scenario happy-pat
 
 Expected summary facts:
 
-- `eventCount` is `18`;
+- `eventCount` is `19`;
 - `terminalCount` is `1`;
 - `semanticResult` is `done`;
 - harness and runner exit codes are `0`.
@@ -100,6 +110,8 @@ Open `http://127.0.0.1:4179`, then follow these steps:
 4. Confirm `Live and replay reducer output` says `Match`.
 5. Select `Permission and input`, start the run, and choose **Allow**.
 6. Enter a trace name and choose **Send input**. Confirm the run completes.
+   Each interactive request remains open for five minutes. If it expires, the
+   page reports that the run finished and asks you to start a new run.
 7. Select `Interruption`, start the run, and choose **Interrupt turn** when the
    button becomes active.
 8. Confirm the terminal badge says `cancelled`, the semantic result says
@@ -107,6 +119,10 @@ Open `http://127.0.0.1:4179`, then follow these steps:
 9. Switch to **Static replay** and confirm the Phase 1 fixture path still works.
 
 Stop Vite with `Ctrl+C`.
+
+The browser regression suite writes its temporary screenshots under the
+ignored `packages/paperclip-runner/test-results/` directory. It never rewrites
+the committed evidence images linked below.
 
 ## 5. Inspect the evidence
 

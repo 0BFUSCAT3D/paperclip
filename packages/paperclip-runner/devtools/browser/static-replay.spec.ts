@@ -1,10 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
-
-test("validates and renders the shared Phase 1 fixture", async ({ page }) => {
+test("validates and renders the shared Phase 1 fixture", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Static replay" }).click();
   await expect(page.getByRole("heading", { name: "Live local runner" })).toBeVisible();
@@ -15,7 +11,7 @@ test("validates and renders the shared Phase 1 fixture", async ({ page }) => {
     "The scripted run completed successfully.",
   );
   await page.screenshot({
-    path: resolve(packageRoot, "knowledge/evidence/phase-01-static-replay.png"),
+    path: testInfo.outputPath("phase-01-static-replay.png"),
     fullPage: true,
   });
 });
@@ -32,7 +28,7 @@ test("shows duplicate and unsupported-version replay states", async ({ page }) =
   await expect(page.getByText(/protocolVersion 2 is unsupported/)).toBeVisible();
 });
 
-test("streams a live run and proves replay parity", async ({ page }) => {
+test("streams a live run and proves replay parity", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Start local run" }).click();
   await expect(page.getByTestId("live-status")).toHaveText("Terminal");
@@ -41,12 +37,12 @@ test("streams a live run and proves replay parity", async ({ page }) => {
   await expect(page.getByTestId("process-facts")).toContainText("done");
   await expect(page.getByTestId("parity-result")).toContainText("Match");
   await page.screenshot({
-    path: resolve(packageRoot, "knowledge/evidence/phase-02-live-complete.png"),
+    path: testInfo.outputPath("phase-02-live-complete.png"),
     fullPage: true,
   });
 });
 
-test("resolves live permission and input requests", async ({ page }) => {
+test("resolves live permission and input requests", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByLabel("Scenario").selectOption("permission-input");
   await page.getByRole("button", { name: "Start local run" }).click();
@@ -58,7 +54,7 @@ test("resolves live permission and input requests", async ({ page }) => {
     }).first(),
   ).toContainText("permission: Allow the fake driver to write its local fixture?");
   await page.screenshot({
-    path: resolve(packageRoot, "knowledge/evidence/phase-02-live-permission.png"),
+    path: testInfo.outputPath("phase-02-live-permission.png"),
     fullPage: true,
   });
   await page.getByRole("button", { name: "Allow" }).click();
@@ -68,13 +64,14 @@ test("resolves live permission and input requests", async ({ page }) => {
       hasText: "runtime_request.resolved",
     }).first(),
   ).toContainText("Resolved permission: Allow the fake driver to write its local fixture?");
+  await page.waitForTimeout(10_500);
   await page.getByLabel("Response").fill("phase-02-browser-trace");
   await page.getByRole("button", { name: "Send input" }).click();
   await expect(page.getByTestId("live-status")).toHaveText("Terminal");
   await expect(page.getByTestId("parity-result")).toContainText("Match");
 });
 
-test("interrupts a live turn without duplicating terminal state", async ({ page }) => {
+test("interrupts a live turn without duplicating terminal state", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByLabel("Scenario").selectOption("interrupted");
   await page.getByRole("button", { name: "Start local run" }).click();
@@ -87,7 +84,7 @@ test("interrupts a live turn without duplicating terminal state", async ({ page 
   await expect(page.getByTestId("terminal-badge")).toHaveAttribute("data-tone", "neutral");
   await expect(page.getByTestId("timeline").getByText("run.terminal")).toHaveCount(1);
   await page.screenshot({
-    path: resolve(packageRoot, "knowledge/evidence/phase-02-live-interrupted.png"),
+    path: testInfo.outputPath("phase-02-live-interrupted.png"),
     fullPage: true,
   });
 });

@@ -17,6 +17,13 @@ export default defineConfig({
   preview: {
     host: "127.0.0.1",
   },
+  // Vite's dev dependency optimizer has its own esbuild target. Keep it in
+  // sync with the standalone browser build so Ajv is never downlevelled.
+  optimizeDeps: {
+    esbuildOptions: {
+      target: "esnext",
+    },
+  },
   build: {
     outDir: resolve(packageRoot, "dist-browser"),
     emptyOutDir: true,

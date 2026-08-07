@@ -18,6 +18,8 @@ const RUNNER_STREAM_SCHEMA: &str = "paperclip.runner.stream.v1";
 const RUNNER_COMMAND_SCHEMA: &str = "paperclip.prp.command.v1";
 const HARNESS_COMMAND_SCHEMA: &str = "paperclip.fake_harness.command.v1";
 const HARNESS_MESSAGE_SCHEMA: &str = "paperclip.fake_harness.message.v1";
+const HARNESS_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const INTERACTIVE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Phase2Error(String);
@@ -1327,9 +1329,14 @@ fn receive_harness_command(
     command_type: &str,
     request_id: Option<&str>,
 ) -> Result<HarnessCommand, Phase2Error> {
+    let timeout = if command_type == "request.resolve" {
+        INTERACTIVE_REQUEST_TIMEOUT
+    } else {
+        HARNESS_COMMAND_TIMEOUT
+    };
     loop {
         let command = receiver
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(timeout)
             .map_err(|_| Phase2Error::invalid(format!("timed out waiting for {command_type}")))?;
         if command.schema != HARNESS_COMMAND_SCHEMA {
             continue;

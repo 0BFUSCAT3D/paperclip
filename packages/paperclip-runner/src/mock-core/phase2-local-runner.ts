@@ -336,6 +336,15 @@ class LocalRunnerController implements Phase2RunHandle {
     command: PrpCommand,
     recordCommand: boolean,
   ): Promise<Phase2CommandReceipt> {
+    if (
+      this.#settled ||
+      this.#process.stdin.destroyed ||
+      !this.#process.stdin.writable
+    ) {
+      return Promise.reject(
+        new Error("This request expired because the local run already finished. Start a new run."),
+      );
+    }
     if (recordCommand) {
       this.#commands.push(structuredClone(command));
     }

@@ -39,6 +39,13 @@ The one-command form after installation is:
 pnpm --filter @paperclipai/paperclip-runner verify
 ```
 
+On a minimal Debian or Ubuntu host without root access, use the rootless browser
+dependency path:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner verify:rootless
+```
+
 ## Cumulative guarantees
 
 - the fixture is validated before any mock-core mutation;
