@@ -814,6 +814,87 @@ describe("agent instructions service", () => {
   );
 
   it.skipIf(process.platform !== "linux")(
+    "does not evict a live lock after a transient probe connection error",
+    async () => {
+      const paperclipHome = await makeTempDir("paperclip-agent-instructions-probe-retry-");
+      cleanupDirs.add(paperclipHome);
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+      const svc = agentInstructionsService();
+      const agent = makeAgent({});
+      const managedRoot = path.join(
+        paperclipHome,
+        "instances",
+        "test-instance",
+        "companies",
+        "company-1",
+        "agents",
+        "agent-1",
+        "instructions",
+      );
+      const lockPath = `${managedRoot}.paperclip-materialize.lock`;
+      const token = randomUUID();
+      const probePath = `\0paperclip-managed-bundle-${token}`;
+      const probe = net.createServer((socket) => socket.destroy());
+      await new Promise<void>((resolve, reject) => {
+        probe.once("error", reject);
+        probe.listen(probePath, resolve);
+      });
+      probe.unref();
+      await fs.mkdir(lockPath, { recursive: true });
+      await fs.writeFile(
+        path.join(lockPath, "owner.json"),
+        `${JSON.stringify({
+          pid: process.pid,
+          token,
+          probePath,
+          createdAt: new Date().toISOString(),
+        })}\n`,
+        "utf8",
+      );
+      await fs.writeFile(path.join(lockPath, `heartbeat-${token}`), "", "utf8");
+
+      const originalCreateConnection = net.createConnection.bind(net);
+      let connectionAttempts = 0;
+      const createConnectionSpy = vi
+        .spyOn(net, "createConnection")
+        .mockImplementation(((...args: Parameters<typeof net.createConnection>) => {
+          connectionAttempts += 1;
+          if (connectionAttempts === 1) {
+            const socket = new net.Socket();
+            queueMicrotask(() => {
+              socket.emit("error", Object.assign(new Error("transient probe failure"), {
+                code: "EAGAIN",
+              }));
+            });
+            return socket;
+          }
+          return originalCreateConnection(...args);
+        }) as typeof net.createConnection);
+      const materialization = svc.materializeManagedBundle(agent, { "AGENTS.md": "# Stock\n" });
+
+      try {
+        const firstOutcome = await Promise.race([
+          materialization.then(() => "materialized"),
+          new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), 100)),
+        ]);
+        expect(firstOutcome).toBe("waiting");
+        expect(connectionAttempts).toBeGreaterThanOrEqual(2);
+      } finally {
+        createConnectionSpy.mockRestore();
+        const releasedLockPath = `${lockPath}.released`;
+        await fs.rename(lockPath, releasedLockPath);
+        await new Promise<void>((resolve) => probe.close(() => resolve()));
+        await fs.rm(releasedLockPath, { recursive: true, force: true });
+      }
+
+      await expect(materialization).resolves.toMatchObject({
+        materialization: { action: "added" },
+      });
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
     "recovers a reused PID after its liveness probe is released",
     async () => {
       const paperclipHome = await makeTempDir("paperclip-agent-instructions-ps-reused-pid-");

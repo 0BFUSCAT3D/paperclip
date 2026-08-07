@@ -35,6 +35,9 @@ const MANAGED_BUNDLE_LOCK_TIMEOUT_MS = 30_000;
 const MANAGED_BUNDLE_LOCK_HEARTBEAT_MS = 1_000;
 const MANAGED_BUNDLE_LOCK_STALE_MS = 10_000;
 const MANAGED_BUNDLE_LOCK_PROBE_CACHE_MS = 1_000;
+const MANAGED_BUNDLE_LOCK_PROBE_ATTEMPTS = 3;
+const MANAGED_BUNDLE_LOCK_PROBE_RETRY_MS = 25;
+const MANAGED_BUNDLE_LOCK_PROBE_TIMEOUT_MS = 250;
 const managedBundleProbeConfirmedAt = new Map<string, number>();
 
 type BundleMode = "managed" | "external";
@@ -284,29 +287,62 @@ async function stopManagedBundleLockProbe(probe: {
   }
 }
 
-async function managedBundleLockProbeIsAlive(probePath: string): Promise<boolean> {
-  const confirmedAt = managedBundleProbeConfirmedAt.get(probePath);
-  if (confirmedAt !== undefined && Date.now() - confirmedAt < MANAGED_BUNDLE_LOCK_PROBE_CACHE_MS) {
-    return true;
-  }
+type ManagedBundleLockProbeStatus = "alive" | "absent" | "indeterminate";
 
-  const alive = await new Promise<boolean>((resolve) => {
+function managedBundleLockProbeErrorStatus(error: Error): ManagedBundleLockProbeStatus {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ECONNREFUSED" || code === "ENOENT"
+    ? "absent"
+    : "indeterminate";
+}
+
+async function probeManagedBundleLockOnce(
+  probePath: string,
+): Promise<ManagedBundleLockProbeStatus> {
+  return new Promise<ManagedBundleLockProbeStatus>((resolve) => {
     const socket = net.createConnection(probePath);
     let settled = false;
-    const finish = (result: boolean) => {
+    const finish = (result: ManagedBundleLockProbeStatus) => {
       if (settled) return;
       settled = true;
       socket.destroy();
       resolve(result);
     };
     socket.unref();
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-    socket.setTimeout(250, () => finish(false));
+    socket.once("connect", () => finish("alive"));
+    socket.once("error", (error) => finish(managedBundleLockProbeErrorStatus(error)));
+    // A timeout does not prove the listener is absent. Under load, evicting on
+    // this ambiguous result could let two processes displace the live tree.
+    socket.setTimeout(MANAGED_BUNDLE_LOCK_PROBE_TIMEOUT_MS, () => finish("indeterminate"));
   });
-  if (alive) managedBundleProbeConfirmedAt.set(probePath, Date.now());
-  else managedBundleProbeConfirmedAt.delete(probePath);
-  return alive;
+}
+
+async function managedBundleLockProbeStatus(
+  probePath: string,
+): Promise<ManagedBundleLockProbeStatus> {
+  const confirmedAt = managedBundleProbeConfirmedAt.get(probePath);
+  if (confirmedAt !== undefined && Date.now() - confirmedAt < MANAGED_BUNDLE_LOCK_PROBE_CACHE_MS) {
+    return "alive";
+  }
+
+  let sawIndeterminateResult = false;
+  for (let attempt = 0; attempt < MANAGED_BUNDLE_LOCK_PROBE_ATTEMPTS; attempt += 1) {
+    const status = await probeManagedBundleLockOnce(probePath);
+    if (status === "alive") {
+      managedBundleProbeConfirmedAt.set(probePath, Date.now());
+      return status;
+    }
+    if (status === "indeterminate") sawIndeterminateResult = true;
+    if (attempt + 1 < MANAGED_BUNDLE_LOCK_PROBE_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, MANAGED_BUNDLE_LOCK_PROBE_RETRY_MS));
+    }
+  }
+
+  managedBundleProbeConfirmedAt.delete(probePath);
+  // Reap only after every attempt definitively reports no listener. Any
+  // transient socket error or timeout keeps the lock, preferring a bounded
+  // acquisition timeout over concurrent materialization of the same tree.
+  return sawIndeterminateResult ? "indeterminate" : "absent";
 }
 
 async function restoreManagedBundleLockOwner(ownerPath: string, claimedOwnerPath: string): Promise<void> {
@@ -395,7 +431,7 @@ async function removeStaleManagedBundleLock(lockPath: string): Promise<boolean> 
       ? owner.probePath
       : null;
     if (probePath !== null) {
-      shouldRemove = !(await managedBundleLockProbeIsAlive(probePath));
+      shouldRemove = await managedBundleLockProbeStatus(probePath) === "absent";
       if (shouldRemove) staleProbePath = probePath;
     } else if (pid !== null && isProcessAlive(pid)) {
       const recordedStart = typeof owner.processStartMarker === "string"
