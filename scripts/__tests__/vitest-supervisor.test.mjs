@@ -202,10 +202,12 @@ test("active cwd guard prevents premature root deletion", { skip: process.platfo
   });
   t.after(() => holder.kill("SIGKILL"));
   await waitFor(async () => (await findRootReferences(run.root)).some((reference) => reference.pid === holder.pid));
-  await assert.rejects(run.cleanup(), /active_root_reference/);
+  await assert.rejects(run.cleanup({ retainReason: "test_failure" }), /active_root_reference/);
+  assert.equal(run.root.startsWith(path.join(parent, "pcvt-retained-")), false);
   holder.kill("SIGKILL");
   await new Promise((resolve) => holder.once("close", resolve));
-  await run.stopGuardian();
+  const cleanup = await run.cleanup();
+  assert.equal(cleanup.removed, true);
 });
 
 test("host-wide slots enforce the configured cap", async (t) => {
@@ -219,6 +221,50 @@ test("host-wide slots enforce the configured cap", async (t) => {
   await first.release();
   const second = await acquireHostSlot({ invocationId: "slot-second", env, cap: 1, waitMs: 1_000 });
   await second.release();
+});
+
+test("concurrent stale-slot reapers cannot remove a replacement owner", async (t) => {
+  const parent = await withTempParent(t);
+  const control = path.join(parent, "control");
+  const slot = path.join(control, "slot-0");
+  await fs.mkdir(slot, { recursive: true });
+  await fs.writeFile(
+    path.join(slot, "owner.json"),
+    `${JSON.stringify({ invocationId: "stale", pid: 2_000_000_000, startTime: "missing" })}\n`,
+  );
+  const env = { PAPERCLIP_TEST_CONTROL_DIR: control };
+  const attempts = await Promise.allSettled([
+    acquireHostSlot({ invocationId: "replacement-first", env, cap: 1, waitMs: 300 }),
+    acquireHostSlot({ invocationId: "replacement-second", env, cap: 1, waitMs: 300 }),
+  ]);
+  const acquired = attempts.filter((attempt) => attempt.status === "fulfilled");
+  const rejected = attempts.filter((attempt) => attempt.status === "rejected");
+  assert.equal(acquired.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.match(rejected[0].reason.message, /host slot/);
+  await acquired[0].value.release();
+});
+
+test("an existing stale-slot reaper lock fails closed", async (t) => {
+  const parent = await withTempParent(t);
+  const control = path.join(parent, "control");
+  const slot = path.join(control, "slot-0");
+  await fs.mkdir(slot, { recursive: true });
+  await fs.writeFile(
+    path.join(slot, "owner.json"),
+    `${JSON.stringify({ invocationId: "stale", pid: 2_000_000_000, startTime: "missing" })}\n`,
+  );
+  await fs.mkdir(path.join(control, ".slot-0-reaper"));
+  await assert.rejects(
+    acquireHostSlot({
+      invocationId: "replacement",
+      env: { PAPERCLIP_TEST_CONTROL_DIR: control },
+      cap: 1,
+      waitMs: 150,
+    }),
+    /host slot/,
+  );
+  assert.equal(JSON.parse(await fs.readFile(path.join(slot, "owner.json"), "utf8")).invocationId, "stale");
 });
 
 test("stale-root recovery only reaps an empty unreferenced dead-runner record", { skip: process.platform !== "linux" }, async (t) => {

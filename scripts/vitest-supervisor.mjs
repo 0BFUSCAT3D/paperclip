@@ -243,6 +243,26 @@ async function slotOwnerIsAlive(owner) {
   }
 }
 
+async function reapStaleHostSlot(slot, reaperLock) {
+  try {
+    await fs.mkdir(reaperLock, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === "EEXIST") return false;
+    throw error;
+  }
+
+  try {
+    const stored = JSON.parse(await fs.readFile(path.join(slot, "owner.json"), "utf8").catch(() => "null"));
+    const stats = stored ? null : await fs.stat(slot).catch(() => null);
+    const ownerWriteMayBeInFlight = stats && Date.now() - stats.mtimeMs < 5_000;
+    if (ownerWriteMayBeInFlight || (await slotOwnerIsAlive(stored))) return false;
+    await fs.rm(slot, { recursive: true, force: true });
+    return true;
+  } finally {
+    await fs.rm(reaperLock, { recursive: true, force: true });
+  }
+}
+
 export async function acquireHostSlot({
   invocationId,
   env = process.env,
@@ -267,6 +287,7 @@ export async function acquireHostSlot({
     if (signal?.aborted) throw signal.reason ?? new Error("Stable test invocation cancelled while waiting for a host slot.");
     for (let index = 0; index < cap; index += 1) {
       const slot = path.join(dir, `slot-${index}`);
+      const reaperLock = path.join(dir, `.slot-${index}-reaper`);
       try {
         await fs.mkdir(slot, { mode: 0o700 });
         await fs.writeFile(path.join(slot, "owner.json"), `${JSON.stringify(owner)}\n`, { mode: 0o600 });
@@ -283,12 +304,7 @@ export async function acquireHostSlot({
         };
       } catch (error) {
         if (error?.code !== "EEXIST") throw error;
-        const stored = JSON.parse(await fs.readFile(path.join(slot, "owner.json"), "utf8").catch(() => "null"));
-        const stats = stored ? null : await fs.stat(slot).catch(() => null);
-        const ownerWriteMayBeInFlight = stats && Date.now() - stats.mtimeMs < 5_000;
-        if (!ownerWriteMayBeInFlight && !(await slotOwnerIsAlive(stored))) {
-          await fs.rm(slot, { recursive: true, force: true });
-        }
+        await reapStaleHostSlot(slot, reaperLock);
       }
     }
     await delay(200);
@@ -708,17 +724,18 @@ export class VitestInvocationSupervisor {
     const cleanupStarted = Date.now();
     const survivors = await this.terminateBoundary();
     const references = this.root ? await findRootReferences(this.root, this.invocationId) : [];
-    let retainedArtifactReason = retainReason;
+    let invariantFailureReason = null;
     let removed = false;
     if (this.identityMismatches.length > 0) {
-      retainedArtifactReason ??= `pid_identity_mismatch:${this.identityMismatches.join(",")}`;
+      invariantFailureReason = `pid_identity_mismatch:${this.identityMismatches.join(",")}`;
     }
-    if (survivors.length > 0) retainedArtifactReason ??= "containment_not_empty";
-    if (references.length > 0) retainedArtifactReason ??= "active_root_reference";
-    const guardianArmed = Boolean(retainedArtifactReason && !retainReason && this.guardian);
+    if (survivors.length > 0) invariantFailureReason ??= "containment_not_empty";
+    if (references.length > 0) invariantFailureReason ??= "active_root_reference";
+    const retainedArtifactReason = invariantFailureReason ?? retainReason;
+    const guardianArmed = Boolean(invariantFailureReason && this.guardian);
     if (!guardianArmed) await this.stopGuardian();
 
-    if (this.root && retainedArtifactReason && retainReason) {
+    if (this.root && retainReason && !invariantFailureReason) {
       const retained = path.join(
         this.tempParent,
         `pcvt-retained-${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${this.invocationId.slice(0, 8)}`,
@@ -751,9 +768,9 @@ export class VitestInvocationSupervisor {
       retainedArtifactReason,
       guardianArmed,
     });
-    if (retainedArtifactReason && !retainReason) {
+    if (invariantFailureReason) {
       throw new Error(
-        `Post-suite invariants failed for ${this.invocationId}: ${retainedArtifactReason}; ` +
+        `Post-suite invariants failed for ${this.invocationId}: ${invariantFailureReason}; ` +
           `survivors=${survivors.length}, rootReferences=${references.length}. Root was not deleted.`,
       );
     }
