@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -6,6 +7,7 @@ import {
   type CSSProperties,
 } from "react";
 import { cn } from "@/lib/utils";
+import { DRAFT_DEBOUNCE_MS, clearDraft, loadDraft, saveDraft } from "@/lib/composer-draft";
 import { ArrowUp, Check, ChevronDown, Loader2, Plus, X } from "lucide-react";
 import {
   DropdownMenu,
@@ -55,6 +57,12 @@ interface TaskChatComposerProps {
   issueStatus?: string;
   /** Mobile document-flow host: 16px editor text so iOS doesn't zoom on focus. */
   mobile?: boolean;
+  /**
+   * localStorage key for per-task draft persistence (mirrors the default
+   * composer). When set, the body is restored on mount / key change, saved
+   * debounced on change, and cleared on a successful send. Absent → no draft.
+   */
+  draftKey?: string;
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
@@ -146,6 +154,7 @@ export function TaskChatComposer({
   currentAssigneeValue = "",
   issueStatus,
   mobile = false,
+  draftKey,
 }: TaskChatComposerProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -156,6 +165,31 @@ export function TaskChatComposer({
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
   bodyRef.current = body;
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Restore the saved draft on mount / when the task (key) changes. Absent
+  // draftKey leaves the composer untouched (no localStorage access).
+  useEffect(() => {
+    if (!draftKey) return;
+    setBody(loadDraft(draftKey));
+  }, [draftKey]);
+
+  // Debounced save on every body change. A successful submit clears the key
+  // explicitly (see submit) rather than relying on this empty-body save, so a
+  // send-then-navigate within the debounce window can't resurrect the message.
+  useEffect(() => {
+    if (!draftKey) return;
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => {
+      saveDraft(draftKey, body);
+    }, DRAFT_DEBOUNCE_MS);
+  }, [body, draftKey]);
+
+  useEffect(() => {
+    return () => {
+      if (draftTimer.current) clearTimeout(draftTimer.current);
+    };
+  }, []);
 
   const modeMeta = workModeMetaFor(pendingMode);
   const canAcceptFiles = Boolean(onAttachImage || onImageUpload);
@@ -291,10 +325,11 @@ export function TaskChatComposer({
         await onWorkModeChange(pendingMode);
       }
       await onAdd(fullBody, reopen, reassignment);
+      if (draftKey) clearDraft(draftKey);
       setAttachments([]);
       setPendingAssignee(null);
     } catch {
-      setBody(trimmed); // restore on failure (chips stay for retry)
+      setBody(trimmed); // restore on failure (chips stay + the draft save effect re-fires)
     } finally {
       setSubmitting(false);
     }

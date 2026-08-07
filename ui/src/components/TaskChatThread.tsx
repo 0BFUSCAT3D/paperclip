@@ -107,6 +107,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     threadHeader,
     workModeChanges,
     issueBrief,
+    draftKey,
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -473,6 +474,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             currentAssigneeValue={currentAssigneeValue}
             issueStatus={issueStatus}
             mobile={isMobile}
+            draftKey={draftKey}
           />
           {footer}
         </div>

@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildAgentMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import { TaskChatComposer } from "./TaskChatComposer";
+import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 
 /**
  * MDXEditor-in-jsdom weight (mirrors MarkdownEditor.test.tsx): the real editor
@@ -149,6 +150,7 @@ let root: Root | null = null;
 let originalRangeRect: typeof Range.prototype.getBoundingClientRect;
 
 beforeEach(() => {
+  localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -527,5 +529,88 @@ describe("TaskChatComposer", () => {
     );
     const trigger = container.querySelector('[data-testid="task-chat-composer-assignee"]');
     expect(trigger?.textContent).toContain("Sam");
+  });
+
+  describe("draft persistence (draftKey)", () => {
+    const KEY = "task-chat-draft:issue-1";
+
+    it("restores a saved draft on mount and posts it verbatim", async () => {
+      localStorage.setItem(KEY, "unsent draft");
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={KEY} />);
+
+      expect(editable().textContent).toBe("unsent draft");
+      expect(sendButton().disabled).toBe(false);
+
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledWith("unsent draft", undefined, undefined);
+    });
+
+    it("saves the body to localStorage after the debounce window", () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={KEY} />);
+
+        typeText("work in progress");
+        // Debounced: nothing persisted until the timer elapses.
+        expect(localStorage.getItem(KEY)).toBeNull();
+
+        vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+        expect(localStorage.getItem(KEY)).toBe("work in progress");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears the draft key on a successful send (not via the empty-body debounce)", async () => {
+      localStorage.setItem(KEY, "queued message");
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={KEY} />);
+
+      // Send the restored draft. Real timers, no advance — so the 800ms
+      // empty-body save can't be what removed the key; only the explicit
+      // clearDraft on success could have.
+      pressKey("Enter", { metaKey: true });
+      await flushAsync();
+
+      expect(onAdd).toHaveBeenCalledWith("queued message", undefined, undefined);
+      expect(localStorage.getItem(KEY)).toBeNull();
+    });
+
+    it("keeps the draft when the send fails", async () => {
+      const onAdd = vi.fn().mockRejectedValue(new Error("network down"));
+      render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={KEY} />);
+
+      typeText("do not lose this");
+      pressKey("Enter", { metaKey: true });
+      await flushAsync(); // the rejected submit restores the body
+
+      // The restored body re-fires the debounced save; wait it out.
+      await new Promise((resolve) => setTimeout(resolve, DRAFT_DEBOUNCE_MS + 50));
+      expect(onAdd).toHaveBeenCalled();
+      expect(localStorage.getItem(KEY)).toBe("do not lose this");
+    });
+
+    it("never touches localStorage when draftKey is absent", () => {
+      vi.useFakeTimers();
+      const getItem = vi.spyOn(Storage.prototype, "getItem");
+      const setItem = vi.spyOn(Storage.prototype, "setItem");
+      const removeItem = vi.spyOn(Storage.prototype, "removeItem");
+      try {
+        render(<TaskChatComposer onAdd={vi.fn().mockResolvedValue(undefined)} workMode="standard" />);
+        typeText("no key, no persistence");
+        vi.advanceTimersByTime(DRAFT_DEBOUNCE_MS);
+
+        expect(getItem).not.toHaveBeenCalled();
+        expect(setItem).not.toHaveBeenCalled();
+        expect(removeItem).not.toHaveBeenCalled();
+      } finally {
+        getItem.mockRestore();
+        setItem.mockRestore();
+        removeItem.mockRestore();
+        vi.useRealTimers();
+      }
+    });
   });
 });
