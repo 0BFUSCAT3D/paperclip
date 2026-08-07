@@ -186,6 +186,44 @@ test("an untagged process-group descendant is reaped after its parent exits", { 
   assert.equal(cleanup.survivors.length, 0);
 });
 
+test("an observed detached descendant is reaped after losing its parent and tag", { skip: process.platform !== "linux" }, async (t) => {
+  const parent = await withTempParent(t);
+  const childCode = "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)";
+  const parentCode = [
+    "const {spawn}=require('node:child_process')",
+    `const child=spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{detached:true,env:{},stdio:'ignore'})`,
+    "child.unref()",
+    "setTimeout(()=>process.exit(0),500)",
+  ].join(";");
+  const run = supervisor(parent, "observed-detached-descendant");
+  const result = await run.run(process.execPath, ["-e", parentCode]);
+  assert.equal(result.code, 0);
+  const owned = await run.ownedProcesses();
+  assert.equal(owned.length, 1);
+  assert.notEqual(owned[0].processGroupId, run.processGroupId);
+  const cleanup = await run.cleanup();
+  assert.equal(cleanup.survivors.length, 0);
+});
+
+test("a root-scoped detached descendant is reaped without an invocation tag", { skip: process.platform !== "linux" }, async (t) => {
+  const parent = await withTempParent(t);
+  const childCode = "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)";
+  const parentCode = [
+    "const {spawn}=require('node:child_process')",
+    `const child=spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{detached:true,env:{TMPDIR:process.env.TMPDIR},stdio:'ignore'})`,
+    "child.unref()",
+  ].join(";");
+  const run = supervisor(parent, "root-scoped-detached-descendant");
+  const result = await run.run(process.execPath, ["-e", parentCode]);
+  assert.equal(result.code, 0);
+  const owned = await run.ownedProcesses();
+  assert.equal(owned.length, 1);
+  assert.notEqual(owned[0].processGroupId, run.processGroupId);
+  const cleanup = await run.cleanup();
+  assert.equal(cleanup.survivors.length, 0);
+  assert.equal(cleanup.removed, true);
+});
+
 test("concurrent invocation boundaries cannot signal one another", { skip: process.platform !== "linux" }, async (t) => {
   const parent = await withTempParent(t);
   const code = "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)";

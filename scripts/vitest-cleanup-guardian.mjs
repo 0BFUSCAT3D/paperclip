@@ -2,7 +2,7 @@
 import { promises as fs } from "node:fs";
 import {
   findRootReferences,
-  listTaggedProcesses,
+  listInvocationProcesses,
   readLinuxProcessIdentity,
   signalProcessIdentity,
 } from "./vitest-supervisor.mjs";
@@ -31,16 +31,16 @@ async function ownerIsAlive() {
 
 async function waitForEmpty(waitMs) {
   const deadline = Date.now() + waitMs;
-  let processes = await listTaggedProcesses(invocationId);
+  let processes = await listInvocationProcesses(invocationId, root);
   while (processes.length > 0 && Date.now() < deadline) {
     await delay(100);
-    processes = await listTaggedProcesses(invocationId);
+    processes = await listInvocationProcesses(invocationId, root);
   }
   return processes;
 }
 
 async function signalAll(signal) {
-  const processes = await listTaggedProcesses(invocationId);
+  const processes = await listInvocationProcesses(invocationId, root);
   for (const identity of processes) await signalProcessIdentity(identity, signal);
 }
 
@@ -50,7 +50,8 @@ while (await ownerIsAlive()) {
 }
 
 // The owner disappeared without disarming us (including SIGKILL/OOM). Drain
-// only processes carrying this invocation's random inherited tag.
+// only processes carrying this invocation's random inherited tag or one of
+// its private root paths in the environment.
 await signalAll("SIGTERM");
 let survivors = await waitForEmpty(graceMs);
 if (survivors.length > 0) {

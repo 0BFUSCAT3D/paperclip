@@ -146,6 +146,39 @@ export async function listTaggedProcesses(invocationId) {
   return matches.sort((a, b) => a.pid - b.pid);
 }
 
+export async function listRootScopedProcesses(root) {
+  if (process.platform !== "linux" || !root) return [];
+  const entries = await fs.readdir("/proc", { withFileTypes: true }).catch(() => []);
+  const matches = [];
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .map(async (entry) => {
+        const pid = Number(entry.name);
+        const env = await readProcessEnvironment(pid);
+        const scopedPaths = [env.get("PAPERCLIP_HOME"), env.get("TMPDIR")].filter(Boolean);
+        if (!scopedPaths.some((candidate) => underRoot(candidate, root))) return;
+        const identity = await readLinuxProcessIdentity(pid);
+        if (!identity) return;
+        const commandTokens = await readProcessCommandTokens(pid);
+        matches.push({ ...identity, family: classifyFamily(identity, commandTokens) });
+      }),
+  );
+  return matches.sort((a, b) => a.pid - b.pid);
+}
+
+export async function listInvocationProcesses(invocationId, root) {
+  const [tagged, rootScoped] = await Promise.all([
+    listTaggedProcesses(invocationId),
+    listRootScopedProcesses(root),
+  ]);
+  const processes = new Map();
+  for (const processInfo of [...tagged, ...rootScoped]) {
+    processes.set(`${processInfo.pid}:${processInfo.startTime}`, processInfo);
+  }
+  return [...processes.values()].sort((a, b) => a.pid - b.pid);
+}
+
 async function listCgroupProcesses(cgroupPath) {
   if (!cgroupPath) return [];
   const raw = await fs.readFile(path.join(cgroupPath, "cgroup.procs"), "utf8").catch(() => "");
@@ -174,6 +207,36 @@ async function listProcessGroupProcesses(processGroupId) {
       }),
   );
   return matches.sort((a, b) => a.pid - b.pid);
+}
+
+async function listProcessDescendants(ancestorPid) {
+  if (process.platform !== "linux" || !Number.isInteger(ancestorPid) || ancestorPid <= 0) return [];
+  const entries = await fs.readdir("/proc", { withFileTypes: true }).catch(() => []);
+  const identities = (
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+        .map((entry) => readLinuxProcessIdentity(Number(entry.name))),
+    )
+  ).filter(Boolean);
+  const descendantPids = new Set([ancestorPid]);
+  const descendants = [];
+  let foundMore = true;
+  while (foundMore) {
+    foundMore = false;
+    for (const identity of identities) {
+      if (descendantPids.has(identity.pid) || !descendantPids.has(identity.ppid)) continue;
+      descendantPids.add(identity.pid);
+      descendants.push(identity);
+      foundMore = true;
+    }
+  }
+  return Promise.all(
+    descendants.map(async (identity) => {
+      const commandTokens = await readProcessCommandTokens(identity.pid);
+      return { ...identity, family: classifyFamily(identity, commandTokens) };
+    }),
+  );
 }
 
 export async function findRootReferences(root, invocationId = null) {
@@ -443,8 +506,8 @@ export class VitestInvocationSupervisor {
       "PAPERCLIP_TEST_PROCESS_BUDGET",
     ),
     familyBudgets = {
-      "embedded-postgres": positiveInteger(env.PAPERCLIP_TEST_MAX_POSTGRES, 16, "PAPERCLIP_TEST_MAX_POSTGRES"),
-      ssh: positiveInteger(env.PAPERCLIP_TEST_MAX_SSH, 16, "PAPERCLIP_TEST_MAX_SSH"),
+      "embedded-postgres": positiveInteger(env.PAPERCLIP_TEST_MAX_POSTGRES, 128, "PAPERCLIP_TEST_MAX_POSTGRES"),
+      ssh: positiveInteger(env.PAPERCLIP_TEST_MAX_SSH, 64, "PAPERCLIP_TEST_MAX_SSH"),
       "model-adapter": positiveInteger(
         env.PAPERCLIP_TEST_MAX_MODEL_ADAPTERS,
         64,
@@ -477,6 +540,7 @@ export class VitestInvocationSupervisor {
     this.termCount = 0;
     this.killCount = 0;
     this.identityMismatches = [];
+    this.observedProcesses = new Map();
     this.cleanupPromise = null;
     this.guardian = null;
     this.runnerIdentity = null;
@@ -591,16 +655,53 @@ export class VitestInvocationSupervisor {
   }
 
   async ownedProcesses() {
-    const [tagged, cgroup, processGroup] = await Promise.all([
-      listTaggedProcesses(this.invocationId),
+    const [invocationProcesses, cgroup, processGroup, descendants] = await Promise.all([
+      listInvocationProcesses(this.invocationId, this.root),
       listCgroupProcesses(this.cgroupPath),
       listProcessGroupProcesses(this.processGroupId),
+      listProcessDescendants(this.child?.pid),
     ]);
     const byIdentity = new Map();
-    for (const processInfo of [...tagged, ...cgroup, ...processGroup]) {
-      byIdentity.set(`${processInfo.pid}:${processInfo.startTime}`, processInfo);
+    for (const processInfo of [...invocationProcesses, ...cgroup, ...processGroup, ...descendants]) {
+      const key = `${processInfo.pid}:${processInfo.startTime}`;
+      byIdentity.set(key, processInfo);
+      this.observedProcesses.set(key, processInfo);
+    }
+    for (const [key, processInfo] of this.observedProcesses) {
+      if (byIdentity.has(key)) continue;
+      const current = await readLinuxProcessIdentity(processInfo.pid);
+      if (current?.startTime === processInfo.startTime) {
+        byIdentity.set(key, { ...processInfo, ...current });
+      } else {
+        this.observedProcesses.delete(key);
+      }
     }
     return [...byIdentity.values()].filter((processInfo) => processInfo.pid !== process.pid);
+  }
+
+  async observeDescendants() {
+    const descendants = await listProcessDescendants(this.child?.pid);
+    const childIdentity = await readLinuxProcessIdentity(this.child?.pid);
+    if (childIdentity) {
+      const commandTokens = await readProcessCommandTokens(childIdentity.pid);
+      descendants.push({
+        ...childIdentity,
+        family: classifyFamily(childIdentity, commandTokens),
+      });
+    }
+    for (const processInfo of descendants) {
+      this.observedProcesses.set(`${processInfo.pid}:${processInfo.startTime}`, processInfo);
+    }
+    const observed = [];
+    for (const [key, processInfo] of this.observedProcesses) {
+      const current = await readLinuxProcessIdentity(processInfo.pid);
+      if (current?.startTime === processInfo.startTime) {
+        observed.push({ ...processInfo, ...current });
+      } else {
+        this.observedProcesses.delete(key);
+      }
+    }
+    return observed;
   }
 
   async attachContainment() {
@@ -651,7 +752,9 @@ export class VitestInvocationSupervisor {
     let budgetError = null;
     const monitor = (async () => {
       while (!monitorStopped) {
-        const owned = await this.ownedProcesses();
+        const owned = process.platform === "linux"
+          ? await this.observeDescendants()
+          : await this.ownedProcesses();
         this.peakDescendants = Math.max(this.peakDescendants, owned.length);
         const families = summarizeFamilies(owned);
         const familyViolation = families.find(
