@@ -206,6 +206,15 @@ function boundedReconciliationReason(reason: string) {
   return reason.trim().slice(0, MAX_RECONCILIATION_REASON_LENGTH);
 }
 
+function wasQueuedBeforeAttempt(
+  queued: Pick<typeof heartbeatRuns.$inferSelect, "createdAt"> | null,
+  attemptedAt: Date,
+) {
+  return queued?.createdAt instanceof Date
+    && Number.isFinite(queued.createdAt.getTime())
+    && queued.createdAt.getTime() < attemptedAt.getTime();
+}
+
 function compactRecoveryPresentation(title: string): IssueCommentPresentation {
   const normalizedTitle = title.trim();
   return {
@@ -1261,7 +1270,7 @@ export function recoveryService(
 
     if (currentIssue) {
       const outcome: LivenessReconciliationOutcome = queued
-        ? queued.createdAt.getTime() < attemptedAt.getTime()
+        ? wasQueuedBeforeAttempt(queued, attemptedAt)
           ? "already_exists"
           : "queued"
         : currentIssue.status === "done" || currentIssue.status === "cancelled"
@@ -1325,12 +1334,12 @@ export function recoveryService(
     await recordLivenessReconciliationDecision({
       issue,
       outcome: queued
-        ? queued.createdAt.getTime() < attemptedAt.getTime()
+        ? wasQueuedBeforeAttempt(queued, attemptedAt)
           ? "already_exists"
           : "queued"
         : "suppressed",
       reason: queued
-        ? queued.createdAt.getTime() < attemptedAt.getTime()
+        ? wasQueuedBeforeAttempt(queued, attemptedAt)
           ? "assignment_dispatch_already_exists"
           : "assignment_dispatch_queued"
         : "assignment_dispatch_suppressed",
