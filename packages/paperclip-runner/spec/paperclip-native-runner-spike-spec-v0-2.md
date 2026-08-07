@@ -174,10 +174,11 @@ heartbeat service
   -> durable runner commands/events
   -> NativeRunResult
   -> AdapterExecutionResult compatibility conversion
-  -> existing workspace finalization and run completion
+  -> native-aware run/issue finalization
+  -> existing workspace finalization
 ```
 
-This isolates the spike from the full heartbeat finalization surface.
+This keeps workspace finalization and all legacy adapter behavior intact. The additive native discriminator extends run/issue finalization only where the legacy exit-code heuristic cannot represent a native disposition.
 
 ---
 
@@ -614,7 +615,7 @@ That is the proof that the abstraction is real.
 21. Human steering becomes a durable control-plane command and is delivered over the same runner connection.
 22. The harness emits a structured result or invokes the completion tool.
 23. The runner emits `run.result`.
-24. The control plane finalizes the native session, converts the result to the existing terminal adapter result shape, and runs existing workspace finalization.
+24. The control plane finalizes the native session, converts the result to the additive native-aware adapter result shape, and runs native-aware run/issue finalization plus existing workspace finalization.
 25. Paperclip applies issue status, handoff, cost, and work-product behavior.
 26. The run and environment lease are released or retained according to warm policy.
 
@@ -712,8 +713,9 @@ if (resolveRuntimeMode(agent, run) === "native") {
   });
 }
 
-// Existing workspace finalization, cost recording,
-// handoff, release, and run finalization continue here.
+// Existing workspace finalization and cost recording continue here.
+// Run/issue finalization reads adapterResult.nativeFinalization
+// for native mode and keeps the legacy heuristic otherwise.
 ```
 
 ### 8.2 Do not extend the heartbeat monolith indefinitely
@@ -2176,7 +2178,7 @@ Invalid result:
 
 ### 18.3 Mapping to Paperclip
 
-The native runtime returns the structured result to existing finalization code.
+The native runtime returns the structured result to the finalization pipeline. Native mode requires the additive finalizer contract in section 18.4; it must not pass a native result through the legacy exit-code-only decision path.
 
 The finalizer:
 
@@ -2196,20 +2198,39 @@ The three vocabularies describe different layers. They are not independent outco
 - `NativeExecutionResult.terminalState` is the native runtime lifecycle result;
 - `AdapterExecutionResult` is the legacy heartbeat compatibility record.
 
-The native finalizer must use this table. It must not infer a disposition from a process exit code.
+`AdapterExecutionResult` needs one additive, typed discriminator before native mode can ship:
+
+```ts
+interface NativeFinalizationResult {
+  schema: "paperclip.native-finalization.v1";
+  terminalState: NativeExecutionResult["terminalState"];
+  disposition: NativeExecutionResult["disposition"];
+}
+
+interface AdapterExecutionResult {
+  // Existing fields stay unchanged.
+  nativeFinalization?: NativeFinalizationResult;
+}
+```
+
+Legacy adapters omit `nativeFinalization` and keep the current exit-code heuristic. Native adapters must set it. The heartbeat finalizer must validate it against `resultJson`, select the run outcome and issue action from it, and only then use the compatibility fields for process diagnostics. `errorCode`, a null exit code, or a zero exit code is not a native disposition signal.
+
+The native finalizer must use this table:
 
 | Native disposition | Native terminal state | `AdapterExecutionResult` compatibility fields | Finalizer action |
 |---|---|---|---|
-| `done` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result in `resultJson` | Apply the legal `done` issue transition. |
-| `blocked` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result and blocker in `resultJson` | Apply `blocked` only when the blocker payload and unblock owner/action are valid. Otherwise convert to `needs_review`. |
-| `needs_review` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result in `resultJson` | Create or bind a real reviewer, approval, interaction, or monitor path, then apply `in_review`. If no review path can be created, keep the issue `in_progress` and record a finalization error. |
-| `yielded` | `completed` | `exitCode: 0`, `timedOut: false`, no error, structured result in `resultJson` | Keep the issue `in_progress` and enqueue the declared continuation or delegated follow-up. If no live continuation can be scheduled, convert to `needs_review`. |
-| `failed` | `failed` | Nonzero driver exit code when available, otherwise `exitCode: 1`; set `errorMessage`, `errorCode`, and error metadata; include the failure disposition in `resultJson` | Apply the existing retry and recovery policy. Do not directly change the issue to a terminal status. |
-| `cancelled` | `cancelled` | `exitCode: null`, `timedOut: false`, `errorCode: "cancelled"`, and the cancellation disposition in `resultJson` | Commit the heartbeat run cancellation before returning the adapter result. Change the issue to `cancelled` only when the cancellation scope explicitly includes the issue; otherwise leave the issue unchanged. |
+| `done` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`, then apply the legal `done` issue transition. |
+| `blocked` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result and blocker in `resultJson` | Persist the run as `succeeded`. Apply `blocked` only when the blocker payload and unblock owner/action are valid. Otherwise convert to `needs_review`. |
+| `needs_review` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`. Create or bind a real reviewer, approval, interaction, or monitor path, then apply `in_review`. If no review path can be created, keep the issue `in_progress` and record a finalization error. |
+| `yielded` | `completed` | `nativeFinalization` carries both values; `exitCode: 0`, `timedOut: false`, no error; structured result in `resultJson` | Persist the run as `succeeded`. Keep the issue `in_progress` and enqueue the declared continuation or delegated follow-up. If no live continuation can be scheduled, convert to `needs_review`. |
+| `failed` | `failed` | `nativeFinalization` carries both values; nonzero driver exit code when available, otherwise `exitCode: 1`; set `errorMessage`, `errorCode`, and error metadata; include the failure disposition in `resultJson` | Persist the run as `failed` and apply the existing retry and recovery policy. Do not directly change the issue to a terminal status. |
+| `cancelled` | `cancelled` | `nativeFinalization` carries both values; `exitCode: null`, `timedOut: false`, optional cancellation diagnostics in `errorCode` and `resultJson` | Persist the run as `cancelled` from `nativeFinalization`, without relying on `errorCode` or the null-exit fallback. Change the issue to `cancelled` only when the cancellation scope explicitly includes the issue; otherwise leave the issue unchanged. |
 
 All compatibility results set `signal: null` unless the harness reported a real signal. They preserve usage, cost, session, provider, model, billing, and runtime-service fields without changing their meaning. `resultJson` always contains `schema`, `disposition`, `summary`, and the validated structured result when one exists.
 
-`failed` and `cancelled` are runtime-owned dispositions, so the model-facing `StructuredRunResult` and semantic tools do not accept them. The runtime constructs them from an explicit driver, policy, timeout, interrupt, or cancellation event. `done`, `blocked`, `needs_review`, and `yielded` require a valid `StructuredRunResult`; they all produce a successful compatibility exit because the run finalizer, not the legacy exit-code heuristic, applies their distinct issue and continuation behavior.
+`failed` and `cancelled` are runtime-owned dispositions, so the model-facing `StructuredRunResult` and semantic tools do not accept them. The runtime constructs them from an explicit driver, policy, timeout, interrupt, or cancellation event. `done`, `blocked`, `needs_review`, and `yielded` require a valid `StructuredRunResult`; they all produce a successful process exit, but `nativeFinalization.disposition` preserves their distinct issue and continuation behavior.
+
+Native-mode enablement is gated on finalizer conformance tests for all six rows. Each test must prove the persisted heartbeat run status, issue status, continuation/review side effect, and cancellation scope. A native adapter result without a valid `nativeFinalization` object is rejected as `native_finalization_missing`; it never falls back to the legacy success heuristic.
 
 It does not create an issue comment for every tool call or token delta.
 
@@ -3406,7 +3427,7 @@ packages/native-runtime-protocol/test-vectors/
 
 ### NR-006 — Native Session Runtime integration in heartbeat orchestration
 
-**Goal:** Add the feature-flagged native branch while preserving existing finalization.
+**Goal:** Add the feature-flagged native branch while preserving workspace finalization and extending run/issue finalization additively.
 
 **Primary files:**
 
@@ -3422,13 +3443,16 @@ server/src/services/environment-run-orchestrator.ts
 - runner expectation/bootstrap;
 - `NativeSessionRuntime.execute`;
 - terminal conversion to `AdapterExecutionResult`;
+- typed `nativeFinalization` validation and six-row disposition handling;
+- native finalizer conformance tests for run status, issue status, continuation/review effects, and cancellation scope;
 - cancellation hook;
 - no behavior change for legacy adapters.
 
 **Acceptance:**
 
-- fake driver run completes through existing workspace finalization;
+- fake driver run completes through native-aware run/issue finalization and existing workspace finalization;
 - native run can be cancelled through existing board controls;
+- a missing or invalid native finalization discriminator fails closed instead of using the legacy success heuristic;
 - legacy integration tests are unchanged;
 - no Paperclip skill materialization occurs in native mode.
 
@@ -3780,7 +3804,7 @@ The spike is successful only if all of the following are demonstrated.
 
 - [ ] Checkout occurs before expensive sandbox/model execution.
 - [ ] Existing budgets and workspace policy still apply.
-- [ ] Existing finalization and legal issue transition still run.
+- [ ] Existing workspace finalization still runs, and the additive native finalizer applies the legal issue transition for all six dispositions.
 - [ ] Legacy adapters are unchanged.
 - [ ] Runtime permission and governance approval are separate.
 - [ ] Database state remains authoritative when the active producer disconnects.
@@ -3882,7 +3906,7 @@ These are real design choices, but none blocks the initial vertical slice.
 >
 > Implement a feature-flagged native runtime path that lets a Paperclip task run through a deterministic daemon inside the realized sandbox rather than through the existing one-shot adapter contract. The daemon must initiate an outbound authenticated WebSocket to the Paperclip control plane, supervise Codex app-server locally over stdio, normalize its thread/turn/item events, persist unacknowledged events for replay, accept durable steer/interrupt/permission commands, and emit a structured terminal result.
 >
-> Preserve the existing environment-run orchestrator, execution workspace realization, issue checkout, budgets, governance, run records, workspace finalization, and legacy adapters. Branch after the execution target is realized. Internally use a session-oriented Native Session Runtime; at terminal completion convert the native result to the existing adapter-result boundary so current finalization continues to work.
+> Preserve the existing environment-run orchestrator, execution workspace realization, issue checkout, budgets, governance, run records, workspace finalization, and legacy adapters. Branch after the execution target is realized. Internally use a session-oriented Native Session Runtime; at terminal completion convert the native result to the additive native-aware adapter-result boundary. Extend run/issue finalization to consume the typed native disposition, and retain the legacy exit-code heuristic only for adapters that omit that discriminator.
 >
 > Native mode must not materialize the Paperclip skill or expose a Paperclip/runner credential to the model process. The model receives a compact task envelope plus a structured completion schema or tiny run-scoped semantic completion tools.
 >
