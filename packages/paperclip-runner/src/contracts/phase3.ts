@@ -62,6 +62,8 @@ export interface Phase3RunnerState extends Phase3Identity {
   peakOutboxBytes: number;
   outbox: Phase3StoredEvent[];
   processedCommands: Record<string, Phase3ProcessedCommand>;
+  compactedCommandFilter: string;
+  compactedCommandCount: number;
   diagnostics: string[];
   backpressure: boolean;
   recoverableFailure: string | null;

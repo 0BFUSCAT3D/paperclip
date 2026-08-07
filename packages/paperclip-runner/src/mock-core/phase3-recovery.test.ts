@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
   chmodSync,
   lstatSync,
@@ -20,38 +21,7 @@ import {
   runPhase3Recovery,
 } from "./phase3-recovery.js";
 
-async function upgradeStatus(url: string, ticket: string): Promise<number> {
-  const parsed = new URL(url);
-  return new Promise((resolveStatus, rejectStatus) => {
-    const socket = connect(Number(parsed.port), parsed.hostname);
-    let response = "";
-    socket.once("error", rejectStatus);
-    socket.once("connect", () => {
-      socket.write(
-        [
-          `GET ${parsed.pathname} HTTP/1.1`,
-          `Host: ${parsed.host}`,
-          "Upgrade: websocket",
-          "Connection: Upgrade",
-          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-          "Sec-WebSocket-Version: 13",
-          `Authorization: Bearer ${ticket}`,
-          "\r\n",
-        ].join("\r\n"),
-      );
-    });
-    socket.on("data", (chunk) => {
-      response += chunk.toString("utf8");
-      if (response.includes("\r\n\r\n")) {
-        const status = Number(response.match(/^HTTP\/1\.1 (\d{3})/)?.[1]);
-        socket.destroy();
-        resolveStatus(status);
-      }
-    });
-  });
-}
-
-async function upgradeSocket(url: string, ticket: string): Promise<Socket> {
+async function upgradeSocket(url: string): Promise<Socket> {
   const parsed = new URL(url);
   return new Promise((resolveSocket, rejectSocket) => {
     const socket = connect(Number(parsed.port), parsed.hostname);
@@ -81,12 +51,44 @@ async function upgradeSocket(url: string, ticket: string): Promise<Socket> {
           "Connection: Upgrade",
           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
           "Sec-WebSocket-Version: 13",
-          `Authorization: Bearer ${ticket}`,
           "\r\n",
         ].join("\r\n"),
       );
     });
     socket.on("data", onData);
+  });
+}
+
+async function receiveServerJson(socket: Socket): Promise<Record<string, unknown>> {
+  return new Promise((resolveValue, rejectValue) => {
+    let buffer = Buffer.alloc(0);
+    const timer = setTimeout(() => rejectValue(new Error("Server frame timed out.")), 2_000);
+    const onData = (chunk: Buffer): void => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length < 2) return;
+      let length = buffer[1]! & 0x7f;
+      let cursor = 2;
+      if (length === 126) {
+        if (buffer.length < 4) return;
+        length = buffer.readUInt16BE(2);
+        cursor = 4;
+      } else if (length === 127) {
+        if (buffer.length < 10) return;
+        length = Number(buffer.readBigUInt64BE(2));
+        cursor = 10;
+      }
+      if (buffer.length < cursor + length) return;
+      clearTimeout(timer);
+      socket.off("data", onData);
+      resolveValue(
+        JSON.parse(buffer.subarray(cursor, cursor + length).toString("utf8")) as Record<
+          string,
+          unknown
+        >,
+      );
+    };
+    socket.on("data", onData);
+    socket.once("error", rejectValue);
   });
 }
 
@@ -116,21 +118,91 @@ async function expectSocketClosed(socket: Socket): Promise<void> {
   });
 }
 
-function hello(identity: ReturnType<typeof phase3Internals.phase3Identity>): Record<string, unknown> {
+function authHello(
+  identity: ReturnType<typeof phase3Internals.phase3Identity>,
+  credentialId: string,
+): Record<string, unknown> {
   return {
     protocol: "paperclip.runner",
     version: 1,
-    envelopeId: "hello_auth_regression",
-    kind: "hello",
-    runnerInstanceId: identity.runnerInstanceId,
+    kind: "auth_hello",
     payload: {
+      credentialId,
+      clientNonce: "client_nonce_auth_regression",
       protocolMin: 1,
       protocolMax: 1,
+      runnerInstanceId: identity.runnerInstanceId,
       runnerVersion: "0.3.0",
       runnerDigest: "sha256:phase3-approved",
       environmentLeaseId: identity.environmentLeaseId,
+      runId: identity.runId,
+      normalizedSessionId: identity.normalizedSessionId,
+      turnId: identity.turnId,
+      itemId: identity.itemId,
     },
   };
+}
+
+async function runRunnerProcess(options: {
+  connectUrl: string;
+  stateDirectory: string;
+  identity: ReturnType<typeof phase3Internals.phase3Identity>;
+  ticket: string;
+  maxRuntimeMs: number;
+}): Promise<{ code: number | null; stderr: string }> {
+  const child = spawn(
+    phase3Internals.runnerBinary,
+    [
+      "--connect-url",
+      options.connectUrl,
+      "--state-dir",
+      options.stateDirectory,
+      "--runner-id",
+      options.identity.runnerInstanceId,
+      "--environment-lease-id",
+      options.identity.environmentLeaseId,
+      "--run-id",
+      options.identity.runId,
+      "--session-id",
+      options.identity.normalizedSessionId,
+      "--turn-id",
+      options.identity.turnId,
+      "--item-id",
+      options.identity.itemId,
+      "--runner-version",
+      "0.3.0",
+      "--runner-digest",
+      "sha256:phase3-approved",
+      "--max-outbox-bytes",
+      String(64 * 1024),
+      "--p0-reserve-bytes",
+      String(32 * 1024),
+      "--reconnect-delay-ms",
+      "10",
+      "--max-runtime-ms",
+      String(options.maxRuntimeMs),
+    ],
+    {
+      env: phase3Internals.runnerEnvironment(options.ticket),
+      stdio: "pipe",
+    },
+  );
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  const code = await new Promise<number | null>((resolveExit, rejectExit) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectExit(new Error("Phase 3 runner process did not terminate."));
+    }, options.maxRuntimeMs + 3_000);
+    child.once("error", rejectExit);
+    child.once("exit", (exitCode) => {
+      clearTimeout(timer);
+      resolveExit(exitCode);
+    });
+  });
+  return { code, stderr };
 }
 
 describe.sequential("Phase 3 durable transport and recovery", () => {
@@ -147,19 +219,50 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
     });
     try {
       await core.start();
+      core.queueCommand("runner.shutdown", {});
       const ticket = core.issueBootstrapTicket();
+      const stateDirectory = resolve(root, "runner");
 
-      await expect(upgradeStatus(core.connectUrl, ticket)).resolves.toBe(101);
-      await expect(upgradeStatus(core.connectUrl, ticket)).resolves.toBe(401);
+      const first = await runRunnerProcess({
+        connectUrl: core.connectUrl,
+        stateDirectory,
+        identity: core.identity,
+        ticket,
+        maxRuntimeMs: 2_000,
+      });
+      expect(first.code, first.stderr).toBe(0);
+      expect(core.store.state.connectionCount).toBe(1);
+
+      const reused = await runRunnerProcess({
+        connectUrl: core.connectUrl,
+        stateDirectory,
+        identity: core.identity,
+        ticket,
+        maxRuntimeMs: 100,
+      });
+      expect(reused.code).not.toBe(0);
+      expect(core.store.state.connectionCount).toBe(1);
+
       const expiredTicket = core.issueBootstrapTicket(-1);
-      await expect(upgradeStatus(core.connectUrl, expiredTicket)).resolves.toBe(401);
+      const expired = await runRunnerProcess({
+        connectUrl: core.connectUrl,
+        stateDirectory: resolve(root, "expired-runner"),
+        identity: core.identity,
+        ticket: expiredTicket,
+        maxRuntimeMs: 100,
+      });
+      expect(expired.code).not.toBe(0);
+      expect(core.store.state.connectionCount).toBe(1);
+      expect(
+        Object.values(core.store.state.tickets).filter((record) => record.usedAt !== null),
+      ).toHaveLength(1);
     } finally {
       await core.stop();
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("rejects bootstrap and resumed lease credentials bound to a different runner identity", async () => {
+  it("requires proof before consuming a ticket and rejects mismatched session identity", async () => {
     const scratch =
       process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
       process.env.PAPERCLIP_SCRATCH_DIR ??
@@ -175,26 +278,31 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
       await core.start();
 
       const bootstrap = core.issueBootstrapTicket();
-      const bootstrapSocket = await upgradeSocket(core.connectUrl, bootstrap);
-      sendMaskedJson(bootstrapSocket, {
-        ...hello(identity),
-        runnerInstanceId: "runner_wrong_identity",
-      });
-      await expectSocketClosed(bootstrapSocket);
+      const credentialId = phase3Internals.credentialMaterial(bootstrap).credentialId;
+      const wrongIdentitySocket = await upgradeSocket(core.connectUrl);
+      const wrongHello = authHello(identity, credentialId);
+      (wrongHello.payload as Record<string, unknown>).runId = "run_wrong_identity";
+      sendMaskedJson(wrongIdentitySocket, wrongHello);
+      await expectSocketClosed(wrongIdentitySocket);
+      expect(core.store.state.tickets[credentialId]?.usedAt).toBeNull();
 
-      const leaseToken = "lease_wrong_identity_regression";
-      const digest = phase3Internals.tokenDigest(leaseToken);
-      core.store.state.leases[digest] = {
-        digest,
-        leaseId: "lease_wrong_identity",
-        runnerInstanceId: "runner_other_identity",
-        expiresAt: new Date(Date.now() + 30_000).toISOString(),
-        revokedAt: null,
-      };
-      core.store.save();
-      const leaseSocket = await upgradeSocket(core.connectUrl, leaseToken);
-      sendMaskedJson(leaseSocket, hello(identity));
-      await expectSocketClosed(leaseSocket);
+      const forgedProofSocket = await upgradeSocket(core.connectUrl);
+      sendMaskedJson(forgedProofSocket, authHello(identity, credentialId));
+      const challenge = await receiveServerJson(forgedProofSocket);
+      const challengePayload = challenge.payload as Record<string, unknown>;
+      sendMaskedJson(forgedProofSocket, {
+        protocol: "paperclip.runner",
+        version: 1,
+        kind: "auth_response",
+        payload: {
+          credentialId,
+          clientNonce: challengePayload.clientNonce,
+          serverNonce: challengePayload.serverNonce,
+          clientProof: "00".repeat(32),
+        },
+      });
+      await expectSocketClosed(forgedProofSocket);
+      expect(core.store.state.tickets[credentialId]?.usedAt).toBeNull();
     } finally {
       await core.stop();
       rmSync(root, { recursive: true, force: true });
@@ -293,6 +401,100 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
     ).toBe(true);
     expect(trace.assertions.stableIdentity).toBe(true);
     expect(trace.assertions.sourceCursorContinuous).toBe(true);
+  });
+
+  it("keeps a restarted revoked runner network-silent and byte-stable with a fresh ticket", async () => {
+    const scratch =
+      process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
+      process.env.PAPERCLIP_SCRATCH_DIR ??
+      tmpdir();
+    const root = mkdtempSync(resolve(scratch, "phase3-revoked-restart-test-"));
+    const runnerStateDirectory = resolve(root, "runner");
+    const identity = phase3Internals.phase3Identity();
+    mkdirSync(runnerStateDirectory, { recursive: true, mode: 0o700 });
+    const envelope = {
+      protocol: "paperclip.runner",
+      version: 1,
+      envelopeId: "envelope_event_000004",
+      kind: "event",
+      runnerInstanceId: identity.runnerInstanceId,
+      payload: {
+        sourceEventId: `event_${identity.runnerInstanceId}_000004`,
+        sourceSeq: 4,
+        eventType: "run.terminal",
+        priority: 0,
+        payload: { status: "succeeded" },
+      },
+    };
+    const byteSize = Buffer.byteLength(JSON.stringify(envelope));
+    const statePath = resolve(runnerStateDirectory, "runner-state.json");
+    writeFileSync(
+      statePath,
+      JSON.stringify(
+        {
+          schema: "paperclip.runner.phase3.state.v1",
+          ...identity,
+          lifecycle: "revoked",
+          nextSourceSeq: 5,
+          ackedSourceSeq: 3,
+          lastControllerCommandSeq: 2,
+          reconnectCount: 7,
+          maxOutboxBytes: 64 * 1024,
+          peakOutboxBytes: byteSize,
+          outbox: [
+            {
+              sourceSeq: 4,
+              sourceEventId: `event_${identity.runnerInstanceId}_000004`,
+              priority: 0,
+              eventType: "run.terminal",
+              itemId: null,
+              envelope,
+              byteSize,
+            },
+          ],
+          processedCommands: {},
+          compactedCommandFilter: "00".repeat(4_096),
+          compactedCommandCount: 0,
+          diagnostics: ["connection lease revoked; preserving durable events"],
+          backpressure: false,
+          recoverableFailure: null,
+          unrecoverableOutcome: null,
+          harnessGeneration: 1,
+          stopAfterFlush: true,
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+    const before = readFileSync(statePath);
+    const core = new Phase3MockCore({
+      stateDirectory: resolve(root, "mock-core"),
+      identity,
+      fault: "none",
+    });
+    try {
+      await core.start();
+      const ticket = core.issueBootstrapTicket();
+      const connectionsBefore = core.store.state.connectionCount;
+      const result = await runRunnerProcess({
+        connectUrl: core.connectUrl,
+        stateDirectory: runnerStateDirectory,
+        identity,
+        ticket,
+        maxRuntimeMs: 1_000,
+      });
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(core.store.state.connectionCount).toBe(connectionsBefore);
+      expect(Object.values(core.store.state.tickets).map((record) => record.usedAt)).toEqual([
+        null,
+      ]);
+      expect(readFileSync(statePath)).toEqual(before);
+    } finally {
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("reconciles a restarted harness without replacing session, turn, or item IDs", async () => {

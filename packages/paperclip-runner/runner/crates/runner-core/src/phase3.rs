@@ -6,25 +6,35 @@ use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
+use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::phase2::SupervisedProcess;
 
 const STATE_SCHEMA: &str = "paperclip.runner.phase3.state.v1";
 const PROTOCOL: &str = "paperclip.runner";
 const PROTOCOL_VERSION: u64 = 1;
+const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const STATIC_WEBSOCKET_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
 const STATIC_WEBSOCKET_ACCEPT: &str = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
 const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTICS: usize = 32;
+const MAX_RECENT_PROCESSED_COMMANDS: usize = 128;
+const COMPACTED_COMMAND_FILTER_BYTES: usize = 4096;
+const COMPACTED_COMMAND_FILTER_HASHES: usize = 7;
 const REVOKE_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 const TEMP_FILE_ATTEMPTS: usize = 16;
+
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Phase3Error(String);
@@ -150,6 +160,10 @@ pub struct DurableRunnerState {
     pub peak_outbox_bytes: usize,
     pub outbox: Vec<StoredOutboxEvent>,
     pub processed_commands: BTreeMap<String, ProcessedCommand>,
+    #[serde(default = "empty_compacted_command_filter")]
+    pub compacted_command_filter: String,
+    #[serde(default)]
+    pub compacted_command_count: u64,
     pub diagnostics: Vec<String>,
     pub backpressure: bool,
     pub recoverable_failure: Option<String>,
@@ -177,6 +191,8 @@ impl DurableRunnerState {
             peak_outbox_bytes: 0,
             outbox: Vec::new(),
             processed_commands: BTreeMap::new(),
+            compacted_command_filter: empty_compacted_command_filter(),
+            compacted_command_count: 0,
             diagnostics: Vec::new(),
             backpressure: false,
             recoverable_failure: None,
@@ -284,12 +300,17 @@ impl DurableStateStore {
                 )))
             }
         };
-        let state: DurableRunnerState = serde_json::from_slice(&bytes).map_err(|error| {
+        let mut state: DurableRunnerState = serde_json::from_slice(&bytes).map_err(|error| {
             Phase3Error::invalid(format!(
                 "durable runner state is malformed and cannot be recovered: {error}"
             ))
         })?;
         validate_state_binding(&state, config)?;
+        let previous_command_count = state.processed_commands.len();
+        compact_processed_commands(&mut state)?;
+        if state.processed_commands.len() != previous_command_count {
+            self.save(&state)?;
+        }
         Ok((state, true))
     }
 
@@ -568,6 +589,7 @@ fn validate_state_binding(
             )));
         }
     }
+    decode_compacted_command_filter(&state.compacted_command_filter)?;
     Ok(())
 }
 
@@ -646,13 +668,173 @@ fn canonical_json(value: &Value) -> String {
     }
 }
 
-fn fnv1a_digest(input: &[u8]) -> String {
-    let mut digest = 0xcbf29ce484222325_u64;
-    for byte in input {
-        digest ^= u64::from(*byte);
-        digest = digest.wrapping_mul(0x100000001b3);
+fn hex_encode(input: &[u8]) -> String {
+    input.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex_decode(input: &str) -> Result<Vec<u8>, Phase3Error> {
+    if input.len() % 2 != 0 {
+        return Err(Phase3Error::invalid("hex value has an odd length"));
     }
-    format!("fnv1a64:{digest:016x}")
+    input
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair)
+                .map_err(|_| Phase3Error::invalid("hex value is not valid UTF-8"))?;
+            u8::from_str_radix(pair, 16)
+                .map_err(|_| Phase3Error::invalid("hex value contains a non-hex character"))
+        })
+        .collect()
+}
+
+fn sha256_bytes(input: &[u8]) -> [u8; 32] {
+    Sha256::digest(input).into()
+}
+
+fn sha256_digest(input: &[u8]) -> String {
+    format!("sha256:{}", hex_encode(&sha256_bytes(input)))
+}
+
+fn digest_domain(domain: &str, parts: &[&[u8]]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(domain.as_bytes());
+    digest.update([0]);
+    for part in parts {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part);
+    }
+    digest.finalize().into()
+}
+
+fn hmac_domain(key: &[u8], domain: &str, parts: &[&[u8]]) -> [u8; 32] {
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC-SHA256 accepts keys of every size");
+    mac.update(domain.as_bytes());
+    mac.update(&[0]);
+    for part in parts {
+        mac.update(&(part.len() as u64).to_be_bytes());
+        mac.update(part);
+    }
+    mac.finalize().into_bytes().into()
+}
+
+fn verify_hmac_hex(
+    key: &[u8],
+    domain: &str,
+    parts: &[&[u8]],
+    supplied: &str,
+) -> Result<(), Phase3Error> {
+    let supplied = hex_decode(supplied)?;
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC-SHA256 accepts keys of every size");
+    mac.update(domain.as_bytes());
+    mac.update(&[0]);
+    for part in parts {
+        mac.update(&(part.len() as u64).to_be_bytes());
+        mac.update(part);
+    }
+    mac.verify_slice(&supplied)
+        .map_err(|_| Phase3Error::invalid("transport authentication proof is invalid"))
+}
+
+fn current_unix_ms() -> Result<u64, Phase3Error> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Phase3Error::invalid("system clock precedes the Unix epoch"))?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| Phase3Error::invalid("system clock value overflowed"))
+}
+
+struct CredentialMaterial {
+    credential_id: String,
+    auth_key: [u8; 32],
+}
+
+impl CredentialMaterial {
+    fn from_token(token: &str) -> Self {
+        Self {
+            credential_id: format!(
+                "sha256:{}",
+                hex_encode(&digest_domain(
+                    "paperclip-runner-credential-id-v1",
+                    &[token.as_bytes()]
+                ))
+            ),
+            auth_key: digest_domain("paperclip-runner-auth-key-v1", &[token.as_bytes()]),
+        }
+    }
+}
+
+impl Drop for CredentialMaterial {
+    fn drop(&mut self) {
+        self.auth_key.fill(0);
+    }
+}
+
+fn empty_compacted_command_filter() -> String {
+    "00".repeat(COMPACTED_COMMAND_FILTER_BYTES)
+}
+
+fn command_filter_positions(command_id: &str) -> [usize; COMPACTED_COMMAND_FILTER_HASHES] {
+    let digest = digest_domain(
+        "paperclip-runner-command-replay-filter-v1",
+        &[command_id.as_bytes()],
+    );
+    let mut positions = [0_usize; COMPACTED_COMMAND_FILTER_HASHES];
+    for (index, position) in positions.iter_mut().enumerate() {
+        let offset = index * 4;
+        let word = u32::from_be_bytes(digest[offset..offset + 4].try_into().unwrap());
+        *position = word as usize % (COMPACTED_COMMAND_FILTER_BYTES * 8);
+    }
+    positions
+}
+
+fn decode_compacted_command_filter(encoded: &str) -> Result<Vec<u8>, Phase3Error> {
+    let filter = hex_decode(encoded)?;
+    if filter.len() != COMPACTED_COMMAND_FILTER_BYTES {
+        return Err(Phase3Error::invalid(
+            "durable compacted command filter has an invalid size",
+        ));
+    }
+    Ok(filter)
+}
+
+fn compacted_command_maybe_seen(
+    state: &DurableRunnerState,
+    command_id: &str,
+) -> Result<bool, Phase3Error> {
+    let filter = decode_compacted_command_filter(&state.compacted_command_filter)?;
+    Ok(command_filter_positions(command_id)
+        .iter()
+        .all(|position| filter[position / 8] & (1 << (position % 8)) != 0))
+}
+
+fn add_compacted_command(
+    state: &mut DurableRunnerState,
+    command_id: &str,
+) -> Result<(), Phase3Error> {
+    let mut filter = decode_compacted_command_filter(&state.compacted_command_filter)?;
+    for position in command_filter_positions(command_id) {
+        filter[position / 8] |= 1 << (position % 8);
+    }
+    state.compacted_command_filter = hex_encode(&filter);
+    state.compacted_command_count = state.compacted_command_count.saturating_add(1);
+    Ok(())
+}
+
+fn compact_processed_commands(state: &mut DurableRunnerState) -> Result<(), Phase3Error> {
+    while state.processed_commands.len() > MAX_RECENT_PROCESSED_COMMANDS {
+        let oldest = state
+            .processed_commands
+            .values()
+            .min_by_key(|command| command.controller_seq)
+            .map(|command| command.command_id.clone())
+            .ok_or_else(|| Phase3Error::invalid("processed command compaction lost its cursor"))?;
+        state.processed_commands.remove(&oldest);
+        add_compacted_command(state, &oldest)?;
+    }
+    Ok(())
 }
 
 fn deterministic_time(sequence: u64) -> String {
@@ -697,9 +879,11 @@ fn event_envelope(
         "envelopeId": format!("envelope_event_{source_seq:06}"),
         "kind": "event",
         "runnerInstanceId": state.runner_instance_id,
+        "environmentLeaseId": state.environment_lease_id,
         "runId": state.run_id,
         "normalizedSessionId": state.normalized_session_id,
         "turnId": state.turn_id,
+        "itemId": state.item_id,
         "sentAt": deterministic_time(source_seq),
         "payload": event,
     })
@@ -729,6 +913,14 @@ fn mark_backpressure(
     )
 }
 
+fn mark_p0_storage_exhausted(state: &mut DurableRunnerState) {
+    state.lifecycle = "unrecoverable".to_owned();
+    state.unrecoverable_outcome = Some("p0_storage_exhausted".to_owned());
+    state.record_diagnostic(
+        "P0 storage reserve is exhausted; the durable session requires operator recovery",
+    );
+}
+
 fn enqueue_event(
     state: &mut DurableRunnerState,
     config: &DurableRunnerConfig,
@@ -742,7 +934,7 @@ fn enqueue_event(
     }
 
     if priority == 2 {
-        if let Some(last) = state.outbox.last_mut() {
+        if let Some(last) = state.outbox.last() {
             if last.priority == 2
                 && last.event_type == event_type
                 && last.item_id.as_deref() == item_id
@@ -756,18 +948,26 @@ fn enqueue_event(
                     "coalescedCount": previous_count + 1,
                     "latest": sanitize_value(&payload),
                 });
-                last.envelope["payload"]["payload"] = compacted;
-                last.byte_size = serde_json::to_vec(&last.envelope)
+                let mut replacement = last.clone();
+                replacement.envelope["payload"]["payload"] = compacted;
+                replacement.byte_size = serde_json::to_vec(&replacement.envelope)
                     .map_err(|error| Phase3Error::invalid(error.to_string()))?
                     .len();
-                state.peak_outbox_bytes = state.peak_outbox_bytes.max(state.outbox_bytes());
-                if state.outbox_bytes()
-                    > config
-                        .max_outbox_bytes
-                        .saturating_sub(config.p0_reserve_bytes)
-                {
+                let projected = state
+                    .outbox_bytes()
+                    .saturating_sub(last.byte_size)
+                    .saturating_add(replacement.byte_size);
+                let non_p0_limit = config
+                    .max_outbox_bytes
+                    .saturating_sub(config.p0_reserve_bytes);
+                if projected > non_p0_limit {
                     return mark_backpressure(state, config);
                 }
+                *state
+                    .outbox
+                    .last_mut()
+                    .expect("coalesced event was just read from the outbox tail") = replacement;
+                state.peak_outbox_bytes = state.peak_outbox_bytes.max(projected);
                 return Ok(());
             }
         }
@@ -793,11 +993,7 @@ fn enqueue_event(
         ));
     }
     if projected > config.max_outbox_bytes {
-        state.lifecycle = "unrecoverable".to_owned();
-        state.unrecoverable_outcome = Some("p0_storage_exhausted".to_owned());
-        state.record_diagnostic(
-            "P0 storage reserve is exhausted; the durable session requires operator recovery",
-        );
+        mark_p0_storage_exhausted(state);
         return Err(Phase3Error::invalid(
             "P0 storage reserve exhausted; durable recovery is explicit",
         ));
@@ -824,8 +1020,11 @@ fn command_result_envelope(state: &DurableRunnerState, processed: &ProcessedComm
         "envelopeId": format!("envelope_result_{}", processed.command_id),
         "kind": "command_result",
         "runnerInstanceId": state.runner_instance_id,
+        "environmentLeaseId": state.environment_lease_id,
         "runId": state.run_id,
         "normalizedSessionId": state.normalized_session_id,
+        "turnId": state.turn_id,
+        "itemId": state.item_id,
         "sentAt": deterministic_time(processed.controller_seq),
         "payload": processed.result,
     })
@@ -1113,7 +1312,7 @@ fn process_command(
         .and_then(Value::as_str)
         .ok_or_else(|| Phase3Error::invalid("command type is required"))?;
     let canonical = canonical_json(command);
-    let command_digest = fnv1a_digest(canonical.as_bytes());
+    let command_digest = sha256_digest(canonical.as_bytes());
 
     if let Some(previous) = state.processed_commands.get(command_id) {
         if previous.command_digest != command_digest {
@@ -1123,6 +1322,40 @@ fn process_command(
         }
         return Ok(previous.clone());
     }
+    if compacted_command_maybe_seen(state, command_id)? {
+        if controller_seq > state.last_controller_command_seq + 1 {
+            return Err(Phase3Error::invalid(format!(
+                "controllerSeq must be at most {}; received {controller_seq}",
+                state.last_controller_command_seq + 1
+            )));
+        }
+        let result = sanitize_value(&json!({
+            "commandId": command_id,
+            "controllerSeq": controller_seq,
+            "status": "rejected",
+            "logicalEffectCount": 0,
+            "detail": "command identity may have been processed before ledger compaction; replay rejected fail-closed",
+        }));
+        let processed = ProcessedCommand {
+            command_id: command_id.to_owned(),
+            controller_seq,
+            command_digest,
+            status: "rejected".to_owned(),
+            logical_effect_count: 0,
+            result,
+        };
+        if controller_seq == state.last_controller_command_seq + 1 {
+            let mut candidate = state.clone();
+            candidate.last_controller_command_seq = controller_seq;
+            candidate
+                .processed_commands
+                .insert(command_id.to_owned(), processed.clone());
+            compact_processed_commands(&mut candidate)?;
+            store.save(&candidate)?;
+            *state = candidate;
+        }
+        return Ok(processed);
+    }
     if controller_seq != state.last_controller_command_seq + 1 {
         return Err(Phase3Error::invalid(format!(
             "controllerSeq must be {}; received {controller_seq}",
@@ -1131,11 +1364,20 @@ fn process_command(
     }
 
     let payload = command.get("payload").cloned().unwrap_or(Value::Null);
-    let effect = execute_command_effect(state, config, command_type, &payload);
+    let mut candidate = state.clone();
+    let effect = execute_command_effect(&mut candidate, config, command_type, &payload);
     let (status, logical_effect_count, detail) = match effect {
         Ok(effect) => effect,
-        Err(error) if state.unrecoverable_outcome.is_some() => {
-            ("failed".to_owned(), 1, error.to_string())
+        Err(error)
+            if state.unrecoverable_outcome.as_deref() != Some("p0_storage_exhausted")
+                && candidate.unrecoverable_outcome.as_deref() == Some("p0_storage_exhausted") =>
+        {
+            // The attempted command may have staged earlier events before discovering that a
+            // mandatory P0 event cannot be stored. Discard every staged logical effect and keep
+            // only the truthful terminal storage outcome plus its durable command result.
+            candidate = state.clone();
+            mark_p0_storage_exhausted(&mut candidate);
+            ("failed".to_owned(), 0, error.to_string())
         }
         Err(error) => return Err(error),
     };
@@ -1154,11 +1396,13 @@ fn process_command(
         logical_effect_count,
         result,
     };
-    state.last_controller_command_seq = controller_seq;
-    state
+    candidate.last_controller_command_seq = controller_seq;
+    candidate
         .processed_commands
         .insert(command_id.to_owned(), processed.clone());
-    store.save(state)?;
+    compact_processed_commands(&mut candidate)?;
+    store.save(&candidate)?;
+    *state = candidate;
     Ok(processed)
 }
 
@@ -1276,6 +1520,129 @@ struct WsClient {
     stream: TcpStream,
     mask_counter: u32,
     max_frame_bytes: usize,
+    secure_channel: Option<SecureChannel>,
+}
+
+struct SecureChannel {
+    send_cipher: Aes256Gcm,
+    receive_cipher: Aes256Gcm,
+    send_counter: u64,
+    receive_counter: u64,
+    session_id: String,
+}
+
+impl SecureChannel {
+    fn new(
+        auth_key: &[u8],
+        challenge: &[u8],
+        server_proof: &[u8],
+        client_proof: &[u8],
+    ) -> Result<Self, Phase3Error> {
+        let session_binding = digest_domain(
+            "paperclip-runner-session-binding-v1",
+            &[challenge, server_proof, client_proof],
+        );
+        let send_key = hmac_domain(
+            auth_key,
+            "paperclip-runner-client-to-core-key-v1",
+            &[&session_binding],
+        );
+        let receive_key = hmac_domain(
+            auth_key,
+            "paperclip-runner-core-to-client-key-v1",
+            &[&session_binding],
+        );
+        Ok(Self {
+            send_cipher: Aes256Gcm::new_from_slice(&send_key)
+                .map_err(|_| Phase3Error::invalid("failed to initialize transport encryption"))?,
+            receive_cipher: Aes256Gcm::new_from_slice(&receive_key)
+                .map_err(|_| Phase3Error::invalid("failed to initialize transport decryption"))?,
+            send_counter: 0,
+            receive_counter: 0,
+            session_id: format!("sha256:{}", hex_encode(&session_binding)),
+        })
+    }
+
+    fn nonce(direction: &[u8; 4], counter: u64) -> [u8; 12] {
+        let mut nonce = [0_u8; 12];
+        nonce[..4].copy_from_slice(direction);
+        nonce[4..].copy_from_slice(&counter.to_be_bytes());
+        nonce
+    }
+
+    fn aad(&self, direction: &str, counter: u64) -> Vec<u8> {
+        format!(
+            "{SECURE_FRAME_SCHEMA}\0{}\0{direction}\0{counter}",
+            self.session_id
+        )
+        .into_bytes()
+    }
+
+    fn encrypt(&mut self, plaintext: &[u8]) -> Result<Value, Phase3Error> {
+        let counter = self.send_counter;
+        let nonce = Self::nonce(b"P3C1", counter);
+        let aad = self.aad("client_to_core", counter);
+        let ciphertext = self
+            .send_cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| Phase3Error::invalid("secure transport encryption failed"))?;
+        self.send_counter = self
+            .send_counter
+            .checked_add(1)
+            .ok_or_else(|| Phase3Error::invalid("secure transport send counter exhausted"))?;
+        Ok(json!({
+            "schema": SECURE_FRAME_SCHEMA,
+            "counter": counter,
+            "ciphertext": hex_encode(&ciphertext),
+        }))
+    }
+
+    fn decrypt(&mut self, frame: &Value) -> Result<Value, Phase3Error> {
+        if frame.get("schema").and_then(Value::as_str) != Some(SECURE_FRAME_SCHEMA) {
+            return Err(Phase3Error::invalid(
+                "unauthenticated plaintext control frame was rejected",
+            ));
+        }
+        let counter = frame
+            .get("counter")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| Phase3Error::invalid("secure frame counter is required"))?;
+        if counter != self.receive_counter {
+            return Err(Phase3Error::invalid(
+                "secure frame counter was replayed or arrived out of order",
+            ));
+        }
+        let ciphertext = frame
+            .get("ciphertext")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Phase3Error::invalid("secure frame ciphertext is required"))?;
+        let ciphertext = hex_decode(ciphertext)?;
+        let nonce = Self::nonce(b"P3S1", counter);
+        let aad = self.aad("core_to_client", counter);
+        let plaintext = self
+            .receive_cipher
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| Phase3Error::invalid("secure frame authentication failed"))?;
+        self.receive_counter = self
+            .receive_counter
+            .checked_add(1)
+            .ok_or_else(|| Phase3Error::invalid("secure transport receive counter exhausted"))?;
+        serde_json::from_slice(&plaintext).map_err(|error| {
+            Phase3Error::invalid(format!("secure frame JSON is malformed: {error}"))
+        })
+    }
 }
 
 fn encode_masked_frame(
@@ -1323,11 +1690,7 @@ fn checked_inbound_frame_length(length: u64, max_frame_bytes: usize) -> Result<u
 }
 
 impl WsClient {
-    fn connect(
-        target: &ResolvedWsTarget,
-        authorization: &str,
-        max_frame_bytes: usize,
-    ) -> Result<Self, Phase3Error> {
+    fn connect(target: &ResolvedWsTarget, max_frame_bytes: usize) -> Result<Self, Phase3Error> {
         let mut stream = TcpStream::connect(target.addresses.as_slice())
             .map_err(|error| Phase3Error::invalid(format!("WebSocket connect failed: {error}")))?;
         stream
@@ -1337,16 +1700,15 @@ impl WsClient {
             .set_write_timeout(Some(Duration::from_secs(2)))
             .map_err(|error| Phase3Error::invalid(error.to_string()))?;
         let mut request = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer {}\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
             target.path,
             target.authority,
-            STATIC_WEBSOCKET_KEY,
-            authorization
+            STATIC_WEBSOCKET_KEY
         )
         .into_bytes();
         let write_result = stream.write_all(&request).and_then(|_| stream.flush());
-        // The HTTP upgrade request contains the bearer capability. Overwrite it before
-        // propagating success or failure so it does not linger in daemon memory.
+        // Keep the request buffer short-lived even though it contains only public data.
+        // Authentication capabilities never cross the socket.
         request.fill(0);
         request.clear();
         write_result.map_err(|error| {
@@ -1395,10 +1757,23 @@ impl WsClient {
             stream,
             mask_counter: 1,
             max_frame_bytes,
+            secure_channel: None,
         })
     }
 
     fn send_json(&mut self, value: &Value) -> Result<(), Phase3Error> {
+        let bytes = serde_json::to_vec(value).map_err(|error| {
+            Phase3Error::invalid(format!("frame serialization failed: {error}"))
+        })?;
+        let frame = self
+            .secure_channel
+            .as_mut()
+            .ok_or_else(|| Phase3Error::invalid("secure transport is not authenticated"))?
+            .encrypt(&bytes)?;
+        self.send_plain_json(&frame)
+    }
+
+    fn send_plain_json(&mut self, value: &Value) -> Result<(), Phase3Error> {
         let bytes = serde_json::to_vec(value).map_err(|error| {
             Phase3Error::invalid(format!("frame serialization failed: {error}"))
         })?;
@@ -1416,6 +1791,18 @@ impl WsClient {
     }
 
     fn receive_json(&mut self) -> Result<Option<Value>, Phase3Error> {
+        let Some(frame) = self.receive_plain_json()? else {
+            return Ok(None);
+        };
+        let value = self
+            .secure_channel
+            .as_mut()
+            .ok_or_else(|| Phase3Error::invalid("secure transport is not authenticated"))?
+            .decrypt(&frame)?;
+        Ok(Some(value))
+    }
+
+    fn receive_plain_json(&mut self) -> Result<Option<Value>, Phase3Error> {
         loop {
             let mut header = [0_u8; 2];
             match self.stream.read_exact(&mut header) {
@@ -1480,9 +1867,18 @@ impl WsClient {
             }
         }
     }
+
+    fn enable_secure_channel(&mut self, channel: SecureChannel) {
+        self.secure_channel = Some(channel);
+    }
 }
 
-fn hello_envelope(state: &DurableRunnerState, config: &DurableRunnerConfig) -> Value {
+fn authentication_hello_envelope(
+    state: &DurableRunnerState,
+    config: &DurableRunnerConfig,
+    credential_id: &str,
+    client_nonce: &str,
+) -> Value {
     let unacked_range = state
         .outbox
         .first()
@@ -1491,16 +1887,20 @@ fn hello_envelope(state: &DurableRunnerState, config: &DurableRunnerConfig) -> V
     json!({
         "protocol": PROTOCOL,
         "version": PROTOCOL_VERSION,
-        "envelopeId": format!("envelope_hello_{}", state.reconnect_count),
-        "kind": "hello",
-        "runnerInstanceId": state.runner_instance_id,
-        "sentAt": deterministic_time(state.reconnect_count),
+        "kind": "auth_hello",
         "payload": {
+            "credentialId": credential_id,
+            "clientNonce": client_nonce,
             "protocolMin": 1,
             "protocolMax": 1,
+            "runnerInstanceId": state.runner_instance_id,
             "runnerVersion": config.runner_version,
             "runnerDigest": config.runner_digest,
             "environmentLeaseId": state.environment_lease_id,
+            "runId": state.run_id,
+            "normalizedSessionId": state.normalized_session_id,
+            "turnId": state.turn_id,
+            "itemId": state.item_id,
             "sandboxProvider": "standalone_mock",
             "platform": {
                 "os": std::env::consts::OS,
@@ -1522,6 +1922,152 @@ fn hello_envelope(state: &DurableRunnerState, config: &DurableRunnerConfig) -> V
     })
 }
 
+fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, Phase3Error> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Phase3Error::invalid(format!("{field} is required")))
+}
+
+fn authenticate_transport(
+    client: &mut WsClient,
+    state: &DurableRunnerState,
+    config: &DurableRunnerConfig,
+    credential: &CredentialMaterial,
+    credential_kind: &str,
+    expected_lease_id: Option<&str>,
+    expected_expires_at_unix_ms: Option<u64>,
+    expected_revocation_epoch: Option<u64>,
+) -> Result<(), Phase3Error> {
+    let client_nonce = random_suffix()?;
+    client.send_plain_json(&authentication_hello_envelope(
+        state,
+        config,
+        &credential.credential_id,
+        &client_nonce,
+    ))?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(2))
+        .ok_or_else(|| Phase3Error::invalid("transport authentication deadline overflowed"))?;
+    let challenge = loop {
+        match client.receive_plain_json()? {
+            Some(value) => break value,
+            None if Instant::now() < deadline => continue,
+            None => return Err(Phase3Error::invalid("transport authentication timed out")),
+        }
+    };
+    if challenge.get("protocol").and_then(Value::as_str) != Some(PROTOCOL)
+        || challenge.get("version").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
+        || challenge.get("kind").and_then(Value::as_str) != Some("auth_challenge")
+    {
+        return Err(Phase3Error::invalid(
+            "core did not return an authenticated transport challenge",
+        ));
+    }
+    let payload = challenge
+        .get("payload")
+        .ok_or_else(|| Phase3Error::invalid("authentication challenge payload is required"))?;
+    for (field, expected) in [
+        ("credentialId", credential.credential_id.as_str()),
+        ("credentialKind", credential_kind),
+        ("clientNonce", client_nonce.as_str()),
+        ("runnerInstanceId", state.runner_instance_id.as_str()),
+        ("environmentLeaseId", state.environment_lease_id.as_str()),
+        ("runId", state.run_id.as_str()),
+        ("normalizedSessionId", state.normalized_session_id.as_str()),
+        ("turnId", state.turn_id.as_str()),
+        ("itemId", state.item_id.as_str()),
+        ("runnerVersion", config.runner_version.as_str()),
+        ("runnerDigest", config.runner_digest.as_str()),
+    ] {
+        if required_string(payload, field)? != expected {
+            return Err(Phase3Error::invalid(format!(
+                "authentication challenge {field} does not match the requested session"
+            )));
+        }
+    }
+    required_string(payload, "serverNonce")?;
+    required_string(payload, "credentialExpiresAt")?;
+    if payload.get("selectedVersion").and_then(Value::as_u64) != Some(PROTOCOL_VERSION) {
+        return Err(Phase3Error::invalid(
+            "authentication challenge selected an unsupported protocol",
+        ));
+    }
+    let expires_at_unix_ms = payload
+        .get("credentialExpiresAtUnixMs")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            Phase3Error::invalid("authentication challenge credential expiry is required")
+        })?;
+    if expires_at_unix_ms <= current_unix_ms()? {
+        return Err(Phase3Error::invalid(
+            "transport credential expired before authentication completed",
+        ));
+    }
+    if expected_expires_at_unix_ms.is_some_and(|expected| expected != expires_at_unix_ms) {
+        return Err(Phase3Error::invalid(
+            "authentication challenge changed the connection lease expiry",
+        ));
+    }
+    let revocation_epoch = payload
+        .get("revocationEpoch")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Phase3Error::invalid("authentication revocation epoch is required"))?;
+    if expected_revocation_epoch.is_some_and(|expected| expected != revocation_epoch) {
+        return Err(Phase3Error::invalid(
+            "authentication challenge changed the connection lease revocation epoch",
+        ));
+    }
+    match (expected_lease_id, payload.get("credentialLeaseId")) {
+        (Some(expected), Some(Value::String(actual))) if actual == expected => {}
+        (None, Some(Value::Null)) => {}
+        _ => {
+            return Err(Phase3Error::invalid(
+                "authentication challenge lease identity does not match the credential",
+            ))
+        }
+    }
+
+    let server_proof = required_string(payload, "serverProof")?.to_owned();
+    let mut authenticated_payload = payload.clone();
+    authenticated_payload
+        .as_object_mut()
+        .ok_or_else(|| Phase3Error::invalid("authentication challenge payload must be an object"))?
+        .remove("serverProof");
+    let canonical_challenge = canonical_json(&authenticated_payload);
+    verify_hmac_hex(
+        &credential.auth_key,
+        "paperclip-runner-server-proof-v1",
+        &[canonical_challenge.as_bytes()],
+        &server_proof,
+    )?;
+    let client_proof = hex_encode(&hmac_domain(
+        &credential.auth_key,
+        "paperclip-runner-client-proof-v1",
+        &[canonical_challenge.as_bytes(), server_proof.as_bytes()],
+    ));
+    client.send_plain_json(&json!({
+        "protocol": PROTOCOL,
+        "version": PROTOCOL_VERSION,
+        "kind": "auth_response",
+        "payload": {
+            "credentialId": credential.credential_id,
+            "clientNonce": client_nonce,
+            "serverNonce": required_string(payload, "serverNonce")?,
+            "clientProof": client_proof,
+        },
+    }))?;
+    let secure_channel = SecureChannel::new(
+        &credential.auth_key,
+        canonical_challenge.as_bytes(),
+        server_proof.as_bytes(),
+        client_proof.as_bytes(),
+    )?;
+    client.enable_secure_channel(secure_channel);
+    Ok(())
+}
+
 fn send_outbox(client: &mut WsClient, state: &DurableRunnerState) -> Result<(), Phase3Error> {
     for event in &state.outbox {
         client.send_json(&event.envelope)?;
@@ -1529,16 +2075,122 @@ fn send_outbox(client: &mut WsClient, state: &DurableRunnerState) -> Result<(), 
     Ok(())
 }
 
-fn welcome_payload(value: &Value) -> Result<&Value, Phase3Error> {
+struct ConnectionMetadata {
+    connection_id: String,
+    lease_id: String,
+    lease_expires_at_unix_ms: u64,
+    revocation_epoch: u64,
+}
+
+fn validate_control_identity(
+    value: &Value,
+    state: &DurableRunnerState,
+    connection: Option<&ConnectionMetadata>,
+) -> Result<(), Phase3Error> {
     if value.get("protocol").and_then(Value::as_str) != Some(PROTOCOL)
         || value.get("version").and_then(Value::as_u64) != Some(PROTOCOL_VERSION)
-        || value.get("kind").and_then(Value::as_str) != Some("welcome")
     {
+        return Err(Phase3Error::invalid(
+            "control envelope protocol identity is invalid",
+        ));
+    }
+    for (field, expected) in [
+        ("runnerInstanceId", state.runner_instance_id.as_str()),
+        ("environmentLeaseId", state.environment_lease_id.as_str()),
+        ("runId", state.run_id.as_str()),
+        ("normalizedSessionId", state.normalized_session_id.as_str()),
+        ("turnId", state.turn_id.as_str()),
+        ("itemId", state.item_id.as_str()),
+    ] {
+        if required_string(value, field)? != expected {
+            return Err(Phase3Error::invalid(format!(
+                "control envelope {field} does not match the authenticated session"
+            )));
+        }
+    }
+    if let Some(connection) = connection {
+        if required_string(value, "connectionId")? != connection.connection_id
+            || required_string(value, "connectionLeaseId")? != connection.lease_id
+        {
+            return Err(Phase3Error::invalid(
+                "control envelope connection lease identity does not match the authenticated session",
+            ));
+        }
+        if current_unix_ms()? >= connection.lease_expires_at_unix_ms {
+            return Err(Phase3Error::invalid(
+                "connection lease expired before the control envelope was applied",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_welcome<'a>(
+    value: &'a Value,
+    state: &DurableRunnerState,
+) -> Result<(&'a Value, ConnectionMetadata), Phase3Error> {
+    validate_control_identity(value, state, None)?;
+    if value.get("kind").and_then(Value::as_str) != Some("welcome") {
         return Err(Phase3Error::invalid("expected a PRP v1 welcome envelope"));
     }
-    value
+    let connection_id = required_string(value, "connectionId")?.to_owned();
+    let lease_id = required_string(value, "connectionLeaseId")?.to_owned();
+    let payload = value
         .get("payload")
-        .ok_or_else(|| Phase3Error::invalid("welcome payload is required"))
+        .ok_or_else(|| Phase3Error::invalid("welcome payload is required"))?;
+    if payload.get("selectedVersion").and_then(Value::as_u64) != Some(PROTOCOL_VERSION) {
+        return Err(Phase3Error::invalid(
+            "core selected an unsupported protocol version",
+        ));
+    }
+    if required_string(payload, "connectionLeaseId")? != lease_id {
+        return Err(Phase3Error::invalid(
+            "welcome lease identity is internally inconsistent",
+        ));
+    }
+    required_string(payload, "connectionLeaseExpiresAt")?;
+    let lease_expires_at_unix_ms = payload
+        .get("connectionLeaseExpiresAtUnixMs")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Phase3Error::invalid("welcome lease expiry is required"))?;
+    if lease_expires_at_unix_ms <= current_unix_ms()? {
+        return Err(Phase3Error::invalid(
+            "welcome carried an already-expired connection lease",
+        ));
+    }
+    let revocation_epoch = payload
+        .get("connectionLeaseRevocationEpoch")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Phase3Error::invalid("welcome revocation epoch is required"))?;
+    let binding = payload
+        .get("leaseBinding")
+        .ok_or_else(|| Phase3Error::invalid("welcome lease binding is required"))?;
+    for (field, expected) in [
+        ("runnerInstanceId", state.runner_instance_id.as_str()),
+        ("environmentLeaseId", state.environment_lease_id.as_str()),
+        ("runId", state.run_id.as_str()),
+        ("normalizedSessionId", state.normalized_session_id.as_str()),
+    ] {
+        if required_string(binding, field)? != expected {
+            return Err(Phase3Error::invalid(format!(
+                "welcome lease binding {field} does not match the authenticated session"
+            )));
+        }
+    }
+    if binding.get("protocolVersion").and_then(Value::as_u64) != Some(PROTOCOL_VERSION) {
+        return Err(Phase3Error::invalid(
+            "welcome lease binding protocol is invalid",
+        ));
+    }
+    Ok((
+        payload,
+        ConnectionMetadata {
+            connection_id,
+            lease_id,
+            lease_expires_at_unix_ms,
+            revocation_epoch,
+        },
+    ))
 }
 
 pub fn run_durable_runner(
@@ -1550,11 +2202,18 @@ pub fn run_durable_runner(
             "P0 reserve must be smaller than the outbox limit",
         ));
     }
-    // Resolve once before a bearer can be sent. Reconnects use only this validated,
-    // concrete address set, so DNS cannot redirect an authenticated retry.
-    let target = ResolvedWsTarget::resolve(&config.connect_url)?;
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
+    if recovered && state.lifecycle == "revoked" {
+        // Revocation is durable and terminal. Dropping the fresh bootstrap capability before
+        // destination resolution guarantees a restarted daemon cannot authenticate, reconnect,
+        // advance cursors, or rewrite the preserved operator-recovery state.
+        drop(bootstrap_ticket);
+        return Ok(());
+    }
+    // Resolve once before authentication. Reconnects use only this validated,
+    // concrete address set, so DNS cannot redirect a retry.
+    let target = ResolvedWsTarget::resolve(&config.connect_url)?;
     if recovered {
         state.reconnect_count += 1;
         state.record_diagnostic("runner process restored the same durable identity");
@@ -1576,6 +2235,9 @@ pub fn run_durable_runner(
     }
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut connection_lease_token: Option<SensitiveString> = None;
+    let mut connection_lease_id: Option<String> = None;
+    let mut connection_lease_expires_at_unix_ms: Option<u64> = None;
+    let mut connection_lease_revocation_epoch: Option<u64> = None;
     let started = Instant::now();
 
     loop {
@@ -1588,38 +2250,61 @@ pub fn run_durable_runner(
                 "transport reconnect deadline exceeded; durable state is preserved",
             ));
         }
-        let authorization = connection_lease_token
+        if connection_lease_expires_at_unix_ms
+            .is_some_and(|expires_at| current_unix_ms().is_ok_and(|now| now >= expires_at))
+        {
+            state.recoverable_failure = Some("lease_expired_requires_bootstrap".to_owned());
+            state.lifecycle = "recoverable_failure".to_owned();
+            state.record_diagnostic(
+                "connection lease expired; a fresh bootstrap may resume this state",
+            );
+            store.save(&state)?;
+            connection_lease_token.take();
+            return Err(Phase3Error::invalid(
+                "connection lease expired; durable state requires a fresh bootstrap",
+            ));
+        }
+        let (credential_token, credential_kind) = connection_lease_token
             .as_ref()
-            .map(SensitiveString::expose)
-            .or_else(|| bootstrap_ticket.as_ref().map(BootstrapTicket::expose))
+            .map(|token| (token.expose(), "lease"))
+            .or_else(|| {
+                bootstrap_ticket
+                    .as_ref()
+                    .map(|ticket| (ticket.expose(), "bootstrap"))
+            })
             .ok_or_else(|| {
                 Phase3Error::invalid(
                     "transport capability is unavailable; a fresh runner bootstrap is required",
                 )
             })?;
-        let mut client = match WsClient::connect(&target, authorization, config.max_frame_bytes) {
+        let credential = CredentialMaterial::from_token(credential_token);
+        let mut client = match WsClient::connect(&target, config.max_frame_bytes) {
             Ok(client) => client,
             Err(error) => {
                 let text = error.to_string();
-                if text.contains("401") || text.contains("403") {
-                    state.recoverable_failure = Some("lease_expired_requires_bootstrap".to_owned());
-                    state.lifecycle = "recoverable_failure".to_owned();
-                    state.record_diagnostic(
-                        "connection lease expired; a fresh bootstrap may resume this state",
-                    );
-                    store.save(&state)?;
-                    return Err(Phase3Error::invalid(
-                        "connection lease expired; durable state requires a fresh bootstrap",
-                    ));
-                }
                 state.record_diagnostic(format!("transport reconnect scheduled: {text}"));
                 store.save(&state)?;
                 thread::sleep(config.reconnect_delay);
                 continue;
             }
         };
-
-        client.send_json(&hello_envelope(&state, &config))?;
+        if let Err(error) = authenticate_transport(
+            &mut client,
+            &state,
+            &config,
+            &credential,
+            credential_kind,
+            connection_lease_id.as_deref(),
+            connection_lease_expires_at_unix_ms,
+            connection_lease_revocation_epoch,
+        ) {
+            state.record_diagnostic(format!(
+                "transport peer authentication failed closed: {error}"
+            ));
+            store.save(&state)?;
+            thread::sleep(config.reconnect_delay);
+            continue;
+        }
         let mut welcome = loop {
             match client.receive_json() {
                 Ok(Some(value)) => break value,
@@ -1635,6 +2320,7 @@ pub fn run_durable_runner(
                 }
             }
         };
+        let (_, connection) = validate_welcome(&welcome, &state)?;
         let next_lease_token = match welcome.pointer_mut("/payload/connectionLeaseToken") {
             Some(Value::String(value)) => {
                 let token = std::mem::take(value);
@@ -1643,22 +2329,23 @@ pub fn run_durable_runner(
             }
             _ => None,
         };
-        let payload = welcome_payload(&welcome)?;
-        let selected_version = payload
-            .get("selectedVersion")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| Phase3Error::invalid("welcome selectedVersion is required"))?;
-        if selected_version != PROTOCOL_VERSION {
+        if credential_kind == "bootstrap" && next_lease_token.is_none() {
             return Err(Phase3Error::invalid(
-                "mock core selected an unsupported version",
+                "authenticated bootstrap welcome did not issue a connection lease",
             ));
         }
         if let Some(token) = next_lease_token {
             connection_lease_token = Some(token);
         }
-        // A bootstrap ticket is one-use. Clear it as soon as the authenticated welcome
-        // has exchanged it for a connection lease.
+        connection_lease_id = Some(connection.lease_id.clone());
+        connection_lease_expires_at_unix_ms = Some(connection.lease_expires_at_unix_ms);
+        connection_lease_revocation_epoch = Some(connection.revocation_epoch);
+        // A bootstrap ticket is one-use. Clear it only after the mutually authenticated,
+        // encrypted welcome has exchanged it for a bound connection lease.
         bootstrap_ticket.take();
+        let payload = welcome
+            .get("payload")
+            .ok_or_else(|| Phase3Error::invalid("welcome payload is required"))?;
         if let Some(acked_source_seq) = payload.get("ackedSourceSeq").and_then(Value::as_u64) {
             state.apply_ack(acked_source_seq)?;
         }
@@ -1717,6 +2404,18 @@ pub fn run_durable_runner(
                 bootstrap_ticket.take();
                 return Ok(());
             }
+            if current_unix_ms()? >= connection.lease_expires_at_unix_ms {
+                state.recoverable_failure = Some("lease_expired_requires_bootstrap".to_owned());
+                state.lifecycle = "recoverable_failure".to_owned();
+                state.record_diagnostic(
+                    "connection lease expired before more control data could be accepted",
+                );
+                store.save(&state)?;
+                connection_lease_token.take();
+                return Err(Phase3Error::invalid(
+                    "connection lease expired; durable state requires a fresh bootstrap",
+                ));
+            }
             match client.receive_json() {
                 Ok(None) => continue,
                 Err(error) => {
@@ -1731,100 +2430,124 @@ pub fn run_durable_runner(
                     store.save(&state)?;
                     break true;
                 }
-                Ok(Some(message)) => match message.get("kind").and_then(Value::as_str) {
-                    Some("ack") => {
-                        let acked = message
-                            .pointer("/payload/ackedSourceSeq")
-                            .and_then(Value::as_u64)
-                            .ok_or_else(|| Phase3Error::invalid("ACK cursor is required"))?;
-                        state.apply_ack(acked)?;
+                Ok(Some(message)) => {
+                    if let Err(error) =
+                        validate_control_identity(&message, &state, Some(&connection))
+                    {
+                        state.record_diagnostic(format!(
+                            "control envelope identity mismatch failed closed: {error}"
+                        ));
+                        state.reconnect_count += 1;
                         store.save(&state)?;
+                        break true;
                     }
-                    Some("command") => {
-                        let command = message
-                            .get("payload")
-                            .ok_or_else(|| Phase3Error::invalid("command payload is required"))?;
-                        match process_command(&mut state, &store, &config, command) {
-                            Ok(processed) => {
-                                let delivery = client
-                                    .send_json(&command_result_envelope(&state, &processed))
-                                    .and_then(|()| send_outbox(&mut client, &state));
-                                if let Err(error) = delivery {
-                                    state.record_diagnostic(error.to_string());
-                                    if state.lifecycle == "revoked" {
+                    match message.get("kind").and_then(Value::as_str) {
+                        Some("ack") => {
+                            let acked = message
+                                .pointer("/payload/ackedSourceSeq")
+                                .and_then(Value::as_u64)
+                                .ok_or_else(|| Phase3Error::invalid("ACK cursor is required"))?;
+                            state.apply_ack(acked)?;
+                            store.save(&state)?;
+                        }
+                        Some("command") => {
+                            let command = message.get("payload").ok_or_else(|| {
+                                Phase3Error::invalid("command payload is required")
+                            })?;
+                            match process_command(&mut state, &store, &config, command) {
+                                Ok(processed) => {
+                                    let delivery = client
+                                        .send_json(&command_result_envelope(&state, &processed))
+                                        .and_then(|()| send_outbox(&mut client, &state));
+                                    if let Err(error) = delivery {
+                                        state.record_diagnostic(error.to_string());
+                                        if state.lifecycle == "revoked" {
+                                            store.save(&state)?;
+                                            connection_lease_token.take();
+                                            bootstrap_ticket.take();
+                                            return Ok(());
+                                        }
+                                        state.reconnect_count += 1;
                                         store.save(&state)?;
-                                        connection_lease_token.take();
-                                        bootstrap_ticket.take();
-                                        return Ok(());
+                                        break true;
                                     }
-                                    state.reconnect_count += 1;
+                                }
+                                Err(error) => {
+                                    state.record_diagnostic(error.to_string());
                                     store.save(&state)?;
-                                    break true;
                                 }
                             }
-                            Err(error) => {
-                                state.record_diagnostic(error.to_string());
-                                store.save(&state)?;
+                        }
+                        Some("revoke") => {
+                            let revocation_epoch = message
+                                .pointer("/payload/revocationEpoch")
+                                .and_then(Value::as_u64)
+                                .ok_or_else(|| {
+                                    Phase3Error::invalid("revoke revocation epoch is required")
+                                })?;
+                            if revocation_epoch <= connection.revocation_epoch {
+                                return Err(Phase3Error::invalid(
+                                    "revoke did not advance the authenticated revocation epoch",
+                                ));
                             }
-                        }
-                    }
-                    Some("revoke") => {
-                        state.lifecycle = "revoked".to_owned();
-                        state.stop_after_flush = true;
-                        revoke_deadline.get_or_insert_with(|| {
-                            Instant::now()
-                                .checked_add(REVOKE_FLUSH_TIMEOUT)
-                                .unwrap_or_else(Instant::now)
-                        });
-                        state
-                            .record_diagnostic("connection lease revoked; flushing durable events");
-                        store.save(&state)?;
-                        if let Err(error) = send_outbox(&mut client, &state) {
-                            state.record_diagnostic(error.to_string());
+                            state.lifecycle = "revoked".to_owned();
+                            state.stop_after_flush = true;
+                            revoke_deadline.get_or_insert_with(|| {
+                                Instant::now()
+                                    .checked_add(REVOKE_FLUSH_TIMEOUT)
+                                    .unwrap_or_else(Instant::now)
+                            });
+                            state.record_diagnostic(
+                                "connection lease revoked; flushing durable events",
+                            );
                             store.save(&state)?;
-                            connection_lease_token.take();
-                            bootstrap_ticket.take();
-                            return Ok(());
-                        }
-                    }
-                    Some("ping") => {
-                        let pong = client.send_json(&json!({
-                            "protocol": PROTOCOL,
-                            "version": PROTOCOL_VERSION,
-                            "kind": "pong",
-                            "runnerInstanceId": state.runner_instance_id,
-                            "payload": {
-                                "lifecycle": state.lifecycle,
-                                "outboxBytes": state.outbox_bytes(),
-                                "ackedSourceSeq": state.acked_source_seq,
-                            },
-                        }));
-                        if let Err(error) = pong {
-                            state.record_diagnostic(error.to_string());
-                            if state.lifecycle == "revoked" {
+                            if let Err(error) = send_outbox(&mut client, &state) {
+                                state.record_diagnostic(error.to_string());
                                 store.save(&state)?;
                                 connection_lease_token.take();
                                 bootstrap_ticket.take();
                                 return Ok(());
                             }
-                            state.reconnect_count += 1;
+                        }
+                        Some("ping") => {
+                            let pong = client.send_json(&json!({
+                                "protocol": PROTOCOL,
+                                "version": PROTOCOL_VERSION,
+                                "kind": "pong",
+                                "runnerInstanceId": state.runner_instance_id,
+                                "payload": {
+                                    "lifecycle": state.lifecycle,
+                                    "outboxBytes": state.outbox_bytes(),
+                                    "ackedSourceSeq": state.acked_source_seq,
+                                },
+                            }));
+                            if let Err(error) = pong {
+                                state.record_diagnostic(error.to_string());
+                                if state.lifecycle == "revoked" {
+                                    store.save(&state)?;
+                                    connection_lease_token.take();
+                                    bootstrap_ticket.take();
+                                    return Ok(());
+                                }
+                                state.reconnect_count += 1;
+                                store.save(&state)?;
+                                break true;
+                            }
+                        }
+                        _ => {
+                            state.record_diagnostic(
+                                "malformed or unsupported control frame closed the connection",
+                            );
                             store.save(&state)?;
+                            if state.lifecycle == "revoked" {
+                                connection_lease_token.take();
+                                bootstrap_ticket.take();
+                                return Ok(());
+                            }
                             break true;
                         }
                     }
-                    _ => {
-                        state.record_diagnostic(
-                            "malformed or unsupported control frame closed the connection",
-                        );
-                        store.save(&state)?;
-                        if state.lifecycle == "revoked" {
-                            connection_lease_token.take();
-                            bootstrap_ticket.take();
-                            return Ok(());
-                        }
-                        break true;
-                    }
-                },
+                }
             }
         };
         if disconnected {
@@ -1836,7 +2559,8 @@ pub fn run_durable_runner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::net::TcpListener;
+    use std::sync::{mpsc, Mutex};
 
     static ENVIRONMENT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1881,6 +2605,53 @@ mod tests {
             "issuedAt": deterministic_time(sequence),
             "payload": payload,
         })
+    }
+
+    fn read_masked_client_text(stream: &mut TcpStream) -> (Value, Vec<u8>) {
+        let mut header = [0_u8; 2];
+        stream.read_exact(&mut header).unwrap();
+        assert_eq!(header[0] & 0x0f, 0x1);
+        assert_ne!(header[1] & 0x80, 0);
+        let mut captured = header.to_vec();
+        let mut length = usize::from(header[1] & 0x7f);
+        if length == 126 {
+            let mut extended = [0_u8; 2];
+            stream.read_exact(&mut extended).unwrap();
+            captured.extend_from_slice(&extended);
+            length = usize::from(u16::from_be_bytes(extended));
+        } else if length == 127 {
+            let mut extended = [0_u8; 8];
+            stream.read_exact(&mut extended).unwrap();
+            captured.extend_from_slice(&extended);
+            length = usize::try_from(u64::from_be_bytes(extended)).unwrap();
+        }
+        let mut mask = [0_u8; 4];
+        stream.read_exact(&mut mask).unwrap();
+        captured.extend_from_slice(&mask);
+        let mut payload = vec![0_u8; length];
+        stream.read_exact(&mut payload).unwrap();
+        captured.extend_from_slice(&payload);
+        for (index, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask[index % mask.len()];
+        }
+        (serde_json::from_slice(&payload).unwrap(), captured)
+    }
+
+    fn send_server_json(stream: &mut TcpStream, value: &Value) {
+        let payload = serde_json::to_vec(value).unwrap();
+        let mut frame = vec![0x81];
+        if payload.len() <= 125 {
+            frame.push(payload.len() as u8);
+        } else if payload.len() <= u16::MAX as usize {
+            frame.push(126);
+            frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        } else {
+            frame.push(127);
+            frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        }
+        frame.extend_from_slice(&payload);
+        stream.write_all(&frame).unwrap();
+        stream.flush().unwrap();
     }
 
     #[test]
@@ -1933,6 +2704,8 @@ mod tests {
         let (mut state, _) = store.load_or_create(&config).unwrap();
         let value = command("command_prepare", 1, "run.prepare", json!({}));
         let first = process_command(&mut state, &store, &config, &value).unwrap();
+        assert!(first.command_digest.starts_with("sha256:"));
+        assert_eq!(first.command_digest.len(), "sha256:".len() + 64);
         let event_count = state.outbox.len();
         let second = process_command(&mut state, &store, &config, &value).unwrap();
         assert_eq!(first.result, second.result);
@@ -1951,6 +2724,270 @@ mod tests {
             )
         )
         .is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn processed_command_ledger_compacts_to_a_fixed_bound_without_reenabling_effects() {
+        let root = temporary_root("command-compaction");
+        let config = config(&root);
+        let store = DurableStateStore::new(&root).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        for sequence in 1..=256_u64 {
+            let command_id = format!("command_compaction_{sequence:04}");
+            process_command(
+                &mut state,
+                &store,
+                &config,
+                &command(&command_id, sequence, "unsupported.compaction", json!({})),
+            )
+            .unwrap();
+        }
+        let size_after_256 = fs::metadata(store.path()).unwrap().len();
+        for sequence in 257..=512_u64 {
+            let command_id = format!("command_compaction_{sequence:04}");
+            process_command(
+                &mut state,
+                &store,
+                &config,
+                &command(&command_id, sequence, "unsupported.compaction", json!({})),
+            )
+            .unwrap();
+        }
+        let size_after_512 = fs::metadata(store.path()).unwrap().len();
+        assert_eq!(
+            state.processed_commands.len(),
+            MAX_RECENT_PROCESSED_COMMANDS
+        );
+        assert_eq!(state.compacted_command_count, 384);
+        assert_eq!(
+            state.compacted_command_filter.len(),
+            COMPACTED_COMMAND_FILTER_BYTES * 2
+        );
+        assert!(size_after_512 <= size_after_256 + 1024);
+
+        let replay = process_command(
+            &mut state,
+            &store,
+            &config,
+            &command(
+                "command_compaction_0001",
+                513,
+                "run.prepare",
+                json!({ "changed": true }),
+            ),
+        )
+        .unwrap();
+        assert_eq!(replay.status, "rejected");
+        assert_eq!(replay.logical_effect_count, 0);
+        assert_eq!(state.last_controller_command_seq, 513);
+        assert!(!state
+            .outbox
+            .iter()
+            .any(|event| event.event_type == "workspace.ready"));
+        let (restored, recovered) = store.load_or_create(&config).unwrap();
+        assert!(recovered);
+        assert_eq!(
+            restored.processed_commands.len(),
+            MAX_RECENT_PROCESSED_COMMANDS
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malicious_loopback_listener_gets_no_capability_and_cannot_forge_control() {
+        let root = temporary_root("malicious-loopback");
+        let config = config(&root);
+        let store = DurableStateStore::new(&root).unwrap();
+        let (state, _) = store.load_or_create(&config).unwrap();
+        let secret = "bootstrap-malicious-listener-regression";
+        let credential = CredentialMaterial::from_token(secret);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (wire_sender, wire_receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            let (hello, frame) = read_masked_client_text(&mut stream);
+            let hello_payload = hello.get("payload").unwrap();
+            let challenge_payload = json!({
+                "credentialId": hello_payload.get("credentialId").unwrap(),
+                "credentialKind": "bootstrap",
+                "clientNonce": hello_payload.get("clientNonce").unwrap(),
+                "serverNonce": "malicious-server-nonce",
+                "runnerInstanceId": hello_payload.get("runnerInstanceId").unwrap(),
+                "environmentLeaseId": hello_payload.get("environmentLeaseId").unwrap(),
+                "runId": hello_payload.get("runId").unwrap(),
+                "normalizedSessionId": hello_payload.get("normalizedSessionId").unwrap(),
+                "turnId": hello_payload.get("turnId").unwrap(),
+                "itemId": hello_payload.get("itemId").unwrap(),
+                "runnerVersion": hello_payload.get("runnerVersion").unwrap(),
+                "runnerDigest": hello_payload.get("runnerDigest").unwrap(),
+                "selectedVersion": PROTOCOL_VERSION,
+                "credentialLeaseId": Value::Null,
+                "credentialExpiresAt": "2099-01-01T00:00:00.000Z",
+                "credentialExpiresAtUnixMs": 4_070_908_800_000_u64,
+                "revocationEpoch": 0,
+                "serverProof": "00".repeat(32),
+            });
+            send_server_json(
+                &mut stream,
+                &json!({
+                    "protocol": PROTOCOL,
+                    "version": PROTOCOL_VERSION,
+                    "kind": "auth_challenge",
+                    "payload": challenge_payload,
+                }),
+            );
+            request.extend_from_slice(&frame);
+            wire_sender.send(request).unwrap();
+        });
+        let target =
+            resolve_ws_target_with(&format!("ws://{address}/phase3/connect"), |_host, _port| {
+                Ok(vec![address])
+            })
+            .unwrap();
+        let mut client = WsClient::connect(&target, config.max_frame_bytes).unwrap();
+        let error = authenticate_transport(
+            &mut client,
+            &state,
+            &config,
+            &credential,
+            "bootstrap",
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("transport authentication proof is invalid"));
+        assert!(client.secure_channel.is_none());
+        let wire = wire_receiver.recv().unwrap();
+        assert!(!wire
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes()));
+        assert_eq!(state.acked_source_seq, 0);
+        assert!(state.processed_commands.is_empty());
+        server.join().unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_terminal_command_failure_restores_exact_prior_state_on_every_retry() {
+        let root = temporary_root("command-atomic-p1");
+        let mut config = config(&root);
+        let sizing_state = DurableRunnerState::new(&config);
+        let accepted_size = serde_json::to_vec(&event_envelope(
+            &sizing_state,
+            1,
+            "turn.accepted",
+            0,
+            json!({ "turnId": sizing_state.turn_id, "sameSession": true }),
+            None,
+        ))
+        .unwrap()
+        .len();
+        let started_size = serde_json::to_vec(&event_envelope(
+            &sizing_state,
+            2,
+            "item.started",
+            1,
+            json!({ "kind": "assistant_message" }),
+            Some(&sizing_state.item_id),
+        ))
+        .unwrap()
+        .len();
+        let non_p0_limit = accepted_size + started_size - 1;
+        config.p0_reserve_bytes = 8 * 1024;
+        config.max_outbox_bytes = non_p0_limit + config.p0_reserve_bytes;
+
+        let store = DurableStateStore::new(&root).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let before_state = serde_json::to_vec(&state).unwrap();
+        let before_file = fs::read(store.path()).unwrap();
+        let value = command("command_tight_p1", 1, "turn.start", json!({}));
+
+        let first_error = process_command(&mut state, &store, &config, &value).unwrap_err();
+        assert_eq!(serde_json::to_vec(&state).unwrap(), before_state);
+        assert_eq!(fs::read(store.path()).unwrap(), before_file);
+        let second_error = process_command(&mut state, &store, &config, &value).unwrap_err();
+        assert_eq!(second_error, first_error);
+        assert_eq!(serde_json::to_vec(&state).unwrap(), before_state);
+        assert_eq!(fs::read(store.path()).unwrap(), before_file);
+        assert!(state.outbox.is_empty());
+        assert!(state.processed_commands.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn p0_exhaustion_commits_only_unrecoverable_result_and_retry_is_stable() {
+        let root = temporary_root("command-atomic-p0");
+        let mut probe_config = config(&root);
+        probe_config.max_outbox_bytes = 128 * 1024;
+        probe_config.p0_reserve_bytes = 1;
+        let mut probe = DurableRunnerState::new(&probe_config);
+        execute_command_effect(
+            &mut probe,
+            &probe_config,
+            "turn.start",
+            &json!({ "text": "Phase 3" }),
+        )
+        .unwrap();
+        assert!(probe.outbox.len() >= 5);
+        let bytes_before_mandatory_p0 = probe
+            .outbox
+            .iter()
+            .take(4)
+            .map(|event| event.byte_size)
+            .sum::<usize>();
+
+        let mut config = config(&root);
+        config.p0_reserve_bytes = 1;
+        config.max_outbox_bytes = bytes_before_mandatory_p0 + 1;
+        let store = DurableStateStore::new(&root).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let value = command(
+            "command_tight_p0",
+            1,
+            "turn.start",
+            json!({ "text": "Phase 3" }),
+        );
+
+        let first = process_command(&mut state, &store, &config, &value).unwrap();
+        assert_eq!(first.status, "failed");
+        assert_eq!(first.logical_effect_count, 0);
+        assert_eq!(state.lifecycle, "unrecoverable");
+        assert_eq!(
+            state.unrecoverable_outcome.as_deref(),
+            Some("p0_storage_exhausted")
+        );
+        assert_eq!(state.next_source_seq, 1);
+        assert!(state.outbox.is_empty());
+        assert_eq!(state.processed_commands.len(), 1);
+        let after_first = serde_json::to_vec(&state).unwrap();
+        let second = process_command(&mut state, &store, &config, &value).unwrap();
+        assert_eq!(second.result, first.result);
+        assert_eq!(serde_json::to_vec(&state).unwrap(), after_first);
+        let (persisted, recovered) = store.load_or_create(&config).unwrap();
+        assert!(recovered);
+        assert!(persisted.outbox.is_empty());
+        assert_eq!(persisted.next_source_seq, 1);
+        assert_eq!(persisted.processed_commands.len(), 1);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1986,6 +3023,51 @@ mod tests {
         let persisted = fs::read_to_string(store.path()).unwrap();
         assert!(!persisted.contains("must-not-persist"));
         assert!(persisted.contains("[REDACTED]"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn oversized_coalesced_p2_retains_prior_event_and_never_exceeds_bounds() {
+        let root = temporary_root("oversized-p2-coalesce");
+        let mut config = config(&root);
+        config.max_outbox_bytes = 8 * 1024;
+        config.p0_reserve_bytes = 4 * 1024;
+        let mut state = DurableRunnerState::new(&config);
+        let item_id = state.item_id.clone();
+        enqueue_event(
+            &mut state,
+            &config,
+            "item.delta",
+            2,
+            json!({ "text": "small durable delta" }),
+            Some(&item_id),
+        )
+        .unwrap();
+        let prior = state.outbox[0].clone();
+
+        enqueue_event(
+            &mut state,
+            &config,
+            "item.delta",
+            2,
+            json!({ "text": "x".repeat(16 * 1024) }),
+            Some(&item_id),
+        )
+        .unwrap();
+
+        let retained = state
+            .outbox
+            .iter()
+            .find(|event| event.event_type == "item.delta")
+            .unwrap();
+        assert_eq!(retained, &prior);
+        assert!(state.backpressure);
+        assert!(state
+            .outbox
+            .iter()
+            .any(|event| event.priority == 0 && event.event_type == "runner.backpressure"));
+        assert!(state.outbox_bytes() <= config.max_outbox_bytes);
+        assert!(state.peak_outbox_bytes <= config.max_outbox_bytes);
         let _ = fs::remove_dir_all(root);
     }
 

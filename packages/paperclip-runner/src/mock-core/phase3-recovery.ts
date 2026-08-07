@@ -1,5 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -51,22 +58,31 @@ const fakeHarnessScript = resolve(
 );
 const protocol = "paperclip.runner";
 const protocolVersion = 1;
+const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.phase3.mock-core-state.v1";
 const maxFrameBytes = 1024 * 1024;
 
 interface BootstrapTicketRecord {
-  digest: string;
-  runnerInstanceId: string;
+  credentialId: string;
+  authKeyDigest: string;
+  identity: Phase3Identity;
+  runnerVersion: string;
+  runnerDigest: string;
   expiresAt: string;
+  expiresAtUnixMs: number;
   usedAt: string | null;
 }
 
 interface ConnectionLeaseRecord {
-  digest: string;
+  credentialId: string;
+  authKeyDigest: string;
   leaseId: string;
-  runnerInstanceId: string;
+  identity: Phase3Identity;
+  protocolVersion: number;
   expiresAt: string;
+  expiresAtUnixMs: number;
+  revocationEpoch: number;
   revokedAt: string | null;
 }
 
@@ -88,19 +104,33 @@ interface StoredCoreState {
   lastLeaseExpiresAt: string | null;
 }
 
-type Authorization =
+type PendingAuthorization =
   | {
       kind: "bootstrap";
-      digest: string;
-      rawToken: string;
+      authKey: Buffer;
       ticket: BootstrapTicketRecord;
     }
   | {
       kind: "lease";
-      digest: string;
-      rawToken: string;
+      authKey: Buffer;
       lease: ConnectionLeaseRecord;
     };
+
+interface PendingChallenge {
+  authorization: PendingAuthorization;
+  canonicalChallenge: string;
+  serverProof: string;
+  clientNonce: string;
+  serverNonce: string;
+}
+
+interface SecureChannel {
+  sendKey: Buffer;
+  receiveKey: Buffer;
+  sendCounter: bigint;
+  receiveCounter: bigint;
+  sessionId: string;
+}
 
 interface MockCoreOptions {
   stateDirectory: string;
@@ -122,8 +152,36 @@ interface RunnerProcessHandle {
   completion: Promise<RunnerProcessResult>;
 }
 
+function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
+  const digest = createHash("sha256").update(domain).update(Buffer.from([0]));
+  for (const part of parts) {
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(part.length));
+    digest.update(length).update(part);
+  }
+  return digest.digest();
+}
+
+function domainHmac(key: Buffer, domain: string, parts: readonly Buffer[]): Buffer {
+  const digest = createHmac("sha256", key).update(domain).update(Buffer.from([0]));
+  for (const part of parts) {
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(part.length));
+    digest.update(length).update(part);
+  }
+  return digest.digest();
+}
+
+function credentialMaterial(token: string): { credentialId: string; authKey: Buffer } {
+  const bytes = Buffer.from(token);
+  return {
+    credentialId: `sha256:${domainDigest("paperclip-runner-credential-id-v1", [bytes]).toString("hex")}`,
+    authKey: domainDigest("paperclip-runner-auth-key-v1", [bytes]),
+  };
+}
+
 function tokenDigest(token: string): string {
-  return `sha256:${createHash("sha256").update(token).digest("hex")}`;
+  return `sha256:${credentialMaterial(token).authKey.toString("hex")}`;
 }
 
 function canonicalJson(value: unknown): string {
@@ -142,6 +200,103 @@ function canonicalJson(value: unknown): string {
 
 function safeDate(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
+}
+
+function authKeyFromDigest(digest: string): Buffer {
+  const hex = digest.match(/^sha256:([0-9a-f]{64})$/)?.[1];
+  if (hex === undefined) throw new Error("Stored transport authentication key is malformed.");
+  return Buffer.from(hex, "hex");
+}
+
+function proofMatches(expected: Buffer, supplied: unknown): boolean {
+  if (typeof supplied !== "string" || !/^[0-9a-f]{64}$/.test(supplied)) return false;
+  return timingSafeEqual(expected, Buffer.from(supplied, "hex"));
+}
+
+function createSecureChannel(
+  authKey: Buffer,
+  canonicalChallenge: string,
+  serverProof: string,
+  clientProof: string,
+): SecureChannel {
+  const parts = [
+    Buffer.from(canonicalChallenge),
+    Buffer.from(serverProof),
+    Buffer.from(clientProof),
+  ];
+  const binding = domainDigest("paperclip-runner-session-binding-v1", parts);
+  return {
+    sendKey: domainHmac(authKey, "paperclip-runner-core-to-client-key-v1", [binding]),
+    receiveKey: domainHmac(authKey, "paperclip-runner-client-to-core-key-v1", [binding]),
+    sendCounter: 0n,
+    receiveCounter: 0n,
+    sessionId: `sha256:${binding.toString("hex")}`,
+  };
+}
+
+function secureNonce(prefix: "P3C1" | "P3S1", counter: bigint): Buffer {
+  const nonce = Buffer.alloc(12);
+  nonce.write(prefix, 0, "ascii");
+  nonce.writeBigUInt64BE(counter, 4);
+  return nonce;
+}
+
+function secureAad(
+  channel: SecureChannel,
+  direction: "client_to_core" | "core_to_client",
+  counter: bigint,
+): Buffer {
+  return Buffer.from(`${secureFrameSchema}\0${channel.sessionId}\0${direction}\0${counter}`);
+}
+
+function encryptSecureJson(channel: SecureChannel, value: unknown): Record<string, unknown> {
+  const counter = channel.sendCounter;
+  const cipher = createCipheriv("aes-256-gcm", channel.sendKey, secureNonce("P3S1", counter));
+  cipher.setAAD(secureAad(channel, "core_to_client", counter));
+  const ciphertext = Buffer.concat([
+    cipher.update(Buffer.from(JSON.stringify(value))),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]);
+  channel.sendCounter += 1n;
+  return {
+    schema: secureFrameSchema,
+    counter: Number(counter),
+    ciphertext: ciphertext.toString("hex"),
+  };
+}
+
+function decryptSecureJson(channel: SecureChannel, value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Secure frame must be an object.");
+  }
+  const frame = value as Record<string, unknown>;
+  if (
+    frame.schema !== secureFrameSchema ||
+    typeof frame.counter !== "number" ||
+    !Number.isSafeInteger(frame.counter) ||
+    BigInt(frame.counter) !== channel.receiveCounter ||
+    typeof frame.ciphertext !== "string" ||
+    !/^[0-9a-f]+$/.test(frame.ciphertext) ||
+    frame.ciphertext.length % 2 !== 0
+  ) {
+    throw new Error("Secure frame metadata or counter is invalid.");
+  }
+  const sealed = Buffer.from(frame.ciphertext, "hex");
+  if (sealed.length < 16) throw new Error("Secure frame authentication tag is missing.");
+  const ciphertext = sealed.subarray(0, -16);
+  const tag = sealed.subarray(-16);
+  const counter = channel.receiveCounter;
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    channel.receiveKey,
+    secureNonce("P3C1", counter),
+  );
+  decipher.setAAD(secureAad(channel, "client_to_core", counter));
+  decipher.setAuthTag(tag);
+  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  channel.receiveCounter += 1n;
+  return JSON.parse(plaintext.toString("utf8")) as Record<string, unknown>;
 }
 
 function initialCoreState(identity: Phase3Identity): StoredCoreState {
@@ -304,8 +459,10 @@ class DurableCoreStore {
 
 class MockWebSocketConnection {
   readonly socket: Duplex;
-  readonly authorization: Authorization;
+  pendingChallenge: PendingChallenge | null = null;
+  secureChannel: SecureChannel | null = null;
   lease: ConnectionLeaseRecord | null = null;
+  connectionId: string | null = null;
   #buffer = Buffer.alloc(0);
   #closed = false;
   #onText: (text: string) => void;
@@ -313,12 +470,10 @@ class MockWebSocketConnection {
 
   constructor(
     socket: Duplex,
-    authorization: Authorization,
     onText: (text: string) => void,
     onClose: () => void,
   ) {
     this.socket = socket;
-    this.authorization = authorization;
     this.#onText = onText;
     this.#onClose = onClose;
     socket.on("data", (chunk: Buffer) => this.#consume(chunk));
@@ -332,7 +487,8 @@ class MockWebSocketConnection {
   }
 
   sendJson(value: unknown): void {
-    this.sendText(JSON.stringify(value));
+    const wire = this.secureChannel === null ? value : encryptSecureJson(this.secureChannel, value);
+    this.sendText(JSON.stringify(wire));
   }
 
   sendText(text: string): void {
@@ -492,11 +648,16 @@ export class Phase3MockCore {
 
   issueBootstrapTicket(ttlMs = 5_000): string {
     const ticket = `bootstrap_${randomUUID()}`;
-    const digest = tokenDigest(ticket);
-    this.store.state.tickets[digest] = {
-      digest,
-      runnerInstanceId: this.identity.runnerInstanceId,
-      expiresAt: safeDate(ttlMs),
+    const material = credentialMaterial(ticket);
+    const expiresAtUnixMs = Date.now() + ttlMs;
+    this.store.state.tickets[material.credentialId] = {
+      credentialId: material.credentialId,
+      authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
+      identity: structuredClone(this.identity),
+      runnerVersion: this.#expectedRunnerVersion,
+      runnerDigest: this.#expectedRunnerDigest,
+      expiresAt: new Date(expiresAtUnixMs).toISOString(),
+      expiresAtUnixMs,
       usedAt: null,
     };
     this.store.state.freshBootstraps += 1;
@@ -542,12 +703,6 @@ export class Phase3MockCore {
       socket.destroy();
       return;
     }
-    const authorization = this.#authorize(request.headers.authorization);
-    if (authorization === null) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
     const websocketKey = request.headers["sec-websocket-key"];
     if (typeof websocketKey !== "string") {
       socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
@@ -568,38 +723,20 @@ export class Phase3MockCore {
     );
     const connection = new MockWebSocketConnection(
       socket,
-      authorization,
       (text) => this.#handleText(connection, text),
       () => this.#connections.delete(connection),
     );
     this.#connections.add(connection);
   }
 
-  #authorize(header: string | undefined): Authorization | null {
-    const rawToken = header?.match(/^Bearer (.+)$/i)?.[1];
-    if (rawToken === undefined) return null;
-    const digest = tokenDigest(rawToken);
-    const ticket = this.store.state.tickets[digest];
-    if (ticket !== undefined && ticket.usedAt === null && Date.parse(ticket.expiresAt) > Date.now()) {
-      ticket.usedAt = new Date().toISOString();
-      this.store.save();
-      return { kind: "bootstrap", digest, rawToken, ticket };
-    }
-    const lease = this.store.state.leases[digest];
-    if (
-      lease !== undefined &&
-      lease.revokedAt === null &&
-      Date.parse(lease.expiresAt) > Date.now()
-    ) {
-      return { kind: "lease", digest, rawToken, lease };
-    }
-    return null;
-  }
-
   #handleText(connection: MockWebSocketConnection, text: string): void {
     let envelope: Record<string, unknown>;
     try {
-      envelope = JSON.parse(text) as Record<string, unknown>;
+      const wire = JSON.parse(text) as unknown;
+      envelope =
+        connection.secureChannel === null
+          ? (wire as Record<string, unknown>)
+          : decryptSecureJson(connection.secureChannel, wire);
     } catch {
       this.store.state.malformedFrames += 1;
       this.store.save();
@@ -611,11 +748,15 @@ export class Phase3MockCore {
       return;
     }
     const kind = envelope.kind;
-    if (kind === "hello") {
-      this.#hello(connection, envelope);
+    if (connection.secureChannel === null && kind === "auth_hello") {
+      this.#authHello(connection, envelope);
       return;
     }
-    if (connection.lease === null) {
+    if (connection.secureChannel === null && kind === "auth_response") {
+      this.#authResponse(connection, envelope);
+      return;
+    }
+    if (connection.secureChannel === null || connection.lease === null) {
       connection.close();
       return;
     }
@@ -632,42 +773,165 @@ export class Phase3MockCore {
     }
   }
 
-  #hello(connection: MockWebSocketConnection, envelope: Record<string, unknown>): void {
-    const payload = envelope.payload as Record<string, unknown> | undefined;
-    const authorizedRunnerInstanceId =
-      connection.authorization.kind === "bootstrap"
-        ? connection.authorization.ticket.runnerInstanceId
-        : connection.authorization.lease.runnerInstanceId;
+  #authorizeHello(payload: Record<string, unknown>): PendingAuthorization | null {
+    const credentialId = payload.credentialId;
+    if (typeof credentialId !== "string") return null;
+    const ticket = this.store.state.tickets[credentialId];
+    const lease = this.store.state.leases[credentialId];
+    const authorization: PendingAuthorization | null =
+      ticket !== undefined && ticket.usedAt === null && ticket.expiresAtUnixMs > Date.now()
+        ? { kind: "bootstrap", authKey: authKeyFromDigest(ticket.authKeyDigest), ticket }
+        : lease !== undefined &&
+            lease.revokedAt === null &&
+            lease.expiresAtUnixMs > Date.now()
+          ? { kind: "lease", authKey: authKeyFromDigest(lease.authKeyDigest), lease }
+          : null;
+    if (authorization === null) return null;
+    const binding = authorization.kind === "bootstrap" ? authorization.ticket : authorization.lease;
+    const identity = binding.identity;
     if (
-      envelope.runnerInstanceId !== this.identity.runnerInstanceId ||
-      envelope.runnerInstanceId !== authorizedRunnerInstanceId ||
-      payload?.environmentLeaseId !== this.identity.environmentLeaseId ||
-      payload?.runnerVersion !== this.#expectedRunnerVersion ||
-      payload?.runnerDigest !== this.#expectedRunnerDigest ||
-      payload?.protocolMin !== 1 ||
-      payload.protocolMax !== 1
+      payload.runnerInstanceId !== identity.runnerInstanceId ||
+      payload.environmentLeaseId !== identity.environmentLeaseId ||
+      payload.runId !== identity.runId ||
+      payload.normalizedSessionId !== identity.normalizedSessionId ||
+      payload.turnId !== identity.turnId ||
+      payload.itemId !== identity.itemId ||
+      payload.runnerVersion !== this.#expectedRunnerVersion ||
+      payload.runnerDigest !== this.#expectedRunnerDigest ||
+      payload.protocolMin !== 1 ||
+      payload.protocolMax !== 1 ||
+      (authorization.kind === "lease" && authorization.lease.protocolVersion !== protocolVersion)
+    ) {
+      return null;
+    }
+    return authorization;
+  }
+
+  #authHello(connection: MockWebSocketConnection, envelope: Record<string, unknown>): void {
+    if (connection.pendingChallenge !== null) {
+      connection.close();
+      return;
+    }
+    const payload = envelope.payload as Record<string, unknown> | undefined;
+    if (payload === undefined || typeof payload.clientNonce !== "string") {
+      connection.close();
+      return;
+    }
+    const authorization = this.#authorizeHello(payload);
+    if (authorization === null) {
+      connection.close();
+      return;
+    }
+    const credential = authorization.kind === "bootstrap" ? authorization.ticket : authorization.lease;
+    const serverNonce = randomUUID();
+    const challengePayload: Record<string, unknown> = {
+      credentialId: credential.credentialId,
+      credentialKind: authorization.kind,
+      clientNonce: payload.clientNonce,
+      serverNonce,
+      runnerInstanceId: payload.runnerInstanceId,
+      environmentLeaseId: payload.environmentLeaseId,
+      runId: payload.runId,
+      normalizedSessionId: payload.normalizedSessionId,
+      turnId: payload.turnId,
+      itemId: payload.itemId,
+      runnerVersion: payload.runnerVersion,
+      runnerDigest: payload.runnerDigest,
+      selectedVersion: protocolVersion,
+      credentialLeaseId: authorization.kind === "lease" ? authorization.lease.leaseId : null,
+      credentialExpiresAt: credential.expiresAt,
+      credentialExpiresAtUnixMs: credential.expiresAtUnixMs,
+      revocationEpoch: authorization.kind === "lease" ? authorization.lease.revocationEpoch : 0,
+    };
+    const canonicalChallenge = canonicalJson(challengePayload);
+    const serverProof = domainHmac(
+      authorization.authKey,
+      "paperclip-runner-server-proof-v1",
+      [Buffer.from(canonicalChallenge)],
+    ).toString("hex");
+    connection.pendingChallenge = {
+      authorization,
+      canonicalChallenge,
+      serverProof,
+      clientNonce: payload.clientNonce,
+      serverNonce,
+    };
+    connection.sendJson({
+      protocol,
+      version: protocolVersion,
+      kind: "auth_challenge",
+      payload: { ...challengePayload, serverProof },
+    });
+  }
+
+  #authResponse(connection: MockWebSocketConnection, envelope: Record<string, unknown>): void {
+    const pending = connection.pendingChallenge;
+    const payload = envelope.payload as Record<string, unknown> | undefined;
+    if (
+      pending === null ||
+      payload === undefined ||
+      payload.credentialId !==
+        (pending.authorization.kind === "bootstrap"
+          ? pending.authorization.ticket.credentialId
+          : pending.authorization.lease.credentialId) ||
+      payload.clientNonce !== pending.clientNonce ||
+      payload.serverNonce !== pending.serverNonce
     ) {
       connection.close();
       return;
     }
-
-    let leaseToken = connection.authorization.rawToken;
+    const expectedClientProof = domainHmac(
+      pending.authorization.authKey,
+      "paperclip-runner-client-proof-v1",
+      [Buffer.from(pending.canonicalChallenge), Buffer.from(pending.serverProof)],
+    );
+    if (!proofMatches(expectedClientProof, payload.clientProof)) {
+      connection.close();
+      return;
+    }
+    const clientProof = expectedClientProof.toString("hex");
+    let leaseToken: string | null = null;
     let lease: ConnectionLeaseRecord;
-    if (connection.authorization.kind === "bootstrap") {
+    if (pending.authorization.kind === "bootstrap") {
+      pending.authorization.ticket.usedAt = new Date().toISOString();
       leaseToken = `lease_${randomUUID()}`;
-      const digest = tokenDigest(leaseToken);
+      const material = credentialMaterial(leaseToken);
+      const ttlMs = this.fault === "lease-expiry" && !this.#faultTriggered ? 50 : 30_000;
+      const expiresAtUnixMs = Date.now() + ttlMs;
       lease = {
-        digest,
+        credentialId: material.credentialId,
+        authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
         leaseId: `connection_lease_${randomUUID()}`,
-        runnerInstanceId: this.identity.runnerInstanceId,
-        expiresAt: safeDate(this.fault === "lease-expiry" && !this.#faultTriggered ? 50 : 30_000),
+        identity: structuredClone(this.identity),
+        protocolVersion,
+        expiresAt: new Date(expiresAtUnixMs).toISOString(),
+        expiresAtUnixMs,
+        revocationEpoch: 0,
         revokedAt: null,
       };
-      this.store.state.leases[digest] = lease;
+      this.store.state.leases[material.credentialId] = lease;
     } else {
-      lease = connection.authorization.lease;
+      lease = pending.authorization.lease;
     }
+    connection.pendingChallenge = null;
     connection.lease = lease;
+    connection.connectionId = `connection_${this.store.state.connectionCount + 1}`;
+    connection.secureChannel = createSecureChannel(
+      pending.authorization.authKey,
+      pending.canonicalChallenge,
+      pending.serverProof,
+      clientProof,
+    );
+    this.#welcome(connection, leaseToken);
+  }
+
+  #welcome(connection: MockWebSocketConnection, leaseToken: string | null): void {
+    const lease = connection.lease;
+    if (lease === null || connection.connectionId === null) {
+      connection.close();
+      return;
+    }
+
     this.store.state.connectionCount += 1;
     this.store.state.lastLeaseId = lease.leaseId;
     this.store.state.lastLeaseExpiresAt = lease.expiresAt;
@@ -691,14 +955,29 @@ export class Phase3MockCore {
       envelopeId: `welcome_${this.store.state.connectionCount}`,
       kind: "welcome",
       runnerInstanceId: this.identity.runnerInstanceId,
-      connectionId: `connection_${this.store.state.connectionCount}`,
+      environmentLeaseId: this.identity.environmentLeaseId,
+      runId: this.identity.runId,
+      normalizedSessionId: this.identity.normalizedSessionId,
+      turnId: this.identity.turnId,
+      itemId: this.identity.itemId,
+      connectionId: connection.connectionId,
+      connectionLeaseId: lease.leaseId,
       sentAt: new Date().toISOString(),
       payload: {
         selectedVersion: 1,
         heartbeatIntervalMs: 250,
         connectionLeaseId: lease.leaseId,
-        connectionLeaseToken: leaseToken,
+        ...(leaseToken === null ? {} : { connectionLeaseToken: leaseToken }),
         connectionLeaseExpiresAt: lease.expiresAt,
+        connectionLeaseExpiresAtUnixMs: lease.expiresAtUnixMs,
+        connectionLeaseRevocationEpoch: lease.revocationEpoch,
+        leaseBinding: {
+          runnerInstanceId: this.identity.runnerInstanceId,
+          environmentLeaseId: this.identity.environmentLeaseId,
+          runId: this.identity.runId,
+          normalizedSessionId: this.identity.normalizedSessionId,
+          protocolVersion,
+        },
         maxFrameBytes,
         maxBatchEvents: 100,
         ackedSourceSeq: reportedAck,
@@ -715,6 +994,7 @@ export class Phase3MockCore {
       }
       if (this.fault === "lease-expiry") {
         lease.expiresAt = safeDate(-1);
+        lease.expiresAtUnixMs = Date.now() - 1;
         this.store.state.lastLeaseExpiresAt = lease.expiresAt;
         this.store.save();
       }
@@ -732,23 +1012,47 @@ export class Phase3MockCore {
     return command === undefined ? [] : [command];
   }
 
+  #controlEnvelope(
+    connection: MockWebSocketConnection,
+    envelopeId: string,
+    kind: string,
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (connection.lease === null || connection.connectionId === null) {
+      throw new Error("Cannot send control data before transport authentication.");
+    }
+    return {
+      protocol,
+      version: protocolVersion,
+      envelopeId,
+      kind,
+      runnerInstanceId: this.identity.runnerInstanceId,
+      environmentLeaseId: this.identity.environmentLeaseId,
+      runId: this.identity.runId,
+      normalizedSessionId: this.identity.normalizedSessionId,
+      turnId: this.identity.turnId,
+      itemId: this.identity.itemId,
+      connectionId: connection.connectionId,
+      connectionLeaseId: connection.lease.leaseId,
+      sentAt: new Date().toISOString(),
+      payload,
+    };
+  }
+
   #sendNextCommand(connection: MockWebSocketConnection): void {
     const [command] = this.#nextPendingCommand();
     if (command === undefined) return;
     this.store.state.commandDeliveryCounts[command.commandId] =
       (this.store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.store.save();
-    connection.sendJson({
-      protocol,
-      version: protocolVersion,
-      envelopeId: `command_${command.commandId}_${this.store.state.commandDeliveryCounts[command.commandId]}`,
-      kind: "command",
-      runnerInstanceId: this.identity.runnerInstanceId,
-      runId: this.identity.runId,
-      normalizedSessionId: this.identity.normalizedSessionId,
-      sentAt: new Date().toISOString(),
-      payload: this.#wireCommand(command),
-    });
+    connection.sendJson(
+      this.#controlEnvelope(
+        connection,
+        `command_${command.commandId}_${this.store.state.commandDeliveryCounts[command.commandId]}`,
+        "command",
+        this.#wireCommand(command),
+      ),
+    );
   }
 
   #commandResult(
@@ -834,6 +1138,7 @@ export class Phase3MockCore {
     if (this.fault === "revoke" && eventType === "run.terminal" && !this.#faultTriggered) {
       if (connection.lease !== null) {
         connection.lease.revokedAt = new Date().toISOString();
+        connection.lease.revocationEpoch += 1;
       }
       this.queueCommand(
         "turn.start",
@@ -843,15 +1148,13 @@ export class Phase3MockCore {
       this.#triggerFault();
       this.store.save();
       // Revoke before ACK so the runner must flush a genuinely non-empty durable outbox.
-      connection.sendJson({
-        protocol,
-        version: protocolVersion,
-        envelopeId: "revoke_phase3",
-        kind: "revoke",
-        runnerInstanceId: this.identity.runnerInstanceId,
-        sentAt: new Date().toISOString(),
-        payload: { reason: "fault_injection_revoke", drain: true },
-      });
+      connection.sendJson(
+        this.#controlEnvelope(connection, "revoke_phase3", "revoke", {
+          reason: "fault_injection_revoke",
+          drain: true,
+          revocationEpoch: connection.lease?.revocationEpoch,
+        }),
+      );
       this.#sendNextCommand(connection);
       return;
     }
@@ -867,15 +1170,11 @@ export class Phase3MockCore {
       return;
     }
 
-    connection.sendJson({
-      protocol,
-      version: protocolVersion,
-      envelopeId: `ack_${this.store.state.ackedSourceSeq}`,
-      kind: "ack",
-      runnerInstanceId: this.identity.runnerInstanceId,
-      sentAt: new Date().toISOString(),
-      payload: { ackedSourceSeq: this.store.state.ackedSourceSeq },
-    });
+    connection.sendJson(
+      this.#controlEnvelope(connection, `ack_${this.store.state.ackedSourceSeq}`, "ack", {
+        ackedSourceSeq: this.store.state.ackedSourceSeq,
+      }),
+    );
   }
 }
 
@@ -1249,6 +1548,7 @@ export async function runPhase3Recovery(
 export const phase3Internals = {
   runnerBinary,
   runnerEnvironment,
+  credentialMaterial,
   tokenDigest,
   canonicalJson,
   phase3Identity,
