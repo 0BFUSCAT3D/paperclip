@@ -563,6 +563,21 @@ describe("TaskChatComposer", () => {
       }
     });
 
+    it("flushes a pending draft when the composer unmounts", () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={KEY} />);
+
+        typeText("save before leaving");
+        flushSync(() => root?.unmount());
+        root = null;
+
+        expect(localStorage.getItem(KEY)).toBe("save before leaving");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("clears the draft key on a successful send (not via the empty-body debounce)", async () => {
       localStorage.setItem(KEY, "queued message");
       const onAdd = vi.fn().mockResolvedValue(undefined);

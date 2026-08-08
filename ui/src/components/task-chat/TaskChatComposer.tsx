@@ -188,8 +188,9 @@ export function TaskChatComposer({
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
+      if (draftKey) saveDraft(draftKey, bodyRef.current);
     };
-  }, []);
+  }, [draftKey]);
 
   const modeMeta = workModeMetaFor(pendingMode);
   const canAcceptFiles = Boolean(onAttachImage || onImageUpload);
