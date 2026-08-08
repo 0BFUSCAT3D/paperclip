@@ -16,6 +16,16 @@ import type {
 import type { PrpEvent } from "../protocol/phase1-contract.js";
 import { Phase4bDemoServer } from "./phase4b-demo-server.js";
 
+const OPAQUE_BROWSER_CREDENTIALS = {
+  clientSecret: "opaque-client-secret-value",
+  providerApiKey: "opaque-provider-api-key-value",
+  sessionToken: "opaque-session-token-value",
+  idToken: "opaque-id-token-value",
+  password: "opaque-password-value",
+  authorization: "opaque-authorization-value",
+  cookie: "opaque-cookie-value",
+} as const;
+
 class Queue<T> implements AsyncIterable<T> {
   #values: T[] = [];
   #waiters: Array<(value: IteratorResult<T>) => void> = [];
@@ -127,7 +137,24 @@ class StubSession implements HarnessSession {
       itemId: "command-demo",
       status: "pending",
       prompt: "Approve the deterministic command.",
-      details: { authorization: "Bearer browser-must-not-see" },
+      details: {
+        provider: {
+          ...OPAQUE_BROWSER_CREDENTIALS,
+          nested: {
+            signingKey: "opaque-signing-key-value",
+            private_key: "opaque-private-key-value",
+          },
+        },
+        usage: {
+          tokenBudget: 4096,
+          tokensUsed: 128,
+          tokenUsage: {
+            inputTokens: 96,
+            outputTokens: 32,
+          },
+        },
+        invalidUsage: { tokenBudget: "opaque-token-budget-string" },
+      },
     };
     this.pending = [request];
     this.emit("runtime_request.created", {
@@ -370,6 +397,37 @@ async function openEventStream(
   });
 }
 
+async function readEventStreamReplay(url: string, sessionId: string): Promise<string> {
+  const response = await browserRequest(
+    url,
+    `/api/phase4b/sessions/${sessionId}/stream?after=0`,
+  );
+  expect(response.status).toBe(200);
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw new Error("event stream response did not include a body");
+  let result = "";
+  try {
+    while (!result.includes("data:")) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      result += new TextDecoder().decode(chunk.value, { stream: true });
+    }
+  } finally {
+    await reader.cancel();
+  }
+  return result;
+}
+
+function expectOpaqueCredentialsRedacted(serialized: string): void {
+  for (const value of Object.values(OPAQUE_BROWSER_CREDENTIALS)) {
+    expect(serialized).not.toContain(value);
+  }
+  expect(serialized).not.toContain("opaque-signing-key-value");
+  expect(serialized).not.toContain("opaque-private-key-value");
+  expect(serialized).not.toContain("opaque-token-budget-string");
+  expect(serialized).toContain("[REDACTED]");
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
@@ -488,7 +546,7 @@ describe("Phase 4b package-local demo server", () => {
 
     const credentialAttempt = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
       objective: "Browser must not choose provider credentials.",
-      openaiApiKey: "browser-secret",
+      clientSecret: "browser-secret",
     });
     expect(credentialAttempt.status).toBe(422);
     await expect(credentialAttempt.json()).resolves.toMatchObject({
@@ -577,6 +635,29 @@ describe("Phase 4b package-local demo server", () => {
     expect(JSON.stringify(created)).not.toContain("browser-must-not-see");
     expect(JSON.stringify(created)).not.toContain("server-only-secret");
     expect(JSON.stringify(created)).not.toContain("/srv/paperclip/home");
+    expectOpaqueCredentialsRedacted(JSON.stringify(created));
+    expect(created).toMatchObject({
+      pendingRequests: [{
+        details: {
+          provider: {
+            clientSecret: "[REDACTED]",
+            providerApiKey: "[REDACTED]",
+            sessionToken: "[REDACTED]",
+            idToken: "[REDACTED]",
+            nested: {
+              signingKey: "[REDACTED]",
+              private_key: "[REDACTED]",
+            },
+          },
+          usage: {
+            tokenBudget: 4096,
+            tokensUsed: 128,
+            tokenUsage: { inputTokens: 96, outputTokens: 32 },
+          },
+          invalidUsage: { tokenBudget: "[REDACTED]" },
+        },
+      }],
+    });
 
     const sessionId = String(created.sessionId);
     const replay = await browserRequest(url, `/api/phase4b/sessions/${sessionId}/events?after=0`)
@@ -586,6 +667,12 @@ describe("Phase 4b package-local demo server", () => {
     expect(replay.events.every((event, index) => event.sourceSeq === index + 1)).toBe(true);
     expect(JSON.stringify(replay)).not.toContain("/srv/paperclip/home");
     expect(JSON.stringify(replay)).toContain("<server-path>");
+    expectOpaqueCredentialsRedacted(JSON.stringify(replay));
+
+    const streamReplay = await readEventStreamReplay(url, sessionId);
+    expectOpaqueCredentialsRedacted(streamReplay);
+    expect(streamReplay).toContain('"tokenBudget":4096');
+    expect(streamReplay).toContain('"tokensUsed":128');
 
     const otherSession = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
       objective: "Keep request scope separate.",
@@ -656,6 +743,33 @@ describe("Phase 4b package-local demo server", () => {
       `/api/phase4b/sessions/${sessionId}/events?after=${replay.cursor}`,
     ).then((response) => response.json()) as { events: PrpEvent[] };
     expect(afterReconnect.events.some(({ eventType }) => eventType === "session.resumed")).toBe(true);
+  });
+
+  it("redacts structured credential diagnostics and bounds browser-visible errors", async () => {
+    const errorSecret = "opaque-error-client-secret";
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => {
+        throw new Error(
+          `provider failed: {"clientSecret":"${errorSecret}"} ${"x".repeat(100_000)}`,
+        );
+      },
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const response = await browserRequest(url, "/api/phase4b/sessions", {
+      method: "POST",
+      headers: { "connection": "close", "content-type": "application/json" },
+      body: JSON.stringify({ objective: "Exercise a structured provider error." }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json() as { error: string; message: string };
+    expect(body.error).toBe("invalid_request");
+    expect(body.message).not.toContain(errorSecret);
+    expect(body.message).toContain('"clientSecret":"[REDACTED]"');
+    expect(body.message.length).toBeLessThanOrEqual(16 * 1024 + "[TRUNCATED]".length);
+    expect(body.message).toMatch(/\[TRUNCATED\]$/);
   });
 
   it("admits an origin-less same-origin stream but still requires an origin to mutate", async () => {

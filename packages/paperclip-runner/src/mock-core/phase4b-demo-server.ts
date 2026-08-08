@@ -31,6 +31,10 @@ import { redactCodexDiagnostic } from "../drivers/codex/app-server-transport.js"
 
 const MAX_BROWSER_BODY_BYTES = 64 * 1024;
 const MAX_BROWSER_EVENTS = 4096;
+const MAX_BROWSER_STRING_CHARACTERS = 16 * 1024;
+const MAX_BROWSER_TOTAL_STRING_CHARACTERS = 512 * 1024;
+const MAX_BROWSER_VALUE_NODES = 65_536;
+const MAX_BROWSER_SERIALIZED_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAX_ACTIVE_SESSIONS = 16;
 const DEFAULT_MAX_SESSION_SUBSCRIBERS = 4;
 const MAX_CONFIGURED_ACTIVE_SESSIONS = 64;
@@ -93,17 +97,61 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function browserSafe(value: unknown, depth = 0): unknown {
+interface BrowserSafeBudget {
+  nodesRemaining: number;
+  stringCharactersRemaining: number;
+}
+
+const BROWSER_SAFE_CREDENTIAL_METADATA_KEYS = new Set([
+  "credentialsexposed",
+  "providerauthentication",
+]);
+
+const BROWSER_SAFE_USAGE_KEYS = new Set([
+  "cachedinputtokens",
+  "inputtokens",
+  "outputtokens",
+  "reasoningoutputtokens",
+  "tokenbudget",
+  "tokensused",
+  "tokenusage",
+  "totaltokens",
+]);
+
+function browserSafe(value: unknown): unknown {
+  return browserSafeValue(value, 0, {
+    nodesRemaining: MAX_BROWSER_VALUE_NODES,
+    stringCharactersRemaining: MAX_BROWSER_TOTAL_STRING_CHARACTERS,
+  });
+}
+
+function browserSafeValue(value: unknown, depth: number, budget: BrowserSafeBudget): unknown {
   if (depth > 10) return "[TRUNCATED]";
-  if (typeof value === "string") return redactBrowserString(value);
-  if (Array.isArray(value)) return value.slice(0, 256).map((entry) => browserSafe(entry, depth + 1));
+  if (budget.nodesRemaining <= 0) return "[TRUNCATED]";
+  budget.nodesRemaining -= 1;
+  if (typeof value === "string") {
+    const redacted = redactBrowserString(value);
+    const allowedCharacters = Math.min(
+      redacted.length,
+      budget.stringCharactersRemaining,
+    );
+    budget.stringCharactersRemaining -= allowedCharacters;
+    return allowedCharacters === redacted.length
+      ? redacted
+      : `${redacted.slice(0, allowedCharacters)}[TRUNCATED]`;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, 256)
+      .map((entry) => browserSafeValue(entry, depth + 1, budget));
+  }
   if (typeof value !== "object" || value === null) return value;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).slice(0, 256).map(([key, entry]) => [
       key,
-      isSensitiveBrowserKey(key)
+      isSensitiveBrowserEntry(key, entry)
         ? "[REDACTED]"
-        : browserSafe(entry, depth + 1),
+        : browserSafeValue(entry, depth + 1, budget),
     ]),
   );
 }
@@ -114,20 +162,133 @@ function browserSafe(value: unknown, depth = 0): unknown {
  * `.paperclip` — and none of them mean anything to a browser.
  */
 function redactBrowserString(value: string): string {
-  return redactCodexDiagnostic(value).replace(
+  const truncated = value.length > MAX_BROWSER_STRING_CHARACTERS;
+  const visible = truncated ? value.slice(0, MAX_BROWSER_STRING_CHARACTERS) : value;
+  const redacted = redactStructuredBrowserCredentials(redactCodexDiagnostic(visible)).replace(
     /\/(?:srv\/paperclip\/home|home\/[^/\s]+|Users\/[^/\s]+)\/\.[^\s"'<>),\]}]*/g,
     "<server-path>",
   );
+  return truncated ? `${redacted}[TRUNCATED]` : redacted;
 }
 
 function isSensitiveBrowserKey(key: string): boolean {
-  return /^(?:api[_-]?key|token|accessToken|refreshToken|secret|password|authorization|cookie)$/i.test(key) ||
-    /(?:^|_)(?:api[_-]?key|token|secret|password|authorization|cookie)$/i.test(key);
+  const normalized = normalizeBrowserKey(key);
+  if (
+    BROWSER_SAFE_CREDENTIAL_METADATA_KEYS.has(normalized) ||
+    BROWSER_SAFE_USAGE_KEYS.has(normalized)
+  ) {
+    return false;
+  }
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (words.some((word) =>
+    [
+      "authorization",
+      "cookie",
+      "cookies",
+      "credential",
+      "credentials",
+      "passwd",
+      "passwds",
+      "password",
+      "passwords",
+      "secret",
+      "secrets",
+      "token",
+      "tokens",
+    ].includes(word)
+  )) {
+    return true;
+  }
+  if (words.some((word, index) =>
+    ["access", "api", "private", "signing"].includes(word) &&
+    ["key", "keys"].includes(words[index + 1] ?? "")
+  )) {
+    return true;
+  }
+  return /(?:apikeys?|accesskeys?|privatekeys?|signingkeys?|credentials?|passwds?|passwords?|secrets?|tokens?)$/.test(
+    normalized,
+  );
+}
+
+function isSensitiveBrowserEntry(key: string, value: unknown): boolean {
+  const normalized = normalizeBrowserKey(key);
+  if (normalized === "credentialsexposed") return typeof value !== "boolean";
+  if (normalized === "providerauthentication") return value !== "server-side";
+  if (BROWSER_SAFE_USAGE_KEYS.has(normalized)) {
+    if (normalized === "tokenusage") return !isBrowserRecord(value);
+    if (normalized === "tokenbudget" && value === null) return false;
+    return typeof value !== "number" || !Number.isFinite(value);
+  }
+  return isSensitiveBrowserKey(key);
+}
+
+function isBrowserRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeBrowserKey(key: string): string {
+  return key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+}
+
+function redactStructuredBrowserCredentials(value: string): string {
+  return value
+    .replace(
+      /(["'])([A-Za-z][A-Za-z0-9_-]{0,127})\1(\s*:\s*)(["'])([^"'\r\n]*)/g,
+      (
+        match,
+        keyQuote: string,
+        key: string,
+        separator: string,
+        valueQuote: string,
+        fieldValue: string,
+      ) =>
+        isSensitiveBrowserDiagnosticField(key, fieldValue)
+          ? `${keyQuote}${key}${keyQuote}${separator}${valueQuote}[REDACTED]`
+          : match,
+    )
+    .replace(
+      /\b([A-Za-z][A-Za-z0-9_-]{0,127})(\s*[=:]\s*)([^\s,;}\]]+)/g,
+      (match, key: string, separator: string, fieldValue: string) =>
+        isSensitiveBrowserDiagnosticField(key, fieldValue)
+          ? `${key}${separator}[REDACTED]`
+          : match,
+    );
+}
+
+function isSensitiveBrowserDiagnosticField(key: string, value: string): boolean {
+  const normalized = normalizeBrowserKey(key);
+  if (normalized === "credentialsexposed") return !/^(?:true|false)$/i.test(value);
+  if (normalized === "providerauthentication") return value !== "server-side";
+  if (BROWSER_SAFE_USAGE_KEYS.has(normalized)) {
+    if (normalized === "tokenusage") return true;
+    if (normalized === "tokenbudget" && value === "null") return false;
+    return !/^-?\d+(?:\.\d+)?$/.test(value);
+  }
+  return isSensitiveBrowserKey(key);
+}
+
+function serializeBrowserJson(body: unknown): { serialized: string; overflow: boolean } {
+  const serialized = JSON.stringify(browserSafe(body)) ?? "null";
+  if (Buffer.byteLength(serialized) <= MAX_BROWSER_SERIALIZED_BYTES) {
+    return { serialized, overflow: false };
+  }
+  return {
+    serialized: JSON.stringify({
+      error: "browser_response_too_large",
+      message: `Browser response exceeded ${MAX_BROWSER_SERIALIZED_BYTES} bytes`,
+    }),
+    overflow: true,
+  };
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {
-  const serialized = JSON.stringify(browserSafe(body));
-  response.writeHead(status, {
+  const { serialized, overflow } = serializeBrowserJson(body);
+  response.writeHead(overflow ? 413 : status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "content-length": Buffer.byteLength(serialized),
@@ -322,18 +483,7 @@ function boundedOption(
 }
 
 function browserCredentialField(body: Record<string, unknown>): string | null {
-  const forbidden = new Set([
-    "authorization",
-    "cookie",
-    "credentials",
-    "apikey",
-    "paperclipapikey",
-    "openaiapikey",
-    "providertoken",
-    "refreshtoken",
-    "accesstoken",
-  ]);
-  return Object.keys(body).find((key) => forbidden.has(key.replace(/[-_]/g, "").toLowerCase())) ?? null;
+  return Object.keys(body).find((key) => isSensitiveBrowserKey(key)) ?? null;
 }
 
 export class Phase4bDemoServer {
@@ -402,7 +552,7 @@ export class Phase4bDemoServer {
       } catch (error) {
         json(response, errorStatus(error), {
           error: errorCode(error),
-          message: redactCodexDiagnostic(String(error instanceof Error ? error.message : error)),
+          message: String(error instanceof Error ? error.message : error),
         });
         return;
       }
@@ -410,7 +560,7 @@ export class Phase4bDemoServer {
         if (!response.headersSent) {
           json(response, errorStatus(error), {
             error: errorCode(error),
-            message: redactCodexDiagnostic(String(error)),
+            message: String(error),
           });
         } else {
           response.end();
@@ -529,7 +679,8 @@ export class Phase4bDemoServer {
       // bytes sent, leaving the browser stuck in CONNECTING.
       response.write(": stream open\n\n");
       for (const event of entry.events.slice(after)) {
-        response.write(`data: ${JSON.stringify(browserSafe(event))}\n\n`);
+        const output = serializeBrowserJson(event);
+        if (!output.overflow) response.write(`data: ${output.serialized}\n\n`);
       }
       entry.subscribers.add(response);
       request.once("close", () => entry.subscribers.delete(response));
@@ -667,9 +818,11 @@ export class Phase4bDemoServer {
       const event = browserSafe(rawEvent) as PrpEvent;
       const validation = validatePrpEvent(event);
       if (!validation.ok) continue;
+      const output = serializeBrowserJson(event);
+      if (output.overflow) continue;
       if (entry.events.length >= MAX_BROWSER_EVENTS) entry.events.shift();
       entry.events.push(event);
-      const serialized = `data: ${JSON.stringify(event)}\n\n`;
+      const serialized = `data: ${output.serialized}\n\n`;
       for (const subscriber of entry.subscribers) subscriber.write(serialized);
     }
   }
