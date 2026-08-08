@@ -420,9 +420,11 @@ mutate provider state.
 - Ownership modes: `dcr` for zero-setup instance-local registration and
   `customer` when an operator supplies a pre-registered client through the
   broker's provider environment variables.
-- OAuth scopes: `read` and `write`. A read-only connection requests only
-  `read`; `https://mcp.linear.app/mcp/readonly` is the provider's equivalent
-  protected resource, not a second gallery method.
+- OAuth scopes: `read` and `write`. At the provider, an authorization request
+  for only `read` produces a read-only connection.
+  `https://mcp.linear.app/mcp/readonly` is the equivalent protected resource,
+  not a second gallery method. The initial gallery wizard currently sends the
+  manifest's `read write` scope hints; it does not yet expose a scope selector.
 - Token behavior: the MCP authorization server advertises refresh tokens, but
   token TTL and refresh rotation are undocumented. QA records the real token
   response's `expires_in` and rotation behavior. The advertised
@@ -511,9 +513,11 @@ sequenceDiagram
   constraint without evidence.
 - How to verify: open `/PAP/apps/connect?source=linear`, complete Linear
   consent, and confirm the wizard reaches the actions step with Linear tools.
-  Verify a read-only connection requests only `read`; then run an allowed read,
-  an ask-first write, a denied or quarantined call, revoke the connection, and
-  inspect the resulting audit events.
+  Then run an allowed read, an ask-first write, a denied or quarantined call,
+  revoke the connection, and inspect the resulting audit events. To test the
+  provider's read-only mode before the wizard has a scope selector, start
+  authorization through the scoped connection endpoint with `scopes: ["read"]`;
+  do not create a second gallery method.
 
 ### Resource Filters
 
@@ -590,8 +594,9 @@ Linear's real-vendor evidence belongs in
   registration, and QA records the redirect rule plus token `expires_in`.
 - Catalog discovery returns the expected Linear issue actions.
 - A read call against an allowed team succeeds.
-- A `read`-scope connection remains read-only without creating a second
-  `/mcp/readonly` gallery method.
+- A start-authorization request with only the `read` scope remains read-only
+  without creating a second `/mcp/readonly` gallery method. The initial wizard
+  still requests the manifest's `read write` hints until a scope selector ships.
 - `linear.create_issue` opens ask-first review and only executes after approval.
 - A call against a disallowed team/project is denied.
 - Revocation removes Linear tools and blocks execution.
