@@ -40,7 +40,13 @@ export function agentLinkRow(
   agent: { id: string; name: string | null } | null | undefined,
 ): NoticeMetadataRow {
   if (!agent) return keyValueRow(label, "unknown");
-  return { type: "agent_link", label, agentId: agent.id, name: agent.name };
+  return {
+    type: "agent_link",
+    label,
+    agentId: agent.id,
+    // Issue-comment metadata constrains link names to 160 characters.
+    name: agent.name?.slice(0, 160) ?? null,
+  };
 }
 
 export function systemNoticePresentation(input: {
