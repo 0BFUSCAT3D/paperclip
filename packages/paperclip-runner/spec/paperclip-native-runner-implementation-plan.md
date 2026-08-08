@@ -343,12 +343,20 @@ the reported machine port. Require screenshots for UX and QA review.
 demo chats, steer and interrupt a live Codex turn, resolve at least one real
 request, inspect subagent/goal state when supported, refresh and replay the same
 session, and approve or revise the interaction contract. Do not create Phase 5
-tasks until the user explicitly accepts this checkpoint and asks to continue.
+tasks until this checkpoint records acceptance and every Phase 4b gate passes.
 
-**Planning-only state (2026-08-08):** Phase 4 is still finishing. This section
-specifies Phase 4b only. Do not create Phase 4b implementation children, start a
-service, claim a port, or start Phase 5 until the board approves the updated plan
-and later explicitly authorizes execution after Phase 4 completes.
+**Authorization and execution state (2026-08-08):** Phase 4 implementation,
+security review, CTO contract review, QA validation, and the isolation-evidence
+follow-up are complete. The board accepted the Phase 4 result and explicitly
+authorized Phase 4b execution. Create one Phase 4b checkpoint issue with
+parallel lowest-layer protocol/server and UX decision work, followed by the
+browser implementation, Security and CTO reviews, QA tutorial execution, and a
+human checkpoint. Keep every change and all evidence inside
+`packages/paperclip-runner/` on the existing branch. The board also authorized
+Phase 5 conditionally: do not create or start Phase 5 until the complete Phase
+4b tracer, targeted and package acceptance tests, package-local documentation,
+tutorial, screenshots, OKF journal entry, review gates, QA evidence, live
+service handoff, and human checkpoint are complete.
 
 ## Phase 5 — Browser reference console and reusable SDK surface
 
@@ -376,7 +384,9 @@ the accepted Phase 4b lifecycle without importing demo internals.
 **Owners/review:** UXDesigner creates/reviews the component plan first; ClaudeCoder or CodexCoder implements after UX approval; QA performs browser validation and screenshot review.
 
 **Depends on:** completed and human-accepted Phase 4b. Do not run it in parallel
-with Phase 4 or Phase 4b because it freezes APIs from the live proof.
+with Phase 4b because it freezes APIs from the live proof. Phase 5 is
+conditionally authorized, but its issue graph remains uncreated until the Phase
+4b checkpoint records all required passing evidence.
 
 **Human checkpoint:** use the browser tutorial as a small SDK consumer, run fake and real-driver sessions, and give UI feedback before Paperclip integration starts.
 

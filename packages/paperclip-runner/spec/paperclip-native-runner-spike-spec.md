@@ -6667,17 +6667,20 @@ The completion evidence must include a real Codex end-to-end run and a live
 service started on this execution machine. The checkpoint comment must state the
 exact startup command, host binding, port, and reachable `paperclip-dev:PORT` so
 the human can exercise it. That runtime handoff is an implementation/QA
-deliverable, not part of this planning-only revision.
+deliverable for the authorized Phase 4b execution.
 
-Phase 5 begins only after the Phase 4b human checkpoint is accepted and the user
-explicitly asks to continue. Phase 5 generalizes the accepted browser proof into
-a stable TypeScript SDK, reusable component contracts, and a second minimal
+Phase 5 begins only after the Phase 4b human checkpoint records a working live
+service and passing targeted and package acceptance tests, documentation,
+tutorial, screenshots, OKF evidence, reviews, and QA. The board conditionally
+authorized that transition on 2026-08-08, so no additional planning approval is
+required after those gates pass. Phase 5 generalizes the accepted browser proof
+into a stable TypeScript SDK, reusable component contracts, and a second minimal
 consumer application. Phase 6 remains the first Paperclip control-plane
 integration phase.
 
 ## 30. Dependency sequencing
 
-The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md). The current order is Phase 4 completion and human acceptance, then Phase 4b planning approval and explicit execution authorization, then the Phase 4b human checkpoint, then Phase 5. Do not create Phase 4b or Phase 5 implementation tasks from this planning revision.
+The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md). Phase 4 is complete and accepted, and Phase 4b execution is authorized. The current order is parallel Phase 4b lowest-layer protocol/server and UX decision work, then browser implementation, Security and CTO reviews, QA and live-service evidence, the Phase 4b human checkpoint, and only then the conditionally authorized Phase 5 issue graph. Do not create Phase 5 tasks before the complete Phase 4b checkpoint passes.
 
 ---
 
