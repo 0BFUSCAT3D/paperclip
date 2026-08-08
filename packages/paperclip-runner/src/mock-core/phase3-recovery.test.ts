@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createDecipheriv, createHash, createHmac } from "node:crypto";
 import {
   chmodSync,
   lstatSync,
@@ -12,6 +13,7 @@ import {
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { describe, expect, it } from "vitest";
 
@@ -59,10 +61,23 @@ async function upgradeSocket(url: string): Promise<Socket> {
   });
 }
 
-async function receiveServerJson(socket: Socket): Promise<Record<string, unknown>> {
+async function receiveServerOutcome(socket: Socket): Promise<Record<string, unknown> | null> {
   return new Promise((resolveValue, rejectValue) => {
     let buffer = Buffer.alloc(0);
-    const timer = setTimeout(() => rejectValue(new Error("Server frame timed out.")), 2_000);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("close", onClose);
+      socket.off("error", onError);
+    };
+    const onClose = (): void => {
+      cleanup();
+      resolveValue(null);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      rejectValue(error);
+    };
     const onData = (chunk: Buffer): void => {
       buffer = Buffer.concat([buffer, chunk]);
       if (buffer.length < 2) return;
@@ -78,8 +93,7 @@ async function receiveServerJson(socket: Socket): Promise<Record<string, unknown
         cursor = 10;
       }
       if (buffer.length < cursor + length) return;
-      clearTimeout(timer);
-      socket.off("data", onData);
+      cleanup();
       resolveValue(
         JSON.parse(buffer.subarray(cursor, cursor + length).toString("utf8")) as Record<
           string,
@@ -87,9 +101,20 @@ async function receiveServerJson(socket: Socket): Promise<Record<string, unknown
         >,
       );
     };
+    const timer = setTimeout(() => {
+      cleanup();
+      rejectValue(new Error("Server frame timed out."));
+    }, 2_000);
     socket.on("data", onData);
-    socket.once("error", rejectValue);
+    socket.once("close", onClose);
+    socket.once("error", onError);
   });
+}
+
+async function receiveServerJson(socket: Socket): Promise<Record<string, unknown>> {
+  const value = await receiveServerOutcome(socket);
+  if (value === null) throw new Error("WebSocket closed before the server frame arrived.");
+  return value;
 }
 
 function sendMaskedJson(socket: Socket, value: unknown): void {
@@ -109,6 +134,7 @@ function sendMaskedJson(socket: Socket, value: unknown): void {
 }
 
 async function expectSocketClosed(socket: Socket): Promise<void> {
+  if (socket.destroyed) return;
   await new Promise<void>((resolveClose, rejectClose) => {
     const timer = setTimeout(() => rejectClose(new Error("WebSocket was not rejected.")), 2_000);
     socket.once("close", () => {
@@ -141,6 +167,139 @@ function authHello(
       itemId: identity.itemId,
     },
   };
+}
+
+function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
+  const digest = createHash("sha256").update(domain).update(Buffer.from([0]));
+  for (const part of parts) {
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(part.length));
+    digest.update(length).update(part);
+  }
+  return digest.digest();
+}
+
+function domainHmac(key: Buffer, domain: string, parts: readonly Buffer[]): Buffer {
+  const digest = createHmac("sha256", key).update(domain).update(Buffer.from([0]));
+  for (const part of parts) {
+    const length = Buffer.alloc(8);
+    length.writeBigUInt64BE(BigInt(part.length));
+    digest.update(length).update(part);
+  }
+  return digest.digest();
+}
+
+interface AuthExchange {
+  response: Record<string, unknown>;
+  authKey: Buffer;
+  canonicalChallenge: string;
+  serverProof: string;
+  clientProof: string;
+}
+
+function validAuthResponse(
+  challenge: Record<string, unknown>,
+  token: string,
+): AuthExchange {
+  const challengePayload = challenge.payload as Record<string, unknown>;
+  const serverProof = challengePayload.serverProof;
+  if (typeof serverProof !== "string") throw new Error("Challenge omitted its server proof.");
+  const canonicalPayload = { ...challengePayload };
+  delete canonicalPayload.serverProof;
+  const canonicalChallenge = phase3Internals.canonicalJson(canonicalPayload);
+  const material = phase3Internals.credentialMaterial(token);
+  const expectedServerProof = domainHmac(
+    material.authKey,
+    "paperclip-runner-server-proof-v1",
+    [Buffer.from(canonicalChallenge)],
+  ).toString("hex");
+  if (serverProof !== expectedServerProof) throw new Error("Challenge server proof was invalid.");
+  const clientProof = domainHmac(
+    material.authKey,
+    "paperclip-runner-client-proof-v1",
+    [Buffer.from(canonicalChallenge), Buffer.from(serverProof)],
+  ).toString("hex");
+  return {
+    response: {
+      protocol: "paperclip.runner",
+      version: 1,
+      kind: "auth_response",
+      payload: {
+        credentialId: challengePayload.credentialId,
+        clientNonce: challengePayload.clientNonce,
+        serverNonce: challengePayload.serverNonce,
+        clientProof,
+      },
+    },
+    authKey: material.authKey,
+    canonicalChallenge,
+    serverProof,
+    clientProof,
+  };
+}
+
+function decryptCoreFrame(
+  frame: Record<string, unknown>,
+  exchange: AuthExchange,
+): Record<string, unknown> {
+  if (
+    frame.schema !== "paperclip.runner.secure-frame.v1" ||
+    typeof frame.counter !== "number" ||
+    typeof frame.ciphertext !== "string"
+  ) {
+    throw new Error("Expected an encrypted core frame.");
+  }
+  const counter = BigInt(frame.counter);
+  const binding = domainDigest("paperclip-runner-session-binding-v1", [
+    Buffer.from(exchange.canonicalChallenge),
+    Buffer.from(exchange.serverProof),
+    Buffer.from(exchange.clientProof),
+  ]);
+  const receiveKey = domainHmac(
+    exchange.authKey,
+    "paperclip-runner-core-to-client-key-v1",
+    [binding],
+  );
+  const nonce = Buffer.alloc(12);
+  nonce.write("P3S1", 0, "ascii");
+  nonce.writeBigUInt64BE(counter, 4);
+  const sessionId = `sha256:${binding.toString("hex")}`;
+  const aad = Buffer.from(
+    `paperclip.runner.secure-frame.v1\0${sessionId}\0core_to_client\0${counter}`,
+  );
+  const sealed = Buffer.from(frame.ciphertext, "hex");
+  const decipher = createDecipheriv("aes-256-gcm", receiveKey, nonce);
+  decipher.setAAD(aad);
+  decipher.setAuthTag(sealed.subarray(-16));
+  return JSON.parse(
+    Buffer.concat([decipher.update(sealed.subarray(0, -16)), decipher.final()]).toString(
+      "utf8",
+    ),
+  ) as Record<string, unknown>;
+}
+
+async function beginWireAuthentication(
+  core: Phase3MockCore,
+  token: string,
+): Promise<{ socket: Socket; exchange: AuthExchange }> {
+  const socket = await upgradeSocket(core.connectUrl);
+  const credentialId = phase3Internals.credentialMaterial(token).credentialId;
+  sendMaskedJson(socket, authHello(core.identity, credentialId));
+  const challenge = await receiveServerJson(socket);
+  expect(challenge.kind).toBe("auth_challenge");
+  return { socket, exchange: validAuthResponse(challenge, token) };
+}
+
+async function authenticateWire(
+  core: Phase3MockCore,
+  token: string,
+): Promise<{ socket: Socket; welcome: Record<string, unknown> }> {
+  const { socket, exchange } = await beginWireAuthentication(core, token);
+  const framePromise = receiveServerJson(socket);
+  sendMaskedJson(socket, exchange.response);
+  const welcome = decryptCoreFrame(await framePromise, exchange);
+  expect(welcome.kind).toBe("welcome");
+  return { socket, welcome };
 }
 
 async function runRunnerProcess(options: {
@@ -262,6 +421,81 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
     }
   });
 
+  it("authenticates only one of two valid proofs for the same bootstrap ticket", async () => {
+    const scratch =
+      process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
+      process.env.PAPERCLIP_SCRATCH_DIR ??
+      tmpdir();
+    const root = mkdtempSync(resolve(scratch, "phase3-concurrent-ticket-test-"));
+    const core = new Phase3MockCore({
+      stateDirectory: root,
+      identity: phase3Internals.phase3Identity(),
+      fault: "none",
+    });
+    try {
+      await core.start();
+      const ticket = core.issueBootstrapTicket();
+      const credentialId = phase3Internals.credentialMaterial(ticket).credentialId;
+      const [first, second] = await Promise.all([
+        beginWireAuthentication(core, ticket),
+        beginWireAuthentication(core, ticket),
+      ]);
+      const firstOutcome = receiveServerOutcome(first.socket);
+      const secondOutcome = receiveServerOutcome(second.socket);
+
+      sendMaskedJson(first.socket, first.exchange.response);
+      sendMaskedJson(second.socket, second.exchange.response);
+      const outcomes = await Promise.all([firstOutcome, secondOutcome]);
+      const authenticated = outcomes.flatMap((outcome, index) =>
+        outcome === null
+          ? []
+          : [decryptCoreFrame(outcome, index === 0 ? first.exchange : second.exchange)],
+      );
+
+      expect(authenticated).toHaveLength(1);
+      expect(authenticated[0]?.kind).toBe("welcome");
+      expect(core.store.state.connectionCount).toBe(1);
+      expect(Object.values(core.store.state.leases)).toHaveLength(1);
+      expect(core.store.state.tickets[credentialId]?.usedAt).not.toBeNull();
+    } finally {
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a valid bootstrap proof completed after ticket expiry", async () => {
+    const scratch =
+      process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
+      process.env.PAPERCLIP_SCRATCH_DIR ??
+      tmpdir();
+    const root = mkdtempSync(resolve(scratch, "phase3-expired-challenge-test-"));
+    const core = new Phase3MockCore({
+      stateDirectory: root,
+      identity: phase3Internals.phase3Identity(),
+      fault: "none",
+    });
+    try {
+      await core.start();
+      const ticket = core.issueBootstrapTicket(500);
+      const credentialId = phase3Internals.credentialMaterial(ticket).credentialId;
+      const pending = await beginWireAuthentication(core, ticket);
+      const expiresAtUnixMs = core.store.state.tickets[credentialId]?.expiresAtUnixMs;
+      if (expiresAtUnixMs === undefined) throw new Error("Bootstrap ticket disappeared.");
+      await delay(Math.max(1, expiresAtUnixMs - Date.now() + 10));
+      const outcome = receiveServerOutcome(pending.socket);
+
+      sendMaskedJson(pending.socket, pending.exchange.response);
+
+      await expect(outcome).resolves.toBeNull();
+      expect(core.store.state.connectionCount).toBe(0);
+      expect(Object.values(core.store.state.leases)).toHaveLength(0);
+      expect(core.store.state.tickets[credentialId]?.usedAt).toBeNull();
+    } finally {
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("requires proof before consuming a ticket and rejects mismatched session identity", async () => {
     const scratch =
       process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
@@ -303,11 +537,74 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
       });
       await expectSocketClosed(forgedProofSocket);
       expect(core.store.state.tickets[credentialId]?.usedAt).toBeNull();
+
+      const replacedRecord = await beginWireAuthentication(core, bootstrap);
+      const ticket = core.store.state.tickets[credentialId];
+      if (ticket === undefined) throw new Error("Bootstrap ticket disappeared.");
+      core.store.state.tickets[credentialId] = {
+        ...ticket,
+        recordId: "bootstrap_ticket_replacement",
+      };
+      core.store.save();
+      const replacementOutcome = receiveServerOutcome(replacedRecord.socket);
+      sendMaskedJson(replacedRecord.socket, replacedRecord.exchange.response);
+      await expect(replacementOutcome).resolves.toBeNull();
+      expect(core.store.state.tickets[credentialId]?.usedAt).toBeNull();
+      expect(core.store.state.connectionCount).toBe(0);
+      expect(Object.values(core.store.state.leases)).toHaveLength(0);
     } finally {
       await core.stop();
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["expired", "revoked"] as const)(
+    "rejects a valid proof after its challenged lease is %s",
+    async (invalidatedAs) => {
+      const scratch =
+        process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
+        process.env.PAPERCLIP_SCRATCH_DIR ??
+        tmpdir();
+      const root = mkdtempSync(resolve(scratch, `phase3-${invalidatedAs}-lease-test-`));
+      const core = new Phase3MockCore({
+        stateDirectory: root,
+        identity: phase3Internals.phase3Identity(),
+        fault: "none",
+      });
+      try {
+        await core.start();
+        const bootstrap = core.issueBootstrapTicket();
+        const initial = await authenticateWire(core, bootstrap);
+        const leaseToken = (initial.welcome.payload as Record<string, unknown>)
+          .connectionLeaseToken;
+        if (typeof leaseToken !== "string") throw new Error("Welcome omitted its lease token.");
+        initial.socket.destroy();
+
+        const pending = await beginWireAuthentication(core, leaseToken);
+        const credentialId = phase3Internals.credentialMaterial(leaseToken).credentialId;
+        const lease = core.store.state.leases[credentialId];
+        if (lease === undefined) throw new Error("Connection lease disappeared.");
+        if (invalidatedAs === "expired") {
+          lease.expiresAtUnixMs = Date.now() - 1;
+          lease.expiresAt = new Date(lease.expiresAtUnixMs).toISOString();
+        } else {
+          lease.revokedAt = new Date().toISOString();
+          lease.revocationEpoch += 1;
+        }
+        core.store.save();
+        const outcome = receiveServerOutcome(pending.socket);
+
+        sendMaskedJson(pending.socket, pending.exchange.response);
+
+        await expect(outcome).resolves.toBeNull();
+        expect(core.store.state.connectionCount).toBe(1);
+        expect(Object.values(core.store.state.leases)).toHaveLength(1);
+      } finally {
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.runIf(process.platform !== "win32")(
     "atomically stores mock-core state without following a preplanted predictable symlink",

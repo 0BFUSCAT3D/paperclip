@@ -62,8 +62,10 @@ const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.phase3.mock-core-state.v1";
 const maxFrameBytes = 1024 * 1024;
+const authChallengeTtlMs = 5_000;
 
 interface BootstrapTicketRecord {
+  recordId: string;
   credentialId: string;
   authKeyDigest: string;
   identity: Phase3Identity;
@@ -75,6 +77,7 @@ interface BootstrapTicketRecord {
 }
 
 interface ConnectionLeaseRecord {
+  recordId: string;
   credentialId: string;
   authKeyDigest: string;
   leaseId: string;
@@ -107,6 +110,33 @@ interface StoredCoreState {
 type PendingAuthorization =
   | {
       kind: "bootstrap";
+      recordId: string;
+      credentialId: string;
+      authKey: Buffer;
+      identity: Phase3Identity;
+      runnerVersion: string;
+      runnerDigest: string;
+      expiresAt: string;
+      expiresAtUnixMs: number;
+      recordSnapshot: string;
+    }
+  | {
+      kind: "lease";
+      recordId: string;
+      credentialId: string;
+      authKey: Buffer;
+      identity: Phase3Identity;
+      protocolVersion: number;
+      expiresAt: string;
+      expiresAtUnixMs: number;
+      leaseId: string;
+      revocationEpoch: number;
+      recordSnapshot: string;
+    };
+
+type LiveAuthorization =
+  | {
+      kind: "bootstrap";
       authKey: Buffer;
       ticket: BootstrapTicketRecord;
     }
@@ -118,6 +148,7 @@ type PendingAuthorization =
 
 interface PendingChallenge {
   authorization: PendingAuthorization;
+  deadlineUnixMs: number;
   canonicalChallenge: string;
   serverProof: string;
   clientNonce: string;
@@ -651,6 +682,7 @@ export class Phase3MockCore {
     const material = credentialMaterial(ticket);
     const expiresAtUnixMs = Date.now() + ttlMs;
     this.store.state.tickets[material.credentialId] = {
+      recordId: `bootstrap_ticket_${randomUUID()}`,
       credentialId: material.credentialId,
       authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
       identity: structuredClone(this.identity),
@@ -779,16 +811,44 @@ export class Phase3MockCore {
     const ticket = this.store.state.tickets[credentialId];
     const lease = this.store.state.leases[credentialId];
     const authorization: PendingAuthorization | null =
-      ticket !== undefined && ticket.usedAt === null && ticket.expiresAtUnixMs > Date.now()
-        ? { kind: "bootstrap", authKey: authKeyFromDigest(ticket.authKeyDigest), ticket }
+      ticket !== undefined &&
+      typeof ticket.recordId === "string" &&
+      ticket.credentialId === credentialId &&
+      ticket.usedAt === null &&
+      ticket.expiresAtUnixMs > Date.now()
+        ? {
+            kind: "bootstrap",
+            recordId: ticket.recordId,
+            credentialId: ticket.credentialId,
+            authKey: authKeyFromDigest(ticket.authKeyDigest),
+            identity: structuredClone(ticket.identity),
+            runnerVersion: ticket.runnerVersion,
+            runnerDigest: ticket.runnerDigest,
+            expiresAt: ticket.expiresAt,
+            expiresAtUnixMs: ticket.expiresAtUnixMs,
+            recordSnapshot: canonicalJson(ticket),
+          }
         : lease !== undefined &&
+            typeof lease.recordId === "string" &&
+            lease.credentialId === credentialId &&
             lease.revokedAt === null &&
             lease.expiresAtUnixMs > Date.now()
-          ? { kind: "lease", authKey: authKeyFromDigest(lease.authKeyDigest), lease }
+          ? {
+              kind: "lease",
+              recordId: lease.recordId,
+              credentialId: lease.credentialId,
+              authKey: authKeyFromDigest(lease.authKeyDigest),
+              identity: structuredClone(lease.identity),
+              protocolVersion: lease.protocolVersion,
+              expiresAt: lease.expiresAt,
+              expiresAtUnixMs: lease.expiresAtUnixMs,
+              leaseId: lease.leaseId,
+              revocationEpoch: lease.revocationEpoch,
+              recordSnapshot: canonicalJson(lease),
+            }
           : null;
     if (authorization === null) return null;
-    const binding = authorization.kind === "bootstrap" ? authorization.ticket : authorization.lease;
-    const identity = binding.identity;
+    const identity = authorization.identity;
     if (
       payload.runnerInstanceId !== identity.runnerInstanceId ||
       payload.environmentLeaseId !== identity.environmentLeaseId ||
@@ -800,11 +860,57 @@ export class Phase3MockCore {
       payload.runnerDigest !== this.#expectedRunnerDigest ||
       payload.protocolMin !== 1 ||
       payload.protocolMax !== 1 ||
-      (authorization.kind === "lease" && authorization.lease.protocolVersion !== protocolVersion)
+      (authorization.kind === "bootstrap" &&
+        (authorization.runnerVersion !== this.#expectedRunnerVersion ||
+          authorization.runnerDigest !== this.#expectedRunnerDigest)) ||
+      (authorization.kind === "lease" && authorization.protocolVersion !== protocolVersion)
     ) {
       return null;
     }
     return authorization;
+  }
+
+  #reauthorizePendingChallenge(
+    pending: PendingChallenge,
+    now: number,
+  ): LiveAuthorization | null {
+    if (pending.deadlineUnixMs <= now) return null;
+    const expected = pending.authorization;
+    if (expected.kind === "bootstrap") {
+      const ticket = this.store.state.tickets[expected.credentialId];
+      if (
+        ticket === undefined ||
+        ticket.recordId !== expected.recordId ||
+        ticket.credentialId !== expected.credentialId ||
+        ticket.usedAt !== null ||
+        ticket.expiresAtUnixMs <= now ||
+        canonicalJson(ticket) !== expected.recordSnapshot
+      ) {
+        return null;
+      }
+      return {
+        kind: "bootstrap",
+        authKey: authKeyFromDigest(ticket.authKeyDigest),
+        ticket,
+      };
+    }
+
+    const lease = this.store.state.leases[expected.credentialId];
+    if (
+      lease === undefined ||
+      lease.recordId !== expected.recordId ||
+      lease.credentialId !== expected.credentialId ||
+      lease.revokedAt !== null ||
+      lease.expiresAtUnixMs <= now ||
+      canonicalJson(lease) !== expected.recordSnapshot
+    ) {
+      return null;
+    }
+    return {
+      kind: "lease",
+      authKey: authKeyFromDigest(lease.authKeyDigest),
+      lease,
+    };
   }
 
   #authHello(connection: MockWebSocketConnection, envelope: Record<string, unknown>): void {
@@ -822,10 +928,9 @@ export class Phase3MockCore {
       connection.close();
       return;
     }
-    const credential = authorization.kind === "bootstrap" ? authorization.ticket : authorization.lease;
     const serverNonce = randomUUID();
     const challengePayload: Record<string, unknown> = {
-      credentialId: credential.credentialId,
+      credentialId: authorization.credentialId,
       credentialKind: authorization.kind,
       clientNonce: payload.clientNonce,
       serverNonce,
@@ -838,10 +943,10 @@ export class Phase3MockCore {
       runnerVersion: payload.runnerVersion,
       runnerDigest: payload.runnerDigest,
       selectedVersion: protocolVersion,
-      credentialLeaseId: authorization.kind === "lease" ? authorization.lease.leaseId : null,
-      credentialExpiresAt: credential.expiresAt,
-      credentialExpiresAtUnixMs: credential.expiresAtUnixMs,
-      revocationEpoch: authorization.kind === "lease" ? authorization.lease.revocationEpoch : 0,
+      credentialLeaseId: authorization.kind === "lease" ? authorization.leaseId : null,
+      credentialExpiresAt: authorization.expiresAt,
+      credentialExpiresAtUnixMs: authorization.expiresAtUnixMs,
+      revocationEpoch: authorization.kind === "lease" ? authorization.revocationEpoch : 0,
     };
     const canonicalChallenge = canonicalJson(challengePayload);
     const serverProof = domainHmac(
@@ -851,6 +956,10 @@ export class Phase3MockCore {
     ).toString("hex");
     connection.pendingChallenge = {
       authorization,
+      deadlineUnixMs: Math.min(
+        authorization.expiresAtUnixMs,
+        Date.now() + authChallengeTtlMs,
+      ),
       canonicalChallenge,
       serverProof,
       clientNonce: payload.clientNonce,
@@ -870,18 +979,23 @@ export class Phase3MockCore {
     if (
       pending === null ||
       payload === undefined ||
-      payload.credentialId !==
-        (pending.authorization.kind === "bootstrap"
-          ? pending.authorization.ticket.credentialId
-          : pending.authorization.lease.credentialId) ||
+      payload.credentialId !== pending.authorization.credentialId ||
       payload.clientNonce !== pending.clientNonce ||
       payload.serverNonce !== pending.serverNonce
     ) {
       connection.close();
       return;
     }
+    // WebSocket callbacks run synchronously on the mock core's event loop. Re-reading,
+    // validating, consuming, minting, and persisting here forms one state mutation
+    // boundary, so another proof cannot interleave with bootstrap consumption.
+    const authorization = this.#reauthorizePendingChallenge(pending, Date.now());
+    if (authorization === null) {
+      connection.close();
+      return;
+    }
     const expectedClientProof = domainHmac(
-      pending.authorization.authKey,
+      authorization.authKey,
       "paperclip-runner-client-proof-v1",
       [Buffer.from(pending.canonicalChallenge), Buffer.from(pending.serverProof)],
     );
@@ -892,13 +1006,14 @@ export class Phase3MockCore {
     const clientProof = expectedClientProof.toString("hex");
     let leaseToken: string | null = null;
     let lease: ConnectionLeaseRecord;
-    if (pending.authorization.kind === "bootstrap") {
-      pending.authorization.ticket.usedAt = new Date().toISOString();
+    if (authorization.kind === "bootstrap") {
+      authorization.ticket.usedAt = new Date().toISOString();
       leaseToken = `lease_${randomUUID()}`;
       const material = credentialMaterial(leaseToken);
       const ttlMs = this.fault === "lease-expiry" && !this.#faultTriggered ? 50 : 30_000;
       const expiresAtUnixMs = Date.now() + ttlMs;
       lease = {
+        recordId: `connection_lease_record_${randomUUID()}`,
         credentialId: material.credentialId,
         authKeyDigest: `sha256:${material.authKey.toString("hex")}`,
         leaseId: `connection_lease_${randomUUID()}`,
@@ -910,14 +1025,15 @@ export class Phase3MockCore {
         revokedAt: null,
       };
       this.store.state.leases[material.credentialId] = lease;
+      this.store.save();
     } else {
-      lease = pending.authorization.lease;
+      lease = authorization.lease;
     }
     connection.pendingChallenge = null;
     connection.lease = lease;
     connection.connectionId = `connection_${this.store.state.connectionCount + 1}`;
     connection.secureChannel = createSecureChannel(
-      pending.authorization.authKey,
+      authorization.authKey,
       pending.canonicalChallenge,
       pending.serverProof,
       clientProof,
