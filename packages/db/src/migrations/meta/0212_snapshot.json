@@ -1,5 +1,5 @@
 {
-  "id": "1f59f67e-5260-4064-a35a-2389ba811521",
+  "id": "c0f0aeff-9ec8-4ec8-b70a-3dbc4daa32f1",
   "prevId": "c56d3441-2ed4-4249-a115-99d55d395899",
   "version": "7",
   "dialect": "postgresql",
@@ -16618,27 +16618,6 @@
         }
       },
       "indexes": {
-        "heartbeat_runs_company_id_id_uq": {
-          "name": "heartbeat_runs_company_id_id_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "heartbeat_runs_company_agent_started_idx": {
           "name": "heartbeat_runs_company_agent_started_idx",
           "columns": [
@@ -16932,7 +16911,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "heartbeat_runs_company_id_id_uq": {
+          "name": "heartbeat_runs_company_id_id_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "company_id",
+            "id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -23025,27 +23013,6 @@
         }
       },
       "indexes": {
-        "issues_company_id_id_uq": {
-          "name": "issues_company_id_id_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "issues_company_status_idx": {
           "name": "issues_company_status_idx",
           "columns": [
@@ -23791,7 +23758,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "issues_company_id_id_uq": {
+          "name": "issues_company_id_id_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "company_id",
+            "id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

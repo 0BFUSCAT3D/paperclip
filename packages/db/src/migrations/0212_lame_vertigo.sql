@@ -19,8 +19,8 @@ CREATE TABLE "interrupted_run_handoffs" (
 ALTER TABLE "interrupted_run_handoffs" ADD CONSTRAINT "interrupted_run_handoffs_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "interrupted_run_handoffs" ADD CONSTRAINT "interrupted_run_handoffs_owner_agent_id_agents_id_fk" FOREIGN KEY ("owner_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "interrupted_run_handoffs" ADD CONSTRAINT "interrupted_run_handoffs_recovery_action_id_issue_recovery_actions_id_fk" FOREIGN KEY ("recovery_action_id") REFERENCES "public"."issue_recovery_actions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "heartbeat_runs_company_id_id_uq" ON "heartbeat_runs" USING btree ("company_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "issues_company_id_id_uq" ON "issues" USING btree ("company_id","id");--> statement-breakpoint
+ALTER TABLE "heartbeat_runs" ADD CONSTRAINT "heartbeat_runs_company_id_id_uq" UNIQUE("company_id","id");--> statement-breakpoint
+ALTER TABLE "issues" ADD CONSTRAINT "issues_company_id_id_uq" UNIQUE("company_id","id");--> statement-breakpoint
 ALTER TABLE "interrupted_run_handoffs" ADD CONSTRAINT "interrupted_run_handoffs_issue_company_fk" FOREIGN KEY ("company_id","issue_id") REFERENCES "public"."issues"("company_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "interrupted_run_handoffs" ADD CONSTRAINT "interrupted_run_handoffs_source_company_fk" FOREIGN KEY ("company_id","interrupted_run_id") REFERENCES "public"."heartbeat_runs"("company_id","id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "interrupted_run_handoffs" ADD CONSTRAINT "interrupted_run_handoffs_successor_company_fk" FOREIGN KEY ("company_id","successor_run_id") REFERENCES "public"."heartbeat_runs"("company_id","id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
