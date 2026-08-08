@@ -1,4 +1,7 @@
-import type { PrpEvent } from "../protocol/phase1-contract.js";
+import type {
+  PrpEvent,
+  PrpStructuredRunResult,
+} from "../protocol/phase1-contract.js";
 import type { NativeSessionCapabilities, NativeUserMessage } from "./types.js";
 
 export interface HarnessDriverDescriptor {
@@ -34,6 +37,18 @@ export class HarnessReconciliationError extends Error {
   }
 }
 
+export interface PersistedHarnessSemanticResult {
+  result: PrpStructuredRunResult;
+  fingerprint: string;
+  callId?: string | null;
+  turnId: string;
+}
+
+export interface PersistedHarnessTurnTerminal {
+  turnId: string;
+  fingerprint: string;
+}
+
 export interface PersistedHarnessSession {
   driverKind: string;
   driverSessionId: string;
@@ -41,6 +56,8 @@ export interface PersistedHarnessSession {
   runId?: string;
   normalizedSessionId?: string;
   activeTurnId?: string | null;
+  semanticResult?: PersistedHarnessSemanticResult | null;
+  terminalTurns?: PersistedHarnessTurnTerminal[];
   lastSourceSequence?: number;
 }
 

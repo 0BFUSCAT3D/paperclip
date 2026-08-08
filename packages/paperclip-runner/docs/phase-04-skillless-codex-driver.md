@@ -15,7 +15,7 @@ delimited JSON-RPC over stdio. It is not exposed as a network service.
 | Runner identity | Codex source | Persistence rule |
 | --- | --- | --- |
 | run ID | mock-core input | Never replaced during recovery. |
-| normalized session ID | `session:<runId>` | Stable across transport/process recovery. |
+| normalized session ID | controller-owned mock-core input | A distinct identity, independent of the run and provider IDs, that stays stable across transport/process recovery. |
 | driver session ID | `thread.id` | Resumed by exact ID. A different returned ID fails recovery. |
 | provider session ID | `thread.sessionId` | Kept separately from the driver thread ID. |
 | turn ID | `turn.id` | Required by steer and interrupt preconditions. |
@@ -23,10 +23,16 @@ delimited JSON-RPC over stdio. It is not exposed as a network service.
 | source event ID | runner instance + run + source sequence | Source sequence continues from the persisted snapshot. |
 
 The persisted session snapshot records run, normalized session, driver
-session, provider session, active turn, and last source sequence. Recovery
-starts a new local app-server transport, calls `thread/resume`, then uses
-`thread/read` for reconciliation. It never silently starts a replacement
-thread.
+session, provider session, the exact active turn, committed semantic-result
+content/call binding, observed terminal-turn fingerprints, and the last source
+sequence. Recovery starts a new local app-server transport, reads the exact
+persisted thread to validate identity and working directory, resumes that
+thread, and then reads it again for reconciliation. Reconciliation considers
+only the persisted active turn: it retains that turn when active, terminalizes
+that turn when terminal, and fails recoverably when it is missing or a
+different active turn appears. Historical terminal turns never substitute for
+the persisted active turn, and a terminal already in the durable snapshot is
+not emitted again.
 
 ## App-server operations
 
@@ -35,7 +41,7 @@ thread.
 | initialize | `initialize`, then `initialized` | Startup fails visibly. |
 | create | `thread/start` | Required. |
 | resume | `thread/resume` | `recovered: false` with a redacted reason. |
-| read | `thread/read` | Explicit `UnsupportedCodexOperationError`. |
+| read | `thread/read` | Explicit `HarnessCapabilityUnavailableError`. |
 | start turn | `turn/start` | Required. |
 | steer | `turn/steer` with `expectedTurnId` | Explicit unsupported diagnostic; no stdin fallback. |
 | interrupt | `turn/interrupt` | Explicit unsupported diagnostic; session is not killed. |
@@ -90,12 +96,14 @@ Two dynamic semantic tools are registered when supported:
   reason, and scope.
 
 Both normalize through the canonical `paperclip.run_result.v1` validator. The
-first valid result is proposed. An exact retry from the same call is
-idempotent; a different call or result is rejected. Tool calls and provider
-notifications must name the exact opened thread and active turn. Missing,
+first valid result is proposed. Any canonically identical result retry is
+idempotent even when the provider assigned a new call ID; the original call
+binding remains persisted for audit, while changed content is rejected. Tool
+calls and provider notifications must name the exact opened thread and active turn. Missing,
 pre-turn, cross-thread, cross-turn, and post-terminal bindings fail the provider
-session closed. Duplicate or conflicting terminal facts are rejected. Process
-exit or prose alone never implies completion.
+session closed. Canonically identical terminal replays are no-ops; conflicting
+terminal facts are rejected. Process exit or prose alone never implies
+completion.
 
 The provider cannot commit controller state. It emits `run.result.proposed` and
 a provider turn terminal; the mock core validates the proposal against its

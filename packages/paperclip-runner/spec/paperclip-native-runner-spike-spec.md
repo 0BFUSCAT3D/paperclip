@@ -2101,6 +2101,13 @@ interface DriverSession {
 }
 ```
 
+The controller assigns `runId` and `normalizedSessionId` independently. A
+normalized session ID is not derived as `session:<runId>` and is never replaced
+by a driver thread or provider session ID. A durable driver snapshot keeps
+those identities separate together with the exact active turn, the canonical
+semantic-result fingerprint and original call binding, and every observed
+terminal-turn fingerprint needed for replay deduplication.
+
 ### 13.4 Capability levels for UI degradation
 
 | Level | Contract |
@@ -2259,18 +2266,30 @@ both its JSON `type` and `const`. The finish tool accepts only `done` and
 `needs_review`; the block tool accepts only `blocked` with a typed blocker
 owner/action/reason/scope. Both normalize through one canonical
 `paperclip.run_result.v1` validator. The first valid result is committed,
-identical repeats are idempotent, and changed repeats are rejected.
+canonically identical repeats are idempotent even when a provider retry has a
+new call ID, and changed repeats are rejected. The original call binding and
+canonical content fingerprint are both durable.
 
 ### 14.8 Reconciliation
 
 After runner or control-plane reconnect:
 
-1. read persisted thread and active turn IDs;
-2. call app-server thread/turn read capability;
-3. compare last known item IDs and terminal state;
-4. synthesize only explicit reconciliation events;
-5. never invent missing deltas;
-6. if provider session cannot be found, mark `session_lost` and apply recovery policy.
+1. read the controller-owned normalized identity, exact driver/provider session
+   IDs, exact active turn ID, semantic-result state, and terminal fingerprints
+   from the durable snapshot;
+2. start a new transport and call app-server thread read for the persisted
+   driver thread, validating both session identities before resume;
+3. resume that exact thread, then read its turns for reconciliation;
+4. reconcile only the persisted active turn: retain it if active, terminalize
+   it if terminal, and fail explicitly/recoverably if missing or replaced by a
+   different active turn; historical terminal turns are not candidates;
+5. reconstruct semantic-result and terminal dedupe state before accepting any
+   replay, so identical completion/terminal replay is a no-op and changed
+   replay conflicts;
+6. synthesize only explicit reconciliation events and never invent missing
+   deltas;
+7. if the provider session cannot be found, mark `session_lost` and apply
+   recovery policy.
 
 ---
 

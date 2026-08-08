@@ -6,7 +6,10 @@ import {
   createPhase4TaskEnvelope,
   isSkilllessPhase4Context,
 } from "../../contracts/phase4.js";
-import { HarnessCapabilityUnavailableError } from "../../contracts/harness-driver.js";
+import {
+  HarnessCapabilityUnavailableError,
+  HarnessReconciliationError,
+} from "../../contracts/harness-driver.js";
 import {
   applyPrpEvent,
   createSessionSnapshotFromMetadata,
@@ -394,8 +397,9 @@ describe("Codex app-server Phase 4 driver", () => {
     expect(await transport.invoke({
       ...request,
       id: 2,
-      params: { ...request.params, arguments: reverseObjectKeys(result) },
+      params: { ...request.params, callId: "call-2", arguments: reverseObjectKeys(result) },
     })).toMatchObject({ success: true });
+    expect((await session.snapshot()).semanticResult?.callId).toBe("call-1");
     const changed = structuredClone(result);
     changed.summary = "Changed after commit.";
     expect(await transport.invoke({ ...request, id: 3, params: { ...request.params, arguments: changed } })).toMatchObject({ success: false });
@@ -605,6 +609,204 @@ describe("Codex app-server Phase 4 driver", () => {
     expect(await recovery?.session?.reconcile?.()).toMatchObject({ thread: { id: "thread-1" } });
     expect(second.calls.map((call) => call.method)).toEqual(["initialize", "thread/read", "thread/resume", "thread/read"]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
+  });
+
+  it("ignores an old terminal turn when the persisted active turn is still running", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: "/workspace",
+        turns: [
+          { id: "turn-old", status: "completed", items: [] },
+          { id: "turn-1", status: "inProgress", items: [] },
+        ],
+      },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-history",
+      normalizedSessionId: "normalized-history",
+      workingDirectory: "/workspace",
+    });
+    await original.startTurn({ message: { role: "user", text: "Keep working." } });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    const recovered = recovery?.session;
+    expect(recovered).toBeDefined();
+    await recovered!.reconcile?.();
+    expect(await recovered!.snapshot()).toMatchObject({ activeTurnId: "turn-1" });
+    await recovered!.close({ reason: "test complete" });
+    const events: PrpEvent[] = [];
+    for await (const event of recovered!.events()) events.push(event);
+    expect(events.some((event) => event.eventType === "turn.completed")).toBe(false);
+  });
+
+  it("preserves proposal idempotency and rejects a changed result after transport loss", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-proposal-loss",
+      normalizedSessionId: "normalized-proposal-loss",
+      workingDirectory: "/workspace",
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await first.invoke({
+      id: "call-before-loss",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-before-loss",
+        tool: "paperclip_finish",
+        arguments: result,
+      },
+    })).toMatchObject({ success: true });
+    const snapshot = await original.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({
+      callId: "call-before-loss",
+      turnId: "turn-1",
+      result,
+    });
+    await original.close({ reason: "transport lost after proposal" });
+    const originalEvents: PrpEvent[] = [];
+    for await (const event of original.events()) originalEvents.push(event);
+    expect(originalEvents.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    const recovered = recovery?.session;
+    expect(recovered).toBeDefined();
+    const collecting = collectUntilTerminal(recovered!.events());
+    await recovered!.reconcile?.();
+    expect(await second.invoke({
+      id: "call-after-loss",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-after-loss",
+        tool: "paperclip_finish",
+        arguments: reverseObjectKeys(result),
+      },
+    })).toMatchObject({ success: true });
+    const changed = structuredClone(result);
+    changed.summary = "Changed after transport loss.";
+    expect(await second.invoke({
+      id: "changed-after-loss",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "changed-after-loss",
+        tool: "paperclip_finish",
+        arguments: changed,
+      },
+    })).toMatchObject({ success: false });
+    second.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    const events = await collecting;
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(0);
+    expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+  });
+
+  it("does not re-emit an already observed terminal after recovery", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: "/workspace",
+        turns: [{ id: "turn-1", status: "completed", items: [] }],
+      },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-terminal-loss",
+      normalizedSessionId: "normalized-terminal-loss",
+      workingDirectory: "/workspace",
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await first.invoke({
+      id: "terminal-call",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "terminal-call",
+        tool: "paperclip_finish",
+        arguments: result,
+      },
+    })).toMatchObject({ success: true });
+    first.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    await collectUntilTerminal(original.events());
+    const snapshot = await original.snapshot();
+    expect(snapshot.terminalTurns).toHaveLength(1);
+    await original.close({ reason: "transport lost after terminal" });
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    const recovered = recovery?.session;
+    expect(recovered).toBeDefined();
+    await recovered!.reconcile?.();
+    await recovered!.close({ reason: "test complete" });
+    const events: PrpEvent[] = [];
+    for await (const event of recovered!.events()) events.push(event);
+    expect(events.some((event) => event.eventType.startsWith("turn."))).toBe(false);
+    expect(events.some((event) => event.eventType === "run.result.proposed")).toBe(false);
+  });
+
+  it("fails recovery explicitly when the persisted active turn is missing or replaced", async () => {
+    for (const testCase of [
+      {
+        label: "missing",
+        turns: [{ id: "turn-old", status: "completed", items: [] }],
+        message: "persisted active turn turn-1 is missing",
+      },
+      {
+        label: "replaced",
+        turns: [{ id: "turn-2", status: "inProgress", items: [] }],
+        message: "active turn turn-2 instead of persisted active turn turn-1",
+      },
+    ]) {
+      const first = new FakeCodexTransport();
+      const second = new FakeCodexTransport();
+      second.readResponse = {
+        thread: {
+          id: "thread-1",
+          sessionId: "provider-session-1",
+          cwd: "/workspace",
+          turns: testCase.turns,
+        },
+      };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({
+        runId: `run-${testCase.label}-turn`,
+        normalizedSessionId: `normalized-${testCase.label}-turn`,
+        workingDirectory: "/workspace",
+      });
+      await original.startTurn({ message: { role: "user", text: "Work." } });
+      const snapshot = await original.snapshot();
+      await original.close({ reason: "transport lost" });
+      const recovery = await driver.recoverSession?.(snapshot);
+      expect(recovery?.session).toBeDefined();
+      await expect(recovery!.session!.reconcile!())
+        .rejects.toMatchObject<HarnessReconciliationError>({
+          name: "HarnessReconciliationError",
+          recoverable: true,
+          message: expect.stringContaining(testCase.message),
+        });
+      await recovery!.session!.close({ reason: "test complete" });
+    }
   });
 
   it("reconciles a turn completed during transport loss without replacing either session identity", async () => {

@@ -7,6 +7,8 @@ import type {
   HarnessSessionRecoveryResult,
   OpenHarnessSessionInput,
   PersistedHarnessSession,
+  PersistedHarnessSemanticResult,
+  PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import {
   HarnessCapabilityUnavailableError,
@@ -134,9 +136,10 @@ function userInput(message: NativeUserMessage): Record<string, unknown> {
   return { type: "text", text: message.text, text_elements: [] };
 }
 
-function terminalState(status: string): "completed" | "failed" | "interrupted" {
+function terminalState(status: string): "completed" | "failed" | "interrupted" | "cancelled" {
   if (status === "failed") return "failed";
   if (status === "interrupted") return "interrupted";
+  if (status === "cancelled") return "cancelled";
   return "completed";
 }
 
@@ -383,6 +386,8 @@ export class CodexAppServerDriver implements HarnessDriver {
           opened,
           resumed: true,
           activeTurnId: snapshot.activeTurnId ?? null,
+          semanticResult: snapshot.semanticResult ?? null,
+          terminalTurns: snapshot.terminalTurns ?? [],
           sourceSequence: snapshot.lastSourceSequence ?? 0,
         }),
       };
@@ -488,6 +493,8 @@ export class CodexAppServerDriver implements HarnessDriver {
     opened: OpenedCodexThread;
     resumed: boolean;
     activeTurnId?: string | null;
+    semanticResult?: PersistedHarnessSemanticResult | null;
+    terminalTurns?: PersistedHarnessTurnTerminal[];
     sourceSequence: number;
   }): CodexHarnessSession {
     return new CodexHarnessSession({
@@ -516,6 +523,7 @@ class CodexHarnessSession implements HarnessSession {
   #result: PrpStructuredRunResult | null = null;
   #resultFingerprint: string | null = null;
   #resultCallId: string | null = null;
+  #resultTurnId: string | null = null;
   #turnStartPending = false;
   #protocolFailed = false;
   #protocolFailureCode: string | null = null;
@@ -532,6 +540,8 @@ class CodexHarnessSession implements HarnessSession {
     taskEnvelope: Phase4TaskEnvelope;
     resumed: boolean;
     activeTurnId?: string | null;
+    semanticResult?: PersistedHarnessSemanticResult | null;
+    terminalTurns?: PersistedHarnessTurnTerminal[];
     sourceSequence: number;
     now: () => Date;
     runnerInstanceId: string;
@@ -547,6 +557,23 @@ class CodexHarnessSession implements HarnessSession {
     this.#now = input.now;
     this.#runnerInstanceId = input.runnerInstanceId;
     this.#capabilities = input.capabilities;
+    if (input.semanticResult) {
+      const validation = validatePrpStructuredRunResult(input.semanticResult.result);
+      if (!validation.ok || canonicalJson(validation.result) !== input.semanticResult.fingerprint) {
+        throw new HarnessReconciliationError("persisted semantic result fingerprint is invalid");
+      }
+      this.#result = structuredClone(validation.result);
+      this.#resultFingerprint = input.semanticResult.fingerprint;
+      this.#resultCallId = input.semanticResult.callId ?? null;
+      this.#resultTurnId = input.semanticResult.turnId;
+    }
+    for (const terminal of input.terminalTurns ?? []) {
+      if (!terminal.turnId || !terminal.fingerprint || this.#terminalTurns.has(terminal.turnId)) {
+        throw new HarnessReconciliationError("persisted terminal turn fingerprints are invalid");
+      }
+      this.#terminalTurns.set(terminal.turnId, terminal.fingerprint);
+    }
+    this.#terminal = this.#terminalTurns.size > 0;
     this.#transport.setServerRequestHandler((request) => this.#handleServerRequest(request));
     this.#emit(input.resumed ? "session.resumed" : "session.started", {
       driverSessionId: input.opened.threadId,
@@ -672,23 +699,57 @@ class CodexHarnessSession implements HarnessSession {
       throw new HarnessReconciliationError("thread/read returned a different provider session");
     }
     const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
-    const active = turns.find((turn) => text(turn.status) === "inProgress");
     const reconciledUsage = boundedPayload(record(thread.tokenUsage ?? snapshot.tokenUsage));
     if (Object.keys(reconciledUsage).length > 0) this.#usage = reconciledUsage;
-    const terminal = [...turns]
-      .reverse()
-      .find((turn) => ["completed", "failed", "interrupted", "cancelled"].includes(text(turn.status)));
-    if (terminal !== undefined) {
-      this.#activeTurnId = null;
-      this.#mapTerminalTurn(terminal, text(terminal.id));
-    } else {
-      this.#activeTurnId = active === undefined ? null : text(active.id);
+    const activeTurns = turns.filter((turn) => text(turn.status) === "inProgress");
+    const expectedTurnId = this.#activeTurnId;
+    const unexpectedActive = activeTurns.find((turn) => text(turn.id) !== expectedTurnId);
+    if (unexpectedActive !== undefined) {
+      throw new HarnessReconciliationError(
+        `thread/read exposed active turn ${text(unexpectedActive.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
+      );
+    }
+
+    let reconciledTerminalTurnId: string | null = null;
+    if (expectedTurnId !== null) {
+      const expectedTurn = turns.find((turn) => text(turn.id) === expectedTurnId);
+      if (expectedTurn === undefined) {
+        throw new HarnessReconciliationError(
+          `persisted active turn ${expectedTurnId} is missing from thread/read`,
+        );
+      }
+      const status = text(expectedTurn.status);
+      if (status === "inProgress") {
+        this.#activeTurnId = expectedTurnId;
+      } else if (["completed", "failed", "interrupted", "cancelled"].includes(status)) {
+        reconciledTerminalTurnId = expectedTurnId;
+        this.#mapTerminalTurn(expectedTurn, expectedTurnId);
+      } else {
+        throw new HarnessReconciliationError(
+          `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
+        );
+      }
+    }
+
+    for (const [turnId, fingerprint] of this.#terminalTurns) {
+      const observed = turns.find((turn) => text(turn.id) === turnId);
+      if (observed === undefined) continue;
+      if (!["completed", "failed", "interrupted", "cancelled"].includes(text(observed.status))) {
+        throw new HarnessReconciliationError(
+          `previously terminal turn ${turnId} is no longer terminal in thread/read`,
+        );
+      }
+      if (this.#terminalFingerprint(observed) !== fingerprint) {
+        throw new HarnessReconciliationError(
+          `previously terminal turn ${turnId} changed after recovery`,
+        );
+      }
     }
     this.#emit("session.reconciled", {
       providerSessionId: this.#opened.providerSessionId,
       turnCount: turns.length,
       activeTurnId: this.#activeTurnId,
-      terminalTurnId: terminal === undefined ? null : text(terminal.id),
+      terminalTurnId: reconciledTerminalTurnId,
     });
     return snapshot;
   }
@@ -706,6 +767,18 @@ class CodexHarnessSession implements HarnessSession {
       runId: this.#runId,
       normalizedSessionId: this.#normalizedSessionId,
       activeTurnId: this.#activeTurnId,
+      semanticResult: this.#result === null || this.#resultFingerprint === null || this.#resultTurnId === null
+        ? null
+        : {
+            result: structuredClone(this.#result),
+            fingerprint: this.#resultFingerprint,
+            callId: this.#resultCallId,
+            turnId: this.#resultTurnId,
+          },
+      terminalTurns: [...this.#terminalTurns].map(([turnId, fingerprint]) => ({
+        turnId,
+        fingerprint,
+      })),
       lastSourceSequence: this.#sourceSequence,
     };
   }
@@ -875,14 +948,10 @@ class CodexHarnessSession implements HarnessSession {
         };
       }
       const fingerprint = canonicalJson(validation.result);
-      if (this.#resultCallId !== null && this.#resultCallId !== callId) {
-        return rejectedToolCall("A semantic result was already committed by another call.");
-      }
       if (this.#resultFingerprint !== null && this.#resultFingerprint !== fingerprint) {
         return rejectedToolCall("A different semantic result was already committed.");
       }
       if (this.#result === null) {
-        this.#resultCallId = callId;
         this.#commitResult(validation.result, callId, turnId);
       }
       return { success: true, contentItems: [{ type: "inputText", text: "Semantic completion accepted." }] };
@@ -939,6 +1008,8 @@ class CodexHarnessSession implements HarnessSession {
     if (this.#result !== null) return;
     this.#result = structuredClone(result);
     this.#resultFingerprint = canonicalJson(result);
+    this.#resultCallId = itemId || null;
+    this.#resultTurnId = turnId || this.#activeTurnId;
     result.verification.forEach((verification, index) => {
       this.#emit("item.completed", {
         kind: "verification",
@@ -970,17 +1041,15 @@ class CodexHarnessSession implements HarnessSession {
     const turnId = text(turn.id, fallbackTurnId || this.#activeTurnId || "");
     const status = text(turn.status, "completed");
     const candidate = this.#resultFromTurn(turn) ?? this.#result;
-    const fingerprint = canonicalJson({
-      terminalState: terminalState(status),
-      error: turn.error ?? null,
-      result: candidate,
-    });
+    const fingerprint = this.#terminalFingerprint(turn, candidate);
     const previous = this.#terminalTurns.get(turnId);
     if (previous !== undefined) {
-      this.#failProtocol(
-        previous === fingerprint ? "duplicate_turn_terminal" : "conflicting_turn_terminal",
-        "Provider sent another terminal fact for an already terminal turn.",
-      );
+      if (previous !== fingerprint) {
+        this.#failProtocol(
+          "conflicting_turn_terminal",
+          "Provider changed a terminal fact for an already terminal turn.",
+        );
+      }
       return;
     }
     this.#terminalTurns.set(turnId, fingerprint);
@@ -1001,6 +1070,17 @@ class CodexHarnessSession implements HarnessSession {
     }), { turnId });
     this.#activeTurnId = null;
     this.#finalize(status);
+  }
+
+  #terminalFingerprint(
+    turn: Record<string, unknown>,
+    candidate: PrpStructuredRunResult | null = this.#resultFromTurn(turn) ?? this.#result,
+  ): string {
+    return canonicalJson({
+      terminalState: terminalState(text(turn.status, "completed")),
+      error: turn.error ?? null,
+      result: candidate,
+    });
   }
 
   #resultItemFromTurn(turn: Record<string, unknown>): Record<string, unknown> | null {
