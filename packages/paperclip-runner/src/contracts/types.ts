@@ -33,6 +33,9 @@ export interface NativeSessionCapabilities {
   reconciliation?: boolean;
   usage?: boolean;
   dynamicTools?: boolean;
+  runtimeRequestResolution?: boolean;
+  goals?: boolean;
+  threadLineage?: boolean;
   unsupported?: string[];
 }
 

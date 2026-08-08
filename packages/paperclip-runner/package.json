@@ -46,6 +46,8 @@
     "record:phase2": "pnpm run trace:phase2 -- --quiet --output knowledge/evidence/phase-02-happy-path.json",
     "trace:phase3": "pnpm run build:typescript && pnpm run build:phase2-binaries && node dist/cli/phase3-recovery.js",
     "trace:phase4": "pnpm run build:typescript && node dist/cli/phase4-codex.js",
+    "demo:phase4b": "pnpm run build:typescript && node scripts/phase4b-demo-server.mjs",
+    "record:phase4b": "pnpm run build:typescript && node scripts/record-phase4b-evidence.mjs",
     "record:phase4": "pnpm run build:typescript && node scripts/record-phase4-evidence.mjs",
     "diagnose:phase3": "pnpm run trace:phase3",
     "record:phase3": "pnpm run build:typescript && pnpm run build:phase2-binaries && node scripts/record-phase3-evidence.mjs",

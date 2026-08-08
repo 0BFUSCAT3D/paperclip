@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
 
 import {
   PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
@@ -8,7 +9,10 @@ import {
 } from "../../contracts/phase4.js";
 import {
   HarnessCapabilityUnavailableError,
+  HarnessOperationAlreadyTerminalError,
   HarnessReconciliationError,
+  HarnessStaleTurnError,
+  type HarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import {
   applyPrpEvent,
@@ -20,6 +24,7 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "../../protocol/phase1-contract.js";
+import { loadPhase4bConformanceFixture } from "../../protocol/phase4b-fixture.js";
 import {
   CodexAppServerDriver,
   createIsolatedCodexAppServerArgs,
@@ -71,6 +76,8 @@ class FakeCodexTransport implements CodexAppServerTransport {
   handler: CodexServerRequestHandler = async () => ({});
   rejectMethods = new Map<string, Error>();
   readResponse: Record<string, unknown> | null = null;
+  turnStartResponse: Promise<Record<string, unknown>> | null = null;
+  goalState: Record<string, unknown> | null = null;
 
   constructor(
     readonly threadId = "thread-1",
@@ -102,7 +109,29 @@ class FakeCodexTransport implements CodexAppServerTransport {
         instructionSources: [],
       };
     }
-    if (method === "turn/start") return { turn: { id: "turn-1", status: "inProgress", items: [] } };
+    if (method === "turn/start") {
+      return this.turnStartResponse ?? { turn: { id: "turn-1", status: "inProgress", items: [] } };
+    }
+    if (method === "thread/goal/get") return { goal: this.goalState };
+    if (method === "thread/goal/set") {
+      this.goalState = {
+        threadId: this.threadId,
+        objective: typeof params.objective === "string"
+          ? params.objective
+          : String(this.goalState?.objective ?? "Ship the Phase 4b tracer"),
+        status: params.status ?? this.goalState?.status ?? "active",
+        tokenBudget: params.tokenBudget ?? this.goalState?.tokenBudget ?? null,
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: 1,
+        updatedAt: 2,
+      };
+      return { goal: this.goalState };
+    }
+    if (method === "thread/goal/clear") {
+      this.goalState = null;
+      return {};
+    }
     if (method === "thread/read") {
       return this.readResponse ?? { thread: { id: this.threadId, sessionId: this.providerSessionId, cwd: "/workspace", turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
     }
@@ -138,6 +167,11 @@ const envelope = createPhase4TaskEnvelope({
   objective: "Create hello.txt with the text hello.",
   criteria: [{ id: "file", requirement: "hello.txt contains hello" }],
 });
+
+const phase4bFixturePath = fileURLToPath(new URL(
+  "../../../protocol/fixtures/phase-04b/driver-conformance.json",
+  import.meta.url,
+));
 
 const result: PrpStructuredRunResult = {
   schema: "paperclip.run_result.v1",
@@ -246,11 +280,19 @@ describe("Codex app-server Phase 4 driver", () => {
     transport.push("item/started", { threadId: "thread-1", turnId: turn.turnId, item: { id: "cmd-1", type: "commandExecution", command: "printf hello" } });
     transport.push("item/commandExecution/outputDelta", { threadId: "thread-1", turnId: turn.turnId, itemId: "cmd-1", delta: "hello" });
     transport.push("item/completed", { threadId: "thread-1", turnId: turn.turnId, item: { id: "file-1", type: "fileChange", changes: [{ path: "hello.txt" }] } });
-    expect(await transport.invoke({
+    const requestResolution = transport.invoke({
       id: "request-1",
       method: "item/tool/requestUserInput",
       params: { threadId: "thread-1", turnId: turn.turnId, itemId: "question-1" },
-    })).toEqual({ answers: {} });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.pendingRuntimeRequests?.()).toHaveLength(1);
+    await session.resolveRuntimeRequest?.({
+      requestId: "request-1",
+      turnId: turn.turnId,
+      resolution: { action: "cancel" },
+    });
+    expect(await requestResolution).toEqual({ answers: {} });
     transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: turn.turnId, tokenUsage: { total: { inputTokens: 10, outputTokens: 4 }, modelContextWindow: 128000 } });
     transport.push("item/completed", { threadId: "thread-1", turnId: turn.turnId, item: { id: "answer-1", type: "agentMessage", text: JSON.stringify(result) } });
     transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
@@ -383,9 +425,222 @@ describe("Codex app-server Phase 4 driver", () => {
     await session.steer?.({ turnId, message: { role: "user", text: "Use a shorter answer." } });
     await session.interrupt?.({ turnId, reason: "operator requested" });
     expect(transport.calls.map((call) => call.method)).toEqual([
-      "initialize", "thread/start", "turn/start", "turn/steer", "turn/interrupt",
+      "initialize", "thread/start", "thread/goal/get", "turn/start", "turn/steer", "turn/interrupt",
     ]);
     expect(session.ids()).toEqual({ driverSessionId: "thread-1", providerSessionId: "provider-session-1", displayId: "thread-1" });
+  });
+
+  it("loads the deterministic Phase 4b wire fixture", async () => {
+    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    expect(fixture.runtimeRequests.map(({ requestKind }) => requestKind)).toEqual([
+      "command_approval",
+      "file_approval",
+      "permission_approval",
+      "user_input",
+      "elicitation",
+    ]);
+    expect(fixture.goals.map(({ action }) => action)).toEqual([
+      "get", "set", "pause", "resume", "clear",
+    ]);
+  });
+
+  it("holds browser-resolved upstream requests and returns the exact fixture responses", async () => {
+    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    for (const scenario of fixture.runtimeRequests) {
+      const transport = new FakeCodexTransport();
+      const session = await makeDriver([transport]).openSession({
+        runId: `run-${scenario.id}`,
+        normalizedSessionId: `normalized-${scenario.id}`,
+        workingDirectory: "/workspace",
+      });
+      const { turnId } = await session.startTurn({ message: { role: "user", text: "Exercise request." } });
+      const response = transport.invoke({
+        id: scenario.id,
+        method: scenario.method,
+        params: {
+          threadId: "thread-1",
+          turnId,
+          itemId: `item-${scenario.id}`,
+          reason: `fixture ${scenario.id}`,
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(session.pendingRuntimeRequests?.()).toEqual([
+        expect.objectContaining({
+          requestId: scenario.id,
+          requestKind: scenario.requestKind,
+          method: scenario.method,
+          turnId,
+        }),
+      ]);
+      await expect(session.resolveRuntimeRequest?.({
+        requestId: scenario.id,
+        turnId,
+        resolution: { action: "forged" } as unknown as HarnessRuntimeRequestResolution,
+      })).rejects.toThrow("unsupported runtime request resolution");
+      expect(session.pendingRuntimeRequests?.()).toHaveLength(1);
+      await session.resolveRuntimeRequest?.({
+        requestId: scenario.id,
+        turnId,
+        resolution: scenario.resolution as HarnessRuntimeRequestResolution,
+      });
+      expect(await response).toEqual(scenario.expectedResponse);
+      expect(session.pendingRuntimeRequests?.()).toEqual([]);
+      await expect(session.resolveRuntimeRequest?.({
+        requestId: scenario.id,
+        turnId,
+        resolution: { action: "cancel" },
+      })).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+      await session.close({ reason: "fixture complete" });
+    }
+  });
+
+  it("acknowledges same-turn steering and rejects stale or child steering", async () => {
+    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    const transport = new FakeCodexTransport("thread-root");
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-phase4b-controls",
+      normalizedSessionId: "normalized-phase4b-controls",
+      workingDirectory: "/workspace",
+    });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Start." } });
+    await session.steer?.({ turnId, message: { role: "user", text: "Stay concise." } });
+    await expect(session.steer?.({
+      turnId: fixture.controls.staleTurnSteer.turnId!,
+      message: { role: "user", text: "Stale." },
+    })).rejects.toBeInstanceOf(HarnessStaleTurnError);
+    transport.push("thread/started", { thread: fixture.lineage.childThread });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.lineage?.()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ threadId: "thread-root", parentThreadId: null, depth: 0 }),
+      expect.objectContaining({
+        threadId: "thread-child",
+        parentThreadId: "thread-root",
+        depth: 1,
+        nickname: "Scout",
+        role: "researcher",
+      }),
+    ]));
+    await expect(session.steer?.({
+      turnId: "thread-child",
+      message: { role: "user", text: "Do not emulate child steering." },
+    })).rejects.toBeInstanceOf(HarnessStaleTurnError);
+    const events = session.events()[Symbol.asyncIterator]();
+    const observed: PrpEvent[] = [];
+    for (let index = 0; index < 9; index += 1) {
+      const next = await events.next();
+      if (next.done) break;
+      observed.push(next.value);
+    }
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        eventType: "item.completed",
+        payload: expect.objectContaining({ kind: "steering_acknowledgement", status: "acknowledged" }),
+      }),
+      expect.objectContaining({
+        eventType: "harness.diagnostic",
+        payload: expect.objectContaining({ code: "stale_turn_rejected" }),
+      }),
+      expect.objectContaining({
+        eventType: "item.started",
+        payload: expect.objectContaining({ kind: "thread_lineage" }),
+      }),
+    ]));
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("queues an interrupt before turn identity and reports a terminal race precisely", async () => {
+    const transport = new FakeCodexTransport();
+    let releaseStart!: (value: Record<string, unknown>) => void;
+    transport.turnStartResponse = new Promise((resolve) => { releaseStart = resolve; });
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-interrupt-races",
+      normalizedSessionId: "normalized-interrupt-races",
+      workingDirectory: "/workspace",
+    });
+    const starting = session.startTurn({ message: { role: "user", text: "Start slowly." } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await session.interrupt?.({ reason: "operator" });
+    releaseStart({ turn: { id: "turn-1", status: "inProgress", items: [] } });
+    await expect(starting).resolves.toEqual({ turnId: "turn-1" });
+    expect(transport.calls.map(({ method }) => method)).toEqual(expect.arrayContaining([
+      "turn/start", "turn/interrupt",
+    ]));
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "interrupted", items: [] },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(session.interrupt?.({ turnId: "turn-1" }))
+      .rejects.toBeInstanceOf(HarnessOperationAlreadyTerminalError);
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("maps all goal operations and advertises an exact unsupported state", async () => {
+    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-goals",
+      normalizedSessionId: "normalized-goals",
+      workingDirectory: "/workspace",
+    });
+    await session.goal?.({ action: "get" });
+    await session.goal?.({ action: "set", objective: "Ship the Phase 4b tracer", tokenBudget: 4096 });
+    await session.goal?.({ action: "pause" });
+    await session.goal?.({ action: "resume" });
+    await session.goal?.({ action: "clear" });
+    const goalCalls = transport.calls.filter(({ method }) => method.startsWith("thread/goal/"));
+    expect(goalCalls.slice(1).map(({ method, params }) => ({
+      method,
+      params: Object.fromEntries(Object.entries(params).filter(([key]) => key !== "threadId")),
+    }))).toEqual(fixture.goals.map(({ method, params }) => ({ method, params })));
+
+    const unsupportedTransport = new FakeCodexTransport();
+    unsupportedTransport.rejectMethods.set("thread/goal/get", new Error("method not found"));
+    const unsupportedDriver = makeDriver([unsupportedTransport]);
+    const unsupported = await unsupportedDriver.openSession({
+      runId: "run-goals-unsupported",
+      normalizedSessionId: "normalized-goals-unsupported",
+      workingDirectory: "/workspace",
+    });
+    expect((await unsupportedDriver.descriptor()).capabilities).toMatchObject({ goals: false });
+    await expect(unsupported.goal?.({ action: "get" }))
+      .rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    await session.close({ reason: "fixture complete" });
+    await unsupported.close({ reason: "fixture complete" });
+  });
+
+  it("redacts browser-visible request details and diagnostics from the fixture markers", async () => {
+    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-redaction",
+      normalizedSessionId: "normalized-redaction",
+      workingDirectory: "/workspace",
+    });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Request input." } });
+    const pending = transport.invoke({
+      id: "redacted-request",
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId: "thread-1",
+        turnId,
+        itemId: "redacted-item",
+        reason: fixture.redactionMarkers.join(" "),
+        authorization: "Bearer browser-secret",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const serialized = JSON.stringify(session.pendingRuntimeRequests?.());
+    for (const marker of fixture.redactionMarkers) expect(serialized).not.toContain(marker);
+    expect(serialized).toContain("[REDACTED]");
+    await session.resolveRuntimeRequest?.({
+      requestId: "redacted-request",
+      turnId,
+      resolution: { action: "cancel" },
+    });
+    await pending;
+    await session.close({ reason: "fixture complete" });
   });
 
   it("makes duplicate semantic completion idempotent and rejects changed payloads", async () => {
@@ -759,7 +1014,9 @@ describe("Codex app-server Phase 4 driver", () => {
     expect(recovery).toMatchObject({ recovered: true });
     expect(recovery?.session?.ids()).toEqual(original.ids());
     expect(await recovery?.session?.reconcile?.()).toMatchObject({ thread: { id: "thread-1" } });
-    expect(second.calls.map((call) => call.method)).toEqual(["initialize", "thread/read", "thread/resume", "thread/read"]);
+    expect(second.calls.map((call) => call.method)).toEqual([
+      "initialize", "thread/read", "thread/resume", "thread/goal/get", "thread/read",
+    ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
 
@@ -1076,7 +1333,7 @@ describe("Codex app-server Phase 4 driver", () => {
     await expect(session.steer?.({ turnId, message: { role: "user", text: "Steer." } })).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
     const iterator = session.events()[Symbol.asyncIterator]();
     const events: PrpEvent[] = [];
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 6; index += 1) {
       const next = await iterator.next();
       if (next.value) events.push(next.value);
     }

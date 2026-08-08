@@ -3,7 +3,7 @@
 ## What this tutorial is
 
 This tutorial combines each implemented Native Runner phase into one procedure.
-It currently includes Phase 0 through Phase 4.
+It currently includes Phase 0 through the Phase 4b protocol/server layer.
 
 ## What this tutorial proves
 
@@ -49,6 +49,11 @@ semantic completion tools, and the same reducer/replay proof used by fixtures.
     stable session identities and exactly one result and terminal event.
 21. Open the [Phase 4 journal entry](../../knowledge/journal/2026-08-08-phase-04.md)
     and its linked real-session trace and verification evidence.
+22. Follow [Phase 4b: Run the Protocol Demo Server](phase-04b-protocol-server.md).
+23. Confirm requests stay pending for a typed browser decision, stale steering
+    is rejected, and reconnect keeps the same run and session identities.
+24. Open the [Phase 4b protocol/server journal](../../knowledge/journal/2026-08-08-phase-04b-protocol-server.md)
+    and its linked deterministic and real-Codex evidence.
 
 The one-command form after installation is:
 
@@ -103,6 +108,18 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
   idempotent, and a changed duplicate is rejected;
 - unsupported capabilities degrade through explicit redacted diagnostics;
 - the real trace and its replay reduce to the same final snapshot.
+- supported provider requests wait for one typed browser resolution and clean
+  up exactly once;
+- same-turn steering is acknowledged while stale and direct-child steering are
+  rejected;
+- pre-start interrupts queue until the provider turn ID exists and terminal
+  races return `already_terminal`;
+- goal controls are capability probed and disabled precisely when unavailable;
+- parent/child activity derives from provider thread identities;
+- the demo server fixes the workspace and keeps Codex authentication out of
+  browser JSON, events, and diagnostics;
+- refresh/reconnect replays canonical events and resumes the exact persisted
+  provider thread.
 
-Phase 5 remains uncreated until the Phase 4 review and human checkpoint are
-complete.
+Phase 5 remains gated on the complete Phase 4b browser, review, QA, live-service,
+and human-checkpoint evidence.

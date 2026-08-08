@@ -50,6 +50,11 @@ export interface Phase4ModelContextSnapshot {
   environmentKeys: string[];
   dynamicToolNames: string[];
   modelInputKinds: ["text"];
+  phase4b?: {
+    runtimeRequestResolution: boolean;
+    goals: boolean;
+    threadLineage: boolean;
+  };
   envelope: Phase4TaskEnvelope;
 }
 

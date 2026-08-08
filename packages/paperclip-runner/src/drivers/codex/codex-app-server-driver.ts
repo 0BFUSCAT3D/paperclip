@@ -5,6 +5,12 @@ import type {
   HarnessDriverDescriptor,
   HarnessSession,
   HarnessSessionRecoveryResult,
+  HarnessGoalOperation,
+  HarnessRuntimeRequest,
+  HarnessRuntimeRequestKind,
+  HarnessRuntimeRequestResolution,
+  HarnessThreadGoal,
+  HarnessThreadLineageEntry,
   OpenHarnessSessionInput,
   PersistedHarnessSession,
   PersistedHarnessSemanticResult,
@@ -12,7 +18,9 @@ import type {
 } from "../../contracts/harness-driver.js";
 import {
   HarnessCapabilityUnavailableError,
+  HarnessOperationAlreadyTerminalError,
   HarnessReconciliationError,
+  HarnessStaleTurnError,
 } from "../../contracts/harness-driver.js";
 import {
   PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
@@ -91,6 +99,9 @@ export interface CodexAppServerDriverOptions {
     usage: boolean;
     reconciliation: boolean;
     dynamicTools: boolean;
+    runtimeRequestResolution: boolean;
+    goals: boolean;
+    threadLineage: boolean;
   }>;
 }
 
@@ -109,6 +120,12 @@ interface OpenedCodexThread {
   threadId: string;
   providerSessionId: string | null;
   context: Phase4ModelContextSnapshot;
+  lineage: HarnessThreadLineageEntry;
+}
+
+interface PendingRuntimeRequest {
+  request: HarnessRuntimeRequest;
+  settle: (response: Record<string, unknown>) => void;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -281,6 +298,9 @@ export class CodexAppServerDriver implements HarnessDriver {
       usage: true,
       reconciliation: true,
       dynamicTools: true,
+      runtimeRequestResolution: true,
+      goals: true,
+      threadLineage: true,
       ...options.capabilities,
     };
     if (!this.#caps.read) this.#caps.reconciliation = false;
@@ -305,6 +325,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         reconciliation: this.#caps.reconciliation,
         usage: this.#caps.usage,
         dynamicTools: this.#caps.dynamicTools,
+        runtimeRequestResolution: this.#caps.runtimeRequestResolution,
+        goals: this.#caps.goals,
+        threadLineage: this.#caps.threadLineage,
         unsupported,
       },
     };
@@ -324,11 +347,14 @@ export class CodexAppServerDriver implements HarnessDriver {
         persistExtendedHistory: false,
       });
       const opened = this.#openedThread(response, initialize, workingDirectory);
+      const goal = await this.#discoverGoal(transport, opened.threadId);
+      if (opened.context.phase4b) opened.context.phase4b.goals = this.#caps.goals;
       return this.#session({
         transport,
         runId: input.runId,
         normalizedSessionId: input.normalizedSessionId,
         opened,
+        goal,
         resumed: false,
         sourceSequence: 0,
       });
@@ -384,6 +410,8 @@ export class CodexAppServerDriver implements HarnessDriver {
         await transport.close();
         return { recovered: false, reason: "provider resumed a different provider session" };
       }
+      const goal = await this.#discoverGoal(transport, opened.threadId);
+      if (opened.context.phase4b) opened.context.phase4b.goals = this.#caps.goals;
       return {
         recovered: true,
         session: this.#session({
@@ -391,10 +419,13 @@ export class CodexAppServerDriver implements HarnessDriver {
           runId: snapshot.runId,
           normalizedSessionId: snapshot.normalizedSessionId,
           opened,
+          goal,
           resumed: true,
           activeTurnId: snapshot.activeTurnId ?? null,
           semanticResult: snapshot.semanticResult ?? null,
           terminalTurns: snapshot.terminalTurns ?? [],
+          stalePendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
+          lineage: snapshot.lineage,
           sourceSequence: snapshot.lastSourceSequence ?? 0,
         }),
       };
@@ -422,6 +453,23 @@ export class CodexAppServerDriver implements HarnessDriver {
     });
     transport.notify("initialized");
     return initialized;
+  }
+
+  async #discoverGoal(
+    transport: CodexAppServerTransport,
+    threadId: string,
+  ): Promise<HarnessThreadGoal | null | undefined> {
+    if (!this.#caps.goals) return undefined;
+    try {
+      const response = await transport.request("thread/goal/get", { threadId });
+      return parseThreadGoal(response.goal);
+    } catch (error) {
+      this.#caps.goals = false;
+      this.#options.onDiagnostic?.(
+        redactCodexDiagnostic(`thread goals unavailable: ${String(error)}`),
+      );
+      return undefined;
+    }
   }
 
   #openedThread(
@@ -488,8 +536,14 @@ export class CodexAppServerDriver implements HarnessDriver {
         ).sort(),
         dynamicToolNames: this.#caps.dynamicTools ? [...PHASE4_SEMANTIC_TOOL_NAMES] : [],
         modelInputKinds: ["text"],
+        phase4b: {
+          runtimeRequestResolution: this.#caps.runtimeRequestResolution,
+          goals: this.#caps.goals,
+          threadLineage: this.#caps.threadLineage,
+        },
         envelope: structuredClone(this.#options.taskEnvelope),
       },
+      lineage: lineageFromThread(thread),
     };
   }
 
@@ -498,10 +552,13 @@ export class CodexAppServerDriver implements HarnessDriver {
     runId: string;
     normalizedSessionId: string;
     opened: OpenedCodexThread;
+    goal?: HarnessThreadGoal | null;
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
     terminalTurns?: PersistedHarnessTurnTerminal[];
+    stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
+    lineage?: HarnessThreadLineageEntry[];
     sourceSequence: number;
   }): CodexHarnessSession {
     return new CodexHarnessSession({
@@ -538,6 +595,12 @@ class CodexHarnessSession implements HarnessSession {
   #terminal = false;
   #turnStarted = false;
   readonly #terminalTurns = new Map<string, string>();
+  readonly #pendingRuntimeRequests = new Map<string, PendingRuntimeRequest>();
+  readonly #lineage = new Map<string, HarnessThreadLineageEntry>();
+  #goal: HarnessThreadGoal | null = null;
+  #interruptQueued = false;
+  #steerSequence = 0;
+  #interruptSequence = 0;
 
   constructor(input: {
     transport: CodexAppServerTransport;
@@ -549,6 +612,9 @@ class CodexHarnessSession implements HarnessSession {
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
     terminalTurns?: PersistedHarnessTurnTerminal[];
+    stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
+    lineage?: HarnessThreadLineageEntry[];
+    goal?: HarnessThreadGoal | null;
     sourceSequence: number;
     now: () => Date;
     runnerInstanceId: string;
@@ -564,6 +630,13 @@ class CodexHarnessSession implements HarnessSession {
     this.#now = input.now;
     this.#runnerInstanceId = input.runnerInstanceId;
     this.#capabilities = input.capabilities;
+    this.#goal = input.goal === undefined ? null : structuredClone(input.goal);
+    for (const entry of input.lineage ?? [input.opened.lineage]) {
+      this.#lineage.set(entry.threadId, structuredClone(entry));
+    }
+    if (!this.#lineage.has(input.opened.lineage.threadId)) {
+      this.#lineage.set(input.opened.lineage.threadId, structuredClone(input.opened.lineage));
+    }
     if (input.semanticResult) {
       const validation = validatePrpStructuredRunResult(input.semanticResult.result);
       if (!validation.ok || canonicalJson(validation.result) !== input.semanticResult.fingerprint) {
@@ -587,6 +660,17 @@ class CodexHarnessSession implements HarnessSession {
       providerSessionId: input.opened.providerSessionId,
       context: input.opened.context,
     });
+    for (const stale of input.stalePendingRuntimeRequests ?? []) {
+      this.#emit("runtime_request.cancelled", {
+        requestId: stale.requestId,
+        reason: "transport_recovered",
+      }, { turnId: stale.turnId, itemId: stale.itemId });
+    }
+    this.#emit("item.completed", {
+      kind: "thread_lineage",
+      text: `Root thread ${input.opened.threadId}`,
+      lineage: input.opened.lineage,
+    }, { itemId: `thread:${input.opened.threadId}` });
     this.#emit("item.completed", {
       kind: "model",
       text: `${input.opened.context.model} (${input.opened.context.modelProvider})`,
@@ -649,34 +733,157 @@ class CodexHarnessSession implements HarnessSession {
     }
     this.#activeTurnId ??= turnId;
     this.#emit("turn.accepted", { turnId }, { turnId });
+    if (this.#interruptQueued) {
+      this.#interruptQueued = false;
+      await this.#sendInterrupt(turnId, "queued_before_start");
+    }
     return { turnId };
   }
 
   async steer(input: { turnId: string; message: NativeUserMessage }): Promise<void> {
     this.#requireCapability("steering");
-    this.#requireActiveTurn(input.turnId);
+    this.#requireActiveTurn(input.turnId, "steering");
     try {
       await this.#transport.request("turn/steer", {
         threadId: this.#opened.threadId,
         input: [userInput(input.message)],
         expectedTurnId: input.turnId,
       });
+      if (this.#activeTurnId !== input.turnId) {
+        throw new HarnessOperationAlreadyTerminalError("steering");
+      }
+      this.#emit("item.completed", {
+        kind: "steering_acknowledgement",
+        text: "Steering acknowledged for the active turn.",
+        status: "acknowledged",
+      }, {
+        turnId: input.turnId,
+        itemId: `${input.turnId}:steer:${++this.#steerSequence}`,
+      });
     } catch (error) {
+      if (error instanceof HarnessOperationAlreadyTerminalError) throw error;
       throw this.#unsupported("steering", error);
     }
   }
 
-  async interrupt(input: { turnId: string; reason?: string }): Promise<void> {
+  async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
     this.#requireCapability("interruption");
-    this.#requireActiveTurn(input.turnId);
+    if (this.#turnStartPending && this.#activeTurnId === null) {
+      this.#interruptQueued = true;
+      this.#emit("item.completed", {
+        kind: "interrupt_acknowledgement",
+        text: "Interrupt queued until the provider assigns the turn identity.",
+        status: "queued",
+      }, { itemId: `interrupt:queued:${++this.#interruptSequence}` });
+      return;
+    }
+    if (this.#terminal || this.#activeTurnId === null) {
+      throw new HarnessOperationAlreadyTerminalError("interruption");
+    }
+    const turnId = input.turnId ?? this.#activeTurnId;
+    this.#requireActiveTurn(turnId, "interruption");
+    await this.#sendInterrupt(turnId, input.reason);
+  }
+
+  async #sendInterrupt(turnId: string, reason?: string): Promise<void> {
     try {
       await this.#transport.request("turn/interrupt", {
         threadId: this.#opened.threadId,
-        turnId: input.turnId,
+        turnId,
+      });
+      if (this.#activeTurnId !== turnId) {
+        throw new HarnessOperationAlreadyTerminalError("interruption");
+      }
+      this.#emit("item.completed", {
+        kind: "interrupt_acknowledgement",
+        text: "Interrupt accepted for the active turn.",
+        status: "acknowledged",
+        reason: boundedText(reason),
+      }, {
+        turnId,
+        itemId: `${turnId}:interrupt:${++this.#interruptSequence}`,
       });
     } catch (error) {
+      if (error instanceof HarnessOperationAlreadyTerminalError) throw error;
       throw this.#unsupported("interruption", error);
     }
+  }
+
+  pendingRuntimeRequests(): HarnessRuntimeRequest[] {
+    return [...this.#pendingRuntimeRequests.values()].map(({ request }) =>
+      structuredClone(request));
+  }
+
+  async resolveRuntimeRequest(input: {
+    requestId: string;
+    turnId: string;
+    resolution: HarnessRuntimeRequestResolution;
+  }): Promise<void> {
+    this.#requireCapability("runtimeRequestResolution");
+    const pending = this.#pendingRuntimeRequests.get(input.requestId);
+    if (pending === undefined) {
+      throw new HarnessCapabilityUnavailableError(
+        "runtime request resolution",
+        `request ${input.requestId} is no longer pending`,
+      );
+    }
+    if (pending.request.turnId !== input.turnId || this.#activeTurnId !== input.turnId) {
+      throw new HarnessStaleTurnError(input.turnId);
+    }
+    const response = runtimeRequestResponse(pending.request, input.resolution);
+    this.#pendingRuntimeRequests.delete(input.requestId);
+    this.#emit("runtime_request.resolved", {
+      requestId: input.requestId,
+      resolution: input.resolution.action,
+    }, { turnId: input.turnId, itemId: pending.request.itemId });
+    pending.settle(response);
+  }
+
+  async goal(input: HarnessGoalOperation): Promise<HarnessThreadGoal | null> {
+    this.#requireCapability("goals");
+    let method: string;
+    let params: Record<string, unknown> = { threadId: this.#opened.threadId };
+    if (input.action === "get") {
+      method = "thread/goal/get";
+    } else if (input.action === "clear") {
+      method = "thread/goal/clear";
+    } else {
+      method = "thread/goal/set";
+      if (input.action === "set") {
+        params = {
+          ...params,
+          objective: input.objective,
+          status: "active",
+          ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+        };
+      } else {
+        params = { ...params, status: input.action === "pause" ? "paused" : "active" };
+      }
+    }
+    try {
+      const response = await this.#transport.request(method, params);
+      const goal = input.action === "clear" ? null : parseThreadGoal(response.goal);
+      if (!["get", "clear"].includes(input.action) && goal === null) {
+        throw new Error(`${method} omitted its goal`);
+      }
+      this.#goal = goal;
+      const kind = input.action === "clear" ? "goal_cleared" : "goal";
+      this.#emit("item.completed", {
+        kind,
+        text: goal === null
+          ? input.action === "clear" ? "Thread goal cleared." : "No thread goal is configured."
+          : `Thread goal ${goal.status}: ${goal.objective}`,
+        action: input.action,
+        goal,
+      }, { itemId: `${this.#opened.threadId}:goal:${this.#sourceSequence + 1}` });
+      return goal === null ? null : structuredClone(goal);
+    } catch (error) {
+      throw this.#unsupported(`goal ${input.action}`, error);
+    }
+  }
+
+  lineage(): HarnessThreadLineageEntry[] {
+    return [...this.#lineage.values()].map((entry) => structuredClone(entry));
   }
 
   async read(): Promise<Record<string, unknown>> {
@@ -787,11 +994,15 @@ class CodexHarnessSession implements HarnessSession {
         turnId,
         fingerprint,
       })),
+      pendingRuntimeRequests: this.pendingRuntimeRequests(),
+      goal: this.#goal === null ? null : structuredClone(this.#goal),
+      lineage: this.lineage(),
       lastSourceSequence: this.#sourceSequence,
     };
   }
 
   async close(): Promise<void> {
+    this.#cancelPendingRequests("session_closed");
     this.#events.close();
     await this.#transport.close();
   }
@@ -826,6 +1037,84 @@ class CodexHarnessSession implements HarnessSession {
         code: notification.method.replaceAll("/", "_"),
         message: redactCodexDiagnostic(text(params.message, JSON.stringify(boundedCodexValue(params)))),
       });
+      return;
+    }
+    if (notification.method === "thread/started") {
+      if (!this.#capabilities.threadLineage) return;
+      const thread = record(params.thread);
+      const lineage = lineageFromThread(thread);
+      if (
+        lineage.threadId.length === 0 ||
+        lineage.threadId === this.#opened.threadId ||
+        lineage.parentThreadId === null ||
+        !this.#lineage.has(lineage.parentThreadId)
+      ) {
+        return;
+      }
+      this.#lineage.set(lineage.threadId, lineage);
+      this.#emit("item.started", {
+        kind: "thread_lineage",
+        text: `${lineage.nickname ?? lineage.role ?? "Child agent"} started.`,
+        lineage,
+      }, { itemId: `thread:${lineage.threadId}` });
+      return;
+    }
+    if (notification.method === "thread/status/changed") {
+      const lineage = this.#lineage.get(threadId);
+      if (lineage === undefined || threadId === this.#opened.threadId) return;
+      lineage.status = threadStatus(params.status);
+      this.#emit("item.delta", {
+        kind: "thread_lineage",
+        text: `${lineage.nickname ?? lineage.role ?? "Child agent"}: ${lineage.status}`,
+        lineage,
+      }, { itemId: `thread:${lineage.threadId}` });
+      return;
+    }
+    if (notification.method === "thread/closed") {
+      const lineage = this.#lineage.get(threadId);
+      if (lineage === undefined || threadId === this.#opened.threadId) return;
+      lineage.status = "closed";
+      this.#emit("item.completed", {
+        kind: "thread_lineage",
+        text: `${lineage.nickname ?? lineage.role ?? "Child agent"} closed.`,
+        lineage,
+      }, { itemId: `thread:${lineage.threadId}` });
+      return;
+    }
+    if (notification.method === "thread/goal/updated") {
+      if (threadId !== this.#opened.threadId) return;
+      const goal = parseThreadGoal(params.goal);
+      if (goal === null) return;
+      this.#goal = goal;
+      this.#emit("item.completed", {
+        kind: "goal",
+        text: `Thread goal ${goal.status}: ${goal.objective}`,
+        action: "notification",
+        goal,
+      }, { turnId: turnId || undefined, itemId: `${threadId}:goal:update:${this.#sourceSequence + 1}` });
+      return;
+    }
+    if (notification.method === "thread/goal/cleared") {
+      if (threadId !== this.#opened.threadId) return;
+      this.#goal = null;
+      this.#emit("item.completed", {
+        kind: "goal_cleared",
+        text: "Thread goal cleared.",
+        action: "notification",
+        goal: null,
+      }, { itemId: `${threadId}:goal:clear:${this.#sourceSequence + 1}` });
+      return;
+    }
+    if (notification.method === "serverRequest/resolved") {
+      const requestId = String(params.requestId ?? "");
+      const pending = this.#pendingRuntimeRequests.get(requestId);
+      if (pending === undefined || threadId !== this.#opened.threadId) return;
+      this.#pendingRuntimeRequests.delete(requestId);
+      this.#emit("runtime_request.cancelled", {
+        requestId,
+        reason: "provider_resolved",
+      }, { turnId: pending.request.turnId, itemId: pending.request.itemId });
+      pending.settle(safeRequestResponse(pending.request.method, "cancel"));
       return;
     }
     if (threadId !== this.#opened.threadId) {
@@ -962,7 +1251,8 @@ class CodexHarnessSession implements HarnessSession {
       return { success: true, contentItems: [{ type: "inputText", text: "Semantic completion accepted." }] };
     }
 
-    if (!isTurnScopedServerRequest(request.method)) return safeRequestResponse(request.method);
+    const requestKind = runtimeRequestKind(request.method);
+    if (requestKind === null) return safeRequestResponse(request.method);
     const requestTurnId = text(request.params.turnId);
     if (
       text(request.params.threadId) !== this.#opened.threadId ||
@@ -974,30 +1264,30 @@ class CodexHarnessSession implements HarnessSession {
       this.#failProtocol("runtime_request_binding_mismatch", "Runtime request did not name the active thread and turn.");
       return safeRequestResponse(request.method);
     }
-    const requestKind = request.method.includes("requestApproval") ? "approval" : "user_input";
     const requestId = String(request.id);
-    this.#emit("runtime_request.created", {
-      request: {
-        requestId,
-        requestKind,
-        type: request.method,
-        status: "pending",
-        prompt: "Codex requires an external runtime decision.",
-        details: redactCodexValue(boundedCodexValue(request.params)),
-      },
-    }, {
-      turnId: requestTurnId,
-      itemId: text(request.params.itemId, requestId),
-    });
-    const response = safeRequestResponse(request.method);
-    this.#emit("runtime_request.resolved", {
+    if (this.#pendingRuntimeRequests.has(requestId)) {
+      this.#failProtocol("runtime_request_duplicate", "Provider reused a pending runtime request identity.");
+      return safeRequestResponse(request.method);
+    }
+    const runtimeRequest: HarnessRuntimeRequest = {
       requestId,
-      resolution: "declined_by_skillless_driver",
-    }, {
+      requestKind,
+      method: request.method,
       turnId: requestTurnId,
       itemId: text(request.params.itemId, requestId),
+      status: "pending",
+      prompt: runtimeRequestPrompt(requestKind, request.params),
+      details: record(redactCodexValue(boundedCodexValue(request.params))),
+    };
+    this.#emit("runtime_request.created", {
+      request: { ...runtimeRequest, type: runtimeRequest.method },
+    }, {
+      turnId: requestTurnId,
+      itemId: runtimeRequest.itemId,
     });
-    return response;
+    return new Promise<Record<string, unknown>>((settle) => {
+      this.#pendingRuntimeRequests.set(requestId, { request: runtimeRequest, settle });
+    });
   }
 
   #captureResultFromItem(item: Record<string, unknown>, turnId: string): boolean {
@@ -1106,6 +1396,7 @@ class CodexHarnessSession implements HarnessSession {
           : status === "cancelled"
             ? "turn.cancelled"
             : "turn.completed";
+    this.#cancelPendingRequests("turn_terminal");
     this.#emit(eventType, boundedPayload({
       status,
       error: turn.error ?? null,
@@ -1173,10 +1464,28 @@ class CodexHarnessSession implements HarnessSession {
     return item === null ? null : tryParseResult(item.text);
   }
 
-  #requireActiveTurn(turnId: string): void {
+  #requireActiveTurn(turnId: string, operation: string): void {
     if (this.#activeTurnId !== turnId) {
-      throw this.#unsupported("active turn operation", "turn is no longer active");
+      this.#emit("harness.diagnostic", {
+        code: "stale_turn_rejected",
+        operation,
+        turnId,
+        activeTurnId: this.#activeTurnId,
+        message: `Rejected ${operation} for a stale turn identity.`,
+      });
+      throw new HarnessStaleTurnError(turnId);
     }
+  }
+
+  #cancelPendingRequests(reason: string): void {
+    for (const [requestId, pending] of this.#pendingRuntimeRequests) {
+      this.#emit("runtime_request.cancelled", { requestId, reason }, {
+        turnId: pending.request.turnId,
+        itemId: pending.request.itemId,
+      });
+      pending.settle(safeRequestResponse(pending.request.method, "cancel"));
+    }
+    this.#pendingRuntimeRequests.clear();
   }
 
   #notificationNamesActiveTurn(turnId: string, kind: string): boolean {
@@ -1219,6 +1528,7 @@ class CodexHarnessSession implements HarnessSession {
     this.#protocolFailed = true;
     this.#protocolFailureCode = code;
     this.#protocolFailureMessage = redactCodexDiagnostic(message);
+    this.#cancelPendingRequests("protocol_failed");
     this.#emit("session.failed", {
       code,
       message: redactCodexDiagnostic(message),
@@ -1377,14 +1687,148 @@ function rejectedToolCall(message: string): Record<string, unknown> {
   return { success: false, contentItems: [{ type: "inputText", text: message }] };
 }
 
-function isTurnScopedServerRequest(method: string): boolean {
-  return method.startsWith("item/") || method.startsWith("tool/") || method === "mcpServer/elicitation/request";
+function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | null {
+  if (method === "item/commandExecution/requestApproval" || method === "execCommandApproval") {
+    return "command_approval";
+  }
+  if (method === "item/fileChange/requestApproval" || method === "applyPatchApproval") {
+    return "file_approval";
+  }
+  if (method === "item/permissions/requestApproval") return "permission_approval";
+  if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
+    return "user_input";
+  }
+  if (method === "mcpServer/elicitation/request") return "elicitation";
+  return null;
+}
+
+function runtimeRequestPrompt(
+  kind: HarnessRuntimeRequestKind,
+  params: Record<string, unknown>,
+): string {
+  const reason = text(params.reason, text(params.message));
+  if (reason.length > 0) return boundedText(redactCodexDiagnostic(reason));
+  const labels: Record<HarnessRuntimeRequestKind, string> = {
+    command_approval: "Codex requests approval to run a command.",
+    file_approval: "Codex requests approval to change files.",
+    permission_approval: "Codex requests additional runtime permissions.",
+    user_input: "Codex requests user input.",
+    elicitation: "A tool requests structured user input.",
+  };
+  return labels[kind];
+}
+
+function runtimeRequestResponse(
+  request: HarnessRuntimeRequest,
+  resolution: HarnessRuntimeRequestResolution,
+): Record<string, unknown> {
+  const action = (resolution as { action?: unknown }).action;
+  if (!["accept", "accept_for_session", "decline", "cancel", "submit"].includes(String(action))) {
+    throw new Error(`unsupported runtime request resolution ${String(action)}`);
+  }
+  if (request.requestKind === "command_approval" || request.requestKind === "file_approval") {
+    if (resolution.action === "submit") {
+      throw new Error(`${request.requestKind} does not accept submitted form data`);
+    }
+    const decisions = {
+      accept: "accept",
+      accept_for_session: "acceptForSession",
+      decline: "decline",
+      cancel: "cancel",
+    } as const;
+    return { decision: decisions[resolution.action] };
+  }
+  if (request.requestKind === "permission_approval") {
+    if (resolution.action === "submit") {
+      throw new Error("permission approval does not accept submitted form data");
+    }
+    return {
+      permissions: {},
+      scope: resolution.action === "accept_for_session" ? "session" : "turn",
+    };
+  }
+  if (request.requestKind === "user_input") {
+    if (resolution.action === "submit" && "answers" in resolution) {
+      return { answers: structuredClone(resolution.answers) };
+    }
+    if (resolution.action === "accept" || resolution.action === "accept_for_session") {
+      throw new Error("user input requires submit, decline, or cancel");
+    }
+    return { answers: {} };
+  }
+  if (resolution.action === "submit" && "content" in resolution) {
+    return { action: "accept", content: structuredClone(resolution.content), _meta: null };
+  }
+  if (resolution.action === "accept_for_session") {
+    throw new Error("elicitation does not support session acceptance");
+  }
+  return {
+    action: resolution.action === "submit" ? "accept" : resolution.action,
+    content: null,
+    _meta: null,
+  };
+}
+
+function parseThreadGoal(value: unknown): HarnessThreadGoal | null {
+  const goal = record(value);
+  const threadId = text(goal.threadId);
+  const objective = text(goal.objective);
+  const status = text(goal.status);
+  if (
+    threadId.length === 0 ||
+    objective.length === 0 ||
+    !["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"].includes(status)
+  ) {
+    return null;
+  }
+  return {
+    threadId,
+    objective,
+    status: status as HarnessThreadGoal["status"],
+    tokenBudget: typeof goal.tokenBudget === "number" ? goal.tokenBudget : null,
+    tokensUsed: typeof goal.tokensUsed === "number" ? goal.tokensUsed : 0,
+    timeUsedSeconds: typeof goal.timeUsedSeconds === "number" ? goal.timeUsedSeconds : 0,
+    createdAt: typeof goal.createdAt === "number" ? goal.createdAt : 0,
+    updatedAt: typeof goal.updatedAt === "number" ? goal.updatedAt : 0,
+  };
+}
+
+function threadStatus(value: unknown): string {
+  if (typeof value === "string") return value;
+  return text(record(value).type, "unknown");
+}
+
+function lineageFromThread(value: unknown): HarnessThreadLineageEntry {
+  const thread = record(value);
+  const source = record(thread.source);
+  const subAgent = source.subAgent ?? source.subagent;
+  const subAgentRecord = record(subAgent);
+  const spawn = record(subAgentRecord.thread_spawn ?? subAgentRecord.threadSpawn);
+  const parentThreadId = text(
+    spawn.parent_thread_id ?? spawn.parentThreadId,
+    text(thread.forkedFromId),
+  ) || null;
+  return {
+    threadId: text(thread.id),
+    providerSessionId: text(thread.sessionId) || null,
+    parentThreadId,
+    depth: typeof spawn.depth === "number" ? spawn.depth : parentThreadId === null ? 0 : 1,
+    nickname: text(thread.agentNickname, text(spawn.agent_nickname ?? spawn.agentNickname)) || null,
+    role: text(thread.agentRole, text(spawn.agent_role ?? spawn.agentRole)) || null,
+    status: threadStatus(thread.status),
+  };
 }
 
 function isBoundCodexNotification(method: string): boolean {
   return (
     method === "turn/started" ||
     method === "turn/completed" ||
+    method === "thread/started" ||
+    method === "thread/status/changed" ||
+    method === "thread/closed" ||
+    method === "thread/goal/updated" ||
+    method === "thread/goal/cleared" ||
+    method === "serverRequest/resolved" ||
     method === "thread/tokenUsage/updated" ||
     method === "error" ||
     method === "warning" ||
@@ -1395,18 +1839,18 @@ function isBoundCodexNotification(method: string): boolean {
   );
 }
 
-function safeRequestResponse(method: string): Record<string, unknown> {
+function safeRequestResponse(method: string, action: "decline" | "cancel" = "decline"): Record<string, unknown> {
   if (method === "item/permissions/requestApproval") {
-    return { permissions: {} };
+    return { permissions: {}, scope: "turn" };
   }
   if (method === "mcpServer/elicitation/request") {
-    return { action: "decline", content: null };
+    return { action, content: null, _meta: null };
   }
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     return { answers: {} };
   }
-  if (method.includes("requestApproval")) {
-    return { decision: "decline" };
+  if (method.includes("requestApproval") || method === "execCommandApproval" || method === "applyPatchApproval") {
+    return { decision: action };
   }
   return {};
 }

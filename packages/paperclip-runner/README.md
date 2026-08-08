@@ -13,7 +13,10 @@ the Rust outbound WebSocket client, private durable state, replay and restart
 recovery, and safe CLI/browser diagnostics. Phase 4 adds a direct, skillless
 Codex app-server driver, semantic completion tools, canonical event tracing,
 and a real-model example against the mock core. These phases do not import or
-start Paperclip's server, UI, CLI, or production database.
+start Paperclip's server, UI, CLI, or production database. The Phase 4b lower
+layer adds browser-resolved provider requests, goal capability detection,
+subagent lineage, control-race semantics, and a package-local demo server that
+keeps Codex authentication server-side.
 
 ## Phase 0–4 quick start
 
@@ -55,6 +58,7 @@ pnpm --filter @paperclipai/paperclip-runner replay:phase1
 pnpm --filter @paperclipai/paperclip-runner trace:phase2 -- --scenario happy-path
 pnpm --filter @paperclipai/paperclip-runner trace:phase3 -- --fault lost-ack
 pnpm --filter @paperclipai/paperclip-runner trace:phase4
+pnpm --filter @paperclipai/paperclip-runner demo:phase4b -- --host 127.0.0.1 --port 4174
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 ```
 
@@ -80,6 +84,8 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 | `record:phase3` | Regenerate the complete Phase 3 fault matrix and exact per-fault traces. |
 | `trace:phase4` | Run the mock core with a real, local skillless Codex app-server session. |
 | `record:phase4` | Run the safe Codex task and record its validated, normalized trace. |
+| `demo:phase4b` | Start the package-local HTTP/SSE server with server-only Codex authentication. |
+| `record:phase4b` | Run a safe real Codex task through the demo server and record reconnect/replay evidence. |
 | `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
 | `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
 | `verify` | Run the complete deterministic Phase 0 through Phase 4 acceptance sequence. |
@@ -97,6 +103,8 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Phase 3 durable transport reference](docs/phase-03-durable-transport.md)
 - [Phase 4 skillless Codex tutorial](docs/tutorials/phase-04-skillless-codex.md)
 - [Phase 4 skillless Codex driver reference](docs/phase-04-skillless-codex-driver.md)
+- [Phase 4b protocol/server tutorial](docs/tutorials/phase-04b-protocol-server.md)
+- [Phase 4b protocol/server reference](docs/phase-04b-protocol-server.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)

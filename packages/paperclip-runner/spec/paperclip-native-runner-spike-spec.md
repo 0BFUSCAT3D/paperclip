@@ -6657,6 +6657,17 @@ requests, goal operations, and parent/child lineage are explicit Phase 4b
 contracts and must receive deterministic conformance fixtures before UI work
 claims them.
 
+The implemented lowest-layer contract keeps supported provider server requests
+pending behind a typed resolution union, emits canonical acknowledgement or
+cleanup facts exactly once, probes goal support through `thread/goal/get`, and
+derives lineage from upstream thread identity/source fields. The package-local
+HTTP/SSE demo server fixes its workspace at construction, resumes the exact
+persisted driver/provider thread, replays only validated PRP events, and applies
+a second bounded redaction pass before browser delivery. The real Codex 0.132.0
+recording found generated goal bindings but no runtime-advertised goal method;
+the capability is therefore disabled with an exact diagnostic instead of
+presenting fabricated controls.
+
 Use source-adapted shadcn/ui and Vercel AI Elements primitives where they fit,
 after UX review. Keep the package's own protocol and reducer authoritative;
 third-party chat message or tool-part types must not become the runner protocol.

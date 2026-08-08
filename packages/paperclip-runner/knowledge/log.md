@@ -18,3 +18,6 @@
   shadcn/AI Elements adapt/reject decision record with a zero-new-runtime-
   dependency rule, keyboard/accessibility acceptance criteria, four token
   additions, and annotated desktop/mobile mockups.
+* **Phase 4b protocol/server layer**: Added deterministic Codex request, goal,
+  lineage, control-race, reconnect, replay, and redaction fixtures; a typed
+  server-only demo boundary; and a passing real Codex server trace.

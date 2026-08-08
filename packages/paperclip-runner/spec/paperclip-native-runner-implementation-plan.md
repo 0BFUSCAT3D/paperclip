@@ -358,6 +358,19 @@ Phase 5 conditionally: do not create or start Phase 5 until the complete Phase
 tutorial, screenshots, OKF journal entry, review gates, QA evidence, live
 service handoff, and human checkpoint are complete.
 
+**Lowest-layer implementation evidence (2026-08-08):** the driver/protocol and
+demo-server slice is implemented under `packages/paperclip-runner/`. It adds a
+Codex 0.132.0 deterministic conformance fixture, typed browser resolution for
+command/file/permission/user-input/elicitation requests, same-turn steering
+acknowledgement and stale rejection, queued pre-start interruption and terminal
+race semantics, capability-probed goals, upstream-derived parent/child lineage,
+exact resume/replay identity, bounded redaction, and an HTTP/SSE demo server
+with a fixed server-owned workspace and server-only Codex authentication. The
+real server evidence records one exact file result, one semantic result, one
+terminal, continuous source sequence, stable reconnect identity, and explicit
+runtime goal unavailability. Browser rendering, screenshots, reviews, QA, live
+service handoff, and the human checkpoint remain later Phase 4b gates.
+
 ## Phase 5 — Browser reference console and reusable SDK surface
 
 **Purpose:** generalize the Phase 4b browser proof into a stable reference

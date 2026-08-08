@@ -37,7 +37,7 @@ export interface NativeSession {
   events(input?: { afterCursor?: string | null }): AsyncIterable<NativeRunEvent>;
   startTurn(input: { message: NativeUserMessage }): Promise<{ turnId: string }>;
   steer?(input: { turnId: string; message: NativeUserMessage }): Promise<void>;
-  interrupt?(input: { turnId: string; reason?: string }): Promise<void>;
+  interrupt?(input: { turnId?: string; reason?: string }): Promise<void>;
   cancel?(input: { reason: string }): Promise<void>;
   result(): Promise<NativeRunResult | null>;
   snapshot(): Promise<PersistedNativeSession>;

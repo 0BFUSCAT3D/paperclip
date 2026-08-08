@@ -10,6 +10,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 2: local runner and fake harness](tutorials/phase-02-local-runner.md) — run a supervised Rust process, exercise scripted live scenarios, resolve requests, interrupt a turn, and confirm live/replay parity.
 - [Phase 3: break recovery on purpose](tutorials/phase-03-break-recovery.md) — lose an ACK, drop the socket, restart the runner side, replay durable events, and inspect recovery diagnostics.
 - [Phase 4: run the skillless Codex driver](tutorials/phase-04-skillless-codex.md) — run a safe real-model task, inspect the exact context boundary, steer or interrupt it, and confirm one replay-safe result.
+- [Phase 4b: run the protocol demo server](tutorials/phase-04b-protocol-server.md) — exercise the server-only Codex boundary, canonical replay, typed controls, and reconnect with `curl`.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -19,6 +20,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 2 local protocol and supervision](phase-02-local-protocol.md)
 - [Phase 3 durable transport and recovery](phase-03-durable-transport.md)
 - [Phase 4 skillless Codex driver](phase-04-skillless-codex-driver.md)
+- [Phase 4b protocol and demo server](phase-04b-protocol-server.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)
