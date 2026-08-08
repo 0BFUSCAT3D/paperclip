@@ -57,6 +57,11 @@ describe("normalizeMidLineHeadings", () => {
     expect(normalizeMidLineHeadings(body)).toBe(body);
   });
 
+  it("does not close a long fence with a shorter run", () => {
+    const body = "````markdown\n```\ncode ## comment\n````";
+    expect(normalizeMidLineHeadings(body)).toBe(body);
+  });
+
   it("is a no-op when there is no `#` at all", () => {
     const body = "Just some prose with no markers.";
     expect(normalizeMidLineHeadings(body)).toBe(body);
@@ -71,8 +76,8 @@ describe("normalizeMarkdownBody / multilineTextSchema", () => {
     );
   });
 
-  it("multilineTextSchema self-heals a collapsed plan body on write", () => {
+  it("multilineTextSchema leaves unrelated mid-line markers unchanged", () => {
     const parsed = multilineTextSchema.parse("plan pack)## The goal, restated");
-    expect(parsed).toBe("plan pack)\n\n## The goal, restated");
+    expect(parsed).toBe("plan pack)## The goal, restated");
   });
 });

@@ -43,6 +43,7 @@ export function normalizeMidLineHeadings(value: string): string {
   const lines = value.split("\n");
   let inFence = false;
   let fenceChar = "";
+  let fenceLength = 0;
   const out: string[] = [];
   for (const line of lines) {
     const fenceMatch = FENCE_LINE.exec(line);
@@ -51,9 +52,11 @@ export function normalizeMidLineHeadings(value: string): string {
       if (!inFence) {
         inFence = true;
         fenceChar = marker[0]!;
-      } else if (marker[0] === fenceChar) {
+        fenceLength = marker.length;
+      } else if (marker[0] === fenceChar && marker.length >= fenceLength) {
         inFence = false;
         fenceChar = "";
+        fenceLength = 0;
       }
       out.push(line);
       continue;
@@ -67,4 +70,4 @@ export function normalizeMarkdownBody(value: string): string {
   return normalizeMidLineHeadings(normalizeEscapedLineBreaks(value));
 }
 
-export const multilineTextSchema = z.string().transform(normalizeMarkdownBody);
+export const multilineTextSchema = z.string().transform(normalizeEscapedLineBreaks);
