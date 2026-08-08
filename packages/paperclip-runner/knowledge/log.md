@@ -14,3 +14,7 @@
   compact task envelope, isolated model context, semantic completion tools,
   canonical event/replay mapping, safe real-model example, tutorial, journal,
   and exact verification trace.
+* **Phase 4b UX gate**: Approved the live-console interaction map, the
+  shadcn/AI Elements adapt/reject decision record with a zero-new-runtime-
+  dependency rule, keyboard/accessibility acceptance criteria, four token
+  additions, and annotated desktop/mobile mockups.

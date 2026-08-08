@@ -21,6 +21,8 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4 skillless Codex driver](phase-04-skillless-codex-driver.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
+- [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)
+- [Phase 4b component decision record (shadcn/ui, AI Elements)](design/phase-4b-component-decisions.md)
 - [Package README](../README.md)
 
 Phase 4 is implemented and ready for Security, CTO, QA, and human review.
