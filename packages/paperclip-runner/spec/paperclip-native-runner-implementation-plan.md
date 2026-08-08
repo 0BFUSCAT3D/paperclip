@@ -223,6 +223,18 @@ to the package index and cumulative end-to-end tutorial.
 
 **Human checkpoint:** run a small Codex task, inspect the exact model envelope, steer or interrupt it, and verify the structured result and replay.
 
+**Authorization and execution state (2026-08-08):** the human checkpoint for
+Phase 3 is accepted, and the board has authorized Phase 4. Create one Phase 4
+checkpoint issue with ordered implementation, security review, CTO contract
+review, and QA tutorial children. Implementation remains entirely inside
+`packages/paperclip-runner/` and uses the mock core; it must not modify or
+import `server/`, `ui/`, `packages/db/`, or production control-plane behavior.
+Security and CTO review start only after the runnable driver tracer is complete.
+QA starts only after implementation and both reviews pass. Keep Phase 5 tasks
+uncreated until the Phase 4 runnable demo, tests, package-local documentation,
+tutorial, OKF journal entry, review gates, QA evidence, and human checkpoint are
+complete.
+
 ## Phase 5 — Browser reference console and reusable SDK surface
 
 **Purpose:** turn the proven protocol into a reference implementation that package users can adopt without the Paperclip app.
