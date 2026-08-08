@@ -11,7 +11,27 @@ export interface HarnessDriverDescriptor {
 
 export interface OpenHarnessSessionInput {
   runId: string;
+  normalizedSessionId: string;
   workingDirectory: string;
+}
+
+export class HarnessCapabilityUnavailableError extends Error {
+  readonly operation: string;
+
+  constructor(operation: string, detail: string) {
+    super(`${operation} is unavailable: ${detail}`);
+    this.name = "HarnessCapabilityUnavailableError";
+    this.operation = operation;
+  }
+}
+
+export class HarnessReconciliationError extends Error {
+  readonly recoverable = true;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "HarnessReconciliationError";
+  }
 }
 
 export interface PersistedHarnessSession {

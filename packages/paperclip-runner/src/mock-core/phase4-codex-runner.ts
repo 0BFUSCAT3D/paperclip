@@ -1,5 +1,8 @@
 import type { HarnessDriver, HarnessSession } from "../contracts/harness-driver.js";
 import {
+  isSkilllessPhase4Context,
+  type Phase4ResultDecision,
+  type Phase4ResultValidationIssue,
   type Phase4RunMetadata,
   type Phase4RunTrace,
   type Phase4TaskEnvelope,
@@ -9,15 +12,13 @@ import {
   applyPrpEvent,
   createSessionSnapshotFromMetadata,
 } from "../reducer/session-reducer.js";
-import type {
-  PrpCapabilities,
-  PrpEvent,
-  PrpStructuredRunResult,
-} from "../protocol/phase1-contract.js";
 import {
-  UnsupportedCodexOperationError,
-  isSkilllessContext,
-} from "../drivers/codex/codex-app-server-driver.js";
+  validatePrpStructuredRunResult,
+  type PrpCapabilities,
+  type PrpEvent,
+  type PrpStructuredRunResult,
+  type PrpTerminalState,
+} from "../protocol/phase1-contract.js";
 
 export interface Phase4CodexTracerInput {
   driver: HarnessDriver;
@@ -25,10 +26,12 @@ export interface Phase4CodexTracerInput {
   workingDirectory: string;
   message?: NativeUserMessage;
   runId?: string;
+  normalizedSessionId?: string;
   companyId?: string;
   issueId?: string;
   environmentLeaseId?: string;
   runnerInstanceId?: string;
+  controlPlaneInstanceId?: string;
   steer?: string;
   interrupt?: boolean;
   timeoutMs?: number;
@@ -55,22 +58,128 @@ function prpCapabilities(
 
 function contextFrom(events: PrpEvent[]) {
   const event = events.find(
-    (candidate) => candidate.eventType === "session.started" || candidate.eventType === "session.resumed",
+    (candidate) =>
+      candidate.eventType === "session.started" || candidate.eventType === "session.resumed",
   );
   const context = event?.payload.context;
   if (typeof context !== "object" || context === null || Array.isArray(context)) {
-    throw new Error("Codex session did not emit its model-context snapshot");
+    throw new Error("Harness session did not emit its model-context snapshot");
   }
   return context as Phase4RunTrace["context"];
 }
 
-function resultFrom(events: PrpEvent[]): PrpStructuredRunResult {
-  const event = events.find((candidate) => candidate.eventType === "run.result.proposed");
-  if (event === undefined) throw new Error("Codex session emitted no semantic result");
-  return event.payload as PrpStructuredRunResult;
+function dispositionIssues(
+  result: PrpStructuredRunResult,
+): Phase4ResultValidationIssue[] {
+  const issues: Phase4ResultValidationIssue[] = [];
+  const claim = result.completionClaim;
+  if (result.reportedWorkDisposition === "done") {
+    if (
+      claim.objectiveSatisfied !== true ||
+      claim.criteria.some((criterion) => criterion.status !== "satisfied") ||
+      claim.remainingWork.some((remaining) => remaining.blocksCompletion) ||
+      result.blocker !== undefined
+    ) {
+      issues.push({
+        code: "invalid_disposition",
+        path: "/reportedWorkDisposition",
+        message: "done requires a satisfied objective and criteria with no blocking work or blocker",
+      });
+    }
+  } else if (result.reportedWorkDisposition === "needs_review") {
+    if (result.blocker !== undefined || result.attentionRequests.length === 0) {
+      issues.push({
+        code: "invalid_disposition",
+        path: "/reportedWorkDisposition",
+        message: "needs_review requires an attention request and must not include a blocker",
+      });
+    }
+  } else if (result.reportedWorkDisposition === "blocked") {
+    if (
+      claim.objectiveSatisfied !== false ||
+      result.blocker === undefined ||
+      !claim.remainingWork.some((remaining) => remaining.blocksCompletion)
+    ) {
+      issues.push({
+        code: "invalid_disposition",
+        path: "/reportedWorkDisposition",
+        message: "blocked requires an unsatisfied objective, blocker details, and blocking remaining work",
+      });
+    }
+  } else {
+    issues.push({
+      code: "invalid_disposition",
+      path: "/reportedWorkDisposition",
+      message: `${result.reportedWorkDisposition} is not a Phase 4 terminal proposal`,
+    });
+  }
+  return issues;
 }
 
-async function consumeToTerminal(
+/** Validate an advisory provider proposal against the exact controller-owned task envelope. */
+export function validatePhase4ResultProposal(
+  proposal: unknown,
+  envelope: Phase4TaskEnvelope,
+): Phase4ResultDecision {
+  const schema = validatePrpStructuredRunResult(proposal);
+  if (!schema.ok) {
+    return {
+      status: "rejected",
+      result: null,
+      issues: schema.issues.map((issue) => ({
+        code: "schema_validation",
+        path: issue.path,
+        message: issue.message,
+      })),
+    };
+  }
+
+  const result = schema.result;
+  const issues: Phase4ResultValidationIssue[] = [];
+  if (result.completionClaim.contractRevision !== envelope.completionContract.revision) {
+    issues.push({
+      code: "contract_revision_mismatch",
+      path: "/completionClaim/contractRevision",
+      message: `expected exact contract revision ${envelope.completionContract.revision}`,
+    });
+  }
+
+  const expectedIds = new Set(envelope.completionContract.criteria.map((criterion) => criterion.id));
+  const observed = new Map<string, number>();
+  result.completionClaim.criteria.forEach((criterion, index) => {
+    observed.set(criterion.criterionId, (observed.get(criterion.criterionId) ?? 0) + 1);
+    if (!expectedIds.has(criterion.criterionId)) {
+      issues.push({
+        code: "unknown_criterion",
+        path: `/completionClaim/criteria/${index}/criterionId`,
+        message: `criterion ${criterion.criterionId} is not in the task envelope`,
+      });
+    }
+  });
+  for (const criterionId of expectedIds) {
+    const count = observed.get(criterionId) ?? 0;
+    if (count === 0) {
+      issues.push({
+        code: "missing_criterion",
+        path: "/completionClaim/criteria",
+        message: `criterion ${criterionId} is missing`,
+      });
+    } else if (count > 1) {
+      issues.push({
+        code: "duplicate_criterion",
+        path: "/completionClaim/criteria",
+        message: `criterion ${criterionId} appears more than once`,
+      });
+    }
+  }
+  issues.push(...dispositionIssues(result));
+
+  return issues.length === 0
+    ? { status: "accepted", result: structuredClone(result), issues: [] }
+    : { status: "rejected", result: null, issues };
+}
+
+async function consumeToTurnTerminal(
   session: HarnessSession,
   timeoutMs: number,
   onEvent?: (event: PrpEvent) => void,
@@ -80,16 +189,19 @@ async function consumeToTerminal(
     for await (const event of session.events()) {
       events.push(event);
       onEvent?.(event);
-      if (event.eventType === "run.terminal") return events;
+      if (isTurnTerminal(event)) return events;
     }
-    throw new Error("Codex event stream closed before run.terminal");
+    throw new Error("Harness event stream closed before a turn terminal fact");
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       consume(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Codex tracer timed out after ${timeoutMs}ms`)), timeoutMs);
+        timer = setTimeout(
+          () => reject(new Error(`Phase 4 tracer timed out after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
       }),
     ]);
   } finally {
@@ -97,13 +209,43 @@ async function consumeToTerminal(
   }
 }
 
+function isTurnTerminal(event: PrpEvent): boolean {
+  return ["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(
+    event.eventType,
+  );
+}
+
+function runtimeTerminal(event: PrpEvent): Pick<PrpTerminalState, "turnTerminalState" | "runTerminalState"> {
+  if (event.eventType === "turn.completed") {
+    return { turnTerminalState: "completed", runTerminalState: "succeeded" };
+  }
+  if (event.eventType === "turn.failed") {
+    return { turnTerminalState: "failed", runTerminalState: "failed" };
+  }
+  if (event.eventType === "turn.interrupted") {
+    return { turnTerminalState: "interrupted", runTerminalState: "cancelled" };
+  }
+  return { turnTerminalState: "cancelled", runTerminalState: "cancelled" };
+}
+
+function sourceSequenceContinuous(events: PrpEvent[]): boolean {
+  const cursors = new Map<string, number>();
+  for (const event of events) {
+    const key = `${event.sourceKind}:${event.sourceInstanceId}`;
+    const previous = cursors.get(key);
+    if (previous !== undefined && event.sourceSeq !== previous + 1) return false;
+    cursors.set(key, event.sourceSeq);
+  }
+  return true;
+}
+
 /**
- * Small in-memory Phase 4 mock core. It accepts only the public driver contract,
- * reduces events live, and replays the same canonical stream after completion.
+ * Small in-memory Phase 4 mock core. The driver reports provider facts; this
+ * controller validates semantic proposals and alone emits the run terminal.
  */
 export async function runPhase4CodexTracer(input: Phase4CodexTracerInput): Promise<Phase4RunTrace> {
   const runId = input.runId ?? "phase4-safe-run";
-  const normalizedSessionId = `session:${runId}`;
+  const normalizedSessionId = input.normalizedSessionId ?? "phase4-normalized-session";
   const descriptor = await input.driver.descriptor();
   const capabilities = prpCapabilities(descriptor);
   const metadata: Phase4RunMetadata = {
@@ -120,12 +262,17 @@ export async function runPhase4CodexTracer(input: Phase4CodexTracerInput): Promi
     },
     capabilities,
   };
-  const session = await input.driver.openSession({ runId, workingDirectory: input.workingDirectory });
+  const session = await input.driver.openSession({
+    runId,
+    normalizedSessionId,
+    workingDirectory: input.workingDirectory,
+  });
+  const capabilityDiagnostics: string[] = [];
   let signalTurnStarted: (() => void) | undefined;
   const turnStarted = new Promise<void>((resolve) => {
     signalTurnStarted = resolve;
   });
-  const consuming = consumeToTerminal(session, input.timeoutMs ?? 180_000, (event) => {
+  const consuming = consumeToTurnTerminal(session, input.timeoutMs ?? 180_000, (event) => {
     if (event.eventType === "turn.started") signalTurnStarted?.();
   });
 
@@ -137,31 +284,37 @@ export async function runPhase4CodexTracer(input: Phase4CodexTracerInput): Promi
       await Promise.race([
         turnStarted,
         consuming.then(() => {
-          throw new Error("Codex turn reached terminal state before accepting the control command");
+          throw new Error("Harness turn reached terminal state before accepting the control command");
         }),
       ]);
     }
     if (input.steer !== undefined) {
-      if (session.steer === undefined) throw new Error("driver did not expose steering");
-      try {
-        await session.steer({ turnId: turn.turnId, message: { role: "user", text: input.steer } });
-      } catch (error) {
-        // A short real-model turn can finish between turn/start and turn/steer.
-        // The driver already emitted the explicit capability diagnostic; keep
-        // consuming the same session so the mock core records its terminal.
-        if (!(error instanceof UnsupportedCodexOperationError)) throw error;
+      if (!descriptor.capabilities.steering || session.steer === undefined) {
+        capabilityDiagnostics.push("steering is unavailable by driver capability contract");
+      } else {
+        try {
+          await session.steer({
+            turnId: turn.turnId,
+            message: { role: "user", text: input.steer },
+          });
+        } catch (error) {
+          capabilityDiagnostics.push(`steering degraded: ${String(error)}`);
+        }
       }
     }
     if (input.interrupt) {
-      if (session.interrupt === undefined) throw new Error("driver did not expose interruption");
-      try {
-        await session.interrupt({ turnId: turn.turnId, reason: "Phase 4 tutorial interrupt" });
-      } catch (error) {
-        if (!(error instanceof UnsupportedCodexOperationError)) throw error;
+      if (!descriptor.capabilities.interruption || session.interrupt === undefined) {
+        capabilityDiagnostics.push("interruption is unavailable by driver capability contract");
+      } else {
+        try {
+          await session.interrupt({ turnId: turn.turnId, reason: "Phase 4 tutorial interrupt" });
+        } catch (error) {
+          capabilityDiagnostics.push(`interruption degraded: ${String(error)}`);
+        }
       }
     }
 
-    const events = await consuming;
+    const providerEvents = await consuming;
     const ids = session.ids();
     const identity = {
       ...metadata.identity,
@@ -169,6 +322,80 @@ export async function runPhase4CodexTracer(input: Phase4CodexTracerInput): Promi
       ...(ids.providerSessionId ? { providerSessionId: ids.providerSessionId } : {}),
     };
     metadata.identity = identity;
+
+    const proposals = providerEvents.filter(
+      (event) => event.eventType === "run.result.proposed",
+    );
+    const proposedResult = proposals.length === 1 ? structuredClone(proposals[0]!.payload) : null;
+    const resultDecision: Phase4ResultDecision =
+      proposals.length === 1
+        ? validatePhase4ResultProposal(proposedResult, input.taskEnvelope)
+        : {
+            status: "rejected",
+            result: null,
+            issues: [{
+              code: "schema_validation",
+              path: "/run.result.proposed",
+              message:
+                proposals.length === 0
+                  ? "the completed turn emitted no semantic proposal"
+                  : "the completed turn emitted multiple semantic proposals",
+            }],
+          };
+
+    let controlSequence = 0;
+    const controlPlaneInstanceId = input.controlPlaneInstanceId ?? "mock-core-phase4";
+    const controlEvent = (
+      eventType: PrpEvent["eventType"],
+      payload: Record<string, unknown>,
+      refs: { turnId?: string; itemId?: string } = {},
+    ): PrpEvent => ({
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: `${controlPlaneInstanceId}:${runId}:${++controlSequence}`,
+      sourceSeq: controlSequence,
+      sourceInstanceId: controlPlaneInstanceId,
+      sourceKind: "control_plane",
+      runId,
+      normalizedSessionId,
+      ...(refs.turnId ? { turnId: refs.turnId } : {}),
+      ...(refs.itemId ? { itemId: refs.itemId } : {}),
+      eventType,
+      schemaVersion: 1,
+      priority: eventType === "run.terminal" || eventType.startsWith("run.result.") ? 0 : 1,
+      emittedAt: new Date().toISOString(),
+      payload,
+    });
+    const controlEvents = capabilityDiagnostics.map((message) =>
+      controlEvent("runner.diagnostic", {
+        code: "capability_unavailable",
+        message,
+      }),
+    );
+    controlEvents.push(
+      resultDecision.status === "accepted"
+        ? controlEvent("run.result.accepted", {
+            contractRevision: input.taskEnvelope.completionContract.revision,
+            result: resultDecision.result,
+          })
+        : controlEvent("run.result.rejected", {
+            reasonCode: "semantic_result_rejected",
+            issues: resultDecision.issues,
+            recovery: { required: true, recoverable: true },
+          }),
+    );
+    const providerTerminal = providerEvents.findLast(isTurnTerminal);
+    if (providerTerminal === undefined) throw new Error("turn terminal invariant failed");
+    const runtime = runtimeTerminal(providerTerminal);
+    controlEvents.push(controlEvent("run.terminal", {
+      schema: "paperclip.prp.terminal.v1",
+      ...runtime,
+      reportedWorkDisposition:
+        resultDecision.status === "accepted"
+          ? resultDecision.result.reportedWorkDisposition
+          : "yielded",
+    }, providerTerminal.turnId ? { turnId: providerTerminal.turnId } : {}));
+    const events = [...providerEvents, ...controlEvents];
+
     const liveSnapshot = events.reduce(
       applyPrpEvent,
       createSessionSnapshotFromMetadata({
@@ -186,37 +413,52 @@ export async function runPhase4CodexTracer(input: Phase4CodexTracerInput): Promi
       }),
     );
     const context = contextFrom(events);
-    const result = resultFrom(events);
     const terminalCount = events.filter((event) => event.eventType === "run.terminal").length;
-    const resultCount = events.filter((event) => event.eventType === "run.result.proposed").length;
+    const turnTerminalCount = events.filter(isTurnTerminal).length;
+    const decisionCount = events.filter(
+      (event) =>
+        event.eventType === "run.result.accepted" || event.eventType === "run.result.rejected",
+    ).length;
     const serialized = JSON.stringify(context).toLowerCase();
     const itemEvents = events.filter((event) => event.eventType.startsWith("item."));
+    const providerSessionId = ids.providerSessionId ?? null;
     return {
       schema: "paperclip.runner.phase4.trace.v1",
       metadata,
       context,
       events,
-      result,
+      proposedResult,
+      result: resultDecision.result,
+      resultDecision,
       liveSnapshot,
       replaySnapshot,
       diagnostics: events
-        .filter((event) => event.eventType === "runner.diagnostic" || event.eventType === "harness.diagnostic")
-        .map((event) => String(event.payload.message ?? event.payload.code ?? "diagnostic")),
+        .filter(
+          (event) =>
+            event.eventType === "runner.diagnostic" ||
+            event.eventType === "harness.diagnostic" ||
+            event.eventType === "run.result.rejected",
+        )
+        .map((event) => String(event.payload.message ?? event.payload.reasonCode ?? event.payload.code ?? "diagnostic")),
       assertions: {
-        exactlyOneTerminalResult: terminalCount === 1 && resultCount === 1,
+        exactlyOneTerminalResult:
+          terminalCount === 1 && turnTerminalCount === 1 && decisionCount === 1,
+        proposalAccepted: resultDecision.status === "accepted",
         liveReplayParity: JSON.stringify(liveSnapshot) === JSON.stringify(replaySnapshot),
         stableIdentity:
+          providerSessionId !== null &&
+          new Set([runId, normalizedSessionId, ids.driverSessionId, providerSessionId]).size === 4 &&
           events.every(
             (event) =>
               event.runId === runId && event.normalizedSessionId === normalizedSessionId,
-          ) && ids.driverSessionId.length > 0,
-        sourceSequenceContinuous: events.every(
-          (event, index) => event.sourceSeq === index + 1,
-        ),
+          ),
+        sourceSequenceContinuous: sourceSequenceContinuous(events),
         stableItemIdentity: itemEvents.every(
           (event) => typeof event.itemId === "string" && event.itemId.length > 0,
         ),
-        contextIsSkillless: isSkilllessContext(context),
+        contextIsSkillless: isSkilllessPhase4Context(context, {
+          dynamicTools: descriptor.capabilities.dynamicTools === true,
+        }),
         unrelatedSkillsAbsent:
           context.instructionSources.length === 0 &&
           context.instructionPolicy.skillInstructions === false &&

@@ -75,12 +75,15 @@ export interface Phase4RunTrace {
   metadata: Phase4RunMetadata;
   context: Phase4ModelContextSnapshot;
   events: PrpEvent[];
-  result: PrpStructuredRunResult;
+  proposedResult: unknown | null;
+  result: PrpStructuredRunResult | null;
+  resultDecision: Phase4ResultDecision;
   liveSnapshot: SessionSnapshot;
   replaySnapshot: SessionSnapshot;
   diagnostics: string[];
   assertions: {
     exactlyOneTerminalResult: boolean;
+    proposalAccepted: boolean;
     liveReplayParity: boolean;
     stableIdentity: boolean;
     sourceSequenceContinuous: boolean;
@@ -90,6 +93,22 @@ export interface Phase4RunTrace {
     credentialsAbsent: boolean;
   };
 }
+
+export interface Phase4ResultValidationIssue {
+  code:
+    | "schema_validation"
+    | "contract_revision_mismatch"
+    | "unknown_criterion"
+    | "missing_criterion"
+    | "duplicate_criterion"
+    | "invalid_disposition";
+  path: string;
+  message: string;
+}
+
+export type Phase4ResultDecision =
+  | { status: "accepted"; result: PrpStructuredRunResult; issues: [] }
+  | { status: "rejected"; result: null; issues: Phase4ResultValidationIssue[] };
 
 export function createPhase4TaskEnvelope(input: {
   objective: string;
@@ -273,3 +292,28 @@ export const PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA = {
     },
   },
 } as const;
+
+export function isSkilllessPhase4Context(
+  context: Phase4ModelContextSnapshot,
+  options: { dynamicTools: boolean } = { dynamicTools: true },
+): boolean {
+  const serialized = JSON.stringify(context).toLowerCase();
+  const expectedTools = options.dynamicTools ? [...PHASE4_SEMANTIC_TOOL_NAMES] : [];
+  return (
+    context.instructionSources.length === 0 &&
+    context.baseInstructions === PHASE4_SKILLLESS_BASE_INSTRUCTIONS &&
+    context.modelInputKinds.length === 1 &&
+    context.modelInputKinds[0] === "text" &&
+    context.dynamicToolNames.length === expectedTools.length &&
+    context.dynamicToolNames.every((name) =>
+      expectedTools.includes(name as (typeof expectedTools)[number]),
+    ) &&
+    context.instructionPolicy.skillInstructions === false &&
+    context.instructionPolicy.appInstructions === false &&
+    context.instructionPolicy.collaborationInstructions === false &&
+    !serialized.includes("paperclip_api_key") &&
+    !serialized.includes("authorization: bearer") &&
+    !serialized.includes("/api/issues/") &&
+    !serialized.includes('"type":"skill"')
+  );
+}

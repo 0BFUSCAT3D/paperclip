@@ -40,7 +40,9 @@ function formatSummary(trace: Awaited<ReturnType<typeof runPhase4CodexTracer>>):
     `provider session: ${trace.metadata.identity.providerSessionId}`,
     `model: ${trace.context.model} (${trace.context.modelProvider})`,
     `events: ${trace.events.length}`,
-    `result: ${trace.result.reportedWorkDisposition} — ${trace.result.summary}`,
+    trace.result === null
+      ? `result: rejected — ${trace.resultDecision.issues.map((issue) => issue.message).join("; ")}`
+      : `result: ${trace.result.reportedWorkDisposition} — ${trace.result.summary}`,
     checks,
   ].join("\n");
 }

@@ -4,7 +4,9 @@ import {
   PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
   PHASE4_RESULT_OUTPUT_SCHEMA,
   createPhase4TaskEnvelope,
+  isSkilllessPhase4Context,
 } from "../../contracts/phase4.js";
+import { HarnessCapabilityUnavailableError } from "../../contracts/harness-driver.js";
 import {
   applyPrpEvent,
   createSessionSnapshotFromMetadata,
@@ -17,9 +19,11 @@ import {
 } from "../../protocol/phase1-contract.js";
 import {
   CodexAppServerDriver,
-  UnsupportedCodexOperationError,
-  isSkilllessContext,
 } from "./codex-app-server-driver.js";
+import {
+  runPhase4CodexTracer,
+  validatePhase4ResultProposal,
+} from "../../mock-core/phase4-codex-runner.js";
 import type {
   CodexAppServerTransport,
   CodexRpcNotification,
@@ -61,6 +65,7 @@ class FakeCodexTransport implements CodexAppServerTransport {
   readonly queue = new TestQueue<CodexRpcNotification>();
   handler: CodexServerRequestHandler = async () => ({});
   rejectMethods = new Map<string, Error>();
+  readResponse: Record<string, unknown> | null = null;
 
   constructor(
     readonly threadId = "thread-1",
@@ -76,7 +81,13 @@ class FakeCodexTransport implements CodexAppServerTransport {
     }
     if (method === "thread/start" || method === "thread/resume") {
       return {
-        thread: { id: this.threadId, sessionId: this.providerSessionId, modelProvider: "openai", cwd: "/workspace", turns: [] },
+        thread: {
+          id: this.threadId,
+          sessionId: this.providerSessionId,
+          modelProvider: "openai",
+          cwd: "/workspace",
+          turns: [],
+        },
         model: "gpt-test",
         modelProvider: "openai",
         cwd: "/workspace",
@@ -87,7 +98,7 @@ class FakeCodexTransport implements CodexAppServerTransport {
     }
     if (method === "turn/start") return { turn: { id: "turn-1", status: "inProgress", items: [] } };
     if (method === "thread/read") {
-      return { thread: { id: this.threadId, sessionId: this.providerSessionId, turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
+      return this.readResponse ?? { thread: { id: this.threadId, sessionId: this.providerSessionId, turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
     }
     return {};
   }
@@ -160,17 +171,69 @@ async function collectUntilTerminal(events: AsyncIterable<PrpEvent>): Promise<Pr
   const collected: PrpEvent[] = [];
   for await (const event of events) {
     collected.push(event);
-    if (event.eventType === "run.terminal") break;
+    if (["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) break;
   }
   return collected;
 }
 
+function reverseObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reverseObjectKeys);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .reverse()
+      .map(([key, entry]) => [key, reverseObjectKeys(entry)]),
+  );
+}
+
+async function traceCompletedProposal(
+  proposal: PrpStructuredRunResult | null,
+  options: {
+    runId?: string;
+    normalizedSessionId?: string;
+    capabilities?: Record<string, boolean>;
+    steer?: string;
+    interrupt?: boolean;
+  } = {},
+) {
+  const transport = new FakeCodexTransport();
+  const driver = makeDriver([transport], { capabilities: options.capabilities });
+  const traced = runPhase4CodexTracer({
+    driver,
+    taskEnvelope: envelope,
+    workingDirectory: "/workspace",
+    runId: options.runId,
+    normalizedSessionId: options.normalizedSessionId,
+    steer: options.steer,
+    interrupt: options.interrupt,
+  });
+  while (!transport.calls.some((call) => call.method === "turn/start")) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  transport.push("turn/started", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "inProgress" },
+  });
+  if (proposal !== null) {
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "answer-1", type: "agentMessage", text: JSON.stringify(proposal) },
+    });
+  }
+  transport.push("turn/completed", {
+    threadId: "thread-1",
+    turn: { id: "turn-1", status: "completed", items: [] },
+  });
+  return { trace: await traced, transport };
+}
+
 describe("Codex app-server Phase 4 driver", () => {
-  it("passes the common typed-event contract and produces exactly one terminal result", async () => {
+  it("passes the common typed-event contract and reports one provider turn terminal", async () => {
     const transport = new FakeCodexTransport();
     const driver = makeDriver([transport]);
     const descriptor = await driver.descriptor();
-    const session = await driver.openSession({ runId: "run-1", workingDirectory: "/workspace" });
+    const session = await driver.openSession({ runId: "run-1", normalizedSessionId: "normalized-1", workingDirectory: "/workspace" });
     const turn = await session.startTurn({ message: { role: "user", text: "Do the safe task." } });
 
     transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
@@ -189,9 +252,10 @@ describe("Codex app-server Phase 4 driver", () => {
     const events = await collectUntilTerminal(session.events());
     expect(events.every((event) => validatePrpEvent(event).ok)).toBe(true);
     expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
-    expect(events.filter((event) => event.eventType === "run.terminal")).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === "run.terminal")).toHaveLength(0);
     expect(events.map((event) => event.eventType)).toEqual(expect.arrayContaining([
-      "session.started", "turn.started", "item.started", "item.delta", "item.completed", "run.result.proposed", "run.terminal",
+      "session.started", "turn.started", "item.started", "item.delta", "item.completed", "run.result.proposed", "turn.completed",
       "runtime_request.created", "runtime_request.resolved",
     ]));
 
@@ -208,7 +272,7 @@ describe("Codex app-server Phase 4 driver", () => {
     };
     const metadata = {
       fixtureName: "phase4-conformance",
-      identity: { schema: "paperclip.prp.identity.v1" as const, companyId: "company-1", issueId: "issue-1", runId: "run-1", environmentLeaseId: "lease-1", runnerInstanceId: "runner-phase4", normalizedSessionId: "session:run-1" },
+      identity: { schema: "paperclip.prp.identity.v1" as const, companyId: "company-1", issueId: "issue-1", runId: "run-1", environmentLeaseId: "lease-1", runnerInstanceId: "runner-phase4", normalizedSessionId: "normalized-1" },
       capabilities,
     };
     const live = events.reduce(applyPrpEvent, createSessionSnapshotFromMetadata(metadata));
@@ -220,10 +284,10 @@ describe("Codex app-server Phase 4 driver", () => {
 
   it("captures an exact skillless model/environment snapshot with credentials absent", async () => {
     const transport = new FakeCodexTransport();
-    const session = await makeDriver([transport]).openSession({ runId: "run-context", workingDirectory: "/workspace" });
+    const session = await makeDriver([transport]).openSession({ runId: "run-context", normalizedSessionId: "normalized-context", workingDirectory: "/workspace" });
     const iterator = session.events()[Symbol.asyncIterator]();
     const first = await iterator.next();
-    const context = first.value?.payload.context as Parameters<typeof isSkilllessContext>[0];
+    const context = first.value?.payload.context as Parameters<typeof isSkilllessPhase4Context>[0];
     expect(context).toMatchObject({
       codexVersion: "codex-cli/0.132.0",
       model: "gpt-test",
@@ -239,7 +303,7 @@ describe("Codex app-server Phase 4 driver", () => {
       environmentKeys: ["CODEX_HOME", "HOME", "LANG", "PATH"],
       envelope,
     });
-    expect(isSkilllessContext(context)).toBe(true);
+    expect(isSkilllessPhase4Context(context)).toBe(true);
     expect(JSON.stringify(context)).not.toContain("must-not-pass");
     expect(JSON.stringify(transport.calls)).not.toContain("RANDOM_SKILL_PATH");
     expect(transport.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
@@ -263,7 +327,7 @@ describe("Codex app-server Phase 4 driver", () => {
 
   it("steers and interrupts an active turn without replacing the session", async () => {
     const transport = new FakeCodexTransport();
-    const session = await makeDriver([transport]).openSession({ runId: "run-controls", workingDirectory: "/workspace" });
+    const session = await makeDriver([transport]).openSession({ runId: "run-controls", normalizedSessionId: "normalized-controls", workingDirectory: "/workspace" });
     const { turnId } = await session.startTurn({ message: { role: "user", text: "Start." } });
     await session.steer?.({ turnId, message: { role: "user", text: "Use a shorter answer." } });
     await session.interrupt?.({ turnId, reason: "operator requested" });
@@ -275,22 +339,28 @@ describe("Codex app-server Phase 4 driver", () => {
 
   it("makes duplicate semantic completion idempotent and rejects changed payloads", async () => {
     const transport = new FakeCodexTransport();
-    const session = await makeDriver([transport]).openSession({ runId: "run-result", workingDirectory: "/workspace" });
+    const session = await makeDriver([transport]).openSession({ runId: "run-result", normalizedSessionId: "normalized-result", workingDirectory: "/workspace" });
     await session.startTurn({ message: { role: "user", text: "Complete." } });
     const request = { id: 1, method: "item/tool/call", params: { threadId: "thread-1", turnId: "turn-1", callId: "call-1", tool: "paperclip_finish", arguments: result } };
     expect(await transport.invoke(request)).toMatchObject({ success: true });
-    expect(await transport.invoke({ ...request, id: 2 })).toMatchObject({ success: true });
+    expect(await transport.invoke({
+      ...request,
+      id: 2,
+      params: { ...request.params, arguments: reverseObjectKeys(result) },
+    })).toMatchObject({ success: true });
     const changed = structuredClone(result);
     changed.summary = "Changed after commit.";
     expect(await transport.invoke({ ...request, id: 3, params: { ...request.params, arguments: changed } })).toMatchObject({ success: false });
     transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
     const events = await collectUntilTerminal(session.events());
     expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
   });
 
   it("normalizes finish and block tools into one canonical result contract", async () => {
     const transport = new FakeCodexTransport();
-    const session = await makeDriver([transport]).openSession({ runId: "run-tools", workingDirectory: "/workspace" });
+    const session = await makeDriver([transport]).openSession({ runId: "run-tools", normalizedSessionId: "normalized-tools", workingDirectory: "/workspace" });
     await session.startTurn({ message: { role: "user", text: "Complete or block." } });
     const blocked: PrpStructuredRunResult = {
       ...structuredClone(result),
@@ -339,7 +409,7 @@ describe("Codex app-server Phase 4 driver", () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
     const driver = makeDriver([first, second]);
-    const original = await driver.openSession({ runId: "run-recover", workingDirectory: "/workspace" });
+    const original = await driver.openSession({ runId: "run-recover", normalizedSessionId: "normalized-recover", workingDirectory: "/workspace" });
     await original.startTurn({ message: { role: "user", text: "Work." } });
     const snapshot = await original.snapshot();
     await original.close({ reason: "transport lost" });
@@ -351,12 +421,62 @@ describe("Codex app-server Phase 4 driver", () => {
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
 
+  it("reconciles a turn completed during transport loss without replacing either session identity", async () => {
+    const first = new FakeCodexTransport("driver-thread-loss", "provider-session-loss");
+    const second = new FakeCodexTransport("driver-thread-loss", "provider-session-loss");
+    second.readResponse = {
+      thread: {
+        id: "driver-thread-loss",
+        sessionId: "provider-session-loss",
+        tokenUsage: { total: { inputTokens: 21, outputTokens: 8 } },
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          items: [{ id: "answer-loss", type: "agentMessage", text: JSON.stringify(result) }],
+        }],
+      },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "runtime-run-loss",
+      normalizedSessionId: "controller-session-loss",
+      workingDirectory: "/workspace",
+    });
+    await original.startTurn({ message: { role: "user", text: "Work through loss." } });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost before terminal delivery" });
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const recovered = recovery?.session;
+    expect(recovered).toBeDefined();
+    const collecting = collectUntilTerminal(recovered!.events());
+    await recovered!.reconcile?.();
+    const events = await collecting;
+
+    expect(recovered!.ids()).toEqual({
+      driverSessionId: "driver-thread-loss",
+      providerSessionId: "provider-session-loss",
+      displayId: "driver-thread-loss",
+    });
+    expect(await recovered!.snapshot()).toMatchObject({
+      runId: "runtime-run-loss",
+      normalizedSessionId: "controller-session-loss",
+      driverSessionId: "driver-thread-loss",
+      providerSessionId: "provider-session-loss",
+    });
+    expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+    expect(events.every((event, index) => event.sourceSeq === snapshot.lastSourceSequence! + index + 1)).toBe(true);
+    expect(await recovered!.usage?.()).toEqual({ total: { inputTokens: 21, outputTokens: 8 } });
+  });
+
   it("degrades unsupported operations with explicit redacted diagnostics", async () => {
     const transport = new FakeCodexTransport();
     transport.rejectMethods.set("turn/steer", new Error("Bearer super-secret api_key=also-secret"));
-    const session = await makeDriver([transport]).openSession({ runId: "run-degrade", workingDirectory: "/workspace" });
+    const session = await makeDriver([transport]).openSession({ runId: "run-degrade", normalizedSessionId: "normalized-degrade", workingDirectory: "/workspace" });
     const { turnId } = await session.startTurn({ message: { role: "user", text: "Start." } });
-    await expect(session.steer?.({ turnId, message: { role: "user", text: "Steer." } })).rejects.toBeInstanceOf(UnsupportedCodexOperationError);
+    await expect(session.steer?.({ turnId, message: { role: "user", text: "Steer." } })).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
     const iterator = session.events()[Symbol.asyncIterator]();
     const events: PrpEvent[] = [];
     for (let index = 0; index < 5; index += 1) {
@@ -367,5 +487,153 @@ describe("Codex app-server Phase 4 driver", () => {
     expect(diagnostic?.payload).toMatchObject({ code: "unsupported_operation", operation: "steering" });
     expect(JSON.stringify(diagnostic)).not.toContain("super-secret");
     expect(JSON.stringify(diagnostic)).not.toContain("also-secret");
+  });
+
+  it("rejects proposals that do not match the exact task envelope", () => {
+    const wrongRevision = structuredClone(result);
+    wrongRevision.completionClaim.contractRevision = "phase4-demo-v0";
+    expect(validatePhase4ResultProposal(wrongRevision, envelope)).toMatchObject({
+      status: "rejected",
+      issues: [{ code: "contract_revision_mismatch" }],
+    });
+
+    const unknownCriterion = structuredClone(result);
+    unknownCriterion.completionClaim.criteria = [{
+      criterionId: "not-in-envelope",
+      status: "satisfied",
+      evidenceRefs: [],
+    }];
+    const criterionDecision = validatePhase4ResultProposal(unknownCriterion, envelope);
+    expect(criterionDecision).toMatchObject({ status: "rejected" });
+    if (criterionDecision.status === "rejected") {
+      expect(criterionDecision.issues.map((issue) => issue.code)).toEqual(
+        expect.arrayContaining(["unknown_criterion", "missing_criterion"]),
+      );
+    }
+
+    const invalidDone = structuredClone(result);
+    invalidDone.completionClaim.objectiveSatisfied = false;
+    expect(validatePhase4ResultProposal(invalidDone, envelope)).toMatchObject({
+      status: "rejected",
+      issues: [{ code: "invalid_disposition" }],
+    });
+  });
+
+  it.each(["needs_review", "blocked"] as const)(
+    "keeps a completed runtime successful for an accepted %s advisory proposal",
+    async (disposition) => {
+      const proposal: PrpStructuredRunResult = disposition === "needs_review"
+        ? {
+            ...structuredClone(result),
+            reportedWorkDisposition: "needs_review",
+            attentionRequests: [{ kind: "review", summary: "Review the completed artifact." }],
+          }
+        : {
+            ...structuredClone(result),
+            reportedWorkDisposition: "blocked",
+            summary: "Waiting on fixture input.",
+            completionClaim: {
+              ...structuredClone(result.completionClaim),
+              objectiveSatisfied: false,
+              criteria: [{ criterionId: "file", status: "not_satisfied", evidenceRefs: [] }],
+              remainingWork: [{ description: "Provide fixture input.", blocksCompletion: true }],
+            },
+            blocker: {
+              reasonCode: "fixture_input_missing",
+              owner: { kind: "external", name: "fixture owner" },
+              unblockAction: "Provide fixture input.",
+              scope: "task_wide",
+            },
+            artifacts: [],
+          };
+      const { trace } = await traceCompletedProposal(proposal);
+      expect(trace.resultDecision.status).toBe("accepted");
+      expect(trace.events.find((event) => event.eventType === "run.terminal")?.payload)
+        .toMatchObject({
+          turnTerminalState: "completed",
+          runTerminalState: "succeeded",
+          reportedWorkDisposition: disposition,
+        });
+    },
+  );
+
+  it("records rejected and missing proposals as recovery evidence instead of review status", async () => {
+    const wrongRevision = structuredClone(result);
+    wrongRevision.completionClaim.contractRevision = "wrong-revision";
+    const rejected = await traceCompletedProposal(wrongRevision);
+    expect(rejected.trace.result).toBeNull();
+    expect(rejected.trace.proposedResult).toMatchObject({ reportedWorkDisposition: "done" });
+    expect(rejected.trace.events.find((event) => event.eventType === "run.result.rejected")?.payload)
+      .toMatchObject({ recovery: { required: true, recoverable: true } });
+    expect(rejected.trace.events.find((event) => event.eventType === "run.terminal")?.payload)
+      .toMatchObject({ runTerminalState: "succeeded", reportedWorkDisposition: "yielded" });
+
+    const missing = await traceCompletedProposal(null);
+    expect(missing.trace.resultDecision).toMatchObject({ status: "rejected" });
+    expect(missing.trace.events.some((event) =>
+      event.eventType === "run.result.proposed" &&
+      event.payload.reportedWorkDisposition === "needs_review"
+    )).toBe(false);
+  });
+
+  it("preserves four independent stable identities under controller ownership", async () => {
+    const { trace } = await traceCompletedProposal(result, {
+      runId: "runtime-run-identity",
+      normalizedSessionId: "controller-session-identity",
+    });
+    expect(trace.assertions.stableIdentity).toBe(true);
+    expect(new Set([
+      trace.metadata.identity.runId,
+      trace.metadata.identity.normalizedSessionId,
+      trace.metadata.identity.driverSessionId,
+      trace.metadata.identity.providerSessionId,
+    ]).size).toBe(4);
+    expect(trace.events.every((event) =>
+      event.runId === "runtime-run-identity" &&
+      event.normalizedSessionId === "controller-session-identity"
+    )).toBe(true);
+  });
+
+  it("degrades declared unsupported capabilities without Codex-specific core branches", async () => {
+    const capabilities = {
+      resume: false,
+      read: false,
+      steering: false,
+      interruption: false,
+      usage: false,
+      reconciliation: false,
+      dynamicTools: false,
+    };
+    const { trace, transport } = await traceCompletedProposal(result, {
+      capabilities,
+      steer: "Do not call this unsupported path.",
+      interrupt: true,
+    });
+    expect(trace.resultDecision.status).toBe("accepted");
+    expect(trace.assertions.contextIsSkillless).toBe(true);
+    expect(trace.diagnostics).toEqual(expect.arrayContaining([
+      expect.stringContaining("steering is unavailable"),
+      expect.stringContaining("interruption is unavailable"),
+    ]));
+    expect(transport.calls.map((call) => call.method)).not.toEqual(
+      expect.arrayContaining(["turn/steer", "turn/interrupt", "thread/read"]),
+    );
+    expect(transport.calls.find((call) => call.method === "thread/start")?.params.dynamicTools)
+      .toEqual([]);
+
+    const directTransport = new FakeCodexTransport();
+    const driver = makeDriver([directTransport], { capabilities });
+    const session = await driver.openSession({
+      runId: "run-no-capabilities",
+      normalizedSessionId: "normalized-no-capabilities",
+      workingDirectory: "/workspace",
+    });
+    await expect(session.read?.()).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    await expect(session.usage?.()).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    const snapshot = await session.snapshot();
+    expect(await driver.recoverSession?.(snapshot)).toMatchObject({
+      recovered: false,
+      reason: "resume capability is unavailable",
+    });
   });
 });

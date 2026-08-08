@@ -9,6 +9,10 @@ import type {
   PersistedHarnessSession,
 } from "../../contracts/harness-driver.js";
 import {
+  HarnessCapabilityUnavailableError,
+  HarnessReconciliationError,
+} from "../../contracts/harness-driver.js";
+import {
   PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
   PHASE4_BLOCK_TOOL_NAME,
   PHASE4_CODEX_PROTOCOL_VERSION,
@@ -68,16 +72,6 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
-export class UnsupportedCodexOperationError extends Error {
-  readonly operation: string;
-
-  constructor(operation: string, detail: string) {
-    super(`${operation} is unsupported: ${redactCodexDiagnostic(detail)}`);
-    this.name = "UnsupportedCodexOperationError";
-    this.operation = operation;
-  }
-}
-
 export interface CodexAppServerDriverOptions {
   taskEnvelope: Phase4TaskEnvelope;
   transportFactory?: () => CodexAppServerTransport;
@@ -102,7 +96,7 @@ type CodexCapabilities = Required<
 
 interface OpenedCodexThread {
   threadId: string;
-  providerSessionId: string;
+  providerSessionId: string | null;
   context: Phase4ModelContextSnapshot;
 }
 
@@ -137,12 +131,6 @@ function terminalState(status: string): "completed" | "failed" | "interrupted" {
   return "completed";
 }
 
-function dispositionRunState(
-  result: PrpStructuredRunResult,
-): "succeeded" | "failed" {
-  return result.reportedWorkDisposition === "done" ? "succeeded" : "failed";
-}
-
 function tryParseResult(value: unknown): PrpStructuredRunResult | null {
   let candidate = value;
   if (typeof value === "string") {
@@ -154,6 +142,18 @@ function tryParseResult(value: unknown): PrpStructuredRunResult | null {
   }
   const validation = validatePrpStructuredRunResult(candidate);
   return validation.ok ? validation.result : null;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const object = record(value);
+  if (Object.keys(object).length > 0 || (typeof value === "object" && value !== null)) {
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
 }
 
 function finishToolSpec(): Record<string, unknown> {
@@ -242,7 +242,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     return this.#session({
       transport,
       runId: input.runId,
-      normalizedSessionId: `session:${input.runId}`,
+      normalizedSessionId: input.normalizedSessionId,
       opened,
       resumed: false,
       sourceSequence: 0,
@@ -254,6 +254,9 @@ export class CodexAppServerDriver implements HarnessDriver {
   ): Promise<HarnessSessionRecoveryResult> {
     if (!this.#caps.resume) {
       return { recovered: false, reason: "resume capability is unavailable" };
+    }
+    if (!this.#caps.read) {
+      return { recovered: false, reason: "read capability is required for safe resume" };
     }
     if (!snapshot.runId || !snapshot.normalizedSessionId || !snapshot.driverSessionId) {
       return { recovered: false, reason: "persisted session identity is incomplete" };
@@ -271,6 +274,13 @@ export class CodexAppServerDriver implements HarnessDriver {
       if (opened.threadId !== snapshot.driverSessionId) {
         await transport.close();
         return { recovered: false, reason: "provider resumed a different session" };
+      }
+      if (
+        snapshot.providerSessionId &&
+        opened.providerSessionId !== snapshot.providerSessionId
+      ) {
+        await transport.close();
+        return { recovered: false, reason: "provider resumed a different provider session" };
       }
       return {
         recovered: true,
@@ -319,7 +329,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     if (threadId.length === 0) throw new Error("Codex thread response omitted thread.id");
     return {
       threadId,
-      providerSessionId: text(thread.sessionId, threadId),
+      providerSessionId: text(thread.sessionId) || null,
       context: {
         protocolVersion: PHASE4_CODEX_PROTOCOL_VERSION,
         codexVersion: text(initialize.userAgent, "unknown"),
@@ -385,6 +395,7 @@ class CodexHarnessSession implements HarnessSession {
   #result: PrpStructuredRunResult | null = null;
   #resultFingerprint: string | null = null;
   #terminal = false;
+  readonly #terminalTurns = new Map<string, string>();
 
   constructor(input: {
     transport: CodexAppServerTransport;
@@ -502,13 +513,34 @@ class CodexHarnessSession implements HarnessSession {
     this.#requireCapability("reconciliation");
     const snapshot = await this.read();
     const thread = record(snapshot.thread);
+    if (text(thread.id) !== this.#opened.threadId) {
+      throw new HarnessReconciliationError("thread/read returned a different driver session");
+    }
+    const providerSessionId = text(thread.sessionId);
+    if (
+      this.#opened.providerSessionId !== null &&
+      providerSessionId !== this.#opened.providerSessionId
+    ) {
+      throw new HarnessReconciliationError("thread/read returned a different provider session");
+    }
     const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
     const active = turns.find((turn) => text(turn.status) === "inProgress");
-    this.#activeTurnId = active === undefined ? null : text(active.id);
+    const reconciledUsage = record(thread.tokenUsage ?? snapshot.tokenUsage);
+    if (Object.keys(reconciledUsage).length > 0) this.#usage = reconciledUsage;
+    const terminal = [...turns]
+      .reverse()
+      .find((turn) => ["completed", "failed", "interrupted", "cancelled"].includes(text(turn.status)));
+    if (terminal !== undefined) {
+      this.#activeTurnId = null;
+      this.#mapTerminalTurn(terminal, text(terminal.id));
+    } else {
+      this.#activeTurnId = active === undefined ? null : text(active.id);
+    }
     this.#emit("session.reconciled", {
       providerSessionId: this.#opened.providerSessionId,
       turnCount: turns.length,
       activeTurnId: this.#activeTurnId,
+      terminalTurnId: terminal === undefined ? null : text(terminal.id),
     });
     return snapshot;
   }
@@ -560,12 +592,7 @@ class CodexHarnessSession implements HarnessSession {
       return;
     }
     if (notification.method === "turn/completed") {
-      const status = text(turn.status, "completed");
-      const eventType = status === "failed" ? "turn.failed" : status === "interrupted" ? "turn.interrupted" : "turn.completed";
-      this.#captureResultFromTurn(turn);
-      this.#emit(eventType, { status, error: turn.error ?? null }, { turnId });
-      this.#activeTurnId = null;
-      this.#finalize(status);
+      this.#mapTerminalTurn(turn, turnId);
       return;
     }
     if (notification.method === "item/started") {
@@ -639,7 +666,7 @@ class CodexHarnessSession implements HarnessSession {
           }],
         };
       }
-      const fingerprint = JSON.stringify(validation.result);
+      const fingerprint = canonicalJson(validation.result);
       if (this.#resultFingerprint !== null && this.#resultFingerprint !== fingerprint) {
         return { success: false, contentItems: [{ type: "inputText", text: "A different semantic result was already committed." }] };
       }
@@ -700,7 +727,7 @@ class CodexHarnessSession implements HarnessSession {
   #commitResult(result: PrpStructuredRunResult, itemId: string, turnId?: string): void {
     if (this.#result !== null) return;
     this.#result = structuredClone(result);
-    this.#resultFingerprint = JSON.stringify(result);
+    this.#resultFingerprint = canonicalJson(result);
     result.verification.forEach((verification, index) => {
       this.#emit("item.completed", {
         kind: "verification",
@@ -720,35 +747,64 @@ class CodexHarnessSession implements HarnessSession {
   #finalize(turnStatus: string): void {
     if (this.#terminal) return;
     if (this.#result === null) {
-      this.#commitResult({
-        schema: "paperclip.run_result.v1",
-        reportedWorkDisposition: "needs_review",
-        summary: "Codex ended without a valid semantic completion.",
-        completionClaim: {
-          contractRevision: this.#taskEnvelope.completionContract.revision,
-          objectiveSatisfied: false,
-          criteria: this.#taskEnvelope.completionContract.criteria.map((criterion) => ({
-            criterionId: criterion.id,
-            status: "unknown",
-            evidenceRefs: [],
-          })),
-          remainingWork: [{ description: "Review the incomplete Codex turn.", blocksCompletion: true }],
-        },
-        evidence: [],
-        verification: [],
-        attentionRequests: [],
-        artifacts: [],
-      }, "missing-semantic-result");
+      this.#emit("harness.diagnostic", {
+        code: "semantic_result_missing",
+        message: `Turn ${turnStatus} without a schema-valid semantic proposal; recovery is required.`,
+      });
     }
-    const result = this.#result;
-    if (result === null) throw new Error("semantic result finalization invariant failed");
     this.#terminal = true;
-    this.#emit("run.terminal", {
-      schema: "paperclip.prp.terminal.v1",
-      turnTerminalState: terminalState(turnStatus),
-      runTerminalState: dispositionRunState(result),
-      reportedWorkDisposition: result.reportedWorkDisposition,
+  }
+
+  #mapTerminalTurn(turn: Record<string, unknown>, fallbackTurnId: string): void {
+    const turnId = text(turn.id, fallbackTurnId || this.#activeTurnId || "");
+    const status = text(turn.status, "completed");
+    const candidate = this.#resultFromTurn(turn) ?? this.#result;
+    const fingerprint = canonicalJson({
+      terminalState: terminalState(status),
+      error: turn.error ?? null,
+      result: candidate,
     });
+    const previous = this.#terminalTurns.get(turnId);
+    if (previous !== undefined) {
+      if (previous !== fingerprint) {
+        this.#emit("harness.diagnostic", {
+          code: "conflicting_turn_terminal",
+          message: "Provider sent materially different terminal facts for an already terminal turn.",
+        }, { turnId });
+      }
+      return;
+    }
+    this.#terminalTurns.set(turnId, fingerprint);
+    if (candidate !== null && this.#result === null) {
+      this.#commitResult(candidate, text(this.#resultItemFromTurn(turn)?.id), turnId);
+    }
+    const eventType =
+      status === "failed"
+        ? "turn.failed"
+        : status === "interrupted"
+          ? "turn.interrupted"
+          : status === "cancelled"
+            ? "turn.cancelled"
+            : "turn.completed";
+    this.#emit(eventType, { status, error: turn.error ?? null }, { turnId });
+    this.#activeTurnId = null;
+    this.#finalize(status);
+  }
+
+  #resultItemFromTurn(turn: Record<string, unknown>): Record<string, unknown> | null {
+    if (!Array.isArray(turn.items)) return null;
+    return (
+      turn.items
+        .map(record)
+        .reverse()
+        .find((value) => text(value.type) === "agentMessage" && tryParseResult(value.text) !== null) ??
+      null
+    );
+  }
+
+  #resultFromTurn(turn: Record<string, unknown>): PrpStructuredRunResult | null {
+    const item = this.#resultItemFromTurn(turn);
+    return item === null ? null : tryParseResult(item.text);
   }
 
   #requireActiveTurn(turnId: string): void {
@@ -761,8 +817,11 @@ class CodexHarnessSession implements HarnessSession {
     if (!this.#capabilities[operation]) throw this.#unsupported(operation, "capability not advertised");
   }
 
-  #unsupported(operation: string, detail: unknown): UnsupportedCodexOperationError {
-    const error = new UnsupportedCodexOperationError(operation, String(detail));
+  #unsupported(operation: string, detail: unknown): HarnessCapabilityUnavailableError {
+    const error = new HarnessCapabilityUnavailableError(
+      operation,
+      redactCodexDiagnostic(String(detail)),
+    );
     this.#diagnoseUnsupported(operation, error.message);
     return error;
   }
@@ -793,34 +852,11 @@ class CodexHarnessSession implements HarnessSession {
       ...(refs.itemId ? { itemId: refs.itemId } : {}),
       eventType,
       schemaVersion: 1,
-      priority: eventType === "run.terminal" || eventType === "run.result.proposed" ? 0 : 1,
+      priority: eventType === "run.result.proposed" ? 0 : 1,
       emittedAt: this.#now().toISOString(),
       payload,
     });
   }
-}
-
-export function isSkilllessContext(context: Phase4ModelContextSnapshot): boolean {
-  const serialized = JSON.stringify(context).toLowerCase();
-  return (
-    context.instructionSources.length === 0 &&
-    context.baseInstructions === PHASE4_SKILLLESS_BASE_INSTRUCTIONS &&
-    context.modelInputKinds.length === 1 &&
-    context.modelInputKinds[0] === "text" &&
-    context.dynamicToolNames.length === PHASE4_SEMANTIC_TOOL_NAMES.length &&
-    context.dynamicToolNames.every((name) =>
-      PHASE4_SEMANTIC_TOOL_NAMES.includes(
-        name as (typeof PHASE4_SEMANTIC_TOOL_NAMES)[number],
-      ),
-    ) &&
-    context.instructionPolicy.skillInstructions === false &&
-    context.instructionPolicy.appInstructions === false &&
-    context.instructionPolicy.collaborationInstructions === false &&
-    !serialized.includes("paperclip_api_key") &&
-    !serialized.includes("authorization: bearer") &&
-    !serialized.includes("/api/issues/") &&
-    !serialized.includes('"type":"skill"')
-  );
 }
 
 function isSemanticTool(tool: string): boolean {
