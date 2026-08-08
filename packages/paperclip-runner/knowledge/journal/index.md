@@ -11,3 +11,4 @@
 * [Phase 4b UX gate — interaction map and component decisions](2026-08-08-phase-04b-ux.md) - Approved live-console interaction contract, adapt/reject component record, and keyboard/accessibility acceptance criteria.
 * [Phase 4b protocol and demo-server layer](2026-08-08-phase-04b-protocol-server.md) - Browser-resolved provider requests, control races, goals, lineage, replay, and server-only credentials.
 * [Phase 4b live console browser tracer](2026-08-08-phase-04b-live-console.md) - Reducer-only browser surfaces, adapted components with no new runtime dependencies, interrupt races, reconnect, replay, and the layout and stream failures found on the way.
+* [Phase 5 UX gate — reusable console and SDK component plan](2026-08-08-phase-05-ux-plan.md) - Frozen consumer-facing component contracts, five extension points, pcr- token rules, and the mini-consumer tracer flow for the SDK extraction.

@@ -27,7 +27,8 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)
 - [Phase 4b component decision record (shadcn/ui, AI Elements)](design/phase-4b-component-decisions.md)
+- [Phase 5 component and SDK surface plan](design/phase-5-component-plan.md)
 - [Package README](../README.md)
 
-Phase 4b is implemented and ready for Security, CTO, QA, and human review.
-Phase 5 remains uncreated.
+Phase 4b is implemented and accepted. Phase 5 (SDK extraction and reference
+console) has an approved UX component plan; implementation is pending.
