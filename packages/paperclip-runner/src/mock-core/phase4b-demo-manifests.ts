@@ -272,10 +272,12 @@ export const PHASE4B_DEMO_MANIFESTS: readonly Phase4bDemoManifest[] = [
   {
     id: "user-input",
     name: "User input and expiry",
-    purpose: "Answer a typed user-input request, then watch an unanswered request expire.",
-    scenarios: ["requests", "user-input", "expiry"],
-    objective: "Collect the deployment target, then let a request expire.",
-    prompt: "Ask which environment to use, then ask a question nobody answers.",
+    purpose:
+      "Answer a typed user-input request and an elicitation, then watch an unanswered request expire.",
+    scenarios: ["requests", "user-input", "elicitation", "expiry"],
+    objective: "Collect the deployment target and release channel, then let a request expire.",
+    prompt:
+      "Ask which environment and channel to use, then ask a question nobody answers.",
     capabilities: capabilities(),
     startDelayMs: 0,
     beats: [
@@ -291,10 +293,20 @@ export const PHASE4B_DEMO_MANIFESTS: readonly Phase4bDemoManifest[] = [
       },
       {
         kind: "request",
-        requestId: "request-expiring",
+        requestId: "request-elicitation",
         requestKind: "elicitation",
         method: "mcpServer/elicitation/request",
         itemId: "input-2",
+        prompt: "Which release channel should the tool use?",
+        details: { fields: [{ name: "channel", label: "Channel" }] },
+        actions: ["submit", "decline", "cancel"],
+      },
+      {
+        kind: "request",
+        requestId: "request-expiring",
+        requestKind: "elicitation",
+        method: "mcpServer/elicitation/request",
+        itemId: "input-3",
         prompt: "Optional detail — this request expires if nobody answers.",
         details: { fields: [{ name: "detail", label: "Detail" }] },
         actions: ["submit", "decline", "cancel"],
@@ -304,6 +316,7 @@ export const PHASE4B_DEMO_MANIFESTS: readonly Phase4bDemoManifest[] = [
     ],
     expectedObservations: [
       "The user-input card renders a text field and a submit action.",
+      "The elicitation card submits its answer as content and resolves.",
       "The submitted answer never appears in the resolution acknowledgement.",
       "The unanswered request resolves to `expired before response` on its own.",
     ],

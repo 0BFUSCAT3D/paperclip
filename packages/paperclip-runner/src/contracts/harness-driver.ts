@@ -84,6 +84,164 @@ export type HarnessRuntimeRequestResolution =
       content: Record<string, unknown>;
     };
 
+export type HarnessRuntimeRequestAction = HarnessRuntimeRequestResolution["action"];
+
+const RUNTIME_REQUEST_ACTIONS: readonly HarnessRuntimeRequestAction[] = [
+  "accept",
+  "accept_for_session",
+  "decline",
+  "cancel",
+  "submit",
+];
+
+export class HarnessRuntimeRequestResolutionError extends Error {
+  readonly code = "invalid_resolution" as const;
+  readonly requestKind: HarnessRuntimeRequestKind;
+
+  constructor(requestKind: HarnessRuntimeRequestKind, detail: string) {
+    super(`${requestKind} rejected its resolution: ${detail}`);
+    this.name = "HarnessRuntimeRequestResolutionError";
+    this.requestKind = requestKind;
+  }
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseAnswers(value: unknown): Record<string, { answers: string[] }> | null {
+  const fields = plainRecord(value);
+  if (fields === null || Object.keys(fields).length === 0) return null;
+  const parsed: Record<string, { answers: string[] }> = {};
+  for (const [field, entry] of Object.entries(fields)) {
+    const answer = plainRecord(entry);
+    if (answer === null || !Array.isArray(answer.answers)) return null;
+    if (answer.answers.some((value) => typeof value !== "string")) return null;
+    parsed[field] = { answers: [...(answer.answers as string[])] };
+  }
+  return parsed;
+}
+
+/**
+ * Validates a resolution against the kind of request it answers, so a
+ * mismatched submit fails closed instead of degrading into an accepted empty
+ * response. Every driver runs this before it touches its provider, and the
+ * browser transport runs it again at its own untrusted edge.
+ */
+export function parseHarnessRuntimeRequestResolution(
+  requestKind: HarnessRuntimeRequestKind,
+  value: unknown,
+): HarnessRuntimeRequestResolution {
+  const candidate = plainRecord(value) ?? {};
+  const rawAction = candidate.action;
+  if (
+    typeof rawAction !== "string" ||
+    !RUNTIME_REQUEST_ACTIONS.includes(rawAction as HarnessRuntimeRequestAction)
+  ) {
+    throw new HarnessRuntimeRequestResolutionError(
+      requestKind,
+      `unsupported action ${JSON.stringify(rawAction) ?? "undefined"}`,
+    );
+  }
+  const action = rawAction as HarnessRuntimeRequestAction;
+  if (action !== "submit" && ("answers" in candidate || "content" in candidate)) {
+    throw new HarnessRuntimeRequestResolutionError(
+      requestKind,
+      `${action} does not carry submitted form data`,
+    );
+  }
+
+  if (requestKind === "user_input") {
+    if (action === "accept" || action === "accept_for_session") {
+      throw new HarnessRuntimeRequestResolutionError(
+        requestKind,
+        "user input requires submit, decline, or cancel",
+      );
+    }
+    if (action !== "submit") return { action };
+    if ("content" in candidate) {
+      throw new HarnessRuntimeRequestResolutionError(
+        requestKind,
+        "user input submissions carry answers, not content",
+      );
+    }
+    const answers = parseAnswers(candidate.answers);
+    if (answers === null) {
+      throw new HarnessRuntimeRequestResolutionError(
+        requestKind,
+        "submit requires answers shaped as { field: { answers: [string] } }",
+      );
+    }
+    return { action, answers };
+  }
+
+  if (requestKind === "elicitation") {
+    if (action === "accept_for_session") {
+      throw new HarnessRuntimeRequestResolutionError(
+        requestKind,
+        "elicitation does not support session acceptance",
+      );
+    }
+    if (action !== "submit") return { action };
+    if ("answers" in candidate) {
+      throw new HarnessRuntimeRequestResolutionError(
+        requestKind,
+        "elicitation submissions carry content, not answers",
+      );
+    }
+    const content = plainRecord(candidate.content);
+    if (content === null || Object.keys(content).length === 0) {
+      throw new HarnessRuntimeRequestResolutionError(
+        requestKind,
+        "submit requires a non-empty content object",
+      );
+    }
+    return { action, content: structuredClone(content) };
+  }
+
+  if (action === "submit") {
+    throw new HarnessRuntimeRequestResolutionError(
+      requestKind,
+      "approval requests do not accept submitted form data",
+    );
+  }
+  return { action };
+}
+
+/**
+ * The single payload shape every driver emits for a terminal
+ * `runtime_request.*` fact. Request identity travels in the payload as well as
+ * the event binding, so a consumer that only reads payloads still settles the
+ * request it belongs to.
+ */
+export type HarnessRuntimeRequestOutcome = {
+  requestId: string;
+  requestKind: HarnessRuntimeRequestKind;
+  turnId: string;
+  itemId: string;
+  action?: HarnessRuntimeRequestAction;
+  reason?: string;
+};
+
+export function harnessRuntimeRequestOutcome(
+  request: Pick<
+    HarnessRuntimeRequest,
+    "requestId" | "requestKind" | "turnId" | "itemId"
+  >,
+  outcome: { action?: HarnessRuntimeRequestAction | null; reason?: string | null } = {},
+): HarnessRuntimeRequestOutcome {
+  return {
+    requestId: request.requestId,
+    requestKind: request.requestKind,
+    turnId: request.turnId,
+    itemId: request.itemId,
+    ...(outcome.action ? { action: outcome.action } : {}),
+    ...(outcome.reason ? { reason: outcome.reason } : {}),
+  };
+}
+
 export interface HarnessThreadGoal {
   threadId: string;
   objective: string;

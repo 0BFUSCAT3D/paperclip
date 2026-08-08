@@ -6,11 +6,12 @@ import {
   type ServerResponse,
 } from "node:http";
 
-import type {
-  HarnessDriver,
-  HarnessGoalOperation,
-  HarnessRuntimeRequestResolution,
-  HarnessSession,
+import {
+  parseHarnessRuntimeRequestResolution,
+  type HarnessDriver,
+  type HarnessGoalOperation,
+  type HarnessRuntimeRequestResolution,
+  type HarnessSession,
 } from "../contracts/harness-driver.js";
 import {
   createPhase4TaskEnvelope,
@@ -107,9 +108,14 @@ function browserSafe(value: unknown, depth = 0): unknown {
   );
 }
 
+/**
+ * Hides absolute host paths under any home root. The provider names its own
+ * state directories in session context — `.codex/memories` as well as
+ * `.paperclip` — and none of them mean anything to a browser.
+ */
 function redactBrowserString(value: string): string {
   return redactCodexDiagnostic(value).replace(
-    /\/(?:srv\/paperclip\/home|home\/[^/\s]+)\/\.paperclip\/[^\s"'<>),\]}]*/g,
+    /\/(?:srv\/paperclip\/home|home\/[^/\s]+|Users\/[^/\s]+)\/\.[^\s"'<>),\]}]*/g,
     "<server-path>",
   );
 }
@@ -164,9 +170,27 @@ function prpCapabilities(capabilities: NativeSessionCapabilities): PrpCapabiliti
   };
 }
 
+/**
+ * Splits first, then decodes, so a percent-encoded reserved character stays
+ * inside the segment the browser meant it for. Upstream request identities are
+ * opaque and may contain `/`, `?`, or `#`.
+ */
 function pathParts(request: IncomingMessage): string[] {
   const url = new URL(request.url ?? "/", "http://phase4b.invalid");
-  return url.pathname.split("/").filter(Boolean);
+  return url.pathname
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        throw new Phase4bHttpError(
+          400,
+          "invalid_path_encoding",
+          "Phase 4b path segments must be valid percent-encoded UTF-8",
+        );
+      }
+    });
 }
 
 function errorStatus(error: unknown): number {
@@ -275,7 +299,11 @@ function requireTransportAdmission(
   if (origin !== null && origin !== `http://${host.toLowerCase()}`) {
     throw new Phase4bHttpError(403, "invalid_origin", "Phase 4b cross-origin requests are forbidden");
   }
-  if ((mutation || request.url?.includes("/stream") === true) && origin === null) {
+  // Only mutations are required to name their origin. A same-origin `GET` —
+  // which is what the `EventSource` stream is — sends no `Origin` header at
+  // all, so demanding one there rejects the console's own subscription;
+  // `Sec-Fetch-Site: same-origin` above is what proves that request safe.
+  if (mutation && origin === null) {
     throw new Phase4bHttpError(403, "origin_required", "Phase 4b browser request Origin is required");
   }
 }
@@ -547,10 +575,22 @@ export class Phase4bDemoServer {
           "Runtime request resolution does not match its session and turn",
         );
       }
+      // The browser is untrusted, so the shape is validated against the kind of
+      // request it answers here as well as inside the driver.
+      let resolution: HarnessRuntimeRequestResolution;
+      try {
+        resolution = parseHarnessRuntimeRequestResolution(pending.requestKind, body.resolution);
+      } catch (error) {
+        throw new Phase4bHttpError(
+          422,
+          "invalid_runtime_request_resolution",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
       await entry.session.resolveRuntimeRequest?.({
         requestId: parts[5],
-        turnId: String(body.turnId ?? ""),
-        resolution: record(body.resolution) as HarnessRuntimeRequestResolution,
+        turnId: body.turnId,
+        resolution,
       });
     } else if (action === "goal" && parts[5]) {
       await entry.session.goal?.(goalOperation(parts[5], body));
@@ -635,9 +675,15 @@ export class Phase4bDemoServer {
   }
 
   async #reconnect(entry: DemoEntry): Promise<void> {
-    const snapshot = await entry.session.snapshot();
     await entry.session.close({ reason: "browser_reconnect" });
     await entry.consumeTask.catch(() => undefined);
+    // The snapshot is taken after the close, not before it. A graceful close
+    // already appends the terminal fact for every request it cancels, so a
+    // pre-close snapshot would hand those same requests to the driver's
+    // stale-request recovery path and append a second terminal fact for each.
+    // Reading afterwards also carries the closing events' source sequence into
+    // the resumed session, keeping source order continuous across the seam.
+    const snapshot = await entry.session.snapshot();
     const recovery = await entry.driver.recoverSession?.(snapshot);
     if (!recovery?.recovered || recovery.session === undefined) {
       throw new Error(`session resume failed: ${recovery?.reason ?? "driver cannot resume"}`);

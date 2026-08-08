@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { request as httpRequest } from "node:http";
 
+import { harnessRuntimeRequestOutcome } from "../contracts/harness-driver.js";
 import type {
   HarnessDriver,
   HarnessDriverDescriptor,
@@ -47,6 +48,8 @@ class StubSession implements HarnessSession {
   readonly queue = new Queue<PrpEvent>();
   readonly runId: string;
   readonly normalizedSessionId: string;
+  readonly requestId: string;
+  readonly requestKind: HarnessRuntimeRequest["requestKind"];
   sourceSequence: number;
   activeTurnId: string | null;
   pending: HarnessRuntimeRequest[];
@@ -55,17 +58,25 @@ class StubSession implements HarnessSession {
   constructor(input: {
     runId: string;
     normalizedSessionId: string;
+    requestId?: string;
+    requestKind?: HarnessRuntimeRequest["requestKind"];
     sourceSequence?: number;
     activeTurnId?: string | null;
-    pending?: HarnessRuntimeRequest[];
+    /**
+     * Requests a crash left behind. Like the real driver, recovery reports each
+     * one terminal rather than adopting it as live.
+     */
+    stalePending?: HarnessRuntimeRequest[];
     goal?: PersistedHarnessSession["goal"];
     resumed?: boolean;
   }) {
     this.runId = input.runId;
     this.normalizedSessionId = input.normalizedSessionId;
+    this.requestId = input.requestId ?? "request-demo";
+    this.requestKind = input.requestKind ?? "command_approval";
     this.sourceSequence = input.sourceSequence ?? 0;
     this.activeTurnId = input.activeTurnId ?? null;
-    this.pending = structuredClone(input.pending ?? []);
+    this.pending = [];
     this.currentGoal = input.goal ?? null;
     this.emit(input.resumed ? "session.resumed" : "session.started", {
       driverSessionId: "thread-demo",
@@ -74,9 +85,19 @@ class StubSession implements HarnessSession {
       sandbox: {
         writableRoots: [
           "/srv/paperclip/home/.paperclip/instances/company/codex-home/memories",
+          // The real app-server reports this one; it leaked before the
+          // redactor covered every hidden directory under a home root.
+          "/srv/paperclip/home/.codex/memories",
         ],
       },
     });
+    for (const stale of input.stalePending ?? []) {
+      this.emit(
+        "runtime_request.cancelled",
+        harnessRuntimeRequestOutcome(stale, { reason: "transport_recovered" }),
+        { turnId: stale.turnId, itemId: stale.itemId },
+      );
+    }
   }
 
   ids() {
@@ -97,9 +118,11 @@ class StubSession implements HarnessSession {
     this.emit("turn.accepted", { turnId: "turn-demo" }, { turnId: "turn-demo" });
     this.emit("turn.started", { status: "inProgress" }, { turnId: "turn-demo" });
     const request: HarnessRuntimeRequest = {
-      requestId: "request-demo",
-      requestKind: "command_approval",
-      method: "item/commandExecution/requestApproval",
+      requestId: this.requestId,
+      requestKind: this.requestKind,
+      method: this.requestKind === "elicitation"
+        ? "mcpServer/elicitation/request"
+        : "item/commandExecution/requestApproval",
       turnId: "turn-demo",
       itemId: "command-demo",
       status: "pending",
@@ -138,11 +161,14 @@ class StubSession implements HarnessSession {
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void> {
+    const request = this.pending.find(({ requestId }) => requestId === input.requestId);
+    if (request === undefined) throw new Error(`unknown runtime request ${input.requestId}`);
     this.pending = this.pending.filter(({ requestId }) => requestId !== input.requestId);
-    this.emit("runtime_request.resolved", {
-      requestId: input.requestId,
-      resolution: input.resolution.action,
-    }, { turnId: input.turnId, itemId: "command-demo" });
+    this.emit(
+      "runtime_request.resolved",
+      harnessRuntimeRequestOutcome(request, { action: input.resolution.action }),
+      { turnId: input.turnId, itemId: request.itemId },
+    );
   }
 
   async goal(input: HarnessGoalOperation) {
@@ -189,7 +215,15 @@ class StubSession implements HarnessSession {
     };
   }
 
-  async close(): Promise<void> {
+  /** Mirrors the real driver: a graceful close settles what is still pending. */
+  async close(input: { reason: string }): Promise<void> {
+    for (const request of this.pending.splice(0)) {
+      this.emit(
+        "runtime_request.cancelled",
+        harnessRuntimeRequestOutcome(request, { reason: input.reason }),
+        { turnId: request.turnId, itemId: request.itemId },
+      );
+    }
     this.queue.close();
   }
 
@@ -220,6 +254,11 @@ class StubSession implements HarnessSession {
 class StubDriver implements HarnessDriver {
   openInputs: OpenHarnessSessionInput[] = [];
 
+  constructor(
+    readonly requestId = "request-demo",
+    readonly requestKind: HarnessRuntimeRequest["requestKind"] = "command_approval",
+  ) {}
+
   async descriptor(): Promise<HarnessDriverDescriptor> {
     return {
       kind: "stub",
@@ -240,7 +279,11 @@ class StubDriver implements HarnessDriver {
 
   async openSession(input: OpenHarnessSessionInput): Promise<HarnessSession> {
     this.openInputs.push(structuredClone(input));
-    return new StubSession(input);
+    return new StubSession({
+      ...input,
+      requestId: this.requestId,
+      requestKind: this.requestKind,
+    });
   }
 
   async recoverSession(snapshot: PersistedHarnessSession): Promise<HarnessSessionRecoveryResult> {
@@ -249,9 +292,11 @@ class StubDriver implements HarnessDriver {
       session: new StubSession({
         runId: snapshot.runId!,
         normalizedSessionId: snapshot.normalizedSessionId!,
+        requestId: this.requestId,
+        requestKind: this.requestKind,
         sourceSequence: snapshot.lastSourceSequence,
         activeTurnId: snapshot.activeTurnId,
-        pending: snapshot.pendingRuntimeRequests,
+        stalePending: snapshot.pendingRuntimeRequests,
         goal: snapshot.goal,
         resumed: true,
       }),
@@ -611,5 +656,158 @@ describe("Phase 4b package-local demo server", () => {
       `/api/phase4b/sessions/${sessionId}/events?after=${replay.cursor}`,
     ).then((response) => response.json()) as { events: PrpEvent[] };
     expect(afterReconnect.events.some(({ eventType }) => eventType === "session.resumed")).toBe(true);
+  });
+
+  it("admits an origin-less same-origin stream but still requires an origin to mutate", async () => {
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+    const created = await jsonBrowserRequest(url, "/api/phase4b/sessions", { startTurn: false })
+      .then((response) => response.json()) as { sessionId: string };
+
+    // A same-origin EventSource GET sends Fetch Metadata but no Origin header.
+    const stream = await fetch(
+      `${url}/api/phase4b/sessions/${created.sessionId}/stream?after=0`,
+      { headers: { "sec-fetch-site": "same-origin" } },
+    );
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type")).toContain("text/event-stream");
+    await stream.body?.cancel();
+
+    const mutation = await fetch(`${url}/api/phase4b/sessions/${created.sessionId}/turns`, {
+      method: "POST",
+      headers: { "sec-fetch-site": "same-origin", "content-type": "application/json" },
+      body: JSON.stringify({ text: "no origin" }),
+    });
+    expect(mutation.status).toBe(403);
+    await expect(mutation.json()).resolves.toMatchObject({ error: "origin_required" });
+  });
+
+  it("resolves a request identity that carries reserved characters", async () => {
+    // Upstream request identities are opaque. The browser percent-encodes the
+    // segment, so the server has to decode it before it can match.
+    const requestId = "req/2026?scope=a#b c%d";
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(requestId),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const created = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
+      objective: "Resolve a reserved-character request identity.",
+    }).then((response) => response.json()) as Record<string, unknown>;
+    const sessionId = String(created.sessionId);
+    expect(created.pendingRequests).toEqual([expect.objectContaining({ requestId })]);
+
+    const encoded = encodeURIComponent(requestId);
+    expect(encoded).not.toBe(requestId);
+    const resolved = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/requests/${encoded}/resolve`,
+      { turnId: "turn-demo", resolution: { action: "accept" } },
+    );
+    expect(resolved.status).toBe(200);
+    await expect(resolved.json()).resolves.toMatchObject({ pendingRequests: [] });
+
+    const malformed = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/requests/%E0%A4%A/resolve`,
+      { turnId: "turn-demo", resolution: { action: "accept" } },
+    );
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({ error: "invalid_path_encoding" });
+  });
+
+  it("fails closed on a submit body that does not match the request kind", async () => {
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver("request-elicit", "elicitation"),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const created = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
+      objective: "Answer an elicitation.",
+    }).then((response) => response.json()) as Record<string, unknown>;
+    const sessionId = String(created.sessionId);
+    const resolve = `/api/phase4b/sessions/${sessionId}/requests/request-elicit/resolve`;
+
+    for (const resolution of [
+      { action: "submit" },
+      { action: "submit", content: {} },
+      { action: "submit", answers: { answer: { answers: ["user-input shape"] } } },
+      { action: "accept_for_session" },
+    ]) {
+      const rejected = await jsonBrowserRequest(url, resolve, { turnId: "turn-demo", resolution });
+      expect(rejected.status).toBe(422);
+      await expect(rejected.json()).resolves.toMatchObject({
+        error: "invalid_runtime_request_resolution",
+      });
+      // A rejected submit must never settle the request.
+      const state = await browserRequest(url, `/api/phase4b/sessions/${sessionId}`)
+        .then((response) => response.json()) as Record<string, unknown>;
+      expect(state.pendingRequests).toEqual([
+        expect.objectContaining({ requestId: "request-elicit" }),
+      ]);
+    }
+
+    const accepted = await jsonBrowserRequest(url, resolve, {
+      turnId: "turn-demo",
+      resolution: { action: "submit", content: { answer: "green" } },
+    });
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({ pendingRequests: [] });
+  });
+
+  it("appends exactly one terminal fact per request across a reconnect", async () => {
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const created = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
+      objective: "Reconnect while a request is still pending.",
+    }).then((response) => response.json()) as Record<string, unknown>;
+    const sessionId = String(created.sessionId);
+    expect(created.pendingRequests).toEqual([
+      expect.objectContaining({ requestId: "request-demo" }),
+    ]);
+
+    const reconnected = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/reconnect`,
+      {},
+    );
+    expect(reconnected.status).toBe(200);
+
+    const { events } = await browserRequest(url, `/api/phase4b/sessions/${sessionId}/events?after=0`)
+      .then((response) => response.json()) as { events: PrpEvent[] };
+    const terminal = events.filter(({ eventType }) =>
+      eventType.startsWith("runtime_request.") && eventType !== "runtime_request.created");
+    expect(terminal).toEqual([
+      expect.objectContaining({
+        eventType: "runtime_request.cancelled",
+        turnId: "turn-demo",
+        itemId: "command-demo",
+        payload: {
+          requestId: "request-demo",
+          requestKind: "command_approval",
+          turnId: "turn-demo",
+          itemId: "command-demo",
+          reason: "browser_reconnect",
+        },
+      }),
+    ]);
+    // The resumed session continues the sequence rather than replaying it.
+    expect(events.map(({ sourceSeq }) => sourceSeq)).toEqual(
+      events.map((_, index) => index + 1),
+    );
+    expect(events.some(({ eventType }) => eventType === "session.resumed")).toBe(true);
   });
 });

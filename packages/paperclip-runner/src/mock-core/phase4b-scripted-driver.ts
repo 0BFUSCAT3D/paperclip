@@ -2,7 +2,10 @@ import {
   HarnessCapabilityUnavailableError,
   HarnessOperationAlreadyTerminalError,
   HarnessStaleTurnError,
+  harnessRuntimeRequestOutcome,
+  parseHarnessRuntimeRequestResolution,
   type HarnessDriver,
+  type HarnessRuntimeRequestAction,
   type HarnessDriverDescriptor,
   type HarnessGoalOperation,
   type HarnessRuntimeRequest,
@@ -107,7 +110,8 @@ interface PendingRequestEntry {
   request: HarnessRuntimeRequest;
   gate: Gate;
   outcome: "pending" | "resolved" | "expired" | "cancelled";
-  action: string | null;
+  action: HarnessRuntimeRequestAction | null;
+  reason: string | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -276,8 +280,12 @@ class Phase4bScriptedSession implements HarnessSession {
     if (input.turnId.length > 0 && input.turnId !== entry.request.turnId) {
       throw new HarnessStaleTurnError(input.turnId);
     }
+    const resolution = parseHarnessRuntimeRequestResolution(
+      entry.request.requestKind,
+      input.resolution,
+    );
     entry.outcome = "resolved";
-    entry.action = input.resolution.action;
+    entry.action = resolution.action;
     this.#settleRequest(entry, "runtime_request.resolved");
   }
 
@@ -366,6 +374,7 @@ class Phase4bScriptedSession implements HarnessSession {
     for (const entry of this.#pending.values()) {
       if (entry.outcome !== "pending") continue;
       entry.outcome = "cancelled";
+      entry.reason = input.reason;
       this.#settleRequest(entry, "runtime_request.cancelled");
     }
     this.#interruptGate?.open();
@@ -412,11 +421,14 @@ class Phase4bScriptedSession implements HarnessSession {
       clearTimeout(entry.timer);
       entry.timer = null;
     }
-    this.#emit(eventType, {
-      requestId: entry.request.requestId,
-      requestKind: entry.request.requestKind,
-      ...(entry.action === null ? {} : { action: entry.action }),
-    }, { turnId: entry.request.turnId, itemId: entry.request.itemId });
+    this.#emit(
+      eventType,
+      harnessRuntimeRequestOutcome(entry.request, {
+        action: entry.action,
+        reason: entry.reason,
+      }),
+      { turnId: entry.request.turnId, itemId: entry.request.itemId },
+    );
     entry.gate.open();
   }
 
@@ -573,6 +585,7 @@ class Phase4bScriptedSession implements HarnessSession {
         gate: new Gate(),
         outcome: "pending",
         action: null,
+        reason: null,
         timer: null,
       };
       this.#pending.set(request.requestId, entry);
@@ -597,6 +610,7 @@ class Phase4bScriptedSession implements HarnessSession {
       ]);
       if (entry.outcome === "pending") {
         entry.outcome = "cancelled";
+        entry.reason = "turn_interrupted";
         this.#settleRequest(entry, "runtime_request.cancelled");
         return false;
       }

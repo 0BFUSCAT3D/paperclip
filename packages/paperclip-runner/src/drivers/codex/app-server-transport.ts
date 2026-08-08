@@ -195,6 +195,56 @@ function proxyContainsCredentials(value: string): boolean {
   }
 }
 
+export const CODEX_METHOD_NOT_FOUND = -32_601;
+export const CODEX_INVALID_REQUEST = -32_600;
+
+/**
+ * Codes where the provider refused the call itself rather than failing while
+ * serving it: the method is absent (-32601), or the request was rejected
+ * outright, which is how the Codex app-server reports a feature it has
+ * switched off (-32600 `goals feature is disabled`). Server-error codes
+ * (-32603 and the -32000..-32099 implementation range) and transport failures
+ * describe one attempt, not what the build supports.
+ */
+const METHOD_UNAVAILABLE_CODES: readonly number[] = [
+  CODEX_METHOD_NOT_FOUND,
+  CODEX_INVALID_REQUEST,
+];
+
+/**
+ * A provider error response, carrying its JSON-RPC code. Callers need the code
+ * to tell "this provider build will not serve the method" apart from "the call
+ * failed this time", which are different facts about a capability.
+ */
+export class CodexRpcError extends Error {
+  readonly code: number | null;
+
+  constructor(message: string, code: number | null) {
+    super(message);
+    this.name = "CodexRpcError";
+    this.code = code;
+  }
+
+  get methodUnavailable(): boolean {
+    return this.code !== null && METHOD_UNAVAILABLE_CODES.includes(this.code);
+  }
+}
+
+/**
+ * True only when the provider answered and its answer denies the method. A
+ * plain `Error` here means the call never got an answer — a transport or
+ * protocol failure — which must not be read as a missing capability.
+ */
+export function isCodexMethodUnavailable(error: unknown): boolean {
+  return error instanceof CodexRpcError && error.methodUnavailable;
+}
+
+function rpcErrorCode(value: unknown): number | null {
+  if (typeof value !== "object" || value === null) return null;
+  const code = (value as { code?: unknown }).code;
+  return typeof code === "number" && Number.isFinite(code) ? code : null;
+}
+
 interface PendingRequest {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
@@ -363,7 +413,10 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
       }
       this.#pending.delete(message.id);
       if (hasError) {
-        pending.reject(new Error(redactCodexDiagnostic(boundedJson(message.error))));
+        pending.reject(new CodexRpcError(
+          redactCodexDiagnostic(boundedJson(message.error)),
+          rpcErrorCode(message.error),
+        ));
       } else if (isRecord(message.result)) {
         pending.resolve(message.result);
       } else {

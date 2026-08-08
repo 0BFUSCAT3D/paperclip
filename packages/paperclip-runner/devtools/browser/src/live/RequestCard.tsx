@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import type { TranscriptRequestEntry } from "./transcript-model";
+import { runtimeRequestSubmission, type TranscriptRequestEntry } from "./transcript-model";
 
 const KIND_LABELS: Record<string, string> = {
   command_approval: "Command",
@@ -149,7 +149,7 @@ export function RequestCard({
             onClick={() =>
               submit(
                 action === "submit"
-                  ? { action: "submit", answers: { answer: { answers: [answer] } } }
+                  ? runtimeRequestSubmission(entry.requestKind, answer)
                   : { action },
               )
             }

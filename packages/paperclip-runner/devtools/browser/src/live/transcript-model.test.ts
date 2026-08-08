@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { Phase4bScriptedDriver } from "../../../../src/mock-core/phase4b-scripted-driver";
-import type { HarnessSession } from "../../../../src/contracts/harness-driver";
+import {
+  parseHarnessRuntimeRequestResolution,
+  type HarnessSession,
+} from "../../../../src/contracts/harness-driver";
 import type { PrpEvent } from "../../../../src/protocol/phase1-contract";
 import {
   applyPrpEvent,
@@ -14,6 +17,7 @@ import {
   capabilityRows,
   composerState,
   goalAvailability,
+  runtimeRequestSubmission,
   transcriptRole,
   type TranscriptEntry,
 } from "./transcript-model";
@@ -243,6 +247,40 @@ describe("goalAvailability", () => {
     const none = goalAvailability(FULL, null);
     expect(none.find((row) => row.operation === "set")?.enabled).toBe(true);
     expect(none.find((row) => row.operation === "clear")?.enabled).toBe(false);
+  });
+});
+
+describe("runtimeRequestSubmission", () => {
+  it("shapes each submit body the way its request kind is validated", async () => {
+    expect(runtimeRequestSubmission("user_input", "staging")).toEqual({
+      action: "submit",
+      answers: { answer: { answers: ["staging"] } },
+    });
+    expect(runtimeRequestSubmission("elicitation", "stable")).toEqual({
+      action: "submit",
+      content: { answer: "stable" },
+    });
+
+    // The driver is the authority on shape, so both bodies are checked against
+    // the real validator rather than against this test's expectations alone.
+    for (const [requestKind, answer] of [
+      ["user_input", "staging"],
+      ["elicitation", "stable"],
+    ] as const) {
+      expect(() =>
+        parseHarnessRuntimeRequestResolution(
+          requestKind,
+          runtimeRequestSubmission(requestKind, answer),
+        )).not.toThrow();
+      // ...and the other kind's body is rejected, which is what the browser
+      // used to send for elicitation.
+      const wrongKind = requestKind === "user_input" ? "elicitation" : "user_input";
+      expect(() =>
+        parseHarnessRuntimeRequestResolution(
+          requestKind,
+          runtimeRequestSubmission(wrongKind, answer),
+        )).toThrow(/rejected its resolution/);
+    }
   });
 });
 

@@ -156,6 +156,22 @@ function collectItemFacts(events: readonly PrpEvent[]): Map<string, ItemFacts> {
   return facts;
 }
 
+/**
+ * Builds the submit body a request kind actually accepts. Elicitation answers
+ * travel as `content` and user-input answers as `answers`; the runner validates
+ * both against the request kind, so sending the wrong one fails closed rather
+ * than resolving the request with an empty response.
+ */
+export function runtimeRequestSubmission(
+  requestKind: string,
+  answer: string,
+): Record<string, unknown> {
+  if (requestKind === "elicitation") {
+    return { action: "submit", content: { answer } };
+  }
+  return { action: "submit", answers: { answer: { answers: [answer] } } };
+}
+
 function requestActions(details: unknown): string[] {
   const record = payloadRecord(details);
   return Array.isArray(record.actions)

@@ -34,11 +34,14 @@ import {
   replayPersistedPhase4Events,
   validatePhase4ResultProposal,
 } from "../../mock-core/phase4-codex-runner.js";
-import type {
-  CodexAppServerTransport,
-  CodexRpcNotification,
-  CodexRpcServerRequest,
-  CodexServerRequestHandler,
+import {
+  CODEX_INVALID_REQUEST,
+  CODEX_METHOD_NOT_FOUND,
+  CodexRpcError,
+  type CodexAppServerTransport,
+  type CodexRpcNotification,
+  type CodexRpcServerRequest,
+  type CodexServerRequestHandler,
 } from "./app-server-transport.js";
 
 class TestQueue<T> implements AsyncIterable<T> {
@@ -477,7 +480,7 @@ describe("Codex app-server Phase 4 driver", () => {
         requestId: scenario.id,
         turnId,
         resolution: { action: "forged" } as unknown as HarnessRuntimeRequestResolution,
-      })).rejects.toThrow("unsupported runtime request resolution");
+      })).rejects.toThrow("unsupported action");
       expect(session.pendingRuntimeRequests?.()).toHaveLength(1);
       await session.resolveRuntimeRequest?.({
         requestId: scenario.id,
@@ -595,19 +598,217 @@ describe("Codex app-server Phase 4 driver", () => {
       params: Object.fromEntries(Object.entries(params).filter(([key]) => key !== "threadId")),
     }))).toEqual(fixture.goals.map(({ method, params }) => ({ method, params })));
 
-    const unsupportedTransport = new FakeCodexTransport();
-    unsupportedTransport.rejectMethods.set("thread/goal/get", new Error("method not found"));
-    const unsupportedDriver = makeDriver([unsupportedTransport]);
-    const unsupported = await unsupportedDriver.openSession({
-      runId: "run-goals-unsupported",
-      normalizedSessionId: "normalized-goals-unsupported",
+    expect((await makeDriver([new FakeCodexTransport()]).descriptor()).capabilities)
+      .toMatchObject({ goals: true });
+
+    // Both denials a real app-server sends: the method is absent, and the
+    // build has the feature switched off.
+    for (const denial of [
+      new CodexRpcError('{"code":-32601,"message":"method not found"}', CODEX_METHOD_NOT_FOUND),
+      new CodexRpcError(
+        '{"code":-32600,"message":"goals feature is disabled"}',
+        CODEX_INVALID_REQUEST,
+      ),
+    ]) {
+      const unsupportedTransport = new FakeCodexTransport();
+      unsupportedTransport.rejectMethods.set("thread/goal/get", denial);
+      const unsupportedDriver = makeDriver([unsupportedTransport]);
+      const unsupported = await unsupportedDriver.openSession({
+        runId: "run-goals-unsupported",
+        normalizedSessionId: "normalized-goals-unsupported",
+        workingDirectory: "/workspace",
+      });
+      expect((await unsupportedDriver.descriptor()).capabilities).toMatchObject({ goals: false });
+      await expect(unsupported.goal?.({ action: "get" }))
+        .rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+      await unsupported.close({ reason: "fixture complete" });
+    }
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("keeps goal support advertised when the probe fails transiently", async () => {
+    // A transport or protocol failure is evidence about this call, not about
+    // what the provider implements, so it must not retire the capability.
+    for (const failure of [
+      new Error("codex app-server transport closed"),
+      new CodexRpcError('{"code":-32603,"message":"internal error"}', -32_603),
+    ]) {
+      const transport = new FakeCodexTransport();
+      transport.rejectMethods.set("thread/goal/get", failure);
+      const driver = makeDriver([transport]);
+      const session = await driver.openSession({
+        runId: "run-goals-transient",
+        normalizedSessionId: "normalized-goals-transient",
+        workingDirectory: "/workspace",
+      });
+
+      expect((await driver.descriptor()).capabilities).toMatchObject({ goals: true });
+      // The capability survives, so the operation is still offered and the
+      // next call reaches the provider instead of failing closed locally.
+      transport.rejectMethods.delete("thread/goal/get");
+      await expect(session.goal?.({ action: "get" })).resolves.toBeNull();
+      expect(transport.calls.filter(({ method }) => method === "thread/goal/get")).toHaveLength(2);
+      await session.close({ reason: "fixture complete" });
+    }
+  });
+
+  it("validates runtime request resolutions against the kind of request they answer", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-resolution-shapes",
+      normalizedSessionId: "normalized-resolution-shapes",
       workingDirectory: "/workspace",
     });
-    expect((await unsupportedDriver.descriptor()).capabilities).toMatchObject({ goals: false });
-    await expect(unsupported.goal?.({ action: "get" }))
-      .rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Ask me things." } });
+
+    // Not `async`: an async function would flatten and await the pending
+    // provider response, which only settles once the request is resolved.
+    function open(id: string, method: string): Promise<Record<string, unknown>> {
+      return transport.invoke({
+        id,
+        method,
+        params: { threadId: "thread-1", turnId, itemId: `item-${id}`, reason: `fixture ${id}` },
+      });
+    }
+    const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    const userInput = open("ask-input", "item/tool/requestUserInput");
+    await settled();
+    for (const resolution of [
+      { action: "submit" },
+      { action: "submit", answers: {} },
+      { action: "submit", answers: { field: {} } },
+      { action: "submit", answers: { field: { answers: [7] } } },
+      { action: "submit", content: { answer: "wrong shape" } },
+      { action: "accept" },
+    ]) {
+      await expect(session.resolveRuntimeRequest?.({
+        requestId: "ask-input",
+        turnId,
+        resolution: resolution as unknown as HarnessRuntimeRequestResolution,
+      })).rejects.toThrow(/user_input rejected its resolution/);
+      // A rejected resolution must leave the request answerable.
+      expect(session.pendingRuntimeRequests?.()).toHaveLength(1);
+    }
+    await session.resolveRuntimeRequest?.({
+      requestId: "ask-input",
+      turnId,
+      resolution: { action: "submit", answers: { field: { answers: ["staging"] } } },
+    });
+    expect(await userInput).toEqual({ answers: { field: { answers: ["staging"] } } });
+
+    const elicitation = open("ask-elicitation", "mcpServer/elicitation/request");
+    await settled();
+    for (const resolution of [
+      { action: "submit" },
+      { action: "submit", content: {} },
+      { action: "submit", answers: { field: { answers: ["wrong shape"] } } },
+      { action: "accept_for_session" },
+    ]) {
+      await expect(session.resolveRuntimeRequest?.({
+        requestId: "ask-elicitation",
+        turnId,
+        resolution: resolution as unknown as HarnessRuntimeRequestResolution,
+      })).rejects.toThrow(/elicitation rejected its resolution/);
+      expect(session.pendingRuntimeRequests?.()).toHaveLength(1);
+    }
+    await session.resolveRuntimeRequest?.({
+      requestId: "ask-elicitation",
+      turnId,
+      resolution: { action: "submit", content: { answer: "green" } },
+    });
+    expect(await elicitation).toEqual({
+      action: "accept",
+      content: { answer: "green" },
+      _meta: null,
+    });
+
+    const approval = open("ask-approval", "item/commandExecution/requestApproval");
+    await settled();
+    await expect(session.resolveRuntimeRequest?.({
+      requestId: "ask-approval",
+      turnId,
+      resolution: {
+        action: "submit",
+        answers: { field: { answers: ["nope"] } },
+      } as unknown as HarnessRuntimeRequestResolution,
+    })).rejects.toThrow(/command_approval rejected its resolution/);
+    await session.resolveRuntimeRequest?.({
+      requestId: "ask-approval",
+      turnId,
+      resolution: { action: "accept" },
+    });
+    expect(await approval).toEqual({ decision: "accept" });
     await session.close({ reason: "fixture complete" });
-    await unsupported.close({ reason: "fixture complete" });
+  });
+
+  it("emits one canonical outcome payload for every terminal runtime request fact", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-outcome",
+      normalizedSessionId: "normalized-outcome",
+      workingDirectory: "/workspace",
+    });
+    const events: PrpEvent[] = [];
+    void (async () => {
+      for await (const event of session.events()) events.push(event);
+    })();
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Approve this." } });
+    const resolved = transport.invoke({
+      id: "outcome-resolved",
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1", turnId, itemId: "item-resolved", reason: "approve" },
+    });
+    const cancelled = transport.invoke({
+      id: "outcome-cancelled",
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1", turnId, itemId: "item-cancelled", reason: "approve" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await session.resolveRuntimeRequest?.({
+      requestId: "outcome-resolved",
+      turnId,
+      resolution: { action: "accept_for_session" },
+    });
+    await resolved;
+    await session.close({ reason: "operator_closed" });
+    await cancelled;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const terminal = events.filter(({ eventType }) =>
+      eventType === "runtime_request.resolved" || eventType === "runtime_request.cancelled");
+    expect(terminal.map(({ eventType, turnId, itemId, payload }) => ({
+      eventType,
+      turnId,
+      itemId,
+      payload,
+    }))).toEqual([
+      {
+        eventType: "runtime_request.resolved",
+        turnId,
+        itemId: "item-resolved",
+        payload: {
+          requestId: "outcome-resolved",
+          requestKind: "command_approval",
+          turnId,
+          itemId: "item-resolved",
+          action: "accept_for_session",
+        },
+      },
+      {
+        eventType: "runtime_request.cancelled",
+        turnId,
+        itemId: "item-cancelled",
+        payload: {
+          requestId: "outcome-cancelled",
+          requestKind: "command_approval",
+          turnId,
+          itemId: "item-cancelled",
+          reason: "session_closed",
+        },
+      },
+    ]);
+    for (const event of terminal) expect(validatePrpEvent(event).ok).toBe(true);
   });
 
   it("redacts browser-visible request details and diagnostics from the fixture markers", async () => {

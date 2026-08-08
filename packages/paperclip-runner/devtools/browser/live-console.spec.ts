@@ -145,7 +145,7 @@ test.describe("Phase 4b live console", () => {
     await expect(second.getByTestId("request-action-accept_for_session")).toHaveCount(0);
   });
 
-  test("submits a user-input answer and lets an unanswered request expire", async ({ page }) => {
+  test("submits user-input and elicitation answers and lets an unanswered request expire", async ({ page }) => {
     test.setTimeout(60_000);
     await openConsole(page);
     await runManifest(page, "user-input");
@@ -158,12 +158,22 @@ test.describe("Phase 4b live console", () => {
       { timeout: 15_000 },
     );
 
-    await expect(page.getByTestId("request-card").nth(1)).toHaveAttribute(
+    // An elicitation submits `content`, not `answers`. The runner validates the
+    // body against the request kind, so a card that sent the user-input shape
+    // would be rejected and stay pending here.
+    const elicitation = page.getByTestId("request-card").nth(1);
+    await expect(elicitation).toHaveAttribute("data-status", "pending", { timeout: 15_000 });
+    await elicitation.getByTestId("request-answer").fill("stable");
+    await elicitation.getByTestId("request-action-submit").click();
+    await expect(elicitation).toHaveAttribute("data-status", "resolved", { timeout: 15_000 });
+    await expect(elicitation).toContainText("resolved — Submit");
+
+    await expect(page.getByTestId("request-card").nth(2)).toHaveAttribute(
       "data-status",
       "expired",
       { timeout: 25_000 },
     );
-    await expect(page.getByTestId("request-card").nth(1)).toContainText("expired before response");
+    await expect(page.getByTestId("request-card").nth(2)).toContainText("expired before response");
     await shot(page, "desktop-10-request-expired");
   });
 

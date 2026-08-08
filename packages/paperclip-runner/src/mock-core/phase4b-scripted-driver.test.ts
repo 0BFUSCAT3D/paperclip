@@ -256,6 +256,62 @@ describe("Phase 4b scripted driver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("fails an elicitation submit closed unless it carries content", async () => {
+    const { session, stream } = await openSession("user-input");
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Ask." } });
+    const first = await stream.waitFor("runtime_request.created");
+    await session.resolveRuntimeRequest?.({
+      requestId: (first.payload as { request: { requestId: string } }).request.requestId,
+      turnId,
+      resolution: { action: "submit", answers: { environment: { answers: ["staging"] } } },
+    });
+
+    // `waitFor` replays the first match, so the elicitation beat is polled for
+    // by kind rather than by event type.
+    type CreatedRequest = { requestId: string; requestKind: string; itemId: string };
+    let request: CreatedRequest | undefined;
+    for (let attempt = 0; attempt < 50 && request === undefined; attempt += 1) {
+      await tick();
+      request = stream.events
+        .filter((event) => event.eventType === "runtime_request.created")
+        .map((event) => (event.payload as { request: CreatedRequest }).request)
+        .find((candidate) => candidate.requestKind === "elicitation");
+    }
+    if (request === undefined) throw new Error("the elicitation request never opened");
+    for (const resolution of [
+      { action: "submit" },
+      { action: "submit", content: {} },
+      { action: "submit", answers: { channel: { answers: ["stable"] } } },
+    ]) {
+      await expect(session.resolveRuntimeRequest?.({
+        requestId: request.requestId,
+        turnId,
+        resolution: resolution as never,
+      })).rejects.toThrow(/elicitation rejected its resolution/);
+    }
+    // Every rejection left the request answerable rather than settling it.
+    expect(session.pendingRuntimeRequests?.().map(({ requestId }) => requestId))
+      .toContain(request.requestId);
+
+    await session.resolveRuntimeRequest?.({
+      requestId: request.requestId,
+      turnId,
+      resolution: { action: "submit", content: { channel: "stable" } },
+    });
+    await tick();
+    const resolved = stream.events.filter((event) =>
+      event.eventType === "runtime_request.resolved");
+    expect(resolved.at(-1)?.payload).toEqual({
+      requestId: request.requestId,
+      requestKind: "elicitation",
+      turnId,
+      itemId: "input-2",
+      action: "submit",
+    });
+    expect(JSON.stringify(resolved.at(-1)?.payload)).not.toContain("stable");
+    await session.close({ reason: "test" });
+  });
+
   it("reports the exact diagnostic when goals are unsupported", async () => {
     const { session } = await openSession("goals-unsupported");
     await expect(session.goal?.({ action: "get" })).rejects.toThrow(

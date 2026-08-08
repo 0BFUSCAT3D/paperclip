@@ -21,6 +21,8 @@ import {
   HarnessOperationAlreadyTerminalError,
   HarnessReconciliationError,
   HarnessStaleTurnError,
+  harnessRuntimeRequestOutcome,
+  parseHarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import {
   PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
@@ -42,6 +44,7 @@ import type { NativeUserMessage } from "../../contracts/types.js";
 import {
   ProcessCodexAppServerTransport,
   createSanitizedCodexEnvironment,
+  isCodexMethodUnavailable,
   redactCodexDiagnostic,
   type CodexAppServerTransport,
   type CodexRpcNotification,
@@ -464,9 +467,20 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/goal/get", { threadId });
       return parseThreadGoal(response.goal);
     } catch (error) {
-      this.#caps.goals = false;
+      if (isCodexMethodUnavailable(error)) {
+        // The provider answered, and its answer is that this build has no goal
+        // API. That is the only evidence that retires the capability.
+        this.#caps.goals = false;
+        this.#options.onDiagnostic?.(
+          redactCodexDiagnostic(`thread goals unavailable: ${String(error)}`),
+        );
+        return undefined;
+      }
+      // A transport or protocol failure says nothing about what the provider
+      // supports, so the capability stays as advertised and the goal is merely
+      // unknown until the next call.
       this.#options.onDiagnostic?.(
-        redactCodexDiagnostic(`thread goals unavailable: ${String(error)}`),
+        redactCodexDiagnostic(`thread goal probe failed: ${String(error)}`),
       );
       return undefined;
     }
@@ -661,10 +675,11 @@ class CodexHarnessSession implements HarnessSession {
       context: input.opened.context,
     });
     for (const stale of input.stalePendingRuntimeRequests ?? []) {
-      this.#emit("runtime_request.cancelled", {
-        requestId: stale.requestId,
-        reason: "transport_recovered",
-      }, { turnId: stale.turnId, itemId: stale.itemId });
+      this.#emit(
+        "runtime_request.cancelled",
+        harnessRuntimeRequestOutcome(stale, { reason: "transport_recovered" }),
+        { turnId: stale.turnId, itemId: stale.itemId },
+      );
     }
     this.#emit("item.completed", {
       kind: "thread_lineage",
@@ -836,12 +851,17 @@ class CodexHarnessSession implements HarnessSession {
     if (pending.request.turnId !== input.turnId || this.#activeTurnId !== input.turnId) {
       throw new HarnessStaleTurnError(input.turnId);
     }
-    const response = runtimeRequestResponse(pending.request, input.resolution);
+    const resolution = parseHarnessRuntimeRequestResolution(
+      pending.request.requestKind,
+      input.resolution,
+    );
+    const response = runtimeRequestResponse(pending.request, resolution);
     this.#pendingRuntimeRequests.delete(input.requestId);
-    this.#emit("runtime_request.resolved", {
-      requestId: input.requestId,
-      resolution: input.resolution.action,
-    }, { turnId: input.turnId, itemId: pending.request.itemId });
+    this.#emit(
+      "runtime_request.resolved",
+      harnessRuntimeRequestOutcome(pending.request, { action: resolution.action }),
+      { turnId: input.turnId, itemId: pending.request.itemId },
+    );
     pending.settle(response);
   }
 
@@ -1116,10 +1136,11 @@ class CodexHarnessSession implements HarnessSession {
       const pending = this.#pendingRuntimeRequests.get(requestId);
       if (pending === undefined || threadId !== this.#opened.threadId) return;
       this.#pendingRuntimeRequests.delete(requestId);
-      this.#emit("runtime_request.cancelled", {
-        requestId,
-        reason: "provider_resolved",
-      }, { turnId: pending.request.turnId, itemId: pending.request.itemId });
+      this.#emit(
+        "runtime_request.cancelled",
+        harnessRuntimeRequestOutcome(pending.request, { reason: "provider_resolved" }),
+        { turnId: pending.request.turnId, itemId: pending.request.itemId },
+      );
       pending.settle(safeRequestResponse(pending.request.method, "cancel"));
       return;
     }
@@ -1484,11 +1505,12 @@ class CodexHarnessSession implements HarnessSession {
   }
 
   #cancelPendingRequests(reason: string): void {
-    for (const [requestId, pending] of this.#pendingRuntimeRequests) {
-      this.#emit("runtime_request.cancelled", { requestId, reason }, {
-        turnId: pending.request.turnId,
-        itemId: pending.request.itemId,
-      });
+    for (const pending of this.#pendingRuntimeRequests.values()) {
+      this.#emit(
+        "runtime_request.cancelled",
+        harnessRuntimeRequestOutcome(pending.request, { reason }),
+        { turnId: pending.request.turnId, itemId: pending.request.itemId },
+      );
       pending.settle(safeRequestResponse(pending.request.method, "cancel"));
     }
     this.#pendingRuntimeRequests.clear();
@@ -1724,14 +1746,15 @@ function runtimeRequestPrompt(
   return labels[kind];
 }
 
+/**
+ * Maps an already-validated resolution onto the provider's response shape.
+ * `parseHarnessRuntimeRequestResolution` is the only gate on shape, so every
+ * branch here answers a resolution the request kind actually accepts.
+ */
 function runtimeRequestResponse(
   request: HarnessRuntimeRequest,
   resolution: HarnessRuntimeRequestResolution,
 ): Record<string, unknown> {
-  const action = (resolution as { action?: unknown }).action;
-  if (!["accept", "accept_for_session", "decline", "cancel", "submit"].includes(String(action))) {
-    throw new Error(`unsupported runtime request resolution ${String(action)}`);
-  }
   if (request.requestKind === "command_approval" || request.requestKind === "file_approval") {
     if (resolution.action === "submit") {
       throw new Error(`${request.requestKind} does not accept submitted form data`);
@@ -1754,25 +1777,20 @@ function runtimeRequestResponse(
     };
   }
   if (request.requestKind === "user_input") {
-    if (resolution.action === "submit" && "answers" in resolution) {
-      return { answers: structuredClone(resolution.answers) };
+    if (resolution.action !== "submit" || !("answers" in resolution)) {
+      // Declines and cancels are the only non-submit answers the validator
+      // lets through, and neither carries form data.
+      return { answers: {} };
     }
-    if (resolution.action === "accept" || resolution.action === "accept_for_session") {
-      throw new Error("user input requires submit, decline, or cancel");
-    }
-    return { answers: {} };
+    return { answers: structuredClone(resolution.answers) };
   }
   if (resolution.action === "submit" && "content" in resolution) {
     return { action: "accept", content: structuredClone(resolution.content), _meta: null };
   }
-  if (resolution.action === "accept_for_session") {
-    throw new Error("elicitation does not support session acceptance");
+  if (resolution.action === "submit" || resolution.action === "accept_for_session") {
+    throw new Error("elicitation submissions require content");
   }
-  return {
-    action: resolution.action === "submit" ? "accept" : resolution.action,
-    content: null,
-    _meta: null,
-  };
+  return { action: resolution.action, content: null, _meta: null };
 }
 
 function parseThreadGoal(value: unknown): HarnessThreadGoal | null {

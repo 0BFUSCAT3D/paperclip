@@ -17,6 +17,10 @@ export default defineConfig({
       // Keep streamed chunks slow enough that interrupt races are reachable
       // from a test, and fast enough that the suite stays quick.
       PAPERCLIP_PHASE4B_CHUNK_DELAY_MS: "60",
+      // One server serves the whole suite, and every test leaves its session
+      // behind when its page closes, so the interactive default of 16 is
+      // exhausted partway through.
+      PAPERCLIP_PHASE4B_MAX_SESSIONS: "64",
     },
     url: "http://127.0.0.1:4179",
     reuseExistingServer: false,

@@ -28,6 +28,13 @@ export function createPhase4bBrowserMiddleware(options = {}) {
     options.chunkDelayMs ?? process.env.PAPERCLIP_PHASE4B_CHUNK_DELAY_MS ?? "45",
     10,
   );
+  // Abandoned demo sessions hold their slot until the process exits, so a long
+  // scripted run needs headroom the interactive default does not. The server
+  // still clamps this to its own hard ceiling.
+  const maxActiveSessions = Number.parseInt(
+    options.maxActiveSessions ?? process.env.PAPERCLIP_PHASE4B_MAX_SESSIONS ?? "",
+    10,
+  );
   let bootstrap = null;
   let bindHost = options.bindHost ?? "127.0.0.1";
 
@@ -43,6 +50,7 @@ export function createPhase4bBrowserMiddleware(options = {}) {
         host: bindHost,
         workingDirectory,
         manifests: runner.phase4bDemoManifestCatalogue(),
+        ...(Number.isInteger(maxActiveSessions) ? { maxActiveSessions } : {}),
         driverFactory: (taskEnvelope, manifestId) =>
           driverMode === "codex"
             ? new runner.CodexAppServerDriver({
