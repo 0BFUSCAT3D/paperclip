@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactElement } from "react";
+import { StrictMode, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -547,6 +547,18 @@ describe("TaskChatComposer", () => {
       expect(onAdd).toHaveBeenCalledWith("unsent draft", undefined, undefined);
     });
 
+    it("preserves a restored draft through the StrictMode effect probe", () => {
+      localStorage.setItem(KEY, "still here");
+      render(
+        <StrictMode>
+          <TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={KEY} />
+        </StrictMode>,
+      );
+
+      expect(editable().textContent).toBe("still here");
+      expect(localStorage.getItem(KEY)).toBe("still here");
+    });
+
     it("saves the body to localStorage after the debounce window", () => {
       vi.useFakeTimers();
       try {
@@ -573,6 +585,20 @@ describe("TaskChatComposer", () => {
         root = null;
 
         expect(localStorage.getItem(KEY)).toBe("save before leaving");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("flushes a pending draft before the page unloads", () => {
+      vi.useFakeTimers();
+      try {
+        render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" draftKey={KEY} />);
+
+        typeText("save before reload");
+        window.dispatchEvent(new Event("beforeunload"));
+
+        expect(localStorage.getItem(KEY)).toBe("save before reload");
       } finally {
         vi.useRealTimers();
       }

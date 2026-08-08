@@ -156,7 +156,10 @@ export function TaskChatComposer({
   mobile = false,
   draftKey,
 }: TaskChatComposerProps) {
-  const [body, setBody] = useState("");
+  // Read the initial value during state initialization. The cleanup below runs
+  // during React StrictMode's effect probe, so starting with an empty body and
+  // restoring in an effect could erase a saved draft before that restore runs.
+  const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
@@ -190,6 +193,15 @@ export function TaskChatComposer({
       if (draftTimer.current) clearTimeout(draftTimer.current);
       if (draftKey) saveDraft(draftKey, bodyRef.current);
     };
+  }, [draftKey]);
+
+  // React unmount cleanup is not guaranteed to run during a page unload. Save
+  // synchronously so a recent keystroke does not depend on the debounce timer.
+  useEffect(() => {
+    if (!draftKey) return;
+    const flushDraft = () => saveDraft(draftKey, bodyRef.current);
+    window.addEventListener("beforeunload", flushDraft);
+    return () => window.removeEventListener("beforeunload", flushDraft);
   }, [draftKey]);
 
   const modeMeta = workModeMetaFor(pendingMode);
@@ -320,17 +332,17 @@ export function TaskChatComposer({
     const reopen = shouldImplicitlyReopenComment(issueStatus, assigneeValue) ? true : undefined;
 
     setSubmitting(true);
-    setBody("");
     try {
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
       await onAdd(fullBody, reopen, reassignment);
       if (draftKey) clearDraft(draftKey);
+      setBody("");
       setAttachments([]);
       setPendingAssignee(null);
     } catch {
-      setBody(trimmed); // restore on failure (chips stay + the draft save effect re-fires)
+      // Keep the body and its pending draft while the user resolves the failure.
     } finally {
       setSubmitting(false);
     }
