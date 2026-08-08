@@ -11,46 +11,6 @@ import { resolve } from "node:path";
  * `PAPERCLIP_PHASE4B_DRIVER=codex` swaps in the real Codex app-server driver
  * behind exactly the same routes.
  */
-const LOOPBACK_ONLY = "Phase 4b is available only over loopback";
-
-function isLoopbackAddress(address) {
-  if (typeof address !== "string") return false;
-  const normalized = address.toLowerCase().replace(/^::ffff:/, "");
-  if (normalized === "::1" || normalized === "[::1]" || normalized === "localhost") return true;
-  const octets = normalized.split(".");
-  return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
-  );
-}
-
-function rejectUntrusted(request, response) {
-  if (
-    !isLoopbackAddress(request.socket.localAddress) ||
-    !isLoopbackAddress(request.socket.remoteAddress)
-  ) {
-    response.statusCode = 403;
-    response.setHeader("content-type", "application/json; charset=utf-8");
-    response.end(JSON.stringify({ error: "forbidden", message: LOOPBACK_ONLY }));
-    return true;
-  }
-  const fetchSite = request.headers["sec-fetch-site"];
-  if (
-    Array.isArray(fetchSite) ||
-    (typeof fetchSite === "string" && !["same-origin", "none"].includes(fetchSite))
-  ) {
-    response.statusCode = 403;
-    response.setHeader("content-type", "application/json; charset=utf-8");
-    response.end(JSON.stringify({
-      error: "forbidden",
-      message: "Phase 4b cross-site requests are forbidden",
-    }));
-    return true;
-  }
-  return false;
-}
-
 async function loadRunner() {
   return import(new URL("../dist/index.js", import.meta.url).href);
 }
@@ -69,14 +29,18 @@ export function createPhase4bBrowserMiddleware(options = {}) {
     10,
   );
   let bootstrap = null;
+  let bindHost = options.bindHost ?? "127.0.0.1";
 
-  async function ready() {
+  async function ready(requestedBindHost = bindHost) {
+    bindHost = requestedBindHost;
     if (bootstrap !== null) return bootstrap;
     bootstrap = (async () => {
       const runner = await load();
+      runner.assertPhase4bLoopbackBindHost(bindHost);
       const workingDirectory =
         options.workingDirectory ?? (await createWorkingDirectory());
       const server = new runner.Phase4bDemoServer({
+        host: bindHost,
         workingDirectory,
         manifests: runner.phase4bDemoManifestCatalogue(),
         driverFactory: (taskEnvelope, manifestId) =>
@@ -101,7 +65,6 @@ export function createPhase4bBrowserMiddleware(options = {}) {
       next();
       return;
     }
-    if (rejectUntrusted(request, response)) return;
     try {
       const { handle } = await ready();
       handle(request, response);
@@ -119,22 +82,31 @@ export function createPhase4bBrowserMiddleware(options = {}) {
     const { server } = await bootstrap;
     await server.close();
   };
+  middleware.prepare = ready;
   return middleware;
 }
 
 export function phase4bBrowserServerPlugin(options = {}) {
-  const middleware = createPhase4bBrowserMiddleware(options);
+  const middlewares = new Set();
+  async function mount(server, host) {
+    const middleware = createPhase4bBrowserMiddleware({ ...options, bindHost: host });
+    await middleware.prepare(host);
+    middlewares.add(middleware);
+    server.middlewares.use(middleware);
+    server.httpServer?.once("close", () => {
+      middlewares.delete(middleware);
+      void middleware.close();
+    });
+  }
   return {
     name: "paperclip-runner-phase4b-live-console-server",
-    configureServer(server) {
-      server.middlewares.use(middleware);
-      server.httpServer?.once("close", () => void middleware.close());
+    async configureServer(server) {
+      const host = server.config.server.host;
+      await mount(server, typeof host === "string" ? host : host === true ? "0.0.0.0" : "127.0.0.1");
     },
-    configurePreviewServer(server) {
-      server.middlewares.use(middleware);
-      server.httpServer?.once("close", () => void middleware.close());
+    async configurePreviewServer(server) {
+      const host = server.config.preview.host;
+      await mount(server, typeof host === "string" ? host : host === true ? "0.0.0.0" : "127.0.0.1");
     },
   };
 }
-
-export const phase4bBrowserServerInternals = { isLoopbackAddress };

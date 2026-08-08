@@ -19,11 +19,9 @@ pnpm --filter @paperclipai/paperclip-runner console:phase4b
 
 Then open `http://127.0.0.1:4180/` and choose **Live console**.
 
-To reach it from another host, pass a bind address to the same script:
-
-```sh
-pnpm --filter @paperclipai/paperclip-runner console:phase4b -- --host 0.0.0.0
-```
+Phase 4b is deliberately loopback-only. A wildcard or LAN `--host` fails
+startup because this developer console can start provider-backed turns and
+resolve approvals. There is no unauthenticated remote mode.
 
 Two environment variables change the driver behind the console:
 
@@ -106,6 +104,13 @@ No provider or Paperclip credential reaches the browser. The Node process owns
 the driver, the working directory, and any provider login. Every JSON and event
 frame passes the demo server's redaction layer, and the inspector renders
 redaction markers verbatim without attempting to reconstruct them.
+
+The live console and standalone server share one transport admission guard:
+exact loopback Host/port, loopback sockets, same-origin Origin and Fetch
+Metadata, plus JSON-only mutations. Browser reset closes the server session;
+active sessions and SSE subscribers are hard-capped. Local untrusted processes
+remain a residual risk, and the Codex sandbox/approval policy is the final
+execution boundary.
 
 ## Components
 

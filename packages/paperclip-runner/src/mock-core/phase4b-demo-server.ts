@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -30,6 +30,24 @@ import { redactCodexDiagnostic } from "../drivers/codex/app-server-transport.js"
 
 const MAX_BROWSER_BODY_BYTES = 64 * 1024;
 const MAX_BROWSER_EVENTS = 4096;
+const DEFAULT_MAX_ACTIVE_SESSIONS = 16;
+const DEFAULT_MAX_SESSION_SUBSCRIBERS = 4;
+const MAX_CONFIGURED_ACTIVE_SESSIONS = 64;
+const MAX_CONFIGURED_SESSION_SUBSCRIBERS = 16;
+
+const LOOPBACK_ONLY = "Phase 4b transport is available only over loopback";
+
+class Phase4bHttpError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = "Phase4bHttpError";
+    this.code = code;
+    this.status = status;
+  }
+}
 
 export interface Phase4bDemoServerOptions {
   workingDirectory: string;
@@ -41,6 +59,10 @@ export interface Phase4bDemoServerOptions {
   port?: number;
   /** Demo-chat manifests the browser lists; the server owns the catalogue. */
   manifests?: readonly unknown[];
+  /** May reduce, but never raise, the package hard limit. */
+  maxActiveSessions?: number;
+  /** May reduce, but never raise, the package hard limit. */
+  maxSessionSubscribers?: number;
 }
 
 interface DemoEntry {
@@ -103,6 +125,7 @@ function json(response: ServerResponse, status: number, body: unknown): void {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "content-length": Buffer.byteLength(serialized),
+    "x-content-type-options": "nosniff",
   });
   response.end(serialized);
 }
@@ -147,15 +170,152 @@ function pathParts(request: IncomingMessage): string[] {
 }
 
 function errorStatus(error: unknown): number {
+  if (error instanceof Phase4bHttpError) return error.status;
   const code = record(error).code;
   if (code === "stale_turn" || code === "already_terminal") return 409;
   return 400;
+}
+
+function errorCode(error: unknown): string {
+  if (error instanceof Phase4bHttpError) return error.code;
+  return String(record(error).code ?? "invalid_request");
+}
+
+function isLoopbackAddress(address: unknown): boolean {
+  if (typeof address !== "string") return false;
+  const normalized = address.toLowerCase().replace(/^\[|\]$/g, "").replace(/^::ffff:/, "");
+  if (normalized === "::1" || normalized === "localhost") return true;
+  const octets = normalized.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+  );
+}
+
+/** Reject wildcard and LAN binds before a provider-capable server starts. */
+export function assertPhase4bLoopbackBindHost(host: string): void {
+  if (!isLoopbackAddress(host)) {
+    throw new Phase4bHttpError(403, "non_loopback_bind_forbidden", LOOPBACK_ONLY);
+  }
+}
+
+function normalizedHost(host: string): string {
+  return host.toLowerCase().replace(/^\[|\]$/g, "");
+}
+
+function expectedAuthority(host: string, port: number): string {
+  const normalized = normalizedHost(host);
+  return normalized.includes(":") ? `[${normalized}]:${port}` : `${normalized}:${port}`;
+}
+
+function singleHeader(value: string | string[] | undefined): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function hasValidCapability(request: IncomingMessage, capability: string): boolean {
+  const authorization = singleHeader(request.headers.authorization);
+  if (authorization === null) return false;
+  const expected = Buffer.from(`Bearer ${capability}`);
+  const actual = Buffer.from(authorization);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function requireTransportAdmission(
+  request: IncomingMessage,
+  bindHost: string,
+  capability: string,
+): void {
+  if (
+    !isLoopbackAddress(request.socket.localAddress) ||
+    !isLoopbackAddress(request.socket.remoteAddress)
+  ) {
+    throw new Phase4bHttpError(403, "loopback_required", LOOPBACK_ONLY);
+  }
+
+  const port = request.socket.localPort;
+  const host = singleHeader(request.headers.host);
+  if (port === undefined || host === null || host.toLowerCase() !== expectedAuthority(bindHost, port)) {
+    throw new Phase4bHttpError(
+      403,
+      "invalid_host",
+      "Phase 4b requests require the exact loopback host and listening port",
+    );
+  }
+
+  const authorization = singleHeader(request.headers.authorization);
+  const authenticatedDirectRequest = hasValidCapability(request, capability);
+  if (authorization !== null && !authenticatedDirectRequest) {
+    throw new Phase4bHttpError(401, "invalid_transport_capability", "Invalid Phase 4b capability");
+  }
+
+  const mutation = !["GET", "HEAD"].includes(request.method ?? "GET");
+  if (mutation) {
+    const mediaType = singleHeader(request.headers["content-type"])?.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType !== "application/json") {
+      throw new Phase4bHttpError(
+        415,
+        "json_content_type_required",
+        "Phase 4b mutations require application/json",
+      );
+    }
+  }
+  if (authenticatedDirectRequest) return;
+
+  const fetchSite = singleHeader(request.headers["sec-fetch-site"]);
+  if (fetchSite !== "same-origin") {
+    throw new Phase4bHttpError(
+      403,
+      "invalid_fetch_metadata",
+      "Phase 4b browser requests require Sec-Fetch-Site: same-origin",
+    );
+  }
+
+  const origin = singleHeader(request.headers.origin);
+  if (origin !== null && origin !== `http://${host.toLowerCase()}`) {
+    throw new Phase4bHttpError(403, "invalid_origin", "Phase 4b cross-origin requests are forbidden");
+  }
+  if ((mutation || request.url?.includes("/stream") === true) && origin === null) {
+    throw new Phase4bHttpError(403, "origin_required", "Phase 4b browser request Origin is required");
+  }
+}
+
+function boundedOption(
+  value: number | undefined,
+  fallback: number,
+  maximum: number,
+  name: string,
+): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > maximum) {
+    throw new Error(`${name} must be an integer from 1 to ${maximum}`);
+  }
+  return resolved;
+}
+
+function browserCredentialField(body: Record<string, unknown>): string | null {
+  const forbidden = new Set([
+    "authorization",
+    "cookie",
+    "credentials",
+    "apikey",
+    "paperclipapikey",
+    "openaiapikey",
+    "providertoken",
+    "refreshtoken",
+    "accesstoken",
+  ]);
+  return Object.keys(body).find((key) => forbidden.has(key.replace(/[-_]/g, "").toLowerCase())) ?? null;
 }
 
 export class Phase4bDemoServer {
   readonly #options: Required<Pick<Phase4bDemoServerOptions, "host" | "port">> &
     Omit<Phase4bDemoServerOptions, "host" | "port">;
   readonly #entries = new Map<string, DemoEntry>();
+  readonly #transportCapability = randomBytes(32).toString("base64url");
+  readonly #maxActiveSessions: number;
+  readonly #maxSessionSubscribers: number;
+  #creatingSessions = 0;
   #server: Server | null = null;
 
   constructor(options: Phase4bDemoServerOptions) {
@@ -164,10 +324,23 @@ export class Phase4bDemoServer {
       host: options.host ?? "127.0.0.1",
       port: options.port ?? 0,
     };
+    this.#maxActiveSessions = boundedOption(
+      options.maxActiveSessions,
+      DEFAULT_MAX_ACTIVE_SESSIONS,
+      MAX_CONFIGURED_ACTIVE_SESSIONS,
+      "maxActiveSessions",
+    );
+    this.#maxSessionSubscribers = boundedOption(
+      options.maxSessionSubscribers,
+      DEFAULT_MAX_SESSION_SUBSCRIBERS,
+      MAX_CONFIGURED_SESSION_SUBSCRIBERS,
+      "maxSessionSubscribers",
+    );
   }
 
   async start(): Promise<{ host: string; port: number; url: string }> {
     if (this.#server !== null) throw new Error("Phase 4b demo server is already started");
+    assertPhase4bLoopbackBindHost(this.#options.host);
     this.#server = createServer(this.middleware());
     await new Promise<void>((resolve, reject) => {
       this.#server!.once("error", reject);
@@ -180,8 +353,13 @@ export class Phase4bDemoServer {
     return {
       host: this.#options.host,
       port: address.port,
-      url: `http://${this.#options.host}:${address.port}`,
+      url: `http://${expectedAuthority(this.#options.host, address.port)}`,
     };
+  }
+
+  /** Server-side automation can authenticate without browser-controlled headers. */
+  directApiAuthorization(): string {
+    return `Bearer ${this.#transportCapability}`;
   }
 
   /**
@@ -190,10 +368,20 @@ export class Phase4bDemoServer {
    */
   middleware(): (request: IncomingMessage, response: ServerResponse) => void {
     return (request, response) => {
+      try {
+        assertPhase4bLoopbackBindHost(this.#options.host);
+        requireTransportAdmission(request, this.#options.host, this.#transportCapability);
+      } catch (error) {
+        json(response, errorStatus(error), {
+          error: errorCode(error),
+          message: redactCodexDiagnostic(String(error instanceof Error ? error.message : error)),
+        });
+        return;
+      }
       void this.#handle(request, response).catch((error) => {
         if (!response.headersSent) {
           json(response, errorStatus(error), {
-            error: record(error).code ?? "invalid_request",
+            error: errorCode(error),
             message: redactCodexDiagnostic(String(error)),
           });
         } else {
@@ -236,7 +424,22 @@ export class Phase4bDemoServer {
       return;
     }
     if (request.method === "POST" && parts.join("/") === "api/phase4b/sessions") {
-      const body = await readJson(request) as BrowserCreateBody;
+      const body = await readJson(request) as BrowserCreateBody & Record<string, unknown>;
+      const credentialField = browserCredentialField(body);
+      if (credentialField !== null) {
+        throw new Phase4bHttpError(
+          422,
+          "browser_credentials_forbidden",
+          `Browser bodies cannot provide credentials (${credentialField})`,
+        );
+      }
+      if (this.#entries.size + this.#creatingSessions >= this.#maxActiveSessions) {
+        throw new Phase4bHttpError(
+          429,
+          "session_limit_reached",
+          `Phase 4b is limited to ${this.#maxActiveSessions} active sessions`,
+        );
+      }
       const objective = typeof body.objective === "string" && body.objective.trim().length > 0
         ? body.objective.trim()
         : "Complete the Phase 4b demo task safely.";
@@ -244,7 +447,13 @@ export class Phase4bDemoServer {
       const manifestId = typeof body.manifest === "string" && body.manifest.length > 0
         ? body.manifest
         : null;
-      const entry = await this.#create(objective, message, manifestId, body.startTurn !== false);
+      this.#creatingSessions += 1;
+      let entry: DemoEntry;
+      try {
+        entry = await this.#create(objective, message, manifestId, body.startTurn !== false);
+      } finally {
+        this.#creatingSessions -= 1;
+      }
       json(response, 201, await this.#publicState(entry));
       return;
     }
@@ -275,6 +484,13 @@ export class Phase4bDemoServer {
     if (request.method === "GET" && action === "stream") {
       const url = new URL(request.url ?? "/", "http://phase4b.invalid");
       const after = Math.max(0, Number.parseInt(url.searchParams.get("after") ?? "0", 10) || 0);
+      if (entry.subscribers.size >= this.#maxSessionSubscribers) {
+        throw new Phase4bHttpError(
+          429,
+          "subscriber_limit_reached",
+          `Phase 4b sessions allow ${this.#maxSessionSubscribers} subscribers`,
+        );
+      }
       response.writeHead(200, {
         "content-type": "text/event-stream; charset=utf-8",
         "cache-control": "no-store",
@@ -296,7 +512,11 @@ export class Phase4bDemoServer {
       return;
     }
     const body = await readJson(request);
-    if (action === "turns") {
+    if (action === "close") {
+      await this.#deleteEntry(entry, "browser_session_closed");
+      json(response, 200, { closed: true, sessionId: entry.id });
+      return;
+    } else if (action === "turns") {
       await entry.session.startTurn({
         message: { role: "user", text: String(body.text ?? "") },
       });
@@ -312,6 +532,21 @@ export class Phase4bDemoServer {
         ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
       });
     } else if (action === "requests" && parts[5] && parts[6] === "resolve") {
+      const pending = entry.session.pendingRuntimeRequests?.().find(({ requestId }) => requestId === parts[5]);
+      if (pending === undefined) {
+        throw new Phase4bHttpError(
+          409,
+          "runtime_request_not_pending",
+          "Runtime request is missing, expired, or already resolved",
+        );
+      }
+      if (typeof body.turnId !== "string" || body.turnId !== pending.turnId) {
+        throw new Phase4bHttpError(
+          409,
+          "runtime_request_scope_mismatch",
+          "Runtime request resolution does not match its session and turn",
+        );
+      }
       await entry.session.resolveRuntimeRequest?.({
         requestId: parts[5],
         turnId: String(body.turnId ?? ""),
@@ -326,6 +561,14 @@ export class Phase4bDemoServer {
       return;
     }
     json(response, 200, await this.#publicState(entry));
+  }
+
+  async #deleteEntry(entry: DemoEntry, reason: string): Promise<void> {
+    if (!this.#entries.delete(entry.id)) return;
+    for (const subscriber of entry.subscribers) subscriber.end();
+    entry.subscribers.clear();
+    await entry.session.close({ reason });
+    await entry.consumeTask.catch(() => undefined);
   }
 
   async #create(
@@ -348,27 +591,35 @@ export class Phase4bDemoServer {
       normalizedSessionId,
       workingDirectory: this.#options.workingDirectory,
     });
-    const descriptor = await driver.descriptor();
-    const entry: DemoEntry = {
-      id,
-      runId,
-      normalizedSessionId,
-      manifestId,
-      envelope,
-      driver,
-      session,
-      capabilities: descriptor.capabilities,
-      events: [],
-      subscribers: new Set(),
-      consumeTask: Promise.resolve(),
-    };
-    this.#entries.set(id, entry);
-    entry.consumeTask = this.#consume(entry, session);
-    if (startTurn) {
-      await session.startTurn({ message: { role: "user", text: message } });
-      await new Promise<void>((resolve) => setImmediate(resolve));
+    let entry: DemoEntry | null = null;
+    try {
+      const descriptor = await driver.descriptor();
+      entry = {
+        id,
+        runId,
+        normalizedSessionId,
+        manifestId,
+        envelope,
+        driver,
+        session,
+        capabilities: descriptor.capabilities,
+        events: [],
+        subscribers: new Set(),
+        consumeTask: Promise.resolve(),
+      };
+      this.#entries.set(id, entry);
+      entry.consumeTask = this.#consume(entry, session);
+      if (startTurn) {
+        await session.startTurn({ message: { role: "user", text: message } });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      return entry;
+    } catch (error) {
+      this.#entries.delete(id);
+      await session.close({ reason: "demo_session_start_failed" }).catch(() => undefined);
+      await entry?.consumeTask.catch(() => undefined);
+      throw error;
     }
-    return entry;
   }
 
   async #consume(entry: DemoEntry, session: HarnessSession): Promise<void> {

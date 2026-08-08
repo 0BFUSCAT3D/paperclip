@@ -13,9 +13,10 @@ const workspace = await mkdtemp(resolve(
   process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? tmpdir(),
   "phase4b-real-codex-",
 ));
+const requestedOutput = process.argv.slice(2).find((argument) => argument !== "--");
 const output = resolve(
   packageRoot,
-  process.argv[2] ?? "knowledge/evidence/phase-04b-real-codex-server.json",
+  requestedOutput ?? "knowledge/evidence/phase-04b-real-codex-server.json",
 );
 
 const server = new Phase4bDemoServer({
@@ -29,11 +30,18 @@ const server = new Phase4bDemoServer({
 });
 
 const address = await server.start();
+const directApiAuthorization = server.directApiAuthorization();
 const commandLog = [];
 
 async function request(path, init) {
   commandLog.push({ method: init?.method ?? "GET", path });
-  const response = await fetch(`${address.url}${path}`, init);
+  const response = await fetch(`${address.url}${path}`, {
+    ...init,
+    headers: {
+      ...init?.headers,
+      authorization: directApiAuthorization,
+    },
+  });
   const body = await response.json();
   if (!response.ok) throw new Error(`${path} returned ${response.status}: ${JSON.stringify(body)}`);
   return body;

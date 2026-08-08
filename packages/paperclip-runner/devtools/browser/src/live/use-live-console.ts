@@ -475,7 +475,18 @@ export function useLiveConsole(): LiveConsole {
   }, [adopt, guard, subscribe]);
 
   const reset = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
     closeStream();
+    if (sessionId !== null) {
+      try {
+        await client.closeSession(sessionId);
+      } catch (cause) {
+        setConnection("disconnected");
+        setError(errorMessage(cause));
+        setAnnouncement("Demo reset failed");
+        return;
+      }
+    }
     window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
     sessionIdRef.current = null;
     cursorRef.current = 0;

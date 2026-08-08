@@ -42,7 +42,9 @@ port, and server-owned working directory. It also says
 In a second terminal, run:
 
 ```sh
-curl -s http://127.0.0.1:4174/api/phase4b/health | jq
+curl -s http://127.0.0.1:4174/api/phase4b/health \
+  -H 'Origin: http://127.0.0.1:4174' \
+  -H 'Sec-Fetch-Site: same-origin' | jq
 ```
 
 Expected facts:
@@ -56,19 +58,24 @@ Expected facts:
 
 ```sh
 curl -s -X POST http://127.0.0.1:4174/api/phase4b/sessions \
+  -H 'Origin: http://127.0.0.1:4174' \
+  -H 'Sec-Fetch-Site: same-origin' \
   -H 'content-type: application/json' \
   --data '{"objective":"Create demo.txt with exactly: phase4b demo","message":"Complete and verify the exact file task."}' \
   | tee "$phase4b_workspace/session.json" | jq
 ```
 
-Copy `sessionId` and `activeTurnId` from the reply. The server ignores any
-browser-supplied working-directory or credential field.
+Copy `sessionId` and `activeTurnId` from the reply. The server ignores a
+browser-supplied working directory and rejects browser-supplied credential
+fields.
 
 ## Step 5: Read live or replayed events
 
 ```sh
 session_id="$(jq -r .sessionId "$phase4b_workspace/session.json")"
-curl -s "http://127.0.0.1:4174/api/phase4b/sessions/$session_id/events?after=0" | jq
+curl -s "http://127.0.0.1:4174/api/phase4b/sessions/$session_id/events?after=0" \
+  -H 'Origin: http://127.0.0.1:4174' \
+  -H 'Sec-Fetch-Site: same-origin' | jq
 ```
 
 The reply contains canonical PRP events and a cursor. A later request can pass
@@ -78,7 +85,9 @@ view and replay.
 For a live stream, run:
 
 ```sh
-curl -N "http://127.0.0.1:4174/api/phase4b/sessions/$session_id/stream?after=0"
+curl -N "http://127.0.0.1:4174/api/phase4b/sessions/$session_id/stream?after=0" \
+  -H 'Origin: http://127.0.0.1:4174' \
+  -H 'Sec-Fetch-Site: same-origin'
 ```
 
 ## Step 6: Reconnect the same session
@@ -86,11 +95,19 @@ curl -N "http://127.0.0.1:4174/api/phase4b/sessions/$session_id/stream?after=0"
 ```sh
 curl -s -X POST \
   "http://127.0.0.1:4174/api/phase4b/sessions/$session_id/reconnect" \
+  -H 'Origin: http://127.0.0.1:4174' \
+  -H 'Sec-Fetch-Site: same-origin' \
   -H 'content-type: application/json' --data '{}' | jq
 ```
 
 Confirm that `runId`, `normalizedSessionId`, `driverSessionId`, and
 `providerSessionId` did not change. The new events include `session.resumed`.
+
+The repeated browser headers are intentional admission evidence. DNS-rebinding
+Hosts, cross-origin or missing Fetch Metadata, wildcard binds, and simple
+`text/plain` mutations are rejected. This protects the browser boundary, but
+untrusted local processes can still make loopback requests; Codex sandbox and
+approval policy remain the final execution boundary.
 
 ## Step 7: Record real evidence
 

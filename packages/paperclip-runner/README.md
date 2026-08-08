@@ -69,6 +69,10 @@ pnpm --filter @paperclipai/paperclip-runner console:phase4b
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 ```
 
+Phase 4b provider-backed routes are loopback-only and reject wildcard/LAN
+binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
+and JSON content; see the protocol-server tutorial for direct `curl` examples.
+
 ## Package-owned commands
 
 | Command | Purpose |

@@ -7,6 +7,7 @@ export default defineConfig({
       "src/**/*.test.ts",
       "devtools/browser/src/**/*.test.ts",
       "scripts/phase2-browser-server.test.mjs",
+      "scripts/phase4b-browser-server.test.mjs",
     ],
   },
 });

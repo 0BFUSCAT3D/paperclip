@@ -127,6 +127,13 @@ export async function reconnectSession(sessionId: string): Promise<LiveSessionSt
   });
 }
 
+export async function closeSession(sessionId: string): Promise<void> {
+  await send(`/sessions/${sessionId}/close`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export interface EventStreamHandle {
   close(): void;
 }

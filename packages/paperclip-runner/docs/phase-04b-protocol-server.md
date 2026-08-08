@@ -83,6 +83,14 @@ pnpm --filter @paperclipai/paperclip-runner demo:phase4b -- \
   --host 127.0.0.1 --port 4174
 ```
 
+The transport fails before binding unless `--host` is an explicit loopback
+address. The standalone server and Vite middleware use the same admission
+guard. It requires loopback local and remote sockets, the exact configured
+loopback `Host` plus listening port, same-origin Fetch Metadata, a matching
+browser `Origin` on mutations and streams, and `application/json` on every
+mutation. Server-side automation uses a random per-launch bearer capability;
+it is never returned by an API response or browser state.
+
 Important routes:
 
 - `GET /api/phase4b/health`
@@ -95,10 +103,26 @@ Important routes:
 - `POST /api/phase4b/sessions/:id/requests/:requestId/resolve`
 - `POST /api/phase4b/sessions/:id/goal/:operation`
 - `POST /api/phase4b/sessions/:id/reconnect`
+- `POST /api/phase4b/sessions/:id/close`
 
 The server chooses the working directory. A create body cannot override it.
+Provider, Paperclip, cookie, and bearer credential fields in create bodies are
+rejected. Runtime-request resolution must match the pending request, its turn,
+and the session named by the route; stale, cross-scope, and duplicate responses
+fail with `409` before reaching the driver.
 Every JSON and event response passes a second bounded redaction layer. Replay
 uses the same validated PRP events and reducer as the live view.
+
+The demo keeps at most 16 active sessions and four SSE subscribers per session
+by default. Call the close route (the browser does this on reset) to release a
+session immediately; server shutdown closes every remaining session and
+subscriber. Configuration may lower these limits and is hard-capped at 64
+sessions and 16 subscribers.
+
+Residual risk: a loopback service is still reachable by untrusted local
+processes, which can reproduce browser headers. The Codex sandbox and approval
+policy remain the final execution boundary; this demo transport is not a
+multi-user authorization boundary.
 
 ## Evidence
 

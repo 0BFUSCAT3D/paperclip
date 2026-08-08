@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { request as httpRequest } from "node:http";
 
 import type {
   HarnessDriver,
@@ -260,11 +261,246 @@ class StubDriver implements HarnessDriver {
 
 const servers: Phase4bDemoServer[] = [];
 
+function browserHeaders(url: string, headers: HeadersInit = {}): Headers {
+  const result = new Headers(headers);
+  result.set("origin", new URL(url).origin);
+  result.set("sec-fetch-site", "same-origin");
+  return result;
+}
+
+function browserRequest(
+  url: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  return fetch(`${url}${path}`, {
+    ...init,
+    headers: browserHeaders(url, init.headers),
+  });
+}
+
+function jsonBrowserRequest(
+  url: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  return browserRequest(url, path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function rawRequest(
+  url: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(`${url}/api/phase4b/health`, { headers }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      response.once("end", () => resolve({
+        status: response.statusCode ?? 0,
+        body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
+      }));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+async function openEventStream(
+  url: string,
+  sessionId: string,
+): Promise<ReturnType<typeof httpRequest>> {
+  const origin = new URL(url).origin;
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(`${url}/api/phase4b/sessions/${sessionId}/stream?after=0`, {
+      headers: { origin, "sec-fetch-site": "same-origin" },
+    }, (response) => {
+      response.once("data", () => resolve(request));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
 describe("Phase 4b package-local demo server", () => {
+  it("rejects DNS-rebinding Host values even with same-origin browser metadata", async () => {
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+    const { url, port } = await server.start();
+
+    const response = await rawRequest(url, {
+      host: `attacker.test:${port}`,
+      origin: `http://attacker.test:${port}`,
+      "sec-fetch-site": "same-origin",
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ error: "invalid_host" });
+  });
+
+  it("fails closed before binding a standalone server to a non-loopback host", async () => {
+    const server = new Phase4bDemoServer({
+      host: "0.0.0.0",
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+
+    await expect(server.start()).rejects.toThrow("available only over loopback");
+  });
+
+  it("rejects cross-origin and missing or hostile Fetch Metadata", async () => {
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const crossOrigin = await fetch(`${url}/api/phase4b/health`, {
+      headers: { origin: "http://attacker.test:4174", "sec-fetch-site": "same-origin" },
+    });
+    expect(crossOrigin.status).toBe(403);
+    await expect(crossOrigin.json()).resolves.toMatchObject({ error: "invalid_origin" });
+
+    const missing = await fetch(`${url}/api/phase4b/health`);
+    expect(missing.status).toBe(403);
+    await expect(missing.json()).resolves.toMatchObject({ error: "invalid_fetch_metadata" });
+
+    const hostile = await fetch(`${url}/api/phase4b/health`, {
+      headers: { origin: new URL(url).origin, "sec-fetch-site": "cross-site" },
+    });
+    expect(hostile.status).toBe(403);
+    await expect(hostile.json()).resolves.toMatchObject({ error: "invalid_fetch_metadata" });
+  });
+
+  it("rejects text/plain simple mutations and accepts a valid loopback browser request", async () => {
+    const driver = new StubDriver();
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => driver,
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const simplePost = await browserRequest(url, "/api/phase4b/sessions", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "{}",
+    });
+    expect(simplePost.status).toBe(415);
+    await expect(simplePost.json()).resolves.toMatchObject({ error: "json_content_type_required" });
+
+    const valid = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
+      objective: "Exercise the browser transport.",
+      startTurn: false,
+    });
+    expect(valid.status).toBe(201);
+    await expect(valid.json()).resolves.toMatchObject({
+      providerAuthentication: "server-side",
+      credentialsExposed: false,
+    });
+    expect(driver.openInputs).toHaveLength(1);
+  });
+
+  it("uses an unguessable direct capability while keeping provider credentials server-side", async () => {
+    const driver = new StubDriver();
+    const server = new Phase4bDemoServer({
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => driver,
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const invalid = await fetch(`${url}/api/phase4b/health`, {
+      headers: { authorization: "Bearer invalid" },
+    });
+    expect(invalid.status).toBe(401);
+
+    const response = await fetch(`${url}/api/phase4b/sessions`, {
+      method: "POST",
+      headers: {
+        authorization: server.directApiAuthorization(),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ objective: "Use the server-owned provider path." }),
+    });
+    expect(response.status).toBe(201);
+    const created = await response.json() as Record<string, unknown>;
+    expect(driver.openInputs[0]?.workingDirectory).toBe("/safe/server-owned-workspace");
+    expect(JSON.stringify(created)).not.toContain(server.directApiAuthorization());
+    expect(JSON.stringify(created)).not.toContain("server-only-secret");
+
+    const credentialAttempt = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
+      objective: "Browser must not choose provider credentials.",
+      openaiApiKey: "browser-secret",
+    });
+    expect(credentialAttempt.status).toBe(422);
+    await expect(credentialAttempt.json()).resolves.toMatchObject({
+      error: "browser_credentials_forbidden",
+    });
+    expect(driver.openInputs).toHaveLength(1);
+  });
+
+  it("caps active sessions and frees capacity through explicit cleanup", async () => {
+    const server = new Phase4bDemoServer({
+      maxActiveSessions: 1,
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+
+    const first = await jsonBrowserRequest(url, "/api/phase4b/sessions", { startTurn: false });
+    expect(first.status).toBe(201);
+    const { sessionId } = await first.json() as { sessionId: string };
+
+    const capped = await jsonBrowserRequest(url, "/api/phase4b/sessions", { startTurn: false });
+    expect(capped.status).toBe(429);
+    await expect(capped.json()).resolves.toMatchObject({ error: "session_limit_reached" });
+
+    const closed = await jsonBrowserRequest(url, `/api/phase4b/sessions/${sessionId}/close`, {});
+    expect(closed.status).toBe(200);
+    await expect(closed.json()).resolves.toEqual({ closed: true, sessionId });
+
+    const replacement = await jsonBrowserRequest(url, "/api/phase4b/sessions", { startTurn: false });
+    expect(replacement.status).toBe(201);
+  });
+
+  it("caps SSE subscribers per session", async () => {
+    const server = new Phase4bDemoServer({
+      maxSessionSubscribers: 1,
+      workingDirectory: "/safe/server-owned-workspace",
+      driverFactory: () => new StubDriver(),
+    });
+    servers.push(server);
+    const { url } = await server.start();
+    const created = await jsonBrowserRequest(url, "/api/phase4b/sessions", { startTurn: false });
+    const { sessionId } = await created.json() as { sessionId: string };
+    const first = await openEventStream(url, sessionId);
+
+    try {
+      const capped = await browserRequest(
+        url,
+        `/api/phase4b/sessions/${sessionId}/stream?after=0`,
+      );
+      expect(capped.status).toBe(429);
+      await expect(capped.json()).resolves.toMatchObject({ error: "subscriber_limit_reached" });
+    } finally {
+      first.destroy();
+    }
+  });
+
   it("keeps credentials and workspace selection server-side across replay and reconnect", async () => {
     const driver = new StubDriver();
     const server = new Phase4bDemoServer({
@@ -274,22 +510,17 @@ describe("Phase 4b package-local demo server", () => {
     servers.push(server);
     const { url } = await server.start();
 
-    const health = await fetch(`${url}/api/phase4b/health`).then((response) => response.json());
+    const health = await browserRequest(url, "/api/phase4b/health").then((response) => response.json());
     expect(health).toEqual(expect.objectContaining({
       status: "ok",
       providerAuthentication: "server-side",
       credentialsExposed: false,
     }));
 
-    const created = await fetch(`${url}/api/phase4b/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+    const created = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
         objective: "Exercise the server boundary.",
         workingDirectory: "/browser/chosen-path",
-        authorization: "Bearer browser-secret",
-      }),
-    }).then((response) => response.json()) as Record<string, unknown>;
+      }).then((response) => response.json()) as Record<string, unknown>;
     expect(driver.openInputs[0]?.workingDirectory).toBe("/safe/server-owned-workspace");
     expect(created).toMatchObject({
       providerAuthentication: "server-side",
@@ -303,7 +534,7 @@ describe("Phase 4b package-local demo server", () => {
     expect(JSON.stringify(created)).not.toContain("/srv/paperclip/home");
 
     const sessionId = String(created.sessionId);
-    const replay = await fetch(`${url}/api/phase4b/sessions/${sessionId}/events?after=0`)
+    const replay = await browserRequest(url, `/api/phase4b/sessions/${sessionId}/events?after=0`)
       .then((response) => response.json()) as { events: PrpEvent[]; cursor: number; replay: boolean };
     expect(replay.replay).toBe(true);
     expect(replay.events.length).toBeGreaterThanOrEqual(5);
@@ -311,35 +542,63 @@ describe("Phase 4b package-local demo server", () => {
     expect(JSON.stringify(replay)).not.toContain("/srv/paperclip/home");
     expect(JSON.stringify(replay)).toContain("<server-path>");
 
-    const resolved = await fetch(
-      `${url}/api/phase4b/sessions/${sessionId}/requests/request-demo/resolve`,
+    const otherSession = await jsonBrowserRequest(url, "/api/phase4b/sessions", {
+      objective: "Keep request scope separate.",
+      startTurn: false,
+    }).then((response) => response.json()) as { sessionId: string };
+    const wrongSession = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${otherSession.sessionId}/requests/request-demo/resolve`,
+      { turnId: "turn-demo", resolution: { action: "accept_for_session" } },
+    );
+    expect(wrongSession.status).toBe(409);
+    await expect(wrongSession.json()).resolves.toMatchObject({ error: "runtime_request_not_pending" });
+
+    const wrongTurn = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/requests/request-demo/resolve`,
       {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+        turnId: "turn-attacker",
+        resolution: { action: "accept_for_session" },
+      },
+    );
+    expect(wrongTurn.status).toBe(409);
+    await expect(wrongTurn.json()).resolves.toMatchObject({ error: "runtime_request_scope_mismatch" });
+
+    const resolved = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/requests/request-demo/resolve`,
+      {
           turnId: "turn-demo",
           resolution: { action: "accept_for_session" },
-        }),
       },
     ).then((response) => response.json()) as Record<string, unknown>;
     expect(resolved.pendingRequests).toEqual([]);
 
-    const withGoal = await fetch(`${url}/api/phase4b/sessions/${sessionId}/goal/set`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ objective: "Keep the goal durable.", tokenBudget: 1024 }),
-    }).then((response) => response.json()) as Record<string, unknown>;
+    const duplicate = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/requests/request-demo/resolve`,
+      { turnId: "turn-demo", resolution: { action: "decline" } },
+    );
+    expect(duplicate.status).toBe(409);
+    await expect(duplicate.json()).resolves.toMatchObject({ error: "runtime_request_not_pending" });
+
+    const withGoal = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/goal/set`,
+      { objective: "Keep the goal durable.", tokenBudget: 1024 },
+    ).then((response) => response.json()) as Record<string, unknown>;
     expect(withGoal.goal).toMatchObject({
       objective: "Keep the goal durable.",
       status: "active",
       tokenBudget: 1024,
     });
 
-    const reconnected = await fetch(`${url}/api/phase4b/sessions/${sessionId}/reconnect`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    }).then((response) => response.json()) as Record<string, unknown>;
+    const reconnected = await jsonBrowserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/reconnect`,
+      {},
+    ).then((response) => response.json()) as Record<string, unknown>;
     expect(reconnected).toMatchObject({
       sessionId,
       runId: created.runId,
@@ -347,8 +606,9 @@ describe("Phase 4b package-local demo server", () => {
       driverSession: created.driverSession,
       goal: withGoal.goal,
     });
-    const afterReconnect = await fetch(
-      `${url}/api/phase4b/sessions/${sessionId}/events?after=${replay.cursor}`,
+    const afterReconnect = await browserRequest(
+      url,
+      `/api/phase4b/sessions/${sessionId}/events?after=${replay.cursor}`,
     ).then((response) => response.json()) as { events: PrpEvent[] };
     expect(afterReconnect.events.some(({ eventType }) => eventType === "session.resumed")).toBe(true);
   });
