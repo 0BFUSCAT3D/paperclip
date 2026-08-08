@@ -7,3 +7,4 @@
 * [Phase 1 protocol, fixtures, reducer, and static replay](2026-08-07-phase-01.md) - Executable PRP schemas, deterministic replay decisions, browser findings, and checkpoint gaps.
 * [Phase 2 local runner and fake harness](2026-08-07-phase-02.md) - Rust supervision, stdio protocol, scripted driver, live browser, cleanup, and parity decisions.
 * [Phase 3 durable outbound transport and recovery](2026-08-07-phase-03.md) - WebSocket authentication, durable ACK replay, command deduplication, and recovery diagnostics.
+* [Phase 4 skillless Codex app-server driver](2026-08-08-phase-04.md) - Direct app-server mapping, context isolation, semantic completion, real-model failures, and fixes.

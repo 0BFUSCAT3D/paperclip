@@ -2198,9 +2198,11 @@ Do not depend on its experimental network WebSocket as the Paperclip WAN transpo
 3. Send protocol initialization.
 4. Confirm server capabilities/version.
 5. Register client-defined semantic tools if configured.
-6. Create or resume thread.
-7. emit `session.started` or `session.resumed`.
-8. Persist thread/session parameters in the normalized session binding.
+6. Disable automatic skill, app, collaboration, plugin, memory, and
+   multi-agent instruction injection in thread config.
+7. Create or resume thread.
+8. emit `session.started` or `session.resumed`.
+9. Persist thread/session parameters in the normalized session binding.
 
 ### 14.4 Event mapping
 
@@ -2247,10 +2249,17 @@ Race behavior:
 Preferred order:
 
 1. app-server structured output schema for terminal run result, when supported;
-2. client-defined `paperclip.finish` dynamic tool;
+2. client-defined `paperclip_finish` and `paperclip_block` dynamic tools;
 3. invalid/no result becomes `needs_review`, never inferred `done`.
 
 The task envelope tells the model the expected result shape but does not teach Paperclip API mechanics.
+
+Every provider-facing object schema is strict and every constant field declares
+both its JSON `type` and `const`. The finish tool accepts only `done` and
+`needs_review`; the block tool accepts only `blocked` with a typed blocker
+owner/action/reason/scope. Both normalize through one canonical
+`paperclip.run_result.v1` validator. The first valid result is committed,
+identical repeats are idempotent, and changed repeats are rejected.
 
 ### 14.8 Reconciliation
 
@@ -6575,7 +6584,7 @@ Never change an active run from native to legacy mid-session.
 
 The implementation phases, dependency policy, package-local documentation layout, human checkpoints, and retained future backlog now live in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md).
 
-The spike specification remains the normative contract. Keep it updated when implementation evidence changes architecture, protocol, security, persistence, API, UI, performance, or exit criteria. Keep sequencing and task-creation details in the implementation plan. Phase 0, Phase 1, Phase 2, and Phase 3 are complete, including the Phase 3 implementation, security, UX, QA, documentation, tutorial, journal, and human checkpoint gates. On 2026-08-08, the board authorized Phase 4. Phase 4 must implement the skillless Codex reference driver entirely inside `packages/paperclip-runner/` against the mock core, with no changes or imports from `server/`, `ui/`, `packages/db/`, or production control-plane behavior. Keep Phase 5 and later tasks deferred until the Phase 4 implementation, security review, CTO contract review, QA tutorial evidence, package-local documentation, OKF journal entry, and human checkpoint are complete.
+The spike specification remains the normative contract. Keep it updated when implementation evidence changes architecture, protocol, security, persistence, API, UI, performance, or exit criteria. Keep sequencing and task-creation details in the implementation plan. Phase 0, Phase 1, Phase 2, and Phase 3 are complete, including the Phase 3 implementation, security, UX, QA, documentation, tutorial, journal, and human checkpoint gates. On 2026-08-08, the board authorized Phase 4. The package-local Phase 4 driver, conformance suite, safe real-model tracer, documentation, tutorial, and OKF evidence are implemented without changes or imports from `server/`, `ui/`, `packages/db/`, or production control-plane behavior. Security review, CTO contract review, QA tutorial evidence, and the human checkpoint remain pending. Keep Phase 5 and later tasks uncreated until those gates complete.
 
 ## 30. Dependency sequencing
 

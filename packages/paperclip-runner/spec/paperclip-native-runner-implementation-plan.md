@@ -6,7 +6,9 @@ This document is the implementation-phase plan for [`paperclip-native-runner-spi
 
 All implementation starts inside `packages/paperclip-runner/` with protocol and mock-control-plane layers. These standalone phases do not modify Paperclip control-plane semantics. A real Paperclip bridge is a late, separately reviewed phase after the standalone contract passes conformance tests.
 
-Phase 0, Phase 1, and Phase 2 are complete. The Phase 3 tracer is implemented and awaits Security, UX, QA, and human acceptance. Keep Phase 4 and later issues deferred until the Phase 3 human checkpoint is complete.
+Phases 0 through 3 are complete and accepted. The authorized Phase 4 tracer is
+implemented and awaits Security, CTO, QA, and human acceptance. Keep Phase 5
+and later issues uncreated until the Phase 4 human checkpoint is complete.
 
 ## Non-negotiable delivery rules
 
@@ -217,6 +219,15 @@ to the package index and cumulative end-to-end tutorial.
 
 **Tests/evidence:** common driver conformance, model-context snapshot, credential absence test, interruption without session loss, duplicate completion idempotency, resume/reconciliation test.
 
+**Implementation evidence (2026-08-08):** the package now contains the direct
+app-server v2 driver, compact envelope, separate finish/block tools, safe real
+Codex example, canonical reducer/replay trace, capability degradation, focused
+conformance suite, reference documentation, Simplified English tutorial, and
+OKF evidence. The exact context snapshot proves automatic skill, app, and
+collaboration instructions are disabled and the allowlisted child environment
+contains no Paperclip or OpenAI bearer credential. Browser screenshots are not
+applicable because Phase 4 changes no browser surface.
+
 **Owners/review:** CodexCoder implementation; SecurityEngineer credential/context review; QA real-harness tutorial; CTO reviews semantic completion and status-authority boundary.
 
 **Depends on:** Phase 3.
@@ -314,8 +325,8 @@ PAP-16717 Plan and phase governance
   ├─ Phase 0 Boundary/journal/skeleton            create now
   ├─ Phase 1 Protocol/fixtures/replay             create now; blocks on Phase 0
   ├─ Phase 2 Local runner/fake harness             deferred; blocks on Phase 1
-  ├─ Phase 3 Durable transport/recovery            deferred; blocks on Phase 2
-  ├─ Phase 4 Skillless Codex driver                 deferred; blocks on Phase 3
+  ├─ Phase 3 Durable transport/recovery            complete
+  ├─ Phase 4 Skillless Codex driver                 implemented; review pending
   ├─ Phase 5 Browser SDK/reference console         deferred; blocks on Phase 3
   ├─ Phase 6 Paperclip integration adapter          deferred; blocks on Phases 4 and 5 + board gate
   └─ Phase 7 Portability/release reference kit     deferred; blocks on Phase 6 for final closure

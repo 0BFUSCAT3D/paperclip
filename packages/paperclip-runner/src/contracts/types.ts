@@ -29,6 +29,11 @@ export interface NativeSessionCapabilities {
   steering: boolean;
   interruption: boolean;
   structuredResult: boolean;
+  read?: boolean;
+  reconciliation?: boolean;
+  usage?: boolean;
+  dynamicTools?: boolean;
+  unsupported?: string[];
 }
 
 export interface NativeUserMessage {

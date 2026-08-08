@@ -7,3 +7,4 @@
 * [Phase 1 verification](2026-08-07-phase-01-verification.md) - Schema, golden, reducer, Rust parity, CLI, browser, token, boundary, and screenshot evidence.
 * [Phase 2 verification](2026-08-07-phase-02-verification.md) - Rust supervisor, fake-driver scenarios, cleanup, live/replay parity, browser flows, screenshots, and complete package verification.
 * [Phase 3 verification](2026-08-07-phase-03-verification.md) - Lost-ACK replay, restart recovery, command deduplication, storage, and redacted diagnostics.
+* [Phase 4 verification](2026-08-08-phase-04-verification.md) - Direct Codex conformance, exact skillless context, semantic completion, recovery, and real-session replay.

@@ -3,18 +3,21 @@
 ## What this tutorial is
 
 This tutorial combines each implemented Native Runner phase into one procedure.
-It currently includes Phase 0 through Phase 3.
+It currently includes Phase 0 through Phase 4.
 
 ## What this tutorial proves
 
 This tutorial proves that the standalone package boundary, static replay path,
-local live-run path, and durable recovery path work together. It does not use
-Paperclip or a real model.
+local live-run path, durable recovery path, and direct Codex driver work
+together. It does not use the Paperclip control plane. Phase 4 uses a real
+local Codex session through the mock core.
 
 The current system includes the Rust mock-core tracer, shared protocol fixtures,
 the Rust supervisor, a scripted fake harness, CLI live runs, and browser live and
 replay modes. It also includes the Rust outbound WebSocket client, durable
 outbox, package-local mock core, recovery CLI, and recovery browser view.
+The final phase adds a skillless task envelope, direct app-server driver,
+semantic completion tools, and the same reducer/replay proof used by fixtures.
 
 ## Current end-to-end path
 
@@ -39,6 +42,13 @@ outbox, package-local mock core, recovery CLI, and recovery browser view.
 15. Confirm that the recovered runner and session IDs stay the same.
 16. Confirm that the outbox is empty after replay and cumulative acknowledgement.
 17. Open the [Phase 3 journal entry](../../knowledge/journal/2026-08-07-phase-03.md).
+18. Follow [Phase 4: Run the Skillless Codex Driver](phase-04-skillless-codex.md).
+19. Inspect the exact model-context snapshot and confirm that it has no
+    Paperclip instructions, bearer credentials, or unrelated skills.
+20. Run the safe task, then steer and interrupt separate sessions. Confirm
+    stable session identities and exactly one result and terminal event.
+21. Open the [Phase 4 journal entry](../../knowledge/journal/2026-08-08-phase-04.md)
+    and its linked real-session trace and verification evidence.
 
 The one-command form after installation is:
 
@@ -82,6 +92,17 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
 - lease expiry, drain, revoke, and unrecoverable storage outcomes are explicit;
 - CLI and browser diagnostics do not expose bootstrap or connection-lease
   tokens.
+- the Codex child receives an allowlisted environment without Paperclip or
+  OpenAI bearer credentials;
+- automatic skill, app, and collaboration instruction blocks are disabled;
+- direct app-server create, resume, read, turn, steer, interrupt, usage, and
+  reconciliation operations preserve stable identities;
+- provider events normalize to canonical lifecycle, model, tool, file,
+  request, usage, verification, result, and terminal events;
+- the first validated semantic completion wins, identical duplicates are
+  idempotent, and a changed duplicate is rejected;
+- unsupported capabilities degrade through explicit redacted diagnostics;
+- the real trace and its replay reduce to the same final snapshot.
 
-Phase 4 remains uncreated until the Phase 3 review and human checkpoint are
+Phase 5 remains uncreated until the Phase 4 review and human checkpoint are
 complete.

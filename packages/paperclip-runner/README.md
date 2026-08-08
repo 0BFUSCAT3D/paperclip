@@ -10,10 +10,12 @@ static replay, and a standalone browser reference page. Phase 2 adds the Rust
 runner process, process-group supervision, a scripted fake harness over stdio
 JSONL, a TypeScript mock core, and validated live browser replay. Phase 3 adds
 the Rust outbound WebSocket client, private durable state, replay and restart
-recovery, and safe CLI/browser diagnostics. These phases do not import or start
-Paperclip's server, UI, CLI, or production database.
+recovery, and safe CLI/browser diagnostics. Phase 4 adds a direct, skillless
+Codex app-server driver, semantic completion tools, canonical event tracing,
+and a real-model example against the mock core. These phases do not import or
+start Paperclip's server, UI, CLI, or production database.
 
-## Phase 0–3 quick start
+## Phase 0–4 quick start
 
 From the repository root:
 
@@ -52,6 +54,7 @@ devtool:
 pnpm --filter @paperclipai/paperclip-runner replay:phase1
 pnpm --filter @paperclipai/paperclip-runner trace:phase2 -- --scenario happy-path
 pnpm --filter @paperclipai/paperclip-runner trace:phase3 -- --fault lost-ack
+pnpm --filter @paperclipai/paperclip-runner trace:phase4
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 ```
 
@@ -75,9 +78,11 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 | `record:phase2` | Capture a validated happy-path live trace as a replay fixture. |
 | `trace:phase3` | Run the Rust runner against the mock core with a selected recovery fault. |
 | `record:phase3` | Regenerate the complete Phase 3 fault matrix and exact per-fault traces. |
+| `trace:phase4` | Run the mock core with a real, local skillless Codex app-server session. |
+| `record:phase4` | Run the safe Codex task and record its validated, normalized trace. |
 | `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
 | `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
-| `verify` | Run the complete Phase 0 through Phase 3 acceptance sequence. |
+| `verify` | Run the complete deterministic Phase 0 through Phase 4 acceptance sequence. |
 | `verify:rootless` | Extract Debian/Ubuntu browser libraries without root, then run `verify`. |
 
 ## Navigate
@@ -90,6 +95,8 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Phase 2 local protocol reference](docs/phase-02-local-protocol.md)
 - [Phase 3 break-it-on-purpose tutorial](docs/tutorials/phase-03-break-recovery.md)
 - [Phase 3 durable transport reference](docs/phase-03-durable-transport.md)
+- [Phase 4 skillless Codex tutorial](docs/tutorials/phase-04-skillless-codex.md)
+- [Phase 4 skillless Codex driver reference](docs/phase-04-skillless-codex-driver.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
@@ -97,4 +104,5 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Implementation plan](spec/paperclip-native-runner-implementation-plan.md)
 - [Normative spike specification](spec/paperclip-native-runner-spike-spec.md)
 
-Phase 3 adds package-local durable network recovery. Production Paperclip integration and a real model harness remain deferred.
+Phase 4 adds the package-local real-model reference driver. Production
+Paperclip integration and Phase 5 remain deferred.

@@ -90,6 +90,11 @@ if (registeredEventValidator === undefined) {
   throw new Error("PRP event validator was not registered");
 }
 const eventValidator = registeredEventValidator as ValidateFunction<PrpEvent>;
+const registeredResultValidator = ajv.getSchema(resultSchema.$id);
+if (registeredResultValidator === undefined) {
+  throw new Error("PRP structured result validator was not registered");
+}
+const resultValidator = registeredResultValidator as ValidateFunction<PrpStructuredRunResult>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -295,6 +300,24 @@ export function validatePrpEvent(value: unknown): EventValidationResult {
     };
   }
   return { ok: true, event: value, issues: [] };
+}
+
+export type StructuredResultValidationResult =
+  | { ok: true; result: PrpStructuredRunResult; issues: [] }
+  | { ok: false; result: null; issues: ProtocolValidationIssue[] };
+
+/** Validate a semantic completion independently from a complete replay fixture. */
+export function validatePrpStructuredRunResult(
+  value: unknown,
+): StructuredResultValidationResult {
+  if (!resultValidator(value)) {
+    return {
+      ok: false,
+      result: null,
+      issues: (resultValidator.errors ?? []).map(ajvIssue),
+    };
+  }
+  return { ok: true, result: value, issues: [] };
 }
 
 export function negotiateProtocolVersion(
