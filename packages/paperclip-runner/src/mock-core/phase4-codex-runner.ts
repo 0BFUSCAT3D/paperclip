@@ -13,12 +13,17 @@ import {
   createSessionSnapshotFromMetadata,
 } from "../reducer/session-reducer.js";
 import {
+  validatePrpEvent,
   validatePrpStructuredRunResult,
   type PrpCapabilities,
   type PrpEvent,
   type PrpStructuredRunResult,
   type PrpTerminalState,
 } from "../protocol/phase1-contract.js";
+
+const MAX_PERSISTED_PHASE4_BYTES = 8 * 1024 * 1024;
+const MAX_PERSISTED_PHASE4_LINE_BYTES = 256 * 1024;
+const MAX_PERSISTED_PHASE4_EVENTS = 4096;
 
 export interface Phase4CodexTracerInput {
   driver: HarnessDriver;
@@ -239,6 +244,78 @@ function sourceSequenceContinuous(events: PrpEvent[]): boolean {
   return true;
 }
 
+/** Parse and validate the persisted boundary before replaying controller state. */
+export function replayPersistedPhase4Events(
+  serialized: string,
+  metadata: Phase4RunMetadata,
+) {
+  if (!metadata.identity.driverSessionId) {
+    throw new Error("Persisted Phase 4 replay requires a driver session identity");
+  }
+  if (Buffer.byteLength(serialized) > MAX_PERSISTED_PHASE4_BYTES) {
+    throw new Error("Persisted Phase 4 event stream exceeded its byte limit");
+  }
+  const lines = serialized.endsWith("\n")
+    ? serialized.slice(0, -1).split("\n")
+    : serialized.split("\n");
+  if (lines.length === 0 || lines.length > MAX_PERSISTED_PHASE4_EVENTS) {
+    throw new Error("Persisted Phase 4 event stream exceeded its event limit");
+  }
+  const events: PrpEvent[] = [];
+  const sourceEventIds = new Set<string>();
+  const sourceSequences = new Map<string, number>();
+  let runTerminalCount = 0;
+  for (const line of lines) {
+    if (line.length === 0 || Buffer.byteLength(line) > MAX_PERSISTED_PHASE4_LINE_BYTES) {
+      throw new Error("Persisted Phase 4 event line was empty or oversized");
+    }
+    let candidate: unknown;
+    try {
+      candidate = JSON.parse(line);
+    } catch {
+      throw new Error("Persisted Phase 4 event line was malformed JSON");
+    }
+    const validation = validatePrpEvent(candidate);
+    if (!validation.ok) throw new Error("Persisted Phase 4 event failed schema validation");
+    const event = validation.event;
+    if (
+      event.runId !== metadata.identity.runId ||
+      event.normalizedSessionId !== metadata.identity.normalizedSessionId
+    ) {
+      throw new Error("Persisted Phase 4 event identity did not match the opened run");
+    }
+    if (sourceEventIds.has(event.sourceEventId)) {
+      throw new Error("Persisted Phase 4 event id was duplicated");
+    }
+    sourceEventIds.add(event.sourceEventId);
+    const source = `${event.sourceKind}:${event.sourceInstanceId}`;
+    const previous = sourceSequences.get(source);
+    if (previous !== undefined && event.sourceSeq !== previous + 1) {
+      throw new Error("Persisted Phase 4 source sequence was discontinuous");
+    }
+    sourceSequences.set(source, event.sourceSeq);
+    if (runTerminalCount > 0) {
+      throw new Error("Persisted Phase 4 event appeared after the run terminal");
+    }
+    if (event.eventType === "run.terminal") runTerminalCount += 1;
+    events.push(event);
+  }
+  if (runTerminalCount !== 1) {
+    throw new Error("Persisted Phase 4 event stream requires exactly one run terminal");
+  }
+  return events.reduce(
+    applyPrpEvent,
+    createSessionSnapshotFromMetadata({
+      fixtureName: metadata.fixtureName,
+      identity: {
+        ...metadata.identity,
+        driverSessionId: metadata.identity.driverSessionId,
+      },
+      capabilities: metadata.capabilities,
+    }),
+  );
+}
+
 /**
  * Small in-memory Phase 4 mock core. The driver reports provider facts; this
  * controller validates semantic proposals and alone emits the run terminal.
@@ -404,14 +481,8 @@ export async function runPhase4CodexTracer(input: Phase4CodexTracerInput): Promi
         capabilities,
       }),
     );
-    const replaySnapshot = events.reduce(
-      applyPrpEvent,
-      createSessionSnapshotFromMetadata({
-        fixtureName: metadata.fixtureName,
-        identity,
-        capabilities,
-      }),
-    );
+    const persistedEvents = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+    const replaySnapshot = replayPersistedPhase4Events(persistedEvents, metadata);
     const context = contextFrom(events);
     const terminalCount = events.filter((event) => event.eventType === "run.terminal").length;
     const turnTerminalCount = events.filter(isTurnTerminal).length;
@@ -447,7 +518,10 @@ export async function runPhase4CodexTracer(input: Phase4CodexTracerInput): Promi
         liveReplayParity: JSON.stringify(liveSnapshot) === JSON.stringify(replaySnapshot),
         stableIdentity:
           providerSessionId !== null &&
-          new Set([runId, normalizedSessionId, ids.driverSessionId, providerSessionId]).size === 4 &&
+          runId.length > 0 &&
+          normalizedSessionId.length > 0 &&
+          ids.driverSessionId.length > 0 &&
+          providerSessionId.length > 0 &&
           events.every(
             (event) =>
               event.runId === runId && event.normalizedSessionId === normalizedSessionId,

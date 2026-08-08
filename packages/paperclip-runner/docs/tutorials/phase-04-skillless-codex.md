@@ -34,6 +34,7 @@ codex app-server --help
 ```sh
 pnpm --filter @paperclipai/paperclip-runner typecheck:typescript
 pnpm --filter @paperclipai/paperclip-runner exec vitest run \
+  src/drivers/codex/app-server-transport.test.ts \
   src/drivers/codex/codex-app-server-driver.test.ts
 pnpm --filter @paperclipai/paperclip-runner check:forbidden-imports
 ```
@@ -91,6 +92,10 @@ Confirm:
 - `modelInputKinds` contains only `text`;
 - the semantic tools are `paperclip_finish` and `paperclip_block`;
 - no environment **value** is present;
+- the permission profile denies root access, exposes only read-only minimal
+  runtime files, grants write access to the assigned workspace, and disables
+  network access;
+- command `HOME` and `CODEX_HOME` are absent;
 - the envelope contains only this safe task and its completion criteria.
 
 Check that no control-plane route or bearer credential appears:
@@ -121,6 +126,17 @@ Confirm:
 The focused test suite supplies deterministic file-change and runtime-request
 events because a real model may choose a shell command instead of a file patch
 and may not need human input for this small task.
+
+To record the authenticated isolation proof, run:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner record:phase4
+```
+
+The recorder selects an existing readable host Codex credential/config path,
+creates a separate host secret, and asks the model to prove that neither is
+readable or writable. The run must still authenticate, create the workspace
+files, retain the successful command output, and pass every trace assertion.
 
 ## Step 5: Try steering
 

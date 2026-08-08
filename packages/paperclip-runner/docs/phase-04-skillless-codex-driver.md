@@ -60,12 +60,19 @@ instruction blocks. The model input accepts only text, never a Codex `skill`
 input. The driver captures the returned instruction-source list and requires it
 to be empty for the skillless assertion.
 
-The child process environment is allowlisted. It may receive only local runtime
-keys such as `PATH`, `HOME`, `CODEX_HOME`, locale, temporary-directory, trusted
-certificate, and credential-free proxy settings. Paperclip bearer values,
-`OPENAI_API_KEY`, arbitrary skill paths, and other inherited variables are not
-passed. Diagnostics redact bearer/basic credentials, credentialed proxy URLs,
-secret query parameters, sensitive JSON keys, and common key assignments.
+The trusted app-server process has an allowlisted environment. It retains host
+`HOME` and `CODEX_HOME` only so the provider can authenticate. Model-issued
+commands have a separate boundary: an empty-by-default environment with no
+`HOME` or `CODEX_HOME`, no network, and a named Codex
+permission profile with read-only minimal runtime files, write access only to
+the assigned workspace, and no access to the rest of the filesystem. The
+driver refuses filesystem-root workspaces, workspaces containing host `HOME`,
+and any workspace overlapping host `CODEX_HOME`.
+
+Paperclip bearer values, `OPENAI_API_KEY`, arbitrary skill paths, and other
+inherited variables are not passed. Diagnostics redact bearer/basic
+credentials, credentialed proxy URLs, secret query parameters, sensitive JSON
+keys, and common key assignments.
 
 The context snapshot records configuration and environment **key names**, not
 secret values.
@@ -83,10 +90,17 @@ Two dynamic semantic tools are registered when supported:
   reason, and scope.
 
 Both normalize through the canonical `paperclip.run_result.v1` validator. The
-first valid result is committed. Repeating the same result is idempotent; a
-different later result is rejected. A completed turn with no valid semantic
-result produces one explicit `needs_review` result and one failed terminal
-event. Process exit or prose alone never implies completion.
+first valid result is proposed. An exact retry from the same call is
+idempotent; a different call or result is rejected. Tool calls and provider
+notifications must name the exact opened thread and active turn. Missing,
+pre-turn, cross-thread, cross-turn, and post-terminal bindings fail the provider
+session closed. Duplicate or conflicting terminal facts are rejected. Process
+exit or prose alone never implies completion.
+
+The provider cannot commit controller state. It emits `run.result.proposed` and
+a provider turn terminal; the mock core validates the proposal against its
+task envelope, emits `run.result.accepted` or `run.result.rejected`, and alone
+emits `run.terminal`.
 
 ## Canonical event mapping
 
@@ -101,17 +115,29 @@ event. Process exit or prose alone never implies completion.
   `runtime_request.resolved` with redacted detail;
 - token snapshots -> completed `usage` items;
 - semantic verification rows -> completed `verification` items;
-- completion -> one `run.result.proposed` and one `run.terminal`.
+- provider completion -> at most one `run.result.proposed` and one turn
+  terminal;
+- controller decision -> one `run.result.accepted` or `run.result.rejected`,
+  followed by one `run.terminal`.
 
-The existing Phase 1 reducer consumes the live stream and the replay stream.
-The Phase 4 tracer requires byte-equivalent snapshots, contiguous source
-sequences, stable item IDs, one result, and one terminal event.
+The JSON-RPC transport limits each input line, pending client requests,
+in-flight server requests, queued notification count and bytes, diagnostic
+lines, and retained provider payloads. Malformed or oversized messages close
+the transport and reject pending work.
+
+The existing Phase 1 reducer consumes the live stream. Replay crosses a
+serialized JSONL boundary that validates byte and event counts, line size,
+schema, run/session binding, unique source event IDs, continuous per-source
+sequence, and exactly one final run terminal before reducing. The Phase 4
+tracer requires byte-equivalent live and replay snapshots.
 
 ## Runnable example
 
 `trace:phase4` starts a real local `codex app-server` session through the mock
-core. Its safe task can create only `hello.txt`, disables network access, and
-checks the exact file contents. See the
+core. Its safe task creates `hello.txt` with network disabled. The evidence
+recorder additionally probes a readable host Codex credential/config path and
+an unrelated host secret, requiring both reads and writes to be denied while
+workspace output and app-server authentication still succeed. See the
 [Phase 4 tutorial](tutorials/phase-04-skillless-codex.md).
 
 This phase changes no browser surface, so no new browser screenshot applies.

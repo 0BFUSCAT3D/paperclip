@@ -13,10 +13,11 @@ interface CliOptions {
   steer?: string;
   interrupt: boolean;
   json: boolean;
+  denyReadWritePaths: string[];
 }
 
 function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { interrupt: false, json: false };
+  const options: CliOptions = { interrupt: false, json: false, denyReadWritePaths: [] };
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
     if (value === "--") continue;
@@ -25,9 +26,20 @@ function parseArgs(args: string[]): CliOptions {
     else if (value === "--working-directory") options.workingDirectory = args[++index];
     else if (value === "--output") options.output = args[++index];
     else if (value === "--steer") options.steer = args[++index];
+    else if (value === "--deny-read-write-path") {
+      const path = args[++index];
+      if (path === undefined || path.trim().length === 0) {
+        throw new Error("--deny-read-write-path requires a path");
+      }
+      options.denyReadWritePaths.push(resolve(path));
+    }
     else throw new Error(`Unknown argument: ${value}`);
   }
   return options;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function formatSummary(trace: Awaited<ReturnType<typeof runPhase4CodexTracer>>): string {
@@ -53,18 +65,44 @@ async function main(): Promise<void> {
     ? resolve(options.workingDirectory)
     : await mkdtemp(join(tmpdir(), "paperclip-phase4-safe-"));
   await mkdir(workingDirectory, { recursive: true });
+  const isolationCommand = options.denyReadWritePaths.length === 0
+    ? null
+    : [
+        ...options.denyReadWritePaths.flatMap((path) => [
+          `test ! -r ${shellQuote(path)}`,
+          `test ! -w ${shellQuote(path)}`,
+        ]),
+        "test -z \"${CODEX_HOME+x}\"",
+        "test -z \"${HOME+x}\"",
+        "printf 'isolation enforced' > isolation-ok.txt",
+        "printf 'isolation enforced\\n'",
+      ].join(" && ");
   const envelope = createPhase4TaskEnvelope({
-    objective: "Create hello.txt in the working directory with exactly: hello from phase 4",
+    objective: isolationCommand === null
+      ? "Create hello.txt in the working directory with exactly: hello from phase 4"
+      : "Prove filesystem isolation, then create the requested files in the working directory.",
     criteria: [
       { id: "file-created", requirement: "hello.txt exists in the supplied working directory." },
       { id: "exact-content", requirement: "hello.txt contains exactly 'hello from phase 4'." },
+      ...(isolationCommand === null
+        ? []
+        : [{
+            id: "filesystem-isolated",
+            requirement:
+              "Run the supplied isolation command exactly; it must print 'isolation enforced' and create isolation-ok.txt with that exact content.",
+          }]),
     ],
     constraints: [
-      "Write only hello.txt inside the supplied working directory.",
+      isolationCommand === null
+        ? "Write only hello.txt inside the supplied working directory."
+        : "Write only hello.txt and isolation-ok.txt inside the supplied working directory.",
       "Do not use network access.",
       "Do not discover or invoke skills.",
       "Do not call a control-plane API.",
       "Return one semantic completion result.",
+      ...(isolationCommand === null
+        ? []
+        : [`Run this exact shell command before all other work: ${isolationCommand}`]),
       ...(options.steer !== undefined || options.interrupt
         ? ["Before changing files, run the shell command 'sleep 3' once so the operator can send a control command."]
         : []),

@@ -19,9 +19,11 @@ import {
 } from "../../protocol/phase1-contract.js";
 import {
   CodexAppServerDriver,
+  createIsolatedCodexAppServerArgs,
 } from "./codex-app-server-driver.js";
 import {
   runPhase4CodexTracer,
+  replayPersistedPhase4Events,
   validatePhase4ResultProposal,
 } from "../../mock-core/phase4-codex-runner.js";
 import type {
@@ -87,6 +89,7 @@ class FakeCodexTransport implements CodexAppServerTransport {
           modelProvider: "openai",
           cwd: "/workspace",
           turns: [],
+          activePermissionProfile: { id: "paperclip-runner-workspace-only" },
         },
         model: "gpt-test",
         modelProvider: "openai",
@@ -98,7 +101,7 @@ class FakeCodexTransport implements CodexAppServerTransport {
     }
     if (method === "turn/start") return { turn: { id: "turn-1", status: "inProgress", items: [] } };
     if (method === "thread/read") {
-      return this.readResponse ?? { thread: { id: this.threadId, sessionId: this.providerSessionId, turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
+      return this.readResponse ?? { thread: { id: this.threadId, sessionId: this.providerSessionId, cwd: "/workspace", turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
     }
     return {};
   }
@@ -300,7 +303,7 @@ describe("Codex app-server Phase 4 driver", () => {
         appInstructions: false,
         collaborationInstructions: false,
       },
-      environmentKeys: ["CODEX_HOME", "HOME", "LANG", "PATH"],
+      environmentKeys: ["LANG", "PATH"],
       envelope,
     });
     expect(isSkilllessPhase4Context(context)).toBe(true);
@@ -313,8 +316,35 @@ describe("Codex app-server Phase 4 driver", () => {
         include_apps_instructions: false,
         include_collaboration_mode_instructions: false,
       },
+      permissions: "paperclip-runner-workspace-only",
+      runtimeWorkspaceRoots: ["/workspace"],
       dynamicTools: [{ name: "paperclip_finish" }, { name: "paperclip_block" }],
     });
+    const commandPolicy = transport.calls.find((call) => call.method === "thread/start")
+      ?.params.config as Record<string, unknown>;
+    expect(JSON.stringify(commandPolicy)).not.toContain("/isolated/home");
+    expect(JSON.stringify(commandPolicy)).not.toContain("/isolated/codex");
+    expect(JSON.stringify(commandPolicy)).not.toContain("CODEX_HOME");
+    const appServerArgs = createIsolatedCodexAppServerArgs({
+      PATH: "/bin",
+      LANG: "C.UTF-8",
+      HOME: "/isolated/home",
+      CODEX_HOME: "/isolated/codex",
+    });
+    expect(appServerArgs).toEqual(expect.arrayContaining([
+      expect.stringContaining('default_permissions="paperclip-runner-workspace-only"'),
+      expect.stringContaining('permissions.paperclip-runner-workspace-only.filesystem='),
+      "permissions.paperclip-runner-workspace-only.network.enabled=false",
+      'shell_environment_policy.inherit="none"',
+      expect.stringContaining('shell_environment_policy.set={PATH="/bin",LANG="C.UTF-8"}'),
+    ]));
+    expect(appServerArgs.find((arg) => arg.startsWith("permissions."))).toContain(
+      '"/isolated/home"="none"',
+    );
+    expect(appServerArgs.find((arg) => arg.startsWith("permissions."))).toContain(
+      '"/isolated/codex"="none"',
+    );
+    expect(JSON.stringify(appServerArgs)).not.toContain("HOME=");
     expect(PHASE4_RESULT_OUTPUT_SCHEMA.properties.schema).toEqual({
       type: "string",
       const: "paperclip.run_result.v1",
@@ -323,6 +353,24 @@ describe("Codex app-server Phase 4 driver", () => {
       type: "string",
       const: "blocked",
     });
+  });
+
+  it("refuses to turn host credential roots into model-writable workspaces", async () => {
+    await expect(makeDriver([]).openSession({
+      runId: "run-codex-home",
+      normalizedSessionId: "normalized-codex-home",
+      workingDirectory: "/isolated/codex",
+    })).rejects.toThrow("cannot overlap host CODEX_HOME");
+    await expect(makeDriver([]).openSession({
+      runId: "run-host-home",
+      normalizedSessionId: "normalized-host-home",
+      workingDirectory: "/isolated",
+    })).rejects.toThrow("cannot contain the host HOME");
+    await expect(makeDriver([]).openSession({
+      runId: "run-root",
+      normalizedSessionId: "normalized-root",
+      workingDirectory: "/",
+    })).rejects.toThrow("cannot be a filesystem root");
   });
 
   it("steers and interrupts an active turn without replacing the session", async () => {
@@ -356,6 +404,144 @@ describe("Codex app-server Phase 4 driver", () => {
     const events = await collectUntilTerminal(session.events());
     expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
     expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+  });
+
+  it.each([
+    { threadId: "other-thread", turnId: "turn-1", label: "another thread" },
+    { threadId: "thread-1", turnId: "other-turn", label: "another turn" },
+  ])("rejects a semantic result for $label without committing it", async ({ threadId, turnId }) => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-hostile-tool",
+      normalizedSessionId: "normalized-hostile-tool",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await transport.invoke({
+      id: "hostile-call",
+      method: "item/tool/call",
+      params: { threadId, turnId, callId: "hostile-call", tool: "paperclip_finish", arguments: result },
+    })).toMatchObject({ success: false });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some((event) => event.eventType === "run.result.proposed")).toBe(false);
+    expect(events.find((event) => event.eventType === "session.failed")?.payload)
+      .toMatchObject({ code: "tool_binding_mismatch", recoverable: false });
+    expect(events.find((event) => event.eventType === "turn.failed")?.turnId).toBe("turn-1");
+  });
+
+  it("rejects pre-turn, cross-thread, and post-terminal notifications", async () => {
+    const preTurnTransport = new FakeCodexTransport();
+    const preTurn = await makeDriver([preTurnTransport]).openSession({
+      runId: "run-pre-turn",
+      normalizedSessionId: "normalized-pre-turn",
+      workingDirectory: "/workspace",
+    });
+    preTurnTransport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "answer-pre", type: "agentMessage", text: JSON.stringify(result) },
+    });
+    const preTurnEvents: PrpEvent[] = [];
+    for await (const event of preTurn.events()) preTurnEvents.push(event);
+    expect(preTurnEvents.some((event) => event.eventType === "run.result.proposed")).toBe(false);
+    expect(preTurnEvents.find((event) => event.eventType === "session.failed")?.payload)
+      .toMatchObject({ code: "turn_binding_mismatch" });
+
+    const crossThreadTransport = new FakeCodexTransport();
+    const crossThread = await makeDriver([crossThreadTransport]).openSession({
+      runId: "run-cross-thread",
+      normalizedSessionId: "normalized-cross-thread",
+      workingDirectory: "/workspace",
+    });
+    await crossThread.startTurn({ message: { role: "user", text: "Complete." } });
+    crossThreadTransport.push("item/completed", {
+      threadId: "other-thread",
+      turnId: "turn-1",
+      item: { id: "answer-other", type: "agentMessage", text: JSON.stringify(result) },
+    });
+    const crossThreadEvents = await collectUntilTerminal(crossThread.events());
+    expect(crossThreadEvents.some((event) => event.eventType === "run.result.proposed")).toBe(false);
+    expect(crossThreadEvents.find((event) => event.eventType === "session.failed")?.payload)
+      .toMatchObject({ code: "thread_binding_mismatch" });
+
+    const postTerminalTransport = new FakeCodexTransport();
+    const postTerminal = await makeDriver([postTerminalTransport]).openSession({
+      runId: "run-post-terminal",
+      normalizedSessionId: "normalized-post-terminal",
+      workingDirectory: "/workspace",
+    });
+    await postTerminal.startTurn({ message: { role: "user", text: "Complete." } });
+    postTerminalTransport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    await collectUntilTerminal(postTerminal.events());
+    expect(await postTerminalTransport.invoke({
+      id: "late-call",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "late-call",
+        tool: "paperclip_finish",
+        arguments: result,
+      },
+    })).toMatchObject({ success: false });
+  });
+
+  it("rejects duplicate and conflicting terminal facts", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-terminal-replay",
+      normalizedSessionId: "normalized-terminal-replay",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "failed", error: { message: "changed" }, items: [] },
+    });
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === "turn.failed")).toHaveLength(0);
+    expect(events.find((event) => event.eventType === "session.failed")?.payload)
+      .toMatchObject({ code: "conflicting_turn_terminal", recoverable: false });
+  });
+
+  it("rejects oversized semantic results without retaining provider payloads", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-large-result",
+      normalizedSessionId: "normalized-large-result",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await transport.invoke({
+      id: "large-call",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "large-call",
+        tool: "paperclip_finish",
+        arguments: { ...result, summary: "x".repeat(70 * 1024) },
+      },
+    })).toEqual({
+      success: false,
+      contentItems: [{ type: "inputText", text: "Semantic result exceeded the retained payload limit." }],
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some((event) => JSON.stringify(event).includes("x".repeat(1024)))).toBe(false);
+    expect(events.some((event) => event.eventType === "run.result.proposed")).toBe(false);
   });
 
   it("normalizes finish and block tools into one canonical result contract", async () => {
@@ -417,7 +603,7 @@ describe("Codex app-server Phase 4 driver", () => {
     expect(recovery).toMatchObject({ recovered: true });
     expect(recovery?.session?.ids()).toEqual(original.ids());
     expect(await recovery?.session?.reconcile?.()).toMatchObject({ thread: { id: "thread-1" } });
-    expect(second.calls.map((call) => call.method)).toEqual(["initialize", "thread/resume", "thread/read"]);
+    expect(second.calls.map((call) => call.method)).toEqual(["initialize", "thread/read", "thread/resume", "thread/read"]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
 
@@ -428,6 +614,7 @@ describe("Codex app-server Phase 4 driver", () => {
       thread: {
         id: "driver-thread-loss",
         sessionId: "provider-session-loss",
+        cwd: "/workspace",
         tokenUsage: { total: { inputTokens: 21, outputTokens: 8 } },
         turns: [{
           id: "turn-1",
@@ -582,16 +769,46 @@ describe("Codex app-server Phase 4 driver", () => {
       normalizedSessionId: "controller-session-identity",
     });
     expect(trace.assertions.stableIdentity).toBe(true);
-    expect(new Set([
-      trace.metadata.identity.runId,
-      trace.metadata.identity.normalizedSessionId,
-      trace.metadata.identity.driverSessionId,
-      trace.metadata.identity.providerSessionId,
-    ]).size).toBe(4);
+    expect(trace.metadata.identity).toMatchObject({
+      runId: "runtime-run-identity",
+      normalizedSessionId: "controller-session-identity",
+      driverSessionId: "thread-1",
+      providerSessionId: "provider-session-1",
+    });
     expect(trace.events.every((event) =>
       event.runId === "runtime-run-identity" &&
       event.normalizedSessionId === "controller-session-identity"
     )).toBe(true);
+  });
+
+  it("validates persisted identity, uniqueness, terminals, and line bounds before replay", async () => {
+    const { trace } = await traceCompletedProposal(result, {
+      runId: "runtime-run-persisted",
+      normalizedSessionId: "controller-session-persisted",
+    });
+    const serialize = (events: PrpEvent[]) => `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
+    expect(replayPersistedPhase4Events(serialize(trace.events), trace.metadata))
+      .toEqual(trace.replaySnapshot);
+
+    const mismatched = structuredClone(trace.events);
+    mismatched[0]!.normalizedSessionId = "another-session";
+    expect(() => replayPersistedPhase4Events(serialize(mismatched), trace.metadata))
+      .toThrow("identity did not match");
+
+    const terminalIndex = trace.events.findIndex((event) => event.eventType === "run.terminal");
+    const duplicated = trace.events.toSpliced(terminalIndex, 0, structuredClone(trace.events[0]!));
+    expect(() => replayPersistedPhase4Events(serialize(duplicated), trace.metadata))
+      .toThrow("event id was duplicated");
+
+    const terminal = structuredClone(trace.events[terminalIndex]!);
+    terminal.sourceEventId = `${terminal.sourceEventId}:conflict`;
+    terminal.sourceSeq += 1;
+    expect(() => replayPersistedPhase4Events(serialize([...trace.events, terminal]), trace.metadata))
+      .toThrow("after the run terminal");
+    expect(() => replayPersistedPhase4Events(`{\"payload\":\"${"x".repeat(300 * 1024)}\"}\n`, trace.metadata))
+      .toThrow("line was empty or oversized");
+    expect(() => replayPersistedPhase4Events("{not-json}\n", trace.metadata))
+      .toThrow("malformed JSON");
   });
 
   it("degrades declared unsupported capabilities without Codex-specific core branches", async () => {
