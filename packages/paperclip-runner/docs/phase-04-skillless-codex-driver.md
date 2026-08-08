@@ -70,10 +70,19 @@ The trusted app-server process has an allowlisted environment. It retains host
 `HOME` and `CODEX_HOME` only so the provider can authenticate. Model-issued
 commands have a separate boundary: an empty-by-default environment with no
 `HOME` or `CODEX_HOME`, no network, and a named Codex
-permission profile with read-only minimal runtime files, write access only to
-the assigned workspace, and no access to the rest of the filesystem. The
-driver refuses filesystem-root workspaces, workspaces containing host `HOME`,
-and any workspace overlapping host `CODEX_HOME`.
+permission profile requesting read-only minimal runtime files, no host-home or
+Codex-home access, and write access to the assigned workspace. The driver
+refuses filesystem-root workspaces, workspaces containing host `HOME`, and any
+workspace overlapping host `CODEX_HOME`.
+
+The returned sandbox facts remain authoritative. Codex 0.132.0 may inject a
+provider-managed writable root such as `~/.codex/memories` after a first run,
+even with `features.memories=false` and an explicit Codex-home deny. That makes
+the Codex-home directory discoverable in a warmed environment, so Phase 4 does
+not claim whole-directory unreadability. Its authenticated proof instead
+requires each readable `auth.json`/`config.toml` file and an unrelated host
+secret to remain unreadable and unwritable, while recording any injected root
+in `context.sandbox.legacyPolicy`.
 
 Paperclip bearer values, `OPENAI_API_KEY`, arbitrary skill paths, and other
 inherited variables are not passed. Diagnostics redact bearer/basic
@@ -143,9 +152,11 @@ tracer requires byte-equivalent live and replay snapshots.
 
 `trace:phase4` starts a real local `codex app-server` session through the mock
 core. Its safe task creates `hello.txt` with network disabled. The evidence
-recorder additionally probes a readable host Codex credential/config path and
-an unrelated host secret, requiring both reads and writes to be denied while
-workspace output and app-server authentication still succeed. See the
+recorder additionally probes all readable host Codex credential/config files
+and an unrelated host secret, requiring reads and writes to be denied while
+workspace output and app-server authentication still succeed. It gates output
+reads on an accepted `done` result and reports missing files by name rather
+than surfacing a raw filesystem `ENOENT`. See the
 [Phase 4 tutorial](tutorials/phase-04-skillless-codex.md).
 
 This phase changes no browser surface, so no new browser screenshot applies.

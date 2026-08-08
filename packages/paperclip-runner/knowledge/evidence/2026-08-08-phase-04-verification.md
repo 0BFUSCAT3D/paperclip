@@ -45,6 +45,12 @@ pnpm --filter @paperclipai/paperclip-runner verify
 - All live events pass the existing Phase 1 validator/reducer. Replaying them
   produces the same snapshot.
 - The package boundary rejects imports from Paperclip core packages.
+- The authenticated isolation proof targets each readable host
+  `auth.json`/`config.toml` file plus an unrelated secret, not the whole
+  Codex-home directory. The trace records Codex's injected memories root while
+  proving the credential files remain unreadable and unwritable.
+- The recorder requires an accepted `done` result before reading outputs and
+  turns an absent `hello.txt` or `isolation-ok.txt` into a named diagnostic.
 
 # Recorded outputs
 
@@ -52,24 +58,28 @@ pnpm --filter @paperclipai/paperclip-runner verify
 - [Driver reference](../../docs/phase-04-skillless-codex-driver.md)
 - [Hands-on tutorial](../../docs/tutorials/phase-04-skillless-codex.md)
 
-The trace normalizes its temporary working directory and writable Codex state
-root. It contains no credential values. This phase changes no browser surface,
-so a browser screenshot is not applicable.
+The trace normalizes its temporary working directory, both readable Codex
+credential/config paths, and writable Codex state root. It contains no
+credential values. This phase changes no browser surface, so a browser
+screenshot is not applicable.
 
 # Local verification result
 
 - Codex CLI/app-server: `0.132.0`.
 - Real model/provider: `gpt-5.5` / `openai`.
+- Focused recorder regressions: 3 passed, covering a warmed memories directory,
+  non-`done` output gating, and missing-file diagnostics.
 - Focused driver tests: 7 passed.
 - Full TypeScript suite: 73 passed.
 - Full Rust suite: 39 passed (37 unit and 2 process-supervisor tests).
 - Existing browser suite: 9 passed with the rootless Linux library path.
 - The real safe task created `hello.txt` with exactly `hello from phase 4`.
-- The real trace contains 340 canonical events and all eight assertions pass:
-  exactly one terminal result, live/replay parity, stable run/session identity,
-  contiguous source sequence, stable item identity, skillless context,
-  unrelated-skill absence, and credential absence. The recorder separately
-  verifies the exact safe-file content.
+- The refreshed warmed-environment trace contains 374 canonical events and all
+  nine assertions pass: exactly one terminal result, accepted proposal,
+  live/replay parity, stable run/session identity, contiguous source sequence,
+  stable item identity, skillless context, unrelated-skill absence, and
+  credential absence. The recorder separately verifies the exact safe-file
+  content.
 - Real steering and interruption commands preserved the session identity and
   ended with exactly one result and terminal event.
 - TypeScript, Rust, and browser builds and typechecks passed. Golden, parity,
@@ -90,6 +100,15 @@ so a browser screenshot is not applicable.
 - The normal package verifier reached Playwright but the host lacked
   `libatk-1.0.so.0`. The supported rootless verifier supplied private browser
   libraries, then completed the same `verify` path with all nine browser tests.
+- The original recorder required the whole `~/.codex` directory to be
+  unreadable. Codex 0.132.0 injects `~/.codex/memories` as a legacy writable
+  root after warm-up, making that directory check unsatisfiable while leaving
+  `auth.json` and `config.toml` protected. The proof now checks credential files
+  directly and the refreshed trace records the injected root.
+- A valid `blocked` result previously fell through to unconditional output
+  reads and surfaced an unhandled `ENOENT`. The recorder now validates the
+  decision/disposition first and guards each expected output with a clear
+  filename-specific diagnostic.
 
 # Review state
 

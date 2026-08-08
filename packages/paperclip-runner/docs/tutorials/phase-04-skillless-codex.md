@@ -29,6 +29,13 @@ codex --version
 codex app-server --help
 ```
 
+Run the real-Codex steps from an ordinary operator shell with a workspace that
+has no `AGENTS.md` in that directory or any ancestor. A child directory of this
+repository is not skillless because Codex discovers the repository
+`AGENTS.md`. In a Paperclip-managed agent run, `PAPERCLIP_WORKSPACE_CWD` also
+prevents `mktemp -d` from selecting a directory outside the assigned workspace;
+use a separate clean operator workspace rather than bypassing that guard.
+
 ## Step 1: Run the focused conformance checks
 
 ```sh
@@ -92,9 +99,12 @@ Confirm:
 - `modelInputKinds` contains only `text`;
 - the semantic tools are `paperclip_finish` and `paperclip_block`;
 - no environment **value** is present;
-- the permission profile denies root access, exposes only read-only minimal
-  runtime files, grants write access to the assigned workspace, and disables
-  network access;
+- the requested permission profile denies root and host-home access, exposes
+  read-only minimal runtime files, grants write access to the assigned
+  workspace, and disables network access;
+- the returned legacy sandbox facts are inspected separately because Codex may
+  add provider-managed state roots such as `~/.codex/memories` even when memory
+  instructions are disabled;
 - command `HOME` and `CODEX_HOME` are absent;
 - the envelope contains only this safe task and its completion criteria.
 
@@ -133,10 +143,18 @@ To record the authenticated isolation proof, run:
 pnpm --filter @paperclipai/paperclip-runner record:phase4
 ```
 
-The recorder selects an existing readable host Codex credential/config path,
-creates a separate host secret, and asks the model to prove that neither is
-readable or writable. The run must still authenticate, create the workspace
+The recorder selects every existing readable host Codex credential/config file
+(`auth.json` and/or `config.toml`), creates a separate host secret, and asks the
+model to prove that those files, the host-home root, and the unrelated secret
+are neither readable nor writable. It intentionally does not assert that the
+whole Codex-home directory is unreadable: warmed Codex 0.132.0 environments can
+inject `~/.codex/memories` as a writable legacy sandbox root. The credential
+files remain denied. The run must still authenticate, create the workspace
 files, retain the successful command output, and pass every trace assertion.
+
+If the tracer returns `blocked`/`needs_review`, or an accepted `done` result is
+missing an expected file, the recorder exits with a named diagnostic before it
+attempts to consume absent outputs.
 
 ## Step 5: Try steering
 

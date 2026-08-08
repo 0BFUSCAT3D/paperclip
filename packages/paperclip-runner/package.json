@@ -24,7 +24,7 @@
     "typecheck:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
     "typecheck:rust": "cargo check --manifest-path runner/Cargo.toml --locked --workspace",
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
-    "test": "pnpm run build:phase2-binaries && pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs",
+    "test": "pnpm run build:phase2-binaries && pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs scripts/record-phase4-evidence.test.mjs",
     "test:typescript": "vitest run",
     "test:rust": "cargo test --manifest-path runner/Cargo.toml --locked --workspace",
     "test:browser": "pnpm run build:typescript && pnpm run build:phase2-binaries && pnpm run build:browser && playwright test --config devtools/browser/playwright.config.ts",
