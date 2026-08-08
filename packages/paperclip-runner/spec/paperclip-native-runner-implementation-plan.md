@@ -246,17 +246,127 @@ uncreated until the Phase 4 runnable demo, tests, package-local documentation,
 tutorial, OKF journal entry, review gates, QA evidence, and human checkpoint are
 complete.
 
-## Phase 5 — Browser reference console and reusable SDK surface
+## Phase 4b — Live Codex protocol Web UI
 
-**Purpose:** turn the proven protocol into a reference implementation that package users can adopt without the Paperclip app.
+**Purpose:** prove that the Phase 4 Codex driver can power a useful live browser
+experience before the package freezes a reusable browser SDK or touches the
+Paperclip control plane.
 
-**Tracer bullet:** a standalone Vite browser app connects to the mock core, launches/replays a run, renders phases and typed events, handles runtime requests, and exposes a small SDK API used by an example app.
+**Ordering decision:** this is the correct next standalone test after Phase 4.
+Phases 0–3 already provide the canonical protocol, reducer, mock core, and
+recovery behavior. Phase 4 provides the real Codex thread/turn driver, steering,
+interruption, reconciliation, and skillless result path. Phase 4b must not begin
+until Phase 4 implementation, reviews, QA, and the human checkpoint are complete.
+It does not depend on Phase 5 or Phase 6. Instead, it extracts the real-driver
+browser tracer from the former Phase 5 scope; Phase 5 will generalize the proven
+client and components into a stable SDK.
+
+**Tracer bullet:** a standalone package-local Vite page connects to the mock
+core and a real Codex app-server session, starts or resumes a chat, renders the
+canonical event stream, steers an active turn, interrupts it gracefully, answers
+or rejects runtime requests, shows parent/child agent activity, exercises Codex
+goal operations when the installed app-server advertises them, and preserves a
+replayable session after refresh or reconnect.
+
+**Lowest-layer slices:**
+
+1. extend the Phase 4 driver and canonical protocol only where the browser proof
+   exposes a real gap: bidirectional app-server requests and responses,
+   approval/permission/user-input lifecycles, goal capability discovery and
+   operations, and parent/child thread lineage;
+2. add a package-local browser transport and reducer adapter against the mock
+   core, with no `server/`, `ui/`, `packages/db/`, or production API imports;
+3. build the minimal live chat shell, then add protocol inspector and debugging
+   controls without inventing a second event model;
+4. add deterministic demo-chat manifests that exercise normal completion,
+   mid-turn steering, graceful interruption and resume, command/file approval,
+   user input, subagent visibility, goal set/view/pause/resume/clear when
+   supported, reconnect, and replay;
+5. run the real Codex path end to end, retain screenshots and exact command
+   evidence, then run the service on this execution machine and report the
+   reachable `paperclip-dev:PORT` in the checkpoint comment.
 
 **Deliverables:**
 
-- stable TypeScript client/reducer API;
-- standalone browser devtools/reference app;
-- phase strip, timeline, connection health, composer, tool/file/plan/terminal views, requests, inspector, and replay controls;
+- standalone browser demo under `packages/paperclip-runner/` with a package-local
+  dev server and live connection to the mock core plus Phase 4 Codex driver;
+- chat transcript, streaming assistant/reasoning/tool items, composer, explicit
+  steer action, graceful stop/interrupt action, resume/reconnect state, and
+  connection/session status;
+- inline command, file-change, permission, tool, and user-input request cards
+  with approve, approve-for-session when offered, reject, cancel, and resolved
+  states derived from the upstream request contract;
+- visible parent/child thread or subagent lineage, activity, terminal state, and
+  unsupported-capability explanations instead of fabricated controls;
+- goal command palette and durable goal banner for set/view/pause/resume/clear,
+  gated by app-server capability/version detection; unsupported goal operations
+  must be disabled with an exact diagnostic;
+- protocol inspector showing canonical events, raw upstream method/event names,
+  identities, sequence/cursor state, pending requests, capability negotiation,
+  and redacted diagnostics;
+- preloaded demo-chat manifests with expected observations and reset controls;
+- selective source adaptation of compatible shadcn/ui and Vercel AI Elements
+  primitives after UX review, with a component decision record and no dependency
+  on the Paperclip application UI;
+- package-local reference documentation, Simplified English hand-run tutorial,
+  cumulative tutorial update, tutorial-index entry, screenshots, and OKF journal
+  entry.
+
+**Tests/evidence:** driver conformance for every newly exposed request/response
+or capability; reducer live/replay parity; stale-turn steering rejection;
+interrupt-before-start and interrupt-during-tool races; approval accept/reject,
+request cleanup, and no double response; goal capability present/absent fixtures;
+parent/child lineage and unsupported child-steering fixtures; reconnect and page
+refresh recovery; secret-redaction and browser-boundary tests; component,
+keyboard, and accessibility checks; deterministic demo-chat tests; a real Codex
+end-to-end recording; screenshots; exact startup command; bound host and port;
+and the final `paperclip-dev:PORT` handoff.
+
+**Security and credential rule:** use the execution environment's existing Codex
+authentication through the same Phase 4 allowlisted driver path. Never serialize
+credentials to browser state, fixtures, screenshots, diagnostics, protocol
+events, or documentation. The browser talks only to the package-local demo
+server/mock core; it does not receive provider credentials or Paperclip API
+credentials.
+
+**Owners/review:** UXDesigner reviews the interaction map and adapted component
+choices before UI implementation; CodexCoder owns driver/protocol/server work;
+ClaudeCoder or CodexCoder owns the package-local React UI after UX review;
+SecurityEngineer reviews credentials, approvals, browser transport, filesystem,
+and debug output; CTO reviews the protocol boundary and goal/subagent capability
+semantics; QA executes every demo chat, the clean-start tutorial, reconnect, and
+the reported machine port. Require screenshots for UX and QA review.
+
+**Depends on:** completed and human-accepted Phase 4. Phase 4b blocks Phase 5.
+
+**Human checkpoint:** open the reported `paperclip-dev:PORT`, run the preloaded
+demo chats, steer and interrupt a live Codex turn, resolve at least one real
+request, inspect subagent/goal state when supported, refresh and replay the same
+session, and approve or revise the interaction contract. Do not create Phase 5
+tasks until the user explicitly accepts this checkpoint and asks to continue.
+
+**Planning-only state (2026-08-08):** Phase 4 is still finishing. This section
+specifies Phase 4b only. Do not create Phase 4b implementation children, start a
+service, claim a port, or start Phase 5 until the board approves the updated plan
+and later explicitly authorizes execution after Phase 4 completes.
+
+## Phase 5 — Browser reference console and reusable SDK surface
+
+**Purpose:** generalize the Phase 4b browser proof into a stable reference
+implementation and reusable SDK surface that package users can adopt without the
+Paperclip app.
+
+**Tracer bullet:** a second small example app consumes the extracted TypeScript
+client/reducer/component APIs, runs against fake and real drivers, and reproduces
+the accepted Phase 4b lifecycle without importing demo internals.
+
+**Deliverables:**
+
+- extracted and versioned browser transport, TypeScript client/reducer, and
+  reusable component contracts based on the accepted Phase 4b behavior;
+- standalone browser devtools/reference app plus a separate minimal SDK consumer;
+- phase strip, timeline, connection health, composer, tool/file/plan/terminal
+  views, request adapters, inspector, replay controls, and extension points;
 - selective adaptation of compatible shadcn/ui and AI Elements source components;
 - accessibility and design-token compliance;
 - screenshots and component decision record explaining reused, adapted, and rejected components.
@@ -265,7 +375,8 @@ complete.
 
 **Owners/review:** UXDesigner creates/reviews the component plan first; ClaudeCoder or CodexCoder implements after UX approval; QA performs browser validation and screenshot review.
 
-**Depends on:** Phase 3. It may proceed in parallel with late Phase 4 driver work once protocol and recovery contracts are frozen.
+**Depends on:** completed and human-accepted Phase 4b. Do not run it in parallel
+with Phase 4 or Phase 4b because it freezes APIs from the live proof.
 
 **Human checkpoint:** use the browser tutorial as a small SDK consumer, run fake and real-driver sessions, and give UI feedback before Paperclip integration starts.
 

@@ -6572,7 +6572,8 @@ them to collapse into one public endpoint.
 1. Fake driver local loopback.
 2. Direct Codex local execution target.
 3. Direct Codex in one cold sandbox provider with legacy/native workspace-equivalence tests passing.
-4. UI steering/interrupt.
+4. Standalone Phase 4b live Codex Web UI with steering, interruption,
+   requests, goal capability detection, subagent lineage, reconnect, and replay.
 5. Reconnect/replay fault suite.
 6. Second provider.
 7. ACP/acpx driver.
@@ -6605,11 +6606,78 @@ Never change an active run from native to legacy mid-session.
 
 The implementation phases, dependency policy, package-local documentation layout, human checkpoints, and retained future backlog now live in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md).
 
-The spike specification remains the normative contract. Keep it updated when implementation evidence changes architecture, protocol, security, persistence, API, UI, performance, or exit criteria. Keep sequencing and task-creation details in the implementation plan. Phase 0, Phase 1, Phase 2, and Phase 3 are complete, including the Phase 3 implementation, security, UX, QA, documentation, tutorial, journal, and human checkpoint gates. On 2026-08-08, the board authorized Phase 4. The package-local Phase 4 driver, conformance suite, safe real-model tracer, documentation, tutorial, and OKF evidence are implemented without changes or imports from `server/`, `ui/`, `packages/db/`, or production control-plane behavior. Security review, CTO contract review, QA tutorial evidence, and the human checkpoint remain pending. Keep Phase 5 and later tasks uncreated until those gates complete.
+The spike specification remains the normative contract. Keep it updated when implementation evidence changes architecture, protocol, security, persistence, API, UI, performance, or exit criteria. Keep sequencing and task-creation details in the implementation plan. Phase 0, Phase 1, Phase 2, and Phase 3 are complete, including the Phase 3 implementation, security, UX, QA, documentation, tutorial, journal, and human checkpoint gates. On 2026-08-08, the board authorized Phase 4. The package-local Phase 4 driver, conformance suite, safe real-model tracer, documentation, tutorial, and OKF evidence are implemented without changes or imports from `server/`, `ui/`, `packages/db/`, or production control-plane behavior. Security review, CTO contract review, QA tutorial evidence, and the human checkpoint remain pending.
+
+### 29.1 Phase 4b live Codex protocol Web UI contract
+
+Phase 4b is the next standalone tracer after Phase 4, but it is not authorized
+to start while Phase 4 is still finishing. It moves the real-driver browser
+proof out of the old Phase 5 scope so the team can validate the interaction
+contract before extracting stable SDK APIs.
+
+The Phase 4b implementation must remain entirely under
+`packages/paperclip-runner/`. It uses the mock control-plane adapter and the
+Phase 4 Codex app-server driver. It must not import or modify `server/`, `ui/`,
+`packages/db/`, production routes, production persistence, or legacy adapter
+behavior. The browser receives no Paperclip or provider credential. Existing
+Codex authentication remains server-side in the allowlisted Phase 4 launch
+boundary.
+
+The runnable proof must provide:
+
+1. a live chat transcript and composer over the canonical event/reducer path;
+2. same-turn steering with stale-turn rejection and visible acknowledgement;
+3. graceful interruption across before-start, active-generation, and active-tool
+   races without silently replacing the session;
+4. inline command, file-change, permission, tool, and user-input request states,
+   including upstream-supported accept, session-accept, reject, cancel, cleanup,
+   and terminal outcomes;
+5. capability-negotiated Codex goal controls for set, view, pause, resume, and
+   clear when the installed app-server exposes them, plus a precise disabled
+   state when it does not;
+6. parent/child thread or subagent lineage and activity derived from upstream
+   identities, with unsupported direct child steering shown as unsupported
+   rather than emulated;
+7. reconnect, refresh, resume, and replay of the same normalized session;
+8. a protocol inspector for raw upstream methods/events, canonical events,
+   identity, sequence/cursor state, pending requests, capabilities, and redacted
+   diagnostics;
+9. preloaded demo-chat manifests that exercise completion, steering,
+   interruption/resume, approvals, user input, subagents, goals, reconnect, and
+   replay with explicit expected observations;
+10. package-local documentation, tutorial index, cumulative tutorial update,
+    Simplified English hand-run guide, screenshots, exact command evidence, and
+    an OKF journal entry.
+
+Phase 4b may extend the driver/protocol at the lowest layer only where the live
+proof finds a missing app-server mapping. In particular, Phase 4 currently
+proves thread/turn lifecycle, steering, interruption, reconciliation, usage,
+canonical replay, and structured completion. Browser-resolved upstream
+requests, goal operations, and parent/child lineage are explicit Phase 4b
+contracts and must receive deterministic conformance fixtures before UI work
+claims them.
+
+Use source-adapted shadcn/ui and Vercel AI Elements primitives where they fit,
+after UX review. Keep the package's own protocol and reducer authoritative;
+third-party chat message or tool-part types must not become the runner protocol.
+Require a component decision record, accessibility checks, keyboard operation,
+and screenshots.
+
+The completion evidence must include a real Codex end-to-end run and a live
+service started on this execution machine. The checkpoint comment must state the
+exact startup command, host binding, port, and reachable `paperclip-dev:PORT` so
+the human can exercise it. That runtime handoff is an implementation/QA
+deliverable, not part of this planning-only revision.
+
+Phase 5 begins only after the Phase 4b human checkpoint is accepted and the user
+explicitly asks to continue. Phase 5 generalizes the accepted browser proof into
+a stable TypeScript SDK, reusable component contracts, and a second minimal
+consumer application. Phase 6 remains the first Paperclip control-plane
+integration phase.
 
 ## 30. Dependency sequencing
 
-The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md).
+The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md). The current order is Phase 4 completion and human acceptance, then Phase 4b planning approval and explicit execution authorization, then the Phase 4b human checkpoint, then Phase 5. Do not create Phase 4b or Phase 5 implementation tasks from this planning revision.
 
 ---
 
