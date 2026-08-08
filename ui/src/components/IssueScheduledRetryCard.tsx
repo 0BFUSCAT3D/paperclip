@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { cn, formatDateTime } from "@/lib/utils";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatRetryReason } from "@/lib/runRetryState";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   describeRecoverySlot,
   receiptChipTitle,
@@ -86,7 +87,7 @@ function ReceiptFragment({ slot }: { slot: RecoverySlot }) {
         data-testid="issue-recovery-receipt-chip"
         title={receiptChipTitle(slot) ?? receiptId}
         onClick={() => {
-          void navigator.clipboard?.writeText(receiptId);
+          void copyTextToClipboard(receiptId);
         }}
         className="font-mono text-foreground hover:underline"
       >
