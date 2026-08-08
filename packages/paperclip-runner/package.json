@@ -52,6 +52,7 @@
     "diagnose:phase3": "pnpm run trace:phase3",
     "record:phase3": "pnpm run build:typescript && pnpm run build:phase2-binaries && node scripts/record-phase3-evidence.mjs",
     "record:phase3:lost-ack": "pnpm run trace:phase3 -- --fault lost-ack --output knowledge/evidence/phase-03-lost-ack.json",
+    "console:phase4b": "pnpm run build:typescript && vite --config vite.config.ts --host 127.0.0.1 --port 4180",
     "browser:dev": "pnpm run build:typescript && pnpm run build:phase2-binaries && vite --config vite.config.ts",
     "browser:preview": "vite preview --config vite.config.ts",
     "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet && pnpm run trace:phase3",

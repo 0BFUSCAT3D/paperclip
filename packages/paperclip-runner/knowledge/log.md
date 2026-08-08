@@ -21,3 +21,11 @@
 * **Phase 4b protocol/server layer**: Added deterministic Codex request, goal,
   lineage, control-race, reconnect, replay, and redaction fixtures; a typed
   server-only demo boundary; and a passing real Codex server trace.
+* **Phase 4b live console**: Added the package-local browser tracer over the
+  canonical protocol — transcript, composer, same-turn steering, three
+  interrupt races, runtime request cards, capability-gated goals, parent/child
+  lineage, reconnect, refresh, replay, and a redacted protocol inspector — plus
+  a deterministic demo driver, eleven demo chats, adapted shadcn/AI Elements
+  components with no new runtime dependencies, and a boundary check that keeps
+  it that way.
+

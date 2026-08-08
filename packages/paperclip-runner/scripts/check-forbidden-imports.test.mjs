@@ -35,3 +35,16 @@ test("a negative Cargo fixture proves that a core path dependency is rejected", 
   assert.match(violations[0].reason, /Cargo path dependencies may not escape/);
   assert.ok(violations[0].file.startsWith(defaultPackageRoot));
 });
+
+test("a negative fixture proves that a browser UI runtime import is rejected", async () => {
+  const violations = await checkForbiddenImports({
+    scanRoots: ["devtools/browser", "test-fixtures/forbidden-ui-runtime/devtools/browser"],
+    cargoRoots: [],
+    checkManifest: false,
+  });
+
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0].specifier, "@ai-sdk/react");
+  assert.match(violations[0].reason, /adapts component source/);
+  assert.ok(violations[0].file.startsWith(defaultPackageRoot));
+});

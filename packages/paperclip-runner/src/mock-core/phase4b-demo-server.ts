@@ -33,15 +33,21 @@ const MAX_BROWSER_EVENTS = 4096;
 
 export interface Phase4bDemoServerOptions {
   workingDirectory: string;
-  driverFactory: (envelope: Phase4TaskEnvelope) => HarnessDriver;
+  driverFactory: (
+    envelope: Phase4TaskEnvelope,
+    manifestId?: string,
+  ) => HarnessDriver;
   host?: string;
   port?: number;
+  /** Demo-chat manifests the browser lists; the server owns the catalogue. */
+  manifests?: readonly unknown[];
 }
 
 interface DemoEntry {
   id: string;
   runId: string;
   normalizedSessionId: string;
+  manifestId: string | null;
   envelope: Phase4TaskEnvelope;
   driver: HarnessDriver;
   session: HarnessSession;
@@ -54,6 +60,8 @@ interface DemoEntry {
 interface BrowserCreateBody {
   objective?: string;
   message?: string;
+  manifest?: string;
+  startTurn?: boolean;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -160,18 +168,7 @@ export class Phase4bDemoServer {
 
   async start(): Promise<{ host: string; port: number; url: string }> {
     if (this.#server !== null) throw new Error("Phase 4b demo server is already started");
-    this.#server = createServer((request, response) => {
-      void this.#handle(request, response).catch((error) => {
-        if (!response.headersSent) {
-          json(response, errorStatus(error), {
-            error: record(error).code ?? "invalid_request",
-            message: redactCodexDiagnostic(String(error)),
-          });
-        } else {
-          response.end();
-        }
-      });
-    });
+    this.#server = createServer(this.middleware());
     await new Promise<void>((resolve, reject) => {
       this.#server!.once("error", reject);
       this.#server!.listen(this.#options.port, this.#options.host, () => resolve());
@@ -184,6 +181,25 @@ export class Phase4bDemoServer {
       host: this.#options.host,
       port: address.port,
       url: `http://${this.#options.host}:${address.port}`,
+    };
+  }
+
+  /**
+   * The same handler `start()` binds, so an embedding dev server (the Vite
+   * plugin) can mount the identical routes without a second implementation.
+   */
+  middleware(): (request: IncomingMessage, response: ServerResponse) => void {
+    return (request, response) => {
+      void this.#handle(request, response).catch((error) => {
+        if (!response.headersSent) {
+          json(response, errorStatus(error), {
+            error: record(error).code ?? "invalid_request",
+            message: redactCodexDiagnostic(String(error)),
+          });
+        } else {
+          response.end();
+        }
+      });
     };
   }
 
@@ -215,13 +231,20 @@ export class Phase4bDemoServer {
       });
       return;
     }
+    if (request.method === "GET" && parts.join("/") === "api/phase4b/manifests") {
+      json(response, 200, { manifests: this.#options.manifests ?? [] });
+      return;
+    }
     if (request.method === "POST" && parts.join("/") === "api/phase4b/sessions") {
       const body = await readJson(request) as BrowserCreateBody;
       const objective = typeof body.objective === "string" && body.objective.trim().length > 0
         ? body.objective.trim()
         : "Complete the Phase 4b demo task safely.";
       const message = typeof body.message === "string" ? body.message : objective;
-      const entry = await this.#create(objective, message);
+      const manifestId = typeof body.manifest === "string" && body.manifest.length > 0
+        ? body.manifest
+        : null;
+      const entry = await this.#create(objective, message, manifestId, body.startTurn !== false);
       json(response, 201, await this.#publicState(entry));
       return;
     }
@@ -257,6 +280,10 @@ export class Phase4bDemoServer {
         "cache-control": "no-store",
         connection: "keep-alive",
       });
+      // Flush the headers immediately. A resumed subscriber can start past the
+      // last event, and Node would otherwise hold the response open with no
+      // bytes sent, leaving the browser stuck in CONNECTING.
+      response.write(": stream open\n\n");
       for (const event of entry.events.slice(after)) {
         response.write(`data: ${JSON.stringify(browserSafe(event))}\n\n`);
       }
@@ -269,7 +296,12 @@ export class Phase4bDemoServer {
       return;
     }
     const body = await readJson(request);
-    if (action === "steer") {
+    if (action === "turns") {
+      await entry.session.startTurn({
+        message: { role: "user", text: String(body.text ?? "") },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } else if (action === "steer") {
       await entry.session.steer?.({
         turnId: String(body.turnId ?? ""),
         message: { role: "user", text: String(body.text ?? "") },
@@ -296,13 +328,18 @@ export class Phase4bDemoServer {
     json(response, 200, await this.#publicState(entry));
   }
 
-  async #create(objective: string, message: string): Promise<DemoEntry> {
+  async #create(
+    objective: string,
+    message: string,
+    manifestId: string | null = null,
+    startTurn = true,
+  ): Promise<DemoEntry> {
     const envelope = createPhase4TaskEnvelope({
       objective,
       contractRevision: "phase4b-demo-v1",
       criteria: [{ id: "objective", requirement: objective }],
     });
-    const driver = this.#options.driverFactory(envelope);
+    const driver = this.#options.driverFactory(envelope, manifestId ?? undefined);
     const id = randomUUID();
     const runId = `phase4b-run-${id}`;
     const normalizedSessionId = `phase4b-session-${id}`;
@@ -316,6 +353,7 @@ export class Phase4bDemoServer {
       id,
       runId,
       normalizedSessionId,
+      manifestId,
       envelope,
       driver,
       session,
@@ -326,8 +364,10 @@ export class Phase4bDemoServer {
     };
     this.#entries.set(id, entry);
     entry.consumeTask = this.#consume(entry, session);
-    await session.startTurn({ message: { role: "user", text: message } });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (startTurn) {
+      await session.startTurn({ message: { role: "user", text: message } });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     return entry;
   }
 
@@ -383,6 +423,7 @@ export class Phase4bDemoServer {
       sessionId: entry.id,
       runId: entry.runId,
       normalizedSessionId: entry.normalizedSessionId,
+      manifest: entry.manifestId,
       providerAuthentication: "server-side",
       credentialsExposed: false,
       capabilities: entry.capabilities,

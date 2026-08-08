@@ -16,9 +16,13 @@ and a real-model example against the mock core. These phases do not import or
 start Paperclip's server, UI, CLI, or production database. The Phase 4b lower
 layer adds browser-resolved provider requests, goal capability detection,
 subagent lineage, control-race semantics, and a package-local demo server that
-keeps Codex authentication server-side.
+keeps Codex authentication server-side. The Phase 4b live console adds the
+browser tracer over that boundary: a live transcript and composer, same-turn
+steering, three distinct interrupt races, inline request cards,
+capability-gated goal controls, parent/child lineage, reconnect, refresh,
+replay, and a redacted protocol inspector.
 
-## Phase 0–4 quick start
+## Phase 0–4b quick start
 
 From the repository root:
 
@@ -59,6 +63,9 @@ pnpm --filter @paperclipai/paperclip-runner trace:phase2 -- --scenario happy-pat
 pnpm --filter @paperclipai/paperclip-runner trace:phase3 -- --fault lost-ack
 pnpm --filter @paperclipai/paperclip-runner trace:phase4
 pnpm --filter @paperclipai/paperclip-runner demo:phase4b -- --host 127.0.0.1 --port 4174
+
+# Phase 4b: chat with a live session in the browser.
+pnpm --filter @paperclipai/paperclip-runner console:phase4b
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
 ```
 
@@ -85,10 +92,11 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 | `trace:phase4` | Run the mock core with a real, local skillless Codex app-server session. |
 | `record:phase4` | Run the safe Codex task and record its validated, normalized trace. |
 | `demo:phase4b` | Start the package-local HTTP/SSE server with server-only Codex authentication. |
+| `console:phase4b` | Start the standalone browser devtool with the Phase 4b live console on `127.0.0.1:4180`. |
 | `record:phase4b` | Run a safe real Codex task through the demo server and record reconnect/replay evidence. |
 | `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
 | `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
-| `verify` | Run the complete deterministic Phase 0 through Phase 4 acceptance sequence. |
+| `verify` | Run the complete deterministic Phase 0 through Phase 4b acceptance sequence. |
 | `verify:rootless` | Extract Debian/Ubuntu browser libraries without root, then run `verify`. |
 
 ## Navigate
@@ -105,6 +113,8 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Phase 4 skillless Codex driver reference](docs/phase-04-skillless-codex-driver.md)
 - [Phase 4b protocol/server tutorial](docs/tutorials/phase-04b-protocol-server.md)
 - [Phase 4b protocol/server reference](docs/phase-04b-protocol-server.md)
+- [Phase 4b live console tutorial](docs/tutorials/phase-04b-live-console.md)
+- [Phase 4b live console reference](docs/phase-04b-live-console.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
@@ -112,5 +122,6 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 - [Implementation plan](spec/paperclip-native-runner-implementation-plan.md)
 - [Normative spike specification](spec/paperclip-native-runner-spike-spec.md)
 
-Phase 4 adds the package-local real-model reference driver. Production
-Paperclip integration and Phase 5 remain deferred.
+Phase 4 adds the package-local real-model reference driver and Phase 4b adds
+the package-local browser console over it. Production Paperclip integration and
+Phase 5 remain deferred.

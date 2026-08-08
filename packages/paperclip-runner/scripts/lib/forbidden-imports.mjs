@@ -55,9 +55,40 @@ function findSpecifiers(source) {
   return found;
 }
 
+// The Phase 4b component decision record adapts shadcn/ui and AI Elements
+// source rather than adopting their runtimes. These packages would reintroduce
+// a second message model or a Tailwind/radix dependency for the demo app.
+const BROWSER_FORBIDDEN_PACKAGES = [
+  "ai",
+  "@ai-sdk",
+  "zod",
+  "radix-ui",
+  "@radix-ui",
+  "cmdk",
+  "streamdown",
+  "shiki",
+  "use-stick-to-bottom",
+  "class-variance-authority",
+  "tailwindcss",
+  "nanoid",
+];
+
+function isForbiddenBrowserPackage(specifier) {
+  return BROWSER_FORBIDDEN_PACKAGES.some(
+    (name) => specifier === name || specifier.startsWith(`${name}/`),
+  );
+}
+
 function violationReason({ file, packageRoot, specifier }) {
   if (specifier.startsWith("@paperclipai/") && specifier !== "@paperclipai/paperclip-runner") {
     return "Paperclip workspace packages are outside the standalone boundary";
+  }
+
+  if (
+    relative(packageRoot, file).split(/[\\/]/).join("/").includes("devtools/browser/") &&
+    isForbiddenBrowserPackage(specifier)
+  ) {
+    return "the standalone browser app adapts component source instead of adopting its runtime";
   }
 
   if (["server", "ui", "cli"].some((root) => specifier === root || specifier.startsWith(`${root}/`))) {

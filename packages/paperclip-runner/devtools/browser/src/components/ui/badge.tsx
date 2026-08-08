@@ -6,7 +6,7 @@ export function Badge({
   tone = "neutral",
   ...props
 }: React.ComponentProps<"span"> & {
-  tone?: "neutral" | "success" | "warning" | "danger";
+  tone?: "neutral" | "accent" | "success" | "warning" | "danger";
 }) {
   return (
     <span

@@ -709,7 +709,13 @@ class CodexHarnessSession implements HarnessSession {
       );
     }
     const taskText = JSON.stringify({ task: this.#taskEnvelope, message: input.message.text });
-    this.#emit("turn.submitted", { envelopeSchema: this.#taskEnvelope.schema });
+    // The submitted text is part of the canonical record so a tracer can show
+    // the operator's own message without keeping shadow state next to the
+    // reducer.
+    this.#emit("turn.submitted", {
+      envelopeSchema: this.#taskEnvelope.schema,
+      text: input.message.text,
+    });
     this.#turnStartPending = true;
     let response: Record<string, unknown>;
     try {

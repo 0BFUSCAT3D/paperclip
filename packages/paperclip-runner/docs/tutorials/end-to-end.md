@@ -120,6 +120,32 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
   browser JSON, events, and diagnostics;
 - refresh/reconnect replays canonical events and resumes the exact persisted
   provider thread.
+- the browser console renders only reducer state and canonical events, with no
+  second event model and no client-side session cache;
+- steering resolves to exactly one of acknowledged, stale-rejected, or failed,
+  and rejected text stays recoverable;
+- interrupt before start, during generation, and during a tool call each end in
+  a distinct visible state, and the session is never replaced;
+- request cards offer only the actions the upstream request offers and lock on
+  the first click until the canonical resolved event arrives;
+- unsupported capabilities render disabled controls carrying the exact upstream
+  diagnostic, never hidden and never emulated;
+- a transport drop, a page refresh, and replay all reproduce the same
+  transcript from the durable cursor;
+- no provider credential reaches the browser DOM, and adapted components add no
+  new runtime dependency.
 
-Phase 5 remains gated on the complete Phase 4b browser, review, QA, live-service,
+## Step 6: Chat with a live session in the browser
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner console:phase4b
+```
+
+Open `http://127.0.0.1:4180/` and press **Live console**. Work through the
+[Phase 4b live console tutorial](phase-04b-live-console.md) to reach every
+state above from the eleven deterministic demo chats. Add
+`PAPERCLIP_PHASE4B_DRIVER=codex` to run the identical screens against a real
+Codex session.
+
+Phase 5 remains gated on the complete Phase 4b review, QA, live-service,
 and human-checkpoint evidence.

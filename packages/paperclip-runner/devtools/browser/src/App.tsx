@@ -29,6 +29,7 @@ import {
   CardTitle,
 } from "./components/ui/card";
 import { Textarea } from "./components/ui/textarea";
+import { LiveConsole } from "./live/LiveConsole";
 
 const fixtureFiles = import.meta.glob(
   "../../../protocol/fixtures/phase-01/*.json",
@@ -53,7 +54,7 @@ const liveScenarios: Array<{ key: Phase2Scenario; label: string }> = [
   { key: "duplicate-terminal", label: "Duplicate terminal guard" },
 ];
 
-type BrowserMode = "recovery" | "live" | "replay";
+type BrowserMode = "console" | "recovery" | "live" | "replay";
 type LiveStatus = "idle" | "starting" | "running" | "terminal" | "error";
 
 const phase3FaultLabels: Record<Phase3Fault, string> = {
@@ -74,6 +75,12 @@ const modeCopy: Record<
   BrowserMode,
   { eyebrow: string; title: string; description: string }
 > = {
+  console: {
+    eyebrow: "Paperclip Runner Protocol · Phase 4b",
+    title: "Live Codex protocol console",
+    description:
+      "Chat with a live session, steer it, stop it, answer its requests, and inspect the canonical protocol behind every surface.",
+  },
   recovery: {
     eyebrow: "Paperclip Runner Protocol · Phase 3",
     title: "Durable recovery diagnostics",
@@ -821,6 +828,8 @@ function StaticReplay() {
 }
 
 export function App() {
+  // Phase 1-3 surfaces keep their landing mode: their screenshots are frozen
+  // QA evidence and their specs open on the Phase 2 runner.
   const [mode, setMode] = useState<BrowserMode>("live");
   const header = modeCopy[mode];
 
@@ -836,6 +845,13 @@ export function App() {
       </header>
 
       <nav className="mode-switch" aria-label="Runner devtool mode">
+        <Button
+          type="button"
+          aria-pressed={mode === "console"}
+          onClick={() => setMode("console")}
+        >
+          Live console
+        </Button>
         <Button
           type="button"
           aria-pressed={mode === "recovery"}
@@ -859,7 +875,15 @@ export function App() {
         </Button>
       </nav>
 
-      {mode === "recovery" ? <RecoveryDiagnostics /> : mode === "live" ? <LiveRunner /> : <StaticReplay />}
+      {mode === "console" ? (
+        <LiveConsole />
+      ) : mode === "recovery" ? (
+        <RecoveryDiagnostics />
+      ) : mode === "live" ? (
+        <LiveRunner />
+      ) : (
+        <StaticReplay />
+      )}
     </main>
   );
 }
