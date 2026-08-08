@@ -135,14 +135,6 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableCloudSync: {
-    title: "Cloud Sync",
-    description:
-      "Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
   enableExternalObjects: {
     title: "External Objects",
     description:
@@ -193,6 +185,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableGoalsSidebarLink: {
     title: "Goals Sidebar Link",
     description: "Restore the Goals item in the main sidebar while the goals surface is being evaluated.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableSimplifiedEnglishInteractions: {
+    title: "Simplified English Interactions",
+    description:
+      "Instruct agents to write user interactions (confirmations, questions, suggested tasks) in ASD-STE100 Simplified Technical English with brief decision context.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
