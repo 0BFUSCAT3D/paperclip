@@ -78,5 +78,9 @@ case "$debian_architecture" in
 esac
 
 rootless_library_path="$rootless_deps_dir/usr/lib/$library_triplet:$rootless_deps_dir/lib/$library_triplet:$rootless_deps_dir/usr/lib"
-printf 'Running Phase 2 verification with rootless browser libraries from %s.\n' "$rootless_deps_dir"
-LD_LIBRARY_PATH="$rootless_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" pnpm run verify
+printf 'Running verification with rootless browser libraries from %s.\n' "$rootless_deps_dir"
+if [[ $# -gt 0 ]]; then
+  LD_LIBRARY_PATH="$rootless_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$@"
+else
+  LD_LIBRARY_PATH="$rootless_library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" pnpm run verify
+fi

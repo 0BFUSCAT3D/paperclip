@@ -48,3 +48,14 @@ test("a negative fixture proves that a browser UI runtime import is rejected", a
   assert.match(violations[0].reason, /adapts component source/);
   assert.ok(violations[0].file.startsWith(defaultPackageRoot));
 });
+
+test("a negative fixture proves that an SDK consumer deep import is rejected", async () => {
+  const violations = await checkForbiddenImports({
+    scanRoots: ["test-fixtures/forbidden-sdk-consumer/examples"],
+    cargoRoots: [],
+    checkManifest: false,
+  });
+
+  assert.equal(violations.length, 1);
+  assert.match(violations[0].reason, /may not deep-import/);
+});

@@ -11,3 +11,4 @@
 * [Phase 4b protocol/server verification](2026-08-08-phase-04b-protocol-server-verification.md) - Browser-resolved requests, goals, lineage, controls, reconnect, redaction, and real Codex server evidence.
 * [Phase 4b live console verification](2026-08-08-phase-04b-live-console-verification.md) - Demo-driver, transcript-model, browser, keyboard, boundary, token, and screenshot evidence for the live console.
 * [Phase 4b QA verification](2026-08-08-phase-04b-qa-verification.md) - Independent QA pass: clean-start tutorial in a real browser, deterministic demos, real Codex end-to-end session, full `verify` acceptance (exit 0), and screenshots (PAP-16837).
+* [Phase 5 browser SDK verification](2026-08-08-phase-05-verification.md) - Targeted and package-acceptance evidence for the versioned SDK, both public consumers, fake/real drivers, accessibility, reconnect, replay, and screenshots.

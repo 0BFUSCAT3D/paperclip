@@ -3,7 +3,7 @@
 ## What this tutorial is
 
 This tutorial combines each implemented Native Runner phase into one procedure.
-It currently includes Phase 0 through the Phase 4b protocol/server layer.
+It currently includes Phase 0 through the Phase 5 browser SDK layer.
 
 ## What this tutorial proves
 
@@ -18,6 +18,8 @@ replay modes. It also includes the Rust outbound WebSocket client, durable
 outbox, package-local mock core, recovery CLI, and recovery browser view.
 The final phase adds a skillless task envelope, direct app-server driver,
 semantic completion tools, and the same reducer/replay proof used by fixtures.
+Phase 5 freezes that browser transport and reducer projection as public SDK
+subpaths, then proves them with a reference console and a second consumer.
 
 ## Current end-to-end path
 
@@ -54,6 +56,12 @@ semantic completion tools, and the same reducer/replay proof used by fixtures.
     is rejected, and reconnect keeps the same run and session identities.
 24. Open the [Phase 4b protocol/server journal](../../knowledge/journal/2026-08-08-phase-04b-protocol-server.md)
     and its linked deterministic and real-Codex evidence.
+25. Follow [Phase 5: Run the SDK Console and Mini Consumer](phase-05-sdk-console.md).
+26. Run the fake lifecycle in both consumers, then confirm the mini consumer
+    reaches `Replay parity: match` after reconnect and replay.
+27. Run the safe real-Codex browser smoke and inspect the Phase 5 screenshots.
+28. Open the [Phase 5 journal](../../knowledge/journal/2026-08-08-phase-05-sdk.md)
+    and its linked package-acceptance evidence.
 
 The one-command form after installation is:
 
@@ -134,6 +142,14 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
   transcript from the durable cursor;
 - no provider credential reaches the browser DOM, and adapted components add no
   new runtime dependency.
+- the browser and React contracts are versioned package subpaths with React as
+  a peer and no new runtime dependency;
+- the reference console and mini consumer import public APIs only;
+- exactly five extension points cover item bodies, request details, Composer
+  actions, token theming, and transport injection;
+- duplicate canonical events reach the shared reducer unchanged;
+- both consumers preserve identity through reconnect and reduce replay to the
+  same final state.
 
 ## Step 6: Chat with a live session in the browser
 
@@ -147,5 +163,13 @@ state above from the eleven deterministic demo chats. Add
 `PAPERCLIP_PHASE4B_DRIVER=codex` to run the identical screens against a real
 Codex session.
 
-Phase 5 remains gated on the complete Phase 4b review, QA, live-service,
-and human-checkpoint evidence.
+## Step 7: Run the reusable SDK consumers
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner console:phase5
+```
+
+Open `http://127.0.0.1:4181/reference-console/` and
+`http://127.0.0.1:4181/mini-consumer/`. Follow the
+[Phase 5 tutorial](phase-05-sdk-console.md) for the deterministic lifecycle,
+real-Codex smoke, keyboard checks, and package acceptance command.

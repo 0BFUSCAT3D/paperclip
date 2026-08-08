@@ -12,6 +12,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4: run the skillless Codex driver](tutorials/phase-04-skillless-codex.md) — run a safe real-model task, inspect the exact context boundary, steer or interrupt it, and confirm one replay-safe result.
 - [Phase 4b: run the protocol demo server](tutorials/phase-04b-protocol-server.md) — exercise the server-only Codex boundary, canonical replay, typed controls, and reconnect with `curl`.
 - [Phase 4b: run the live Codex protocol console](tutorials/phase-04b-live-console.md) — chat with a live session in the browser, steer it, stop it three ways, answer its requests, change its goal, break its connection, and replay the record.
+- [Phase 5: run the SDK console and mini consumer](tutorials/phase-05-sdk-console.md) — exercise the versioned public browser/React surface in two independent consumers against fake and real drivers.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -23,12 +24,14 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4 skillless Codex driver](phase-04-skillless-codex-driver.md)
 - [Phase 4b protocol and demo server](phase-04b-protocol-server.md)
 - [Phase 4b live console](phase-04b-live-console.md)
+- [Phase 5 browser SDK and reference console](phase-05-sdk.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)
 - [Phase 4b component decision record (shadcn/ui, AI Elements)](design/phase-4b-component-decisions.md)
 - [Phase 5 component and SDK surface plan](design/phase-5-component-plan.md)
+- [Phase 5 SDK extraction decision record](design/phase-5-component-decisions.md)
 - [Package README](../README.md)
 
-Phase 4b is implemented and accepted. Phase 5 (SDK extraction and reference
-console) has an approved UX component plan; implementation is pending.
+Phase 5 is implemented under this standalone package boundary. Production
+Paperclip UI integration remains deferred.

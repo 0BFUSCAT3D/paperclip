@@ -80,12 +80,32 @@ function isForbiddenBrowserPackage(specifier) {
 }
 
 function violationReason({ file, packageRoot, specifier }) {
-  if (specifier.startsWith("@paperclipai/") && specifier !== "@paperclipai/paperclip-runner") {
+  const relativeFile = relative(packageRoot, file).split(/[\\/]/).join("/");
+  const isExampleConsumer = relativeFile.startsWith("examples/");
+  const publicRunnerImports = new Set([
+    "@paperclipai/paperclip-runner/browser",
+    "@paperclipai/paperclip-runner/react",
+    "@paperclipai/paperclip-runner/styles.css",
+  ]);
+  if (
+    specifier.startsWith("@paperclipai/paperclip-runner/") &&
+    !publicRunnerImports.has(specifier)
+  ) {
+    return "runner consumers may import only declared public subpaths";
+  }
+  if (isExampleConsumer && specifier === "@paperclipai/paperclip-runner") {
+    return "runner consumers may import only browser, react, and styles.css public subpaths";
+  }
+  if (
+    specifier.startsWith("@paperclipai/") &&
+    specifier !== "@paperclipai/paperclip-runner" &&
+    !publicRunnerImports.has(specifier)
+  ) {
     return "Paperclip workspace packages are outside the standalone boundary";
   }
 
   if (
-    relative(packageRoot, file).split(/[\\/]/).join("/").includes("devtools/browser/") &&
+    ["devtools/browser/", "src/react/", "examples/"].some((root) => relativeFile.includes(root)) &&
     isForbiddenBrowserPackage(specifier)
   ) {
     return "the standalone browser app adapts component source instead of adopting its runtime";
@@ -99,6 +119,17 @@ function violationReason({ file, packageRoot, specifier }) {
     const resolvedImport = resolve(dirname(file), specifier);
     if (!isInside(packageRoot, resolvedImport)) {
       return "relative imports may not escape packages/paperclip-runner";
+    }
+    const segments = relativeFile.split("/");
+    const examplesIndex = segments.indexOf("examples");
+    if (examplesIndex >= 0 && segments[examplesIndex + 1] !== undefined) {
+      const consumerRoot = resolve(
+        packageRoot,
+        segments.slice(0, examplesIndex + 2).join("/"),
+      );
+      if (!isInside(consumerRoot, resolvedImport)) {
+        return "example consumers may not deep-import package or demo internals";
+      }
     }
   }
 
@@ -172,7 +203,7 @@ async function cargoManifestViolations(packageRoot, cargoRoots) {
 
 export async function checkForbiddenImports({
   packageRoot = defaultPackageRoot,
-  scanRoots = ["src", "scripts", "runner"],
+  scanRoots = ["src", "scripts", "runner", "examples"],
   cargoRoots = ["runner"],
   checkManifest = true,
 } = {}) {

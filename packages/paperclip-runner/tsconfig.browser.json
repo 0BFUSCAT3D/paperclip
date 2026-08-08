@@ -6,7 +6,18 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "rootDir": ".",
-    "types": ["vite/client"]
+    "types": ["vite/client", "node"],
+    "baseUrl": ".",
+    "paths": {
+      "@paperclipai/paperclip-runner/browser": ["src/browser/index.ts"],
+      "@paperclipai/paperclip-runner/react": ["src/react/index.ts"],
+      "@paperclipai/paperclip-runner/styles.css": ["styles.css"]
+    }
   },
-  "include": ["devtools/browser/src/**/*.ts", "devtools/browser/src/**/*.tsx"]
+  "include": [
+    "devtools/browser/src/**/*.ts",
+    "devtools/browser/src/**/*.tsx",
+    "examples/*/src/**/*.ts",
+    "examples/*/src/**/*.tsx"
+  ]
 }

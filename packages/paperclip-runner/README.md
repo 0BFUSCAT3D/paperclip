@@ -20,9 +20,12 @@ keeps Codex authentication server-side. The Phase 4b live console adds the
 browser tracer over that boundary: a live transcript and composer, same-turn
 steering, three distinct interrupt races, inline request cards,
 capability-gated goal controls, parent/child lineage, reconnect, refresh,
-replay, and a redacted protocol inspector.
+replay, and a redacted protocol inspector. Phase 5 extracts that accepted
+transport, reducer projection, hook, components, styles, and reference console
+into versioned public subpaths, then proves the surface with a second minimal
+consumer.
 
-## Phase 0–4b quick start
+## Phase 0–5 quick start
 
 From the repository root:
 
@@ -67,6 +70,9 @@ pnpm --filter @paperclipai/paperclip-runner demo:phase4b -- --host 127.0.0.1 --p
 # Phase 4b: chat with a live session in the browser.
 pnpm --filter @paperclipai/paperclip-runner console:phase4b
 pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 4179
+
+# Phase 5: open the public-SDK reference console and mini consumer.
+pnpm --filter @paperclipai/paperclip-runner console:phase5
 ```
 
 Phase 4b provider-backed routes are loopback-only and reject wildcard/LAN
@@ -98,9 +104,13 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 | `demo:phase4b` | Start the package-local HTTP/SSE server with server-only Codex authentication. |
 | `console:phase4b` | Start the standalone browser devtool with the Phase 4b live console on `127.0.0.1:4180`. |
 | `record:phase4b` | Run a safe real Codex task through the demo server and record reconnect/replay evidence. |
+| `console:phase5` | Start the public-SDK reference console and mini consumer on `127.0.0.1:4181`. |
+| `test:phase5` | Run targeted browser-client, reducer-projection, and React component contract tests. |
+| `test:browser:phase5` | Exercise both consumers with the fake driver, keyboard/a11y checks, reconnect/replay, measurements, and screenshots. |
+| `record:phase5:codex` | Run both public consumers against a safe real Codex session and capture live screenshots. |
 | `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
 | `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
-| `verify` | Run the complete deterministic Phase 0 through Phase 4b acceptance sequence. |
+| `verify` | Run the complete deterministic Phase 0 through Phase 5 acceptance sequence. |
 | `verify:rootless` | Extract Debian/Ubuntu browser libraries without root, then run `verify`. |
 
 ## Navigate
@@ -119,6 +129,9 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 - [Phase 4b protocol/server reference](docs/phase-04b-protocol-server.md)
 - [Phase 4b live console tutorial](docs/tutorials/phase-04b-live-console.md)
 - [Phase 4b live console reference](docs/phase-04b-live-console.md)
+- [Phase 5 SDK console tutorial](docs/tutorials/phase-05-sdk-console.md)
+- [Phase 5 browser SDK reference](docs/phase-05-sdk.md)
+- [Phase 5 component decision record](docs/design/phase-5-component-decisions.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
@@ -126,6 +139,6 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 - [Implementation plan](spec/paperclip-native-runner-implementation-plan.md)
 - [Normative spike specification](spec/paperclip-native-runner-spike-spec.md)
 
-Phase 4 adds the package-local real-model reference driver and Phase 4b adds
-the package-local browser console over it. Production Paperclip integration and
-Phase 5 remain deferred.
+Phase 4 adds the package-local real-model reference driver, Phase 4b adds the
+package-local browser console, and Phase 5 extracts a reusable public SDK plus
+two standalone consumers. Production Paperclip integration remains deferred.

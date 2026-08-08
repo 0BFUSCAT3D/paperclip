@@ -28,4 +28,7 @@
   a deterministic demo driver, eleven demo chats, adapted shadcn/AI Elements
   components with no new runtime dependencies, and a boundary check that keeps
   it that way.
-
+* **Phase 5 browser SDK**: Extracted versioned browser, React, and scoped-style
+  exports; added a public-API-only reference console and mini consumer; proved
+  the five approved extension points, keyboard/accessibility contracts,
+  reconnect and replay parity, package boundaries, and safe real-Codex use.
