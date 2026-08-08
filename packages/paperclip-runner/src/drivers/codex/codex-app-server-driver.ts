@@ -98,6 +98,13 @@ type CodexCapabilities = Required<
   NonNullable<CodexAppServerDriverOptions["capabilities"]>
 >;
 
+type SemanticResultAdmission = "committed" | "identical" | "conflict";
+
+interface TerminalReplayConflict {
+  code: "conflicting_semantic_result" | "conflicting_turn_terminal";
+  message: string;
+}
+
 interface OpenedCodexThread {
   threadId: string;
   providerSessionId: string | null;
@@ -723,7 +730,7 @@ class CodexHarnessSession implements HarnessSession {
         this.#activeTurnId = expectedTurnId;
       } else if (["completed", "failed", "interrupted", "cancelled"].includes(status)) {
         reconciledTerminalTurnId = expectedTurnId;
-        this.#mapTerminalTurn(expectedTurn, expectedTurnId);
+        this.#mapTerminalTurn(expectedTurn, expectedTurnId, true);
       } else {
         throw new HarnessReconciliationError(
           `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
@@ -739,9 +746,10 @@ class CodexHarnessSession implements HarnessSession {
           `previously terminal turn ${turnId} is no longer terminal in thread/read`,
         );
       }
-      if (this.#terminalFingerprint(observed) !== fingerprint) {
+      const conflict = this.#terminalReplayConflict(observed, fingerprint);
+      if (conflict !== null) {
         throw new HarnessReconciliationError(
-          `previously terminal turn ${turnId} changed after recovery`,
+          `previously terminal turn ${turnId} ${conflict.message}`,
         );
       }
     }
@@ -864,7 +872,7 @@ class CodexHarnessSession implements HarnessSession {
     }
     if (notification.method === "item/completed") {
       if (!this.#notificationNamesActiveTurn(turnId, "item completion")) return;
-      this.#captureResultFromItem(item, turnId);
+      if (!this.#captureResultFromItem(item, turnId)) return;
       this.#emit("item.completed", boundedPayload({
         kind: text(item.type, "unknown"),
         text: itemText(item),
@@ -947,12 +955,9 @@ class CodexHarnessSession implements HarnessSession {
           }],
         };
       }
-      const fingerprint = canonicalJson(validation.result);
-      if (this.#resultFingerprint !== null && this.#resultFingerprint !== fingerprint) {
+      const admission = this.#admitResult(validation.result, callId, turnId);
+      if (admission === "conflict") {
         return rejectedToolCall("A different semantic result was already committed.");
-      }
-      if (this.#result === null) {
-        this.#commitResult(validation.result, callId, turnId);
       }
       return { success: true, contentItems: [{ type: "inputText", text: "Semantic completion accepted." }] };
     }
@@ -995,19 +1000,33 @@ class CodexHarnessSession implements HarnessSession {
     return response;
   }
 
-  #captureResultFromItem(item: Record<string, unknown>, turnId: string): void {
-    if (text(item.type) !== "agentMessage" || this.#result !== null) return;
-    if (!isRetainableCodexPayload(item.text)) return;
+  #captureResultFromItem(item: Record<string, unknown>, turnId: string): boolean {
+    if (text(item.type) !== "agentMessage" || !isRetainableCodexPayload(item.text)) return true;
     const result = tryParseResult(item.text);
     if (result !== null && isRetainableCodexPayload(result)) {
-      this.#commitResult(result, text(item.id), turnId);
+      const admission = this.#admitResult(result, text(item.id), turnId);
+      if (admission === "conflict") {
+        this.#failProtocol(
+          "conflicting_semantic_result",
+          "Provider agentMessage supplied a different schema-valid semantic result after one was committed.",
+        );
+        return false;
+      }
     }
+    return true;
   }
 
-  #commitResult(result: PrpStructuredRunResult, itemId: string, turnId?: string): void {
-    if (this.#result !== null) return;
+  #admitResult(
+    result: PrpStructuredRunResult,
+    itemId: string,
+    turnId?: string,
+  ): SemanticResultAdmission {
+    const fingerprint = canonicalJson(result);
+    if (this.#resultFingerprint !== null) {
+      return this.#resultFingerprint === fingerprint ? "identical" : "conflict";
+    }
     this.#result = structuredClone(result);
-    this.#resultFingerprint = canonicalJson(result);
+    this.#resultFingerprint = fingerprint;
     this.#resultCallId = itemId || null;
     this.#resultTurnId = turnId || this.#activeTurnId;
     result.verification.forEach((verification, index) => {
@@ -1024,6 +1043,7 @@ class CodexHarnessSession implements HarnessSession {
       turnId: turnId || this.#activeTurnId || undefined,
       itemId: itemId || undefined,
     });
+    return "committed";
   }
 
   #finalize(turnStatus: string): void {
@@ -1037,25 +1057,47 @@ class CodexHarnessSession implements HarnessSession {
     this.#terminal = true;
   }
 
-  #mapTerminalTurn(turn: Record<string, unknown>, fallbackTurnId: string): void {
+  #mapTerminalTurn(
+    turn: Record<string, unknown>,
+    fallbackTurnId: string,
+    reconciling = false,
+  ): void {
     const turnId = text(turn.id, fallbackTurnId || this.#activeTurnId || "");
     const status = text(turn.status, "completed");
-    const candidate = this.#resultFromTurn(turn) ?? this.#result;
-    const fingerprint = this.#terminalFingerprint(turn, candidate);
     const previous = this.#terminalTurns.get(turnId);
     if (previous !== undefined) {
-      if (previous !== fingerprint) {
+      const conflict = this.#terminalReplayConflict(turn, previous);
+      if (conflict !== null) {
+        if (reconciling) {
+          throw new HarnessReconciliationError(
+            `previously terminal turn ${turnId} ${conflict.message}`,
+          );
+        }
         this.#failProtocol(
-          "conflicting_turn_terminal",
-          "Provider changed a terminal fact for an already terminal turn.",
+          conflict.code,
+          `Provider terminal for turn ${turnId} ${conflict.message}.`,
         );
       }
       return;
     }
-    this.#terminalTurns.set(turnId, fingerprint);
-    if (candidate !== null && this.#result === null) {
-      this.#commitResult(candidate, text(this.#resultItemFromTurn(turn)?.id), turnId);
+    const candidate = this.#resultFromTurn(turn);
+    if (candidate !== null) {
+      const admission = this.#admitResult(
+        candidate,
+        text(this.#resultItemFromTurn(turn)?.id),
+        turnId,
+      );
+      if (admission === "conflict") {
+        const message = `terminal turn ${turnId} contains a conflicting semantic result`;
+        if (reconciling) throw new HarnessReconciliationError(message);
+        this.#failProtocol(
+          "conflicting_semantic_result",
+          `Provider ${message}.`,
+        );
+        return;
+      }
     }
+    this.#terminalTurns.set(turnId, this.#terminalFingerprint(turn));
     const eventType =
       status === "failed"
         ? "turn.failed"
@@ -1074,13 +1116,41 @@ class CodexHarnessSession implements HarnessSession {
 
   #terminalFingerprint(
     turn: Record<string, unknown>,
-    candidate: PrpStructuredRunResult | null = this.#resultFromTurn(turn) ?? this.#result,
+    semanticResult: PrpStructuredRunResult | null = this.#result,
   ): string {
     return canonicalJson({
       terminalState: terminalState(text(turn.status, "completed")),
       error: turn.error ?? null,
-      result: candidate,
+      result: semanticResult,
     });
+  }
+
+  #terminalReplayConflict(
+    turn: Record<string, unknown>,
+    expectedFingerprint: string,
+  ): TerminalReplayConflict | null {
+    const candidate = this.#resultFromTurn(turn);
+    if (
+      candidate !== null &&
+      this.#resultFingerprint !== null &&
+      canonicalJson(candidate) !== this.#resultFingerprint
+    ) {
+      return {
+        code: "conflicting_semantic_result",
+        message: "contains a conflicting semantic result",
+      };
+    }
+    const semanticResult = this.#result ?? candidate;
+    if (this.#terminalFingerprint(turn, semanticResult) !== expectedFingerprint) {
+      return {
+        code: "conflicting_turn_terminal",
+        message: "changed from its committed terminal fingerprint",
+      };
+    }
+    if (candidate !== null && this.#result === null) {
+      this.#admitResult(candidate, text(this.#resultItemFromTurn(turn)?.id), text(turn.id));
+    }
+    return null;
   }
 
   #resultItemFromTurn(turn: Record<string, unknown>): Record<string, unknown> | null {

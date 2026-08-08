@@ -2257,7 +2257,9 @@ Preferred order:
 
 1. app-server structured output schema for terminal run result, when supported;
 2. client-defined `paperclip_finish` and `paperclip_block` dynamic tools;
-3. invalid/no result becomes `needs_review`, never inferred `done`.
+3. invalid or missing proposals are rejected/preserved as runtime facts and enter
+   server-owned assessment/recovery without manufacturing a model disposition or
+   issue status.
 
 The task envelope tells the model the expected result shape but does not teach Paperclip API mechanics.
 

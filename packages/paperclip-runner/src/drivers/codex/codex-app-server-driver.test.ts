@@ -410,6 +410,158 @@ describe("Codex app-server Phase 4 driver", () => {
     expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
   });
 
+  it("fails closed when an agent message changes a tool-committed result", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-tool-then-message-conflict",
+      normalizedSessionId: "normalized-tool-then-message-conflict",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await transport.invoke({
+      id: "tool-result",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "tool-result",
+        tool: "paperclip_finish",
+        arguments: result,
+      },
+    })).toMatchObject({ success: true });
+    const changed = structuredClone(result);
+    changed.summary = "Conflicting agent-message result.";
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "message-result", type: "agentMessage", text: JSON.stringify(changed) },
+    });
+
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+    expect(events.find((event) => event.eventType === "session.failed")?.payload)
+      .toMatchObject({ code: "conflicting_semantic_result", recoverable: false });
+    expect((await session.snapshot()).semanticResult?.result).toEqual(result);
+  });
+
+  it("rejects a tool result that changes an agent-message commitment", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-message-then-tool-conflict",
+      normalizedSessionId: "normalized-message-then-tool-conflict",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: { id: "message-result", type: "agentMessage", text: JSON.stringify(result) },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const changed = structuredClone(result);
+    changed.summary = "Conflicting tool result.";
+    expect(await transport.invoke({
+      id: "tool-result",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "tool-result",
+        tool: "paperclip_finish",
+        arguments: changed,
+      },
+    })).toMatchObject({ success: false });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+    expect(events.some((event) => event.eventType === "session.failed")).toBe(false);
+    expect((await session.snapshot()).semanticResult).toMatchObject({
+      callId: "message-result",
+      result,
+    });
+  });
+
+  it("treats a canonically identical cross-channel result as a no-op", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-identical-cross-channel",
+      normalizedSessionId: "normalized-identical-cross-channel",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await transport.invoke({
+      id: "tool-result",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "tool-result",
+        tool: "paperclip_finish",
+        arguments: result,
+      },
+    })).toMatchObject({ success: true });
+    transport.push("item/completed", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      item: {
+        id: "message-result",
+        type: "agentMessage",
+        text: JSON.stringify(reverseObjectKeys(result)),
+      },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+
+    const events = await collectUntilTerminal(session.events());
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(1);
+    expect((await session.snapshot()).semanticResult?.callId).toBe("tool-result");
+  });
+
+  it("fails closed when a live terminal embeds a changed semantic result", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-terminal-result-conflict",
+      normalizedSessionId: "normalized-terminal-result-conflict",
+      workingDirectory: "/workspace",
+    });
+    await session.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await transport.invoke({
+      id: "tool-result",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "tool-result",
+        tool: "paperclip_finish",
+        arguments: result,
+      },
+    })).toMatchObject({ success: true });
+    const changed = structuredClone(result);
+    changed.summary = "Conflicting terminal result.";
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        status: "completed",
+        items: [{ id: "terminal-result", type: "agentMessage", text: JSON.stringify(changed) }],
+      },
+    });
+
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    expect(events.find((event) => event.eventType === "session.failed")?.payload)
+      .toMatchObject({ code: "conflicting_semantic_result", recoverable: false });
+    expect(events.some((event) => event.eventType === "turn.completed")).toBe(false);
+    expect((await session.snapshot()).semanticResult?.result).toEqual(result);
+  });
+
   it.each([
     { threadId: "other-thread", turnId: "turn-1", label: "another thread" },
     { threadId: "thread-1", turnId: "other-turn", label: "another turn" },
@@ -714,6 +866,62 @@ describe("Codex app-server Phase 4 driver", () => {
     const events = await collecting;
     expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(0);
     expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+  });
+
+  it("rejects changed terminal result content discovered during recovery", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const changed = structuredClone(result);
+    changed.summary = "Conflicting recovered terminal result.";
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: "/workspace",
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          items: [{ id: "terminal-result", type: "agentMessage", text: JSON.stringify(changed) }],
+        }],
+      },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-recovered-result-conflict",
+      normalizedSessionId: "normalized-recovered-result-conflict",
+      workingDirectory: "/workspace",
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(await first.invoke({
+      id: "tool-result",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "tool-result",
+        tool: "paperclip_finish",
+        arguments: result,
+      },
+    })).toMatchObject({ success: true });
+    first.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: "turn-1", status: "completed", items: [] },
+    });
+    await collectUntilTerminal(original.events());
+    const snapshot = await original.snapshot();
+    expect(snapshot.terminalTurns).toHaveLength(1);
+    await original.close({ reason: "transport lost after terminal" });
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery!.session!.reconcile!())
+      .rejects.toMatchObject<HarnessReconciliationError>({
+        name: "HarnessReconciliationError",
+        recoverable: true,
+        message: expect.stringContaining("contains a conflicting semantic result"),
+      });
+    expect((await recovery!.session!.snapshot()).semanticResult?.result).toEqual(result);
+    await recovery!.session!.close({ reason: "test complete" });
   });
 
   it("does not re-emit an already observed terminal after recovery", async () => {
