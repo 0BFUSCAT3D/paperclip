@@ -7,7 +7,7 @@ export function normalizeEscapedLineBreaks(value: string): string {
     .replace(/\\r/g, "\n");
 }
 
-const FENCE_LINE = /^(\s{0,3})(```+|~~~+)/;
+const FENCE_LINE = /^(\s{0,3})(```+|~~~+)(.*)$/;
 // A mid-line ATX heading marker: 1–6 `#`, a space, then heading text. The
 // capture keeps the char immediately before the run so we can tell a real
 // (collapsed) heading from an inline `#` token like `C#`/`F#`.
@@ -53,7 +53,11 @@ export function normalizeMidLineHeadings(value: string): string {
         inFence = true;
         fenceChar = marker[0]!;
         fenceLength = marker.length;
-      } else if (marker[0] === fenceChar && marker.length >= fenceLength) {
+      } else if (
+        marker[0] === fenceChar
+        && marker.length >= fenceLength
+        && fenceMatch[3]!.trim().length === 0
+      ) {
         inFence = false;
         fenceChar = "";
         fenceLength = 0;

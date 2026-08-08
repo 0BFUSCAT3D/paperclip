@@ -62,6 +62,11 @@ describe("normalizeMidLineHeadings", () => {
     expect(normalizeMidLineHeadings(body)).toBe(body);
   });
 
+  it("does not close a fence marker that has trailing content", () => {
+    const body = "```markdown\n``` still code\ncode ## comment\n```";
+    expect(normalizeMidLineHeadings(body)).toBe(body);
+  });
+
   it("is a no-op when there is no `#` at all", () => {
     const body = "Just some prose with no markers.";
     expect(normalizeMidLineHeadings(body)).toBe(body);
