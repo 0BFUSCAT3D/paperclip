@@ -79,6 +79,7 @@ node \
   --max-old-space-size=64 \
   --permission \
   --allow-fs-read="$package_root/dist/phase7/phase7i-loopback-proxy.js" \
+  --allow-fs-read="$package_root/dist/phase7/phase7i-proxy-config.js" \
   --allow-fs-read="$socket_dir" \
   --allow-fs-write="$socket_dir" \
   "$package_root/dist/phase7/phase7i-loopback-proxy.js" &
