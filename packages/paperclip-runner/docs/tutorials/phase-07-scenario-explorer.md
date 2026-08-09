@@ -144,7 +144,7 @@ pnpm --filter @paperclipai/paperclip-runner exec vitest run \
 pnpm --filter @paperclipai/paperclip-runner test:phase7-evals
 pnpm --filter @paperclipai/paperclip-runner report:phase7-evals
 
-# Scenario runtime, explorer components, and route determinism (45 tests).
+# Scenario runtime, explorer components, and route determinism (49 tests).
 pnpm --filter @paperclipai/paperclip-runner test:phase7
 
 # Browser information architecture, accessibility, determinism, and boundary.
@@ -184,5 +184,3 @@ The exact results captured for the acceptance record are in the
   (PAP-16903), 7F browser explorer (PAP-16904, UX gate PAP-16905), 7G docs and
   evidence (PAP-16906), 7H clean-room QA (PAP-16907), Phase 7 checkpoint
   (PAP-16908).
-</content>
-</invoke>

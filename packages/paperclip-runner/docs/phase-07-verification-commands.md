@@ -14,10 +14,10 @@ acceptance record are in
 | Semantic tools + authorization/redaction | `exec vitest run src/tools/phase7-semantic-tools.test.ts` | 9 tests pass |
 | 106-case conformance | `test:phase7-evals` | 1 file (all 106 cases) passes |
 | Fake-agent matrix + bounded Codex + parity report | `report:phase7-evals` | `Phase 7 eval conformance passed: 106 cases across 16 groups.` |
-| Scenario runtime + explorer + routes | `test:phase7` | 45 tests pass |
-| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | 19 Playwright tests pass |
+| Scenario runtime + explorer + routes | `test:phase7` | 49 tests pass |
+| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | 25 Playwright tests pass |
 | Screenshot acceptance set | `record:phase7` | 24 deterministic images |
-| Doc links + OKF bundle | `docs:validate` | 62 files, 26 OKF concepts, 5 indexes |
+| Doc links + OKF bundle | `docs:validate` | 73 files, 28 OKF concepts, 5 indexes |
 
 ## Notes
 
@@ -39,4 +39,3 @@ acceptance record are in
 - [Clean-start tutorial](tutorials/phase-07-scenario-explorer.md)
 - [Eval conformance](phase-07-eval-conformance.md)
 - [Scenario explorer](phase-07-scenario-explorer.md)
-</content>

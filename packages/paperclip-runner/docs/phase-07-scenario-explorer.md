@@ -68,10 +68,10 @@ a time with zero horizontal overflow.
 # Open the explorer on 127.0.0.1:4183.
 pnpm --filter @paperclipai/paperclip-runner demo:phase7
 
-# Scenario runtime, explorer components, and route determinism (45 tests).
+# Scenario runtime, explorer components, and route determinism (49 tests).
 pnpm --filter @paperclipai/paperclip-runner test:phase7
 
-# Browser IA, determinism, evidence routes, boundary, a11y, responsive (19).
+# Browser IA, determinism, evidence routes, boundary, a11y, responsive (25).
 pnpm --filter @paperclipai/paperclip-runner test:browser:phase7
 
 # Deterministic 24-image acceptance set (12 routes x 2 viewports).
@@ -83,4 +83,3 @@ pnpm --filter @paperclipai/paperclip-runner record:phase7
 - [Eval conformance](phase-07-eval-conformance.md)
 - [Verification commands](phase-07-verification-commands.md)
 - [Phase 7F explorer verification](../knowledge/evidence/2026-08-09-phase-07f-explorer-verification.md)
-</content>

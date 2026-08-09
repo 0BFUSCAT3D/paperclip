@@ -102,4 +102,3 @@ Results were captured on 2026-08-09 between 13:37Z and 13:39Z.
   provider exercise is the bounded binding sample in `report:phase7-evals`.
 - No Paperclip control plane, database, or provider is contacted anywhere in
   Phase 7. Real integration is Phase 8 (ACPX) and requires separate approval.
-</content>

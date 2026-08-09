@@ -49,4 +49,3 @@ CTO approval at the Phase 7 checkpoint (`PAP-16908`). Until then:
 - [Architecture and dependency boundary](architecture.md)
 - [Mock ControlPlanePort](phase-07-mock-control-plane-port.md)
 - [Capability disposition](phase-07-capability-disposition.md)
-</content>

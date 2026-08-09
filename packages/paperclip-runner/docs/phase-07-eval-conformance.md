@@ -80,4 +80,3 @@ OKF frontmatter). See the
 - [Capability disposition](phase-07-capability-disposition.md)
 - [Semantic tool catalog](phase-07-semantic-tools.md)
 - [Scenario explorer](phase-07-scenario-explorer.md)
-</content>

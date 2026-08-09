@@ -82,4 +82,3 @@ contract cannot silently fall out of sync.
 - [Semantic tool catalog](phase-07-semantic-tools.md)
 - [Authorization and exposure](phase-07-authorization-and-exposure.md)
 - [Eval conformance](phase-07-eval-conformance.md)
-</content>

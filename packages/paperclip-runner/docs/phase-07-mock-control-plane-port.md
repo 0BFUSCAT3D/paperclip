@@ -92,4 +92,3 @@ Nine tests, no npm alias of their own — they also run inside
 - [Semantic tool catalog](phase-07-semantic-tools.md)
 - [Authorization and exposure](phase-07-authorization-and-exposure.md)
 - [Future binding boundary](phase-07-future-binding-boundary.md)
-</content>

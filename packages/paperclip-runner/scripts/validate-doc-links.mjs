@@ -2,6 +2,8 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { dirname, extname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { wrapperMarkupIn } from "./lib/doc-wrappers.mjs";
+
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const documentationRoots = [
   resolve(packageRoot, "README.md"),
@@ -80,6 +82,9 @@ const markdownFiles = (
 
 for (const file of markdownFiles.sort()) {
   const markdown = await readFile(file, "utf8");
+  for (const { line, tag } of wrapperMarkupIn(markdown)) {
+    errors.push(`${relative(packageRoot, file)}:${line} -> leaked generation-wrapper markup ${tag}`);
+  }
   for (const rawLink of linksIn(markdown)) {
     if (/^(?:https?:|mailto:|skill:)/.test(rawLink)) {
       continue;

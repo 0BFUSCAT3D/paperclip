@@ -84,4 +84,3 @@ that every optional group is present.
 - [Authorization and exposure](phase-07-authorization-and-exposure.md)
 - [Mock ControlPlanePort](phase-07-mock-control-plane-port.md)
 - [Eval conformance](phase-07-eval-conformance.md)
-</content>
