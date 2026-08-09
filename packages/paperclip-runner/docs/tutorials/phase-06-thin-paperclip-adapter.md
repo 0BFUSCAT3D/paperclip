@@ -1,178 +1,196 @@
-# Phase 6: Thin Paperclip Adapter Tutorial Outline
+# Phase 6: Run the Thin Paperclip Adapter
 
-Status: design only; commands marked as Phase 6 commands are not implemented yet.
+Phase 6 connects one local, issue-bound `codex_local` task to the runner's
+public `ControlPlanePort`/`NativeSessionBackend` contract. Selection is
+default-off, explicit per agent, and persisted before provider execution. The
+runner never receives a Paperclip API key, local JWT, managed MCP token, raw
+environment, wake payload, or skill instructions.
 
-## What this phase is
+## Prerequisites
 
-Phase 6 connects one Paperclip task to the native runner package. The connection
-is behind a flag. Paperclip still prepares and finalizes the workspace. The
-runner package still owns session and protocol behavior.
+- a local Paperclip instance built from this branch;
+- a board/operator API key in `PAPERCLIP_API_KEY` (never print it);
+- `PAPERCLIP_API_URL`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_TASK_ID`;
+- an active `codex_local` agent, a standard issue assigned to it, and a
+  realized local execution workspace;
+- Codex already authenticated on the host.
 
-## What the runnable proof will establish
+Normalize the API base once:
 
-The proof will run the same contract against the mock core and a real local
-Paperclip service. It will store and replay native events through one canonical
-sequence allocator, preserve the typed terminal result, and apply the complete
-Section 18 server-owned finalization/arbitration flow. It will then turn the
-flag off, prove persisted native recovery still completes as native, and prove
-that a new task uses the old adapter path.
+```sh
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+PHASE6_SCRATCH="${PAPERCLIP_RUN_SCRATCH_DIR:-$(mktemp -d)}"
+```
 
-## Planned prerequisites
-
-- an isolated local Paperclip development instance;
-- Node.js 20+, pnpm 9+, Rust, and Codex already authenticated;
-- a test company, `codex_local` test agent, project workspace, and test issue;
-- board/operator authorization for the flag and agent-profile changes;
-- `PAPERCLIP_API_URL`, `PAPERCLIP_API_KEY`, `PAPERCLIP_COMPANY_ID`,
-  `PAPERCLIP_AGENT_ID`, `PAPERCLIP_TASK_ID`, and `PAPERCLIP_RUN_ID` set without
-  printing their values.
-
-## Planned procedure
-
-### 1. Prove the package contract with the mock core
+## 1. Prove the mock package contract
 
 ```sh
 pnpm --filter @paperclipai/paperclip-runner exec vitest run \
   src/conformance/control-plane-port.test.ts \
-  src/backends/harness-driver-backend.test.ts
-
-pnpm check:runner-phase5-spec
+  src/backends/harness-driver-backend.test.ts \
+  src/contracts/native-execution.test.ts
 
 pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- \
   --target mock --scenario happy-path
 ```
 
-Expected: stable identities, one semantic terminal result, contiguous source
-sequence, replay parity, and no Paperclip server import.
+Expected: five targeted tests pass and the trace reports `resolvedMode` as
+`native`, three replay-stable events, a successful workspace barrier, and one
+server-owned `done` decision.
 
-### 2. Run the focused Paperclip integration tests
+## 2. Prove the database-backed Paperclip port
 
 ```sh
+pnpm --filter @paperclipai/paperclip-runner build:typescript
 pnpm --filter @paperclipai/server exec vitest run \
-  src/__tests__/native-runner-phase6.integration.test.ts \
-  src/__tests__/heartbeat-native-runner-selection.test.ts \
-  src/__tests__/heartbeat-native-runner-cancellation.test.ts \
-  src/__tests__/heartbeat-run-event-sequencing.test.ts \
-  src/__tests__/native-runner-input-boundary.test.ts \
-  src/__tests__/native-run-finalizer.test.ts \
-  src/__tests__/native-status-arbiter-corpus.test.ts \
-  src/__tests__/native-finalization-recovery.test.ts \
-  src/__tests__/native-finalization-migration.test.ts \
-  src/__tests__/legacy-finalization-regression.test.ts
+  src/services/native-runtime/paperclip-control-plane-port.test.ts \
+  src/services/native-runtime/runtime-mode.test.ts \
+  src/services/native-runtime/status-arbiter.test.ts
 ```
 
-Expected: company/auth denials, workspace/finalization ordering, cancellation,
-budget, audit, canonical event sequencing, terminal replay, typed input
-isolation, Section 18 arbitration, and legacy regression pass.
+This runs the unchanged package conformance suite against the real Paperclip
+port. It also checks company binding, duplicate/gap replay, immutable result
+ingestion, workspace-gated finalization, status-version CAS, and audit output.
 
-### 3. Enable one isolated agent
+## 3. Enable one isolated agent
 
-Use the existing board-authorized instance-settings and agent-update APIs to
-set `experimental.enableNativeRunner=true` and the test agent's
-`runtimeConfig.nativeRunner.mode="native"`. The implemented tutorial will give
-copyable API requests for the exact local auth mode. Do not give the runner or
-harness a Paperclip API key.
-
-### 4. Run one local native task
+Save the agent's current runtime profile, merge the native profile, then enable
+the instance flag. These endpoints require board/operator authority.
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- \
-  --target paperclip --scenario happy-path
-```
-
-Expected stable summary fields:
-
-```text
-resolvedMode=native
-runStatus=succeeded
-nativeEventCount>0
-highestContiguousSourceSeq=nativeEventCount
-workspaceFinalizeStatus=succeeded
-legacyAdapterInvocationCount=0
-reportedWorkDisposition=done
-authoritativeDecision=done
-issueStatusBefore=in_progress
-issueStatusAfter=done
-statusVersionAfter=statusVersionBefore+1
-```
-
-The separate claim and decision fields prove that the runner report did not
-seize issue-status authority; the server-owned arbiter applied the transition
-only after the completion contract, evidence, workspace barrier, and legal
-liveness effects passed.
-
-### 5. Inspect persistence, replay, and finalization
-
-```sh
-PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
-PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
 curl -fsS \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  "$PAPERCLIP_API_BASE/api/heartbeat-runs/$PAPERCLIP_RUN_ID/events?after=0&limit=200" \
-  | jq '[.[] | select(.sourceEventId != null)] | {count: length, events: map({sourceSeq, sourceEventId, eventType})}'
+  "$PAPERCLIP_API_BASE/api/agents/$PAPERCLIP_AGENT_ID" \
+  | jq '.runtimeConfig' > "$PHASE6_SCRATCH/phase6-runtime-before.json"
+
+jq -n \
+  --slurpfile current "$PHASE6_SCRATCH/phase6-runtime-before.json" \
+  '{runtimeConfig: ($current[0] * {nativeRunner: {mode: "native", backend: "codex_app_server", protocolVersion: 1}})}' \
+  | curl -fsS -X PATCH \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "Content-Type: application/json" \
+      --data-binary @- \
+      "$PAPERCLIP_API_BASE/api/agents/$PAPERCLIP_AGENT_ID" >/dev/null
+
+curl -fsS -X PATCH \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enableNativeRunner":true}' \
+  "$PAPERCLIP_API_BASE/api/instance/settings/experimental" >/dev/null
 ```
 
-Repeat the read with an `after` cursor and inspect the run finalization and
-issue status-decision read models. Expected: no duplicate semantic event,
-stable IDs, unique canonical `seq`, increasing source sequence, a persisted
-`native_run_results` digest, a committed coordinator/decision, and a workspace-
-finalize barrier before assessment or clean run success.
-
-### 6. Prove cancellation
-
-Run the deterministic cancellation scenario through the focused server test.
-Expected: one native cancel effect, one terminal run outcome, only the
-server-authorized cancellation/resume scope from Section 18, and the normal
-environment/runtime/scratch cleanup path. The focused concurrency case also
-appends lifecycle, cancellation, native, and log events at once and proves one
-unique replay-stable `(run_id, seq)` order.
-
-### 7. Prove credential and recovery boundaries
-
-Run the typed-input boundary test with unique canaries in the local agent JWT,
-Paperclip API key, managed MCP gateway credentials, wake payload, skill
-instructions, raw env, and legacy context. Expected: no canary key/value in the
-package launch input, model request, event, terminal result, log, or digest.
-
-Then persist a native terminal result, simulate process/server disconnect, and
-disable the flag before reconciliation. Expected: recovery reads the persisted
-`heartbeat_runs.runtime_mode`, `native_run_finalizations.result_id`, and
-`native_run_results` row and completes without re-running selection or invoking
-the legacy adapter.
-
-### 8. Disable the kill switch and prove fallback
-
-Set `experimental.enableNativeRunner=false` through the existing board-
-authorized settings API, then run a fresh task:
+## 4. Run one local native Paperclip task
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- \
-  --target paperclip --scenario legacy-fallback
+PAPERCLIP_NATIVE_RUN_ID="$({
+  curl -fsS -X POST \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"source\":\"on_demand\",\"triggerDetail\":\"manual\",\"payload\":{\"issueId\":\"$PAPERCLIP_TASK_ID\"},\"forceFreshSession\":true}" \
+    "$PAPERCLIP_API_BASE/api/agents/$PAPERCLIP_AGENT_ID/wakeup"
+} | jq -r '.id')"
 
-pnpm --filter @paperclipai/server exec vitest run \
-  src/__tests__/native-runner-phase6.integration.test.ts \
-  -t "uses the unchanged legacy path when the kill switch is off"
+while :; do
+  PAPERCLIP_NATIVE_STATUS="$({
+    curl -fsS \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      "$PAPERCLIP_API_BASE/api/heartbeat-runs/$PAPERCLIP_NATIVE_RUN_ID"
+  } | jq -r '.status')"
+  case "$PAPERCLIP_NATIVE_STATUS" in
+    succeeded|failed|cancelled|timed_out) break ;;
+  esac
+  sleep 2
+done
+test "$PAPERCLIP_NATIVE_STATUS" = succeeded
 ```
 
-Expected:
+The expected run has `runtimeMode=native`, a persisted completion contract and
+runner instance, no legacy adapter invocation, and a typed terminal fact.
 
-```text
-resolvedMode=legacy
-nativeEventCount=0
-legacyAdapterInvocationCount=1
+## 5. Inspect replay and finalization
+
+```sh
+curl -fsS \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_BASE/api/heartbeat-runs/$PAPERCLIP_NATIVE_RUN_ID/events?afterSeq=0&limit=200" \
+  | jq '[.[] | select(.payload.prpEvent != null)] | {count: length, events: map({seq, sourceSeq, sourceEventId, eventType})}'
+
+curl -fsS \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_BASE/api/heartbeat-runs/$PAPERCLIP_NATIVE_RUN_ID" \
+  | jq '{runtimeMode, nativePhase, runnerInstanceId, completionContractId, resultJson}'
+
+curl -fsS \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID" \
+  | jq '{status, statusVersion, lastStatusDecisionId, unblockDescriptor}'
 ```
 
-### 9. Record evidence and clean up
+Repeat the events request with `afterSeq=<seq>`. Replay is exclusive and stable;
+native result/finalization rows remain authoritative even if the flag changes.
 
-The implementation record will save only redacted summaries and test results
-under `knowledge/evidence/`. It will restore the test agent profile and leave
-the global flag off. It will not delete a shared database or workspace.
+## 6. Exercise cancellation and budget hard-stop
+
+Start a deliberately long native task, then use the existing cancellation API:
+
+```sh
+curl -fsS -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "$PAPERCLIP_API_BASE/api/heartbeat-runs/$PAPERCLIP_NATIVE_RUN_ID/cancel" >/dev/null
+```
+
+The same run-scoped native cancel handle is invoked by explicit cancellation,
+agent pause, and budget-pause enforcement. Resource, environment, scratch, and
+workspace cleanup remain owned by the existing heartbeat path.
+
+## 7. Disable the flag and prove legacy fallback
+
+Set `PAPERCLIP_LEGACY_TASK_ID` to a fresh eligible issue assigned to the same
+agent; the native proof issue may already be terminal.
+
+```sh
+curl -fsS -X PATCH \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enableNativeRunner":false}' \
+  "$PAPERCLIP_API_BASE/api/instance/settings/experimental" >/dev/null
+
+PAPERCLIP_LEGACY_RUN_ID="$({
+  curl -fsS -X POST \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"source\":\"on_demand\",\"triggerDetail\":\"manual\",\"payload\":{\"issueId\":\"$PAPERCLIP_LEGACY_TASK_ID\"},\"forceFreshSession\":true}" \
+    "$PAPERCLIP_API_BASE/api/agents/$PAPERCLIP_AGENT_ID/wakeup"
+} | jq -r '.id')"
+
+curl -fsS \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  "$PAPERCLIP_API_BASE/api/heartbeat-runs/$PAPERCLIP_LEGACY_RUN_ID" \
+  | jq '{runtimeMode, runtimeModeReason}'
+```
+
+Expected: the new run reports `legacy` and `instance_flag_disabled`; an already
+selected native run still reconciles from its persisted native coordinator and
+never falls through to the legacy adapter.
+
+Restore the saved profile after the proof:
+
+```sh
+jq -n \
+  --slurpfile saved "$PHASE6_SCRATCH/phase6-runtime-before.json" \
+  '{runtimeConfig: $saved[0]}' \
+  | curl -fsS -X PATCH \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "Content-Type: application/json" \
+      --data-binary @- \
+      "$PAPERCLIP_API_BASE/api/agents/$PAPERCLIP_AGENT_ID" >/dev/null
+```
 
 ## Stop conditions
 
-Stop and fail the proof if mode changes during a run, a native failure invokes
-the legacy adapter, a forbidden legacy-context field or credential reaches the
-package/model, a workspace-finalization failure reports success, a PRP claim
-bypasses the arbiter, a non-terminal status lacks its atomic liveness path, a
-concurrent writer duplicates canonical `seq`, or replay changes canonical
-event/result/effect bytes.
+Stop if a native failure invokes legacy, credentials appear in model input or
+stored PRP bytes, a workspace-finalization failure reports success, replay
+changes bytes, or a model-reported disposition bypasses the server arbiter.

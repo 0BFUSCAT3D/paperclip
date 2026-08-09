@@ -13,7 +13,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4b: run the protocol demo server](tutorials/phase-04b-protocol-server.md) — exercise the server-only Codex boundary, canonical replay, typed controls, and reconnect with `curl`.
 - [Phase 4b: run the live Codex protocol console](tutorials/phase-04b-live-console.md) — chat with a live session in the browser, steer it, stop it three ways, answer its requests, change its goal, break its connection, and replay the record.
 - [Phase 5: run the SDK console and mini consumer](tutorials/phase-05-sdk-console.md) — exercise the versioned public browser/React surface in two independent consumers against fake and real drivers.
-- [Phase 6: thin Paperclip adapter tutorial outline](tutorials/phase-06-thin-paperclip-adapter.md) — planned mock/real conformance, canonical sequencing, durable mode/result recovery, Section 18 arbitration, credential isolation, kill switch, and legacy fallback proof. Design only until CTO approval.
+- [Phase 6: run the thin Paperclip adapter](tutorials/phase-06-thin-paperclip-adapter.md) — prove mock/real conformance, run one feature-flagged local task, inspect replay/finalization, disable the kill switch, and verify legacy fallback.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -26,6 +26,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4b protocol and demo server](phase-04b-protocol-server.md)
 - [Phase 4b live console](phase-04b-live-console.md)
 - [Phase 5 browser SDK and reference console](phase-05-sdk.md)
+- [Phase 6 thin Paperclip adapter](phase-06-thin-paperclip-adapter.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)
@@ -35,6 +36,5 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 6 thin Paperclip adapter boundary](design/phase-6-thin-paperclip-adapter.md)
 - [Package README](../README.md)
 
-Phase 5 is implemented under this standalone package boundary. Phase 6 has a
-design-only, default-off integration proposal awaiting CTO approval. Production
-Paperclip UI integration remains deferred.
+Phase 6 is implemented as a default-off server integration at the public
+package boundary. Production Paperclip UI integration remains deferred.

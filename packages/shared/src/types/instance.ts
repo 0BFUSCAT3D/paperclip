@@ -45,6 +45,8 @@ export interface InstanceGeneralSettings {
 }
 
 export interface InstanceExperimentalSettings {
+  /** Default-off Phase 6 native runner tracer and its instance kill switch. */
+  enableNativeRunner: boolean;
   enableEnvironments: boolean;
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;

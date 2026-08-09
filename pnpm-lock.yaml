@@ -122,6 +122,9 @@ importers:
 
   packages/adapter-utils:
     dependencies:
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../shared
       acpx:
         specifier: 0.12.0
         version: 0.12.0(patch_hash=x3fethhotv43zektyl5prdwf54)
@@ -803,6 +806,9 @@ importers:
       '@paperclipai/hermes-paperclip-adapter':
         specifier: workspace:*
         version: link:../packages/adapters/hermes
+      '@paperclipai/paperclip-runner':
+        specifier: workspace:*
+        version: link:../packages/paperclip-runner
       '@paperclipai/plugin-sdk':
         specifier: workspace:*
         version: link:../packages/plugins/sdk

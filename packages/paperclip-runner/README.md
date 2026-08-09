@@ -24,6 +24,9 @@ replay, and a redacted protocol inspector. Phase 5 extracts that accepted
 transport, reducer projection, hook, components, styles, and reference console
 into versioned public subpaths, then proves the surface with a second minimal
 consumer.
+Phase 6 adds a default-off Paperclip adapter at the public control-plane/session
+boundary, durable PRP replay and result finalization, and a kill switch that
+keeps the legacy adapter path as the default.
 
 ## Phase 0–5 quick start
 
@@ -73,6 +76,9 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 
 # Phase 5: open the public-SDK reference console and mini consumer.
 pnpm --filter @paperclipai/paperclip-runner console:phase5
+
+# Phase 6: prove the mock-side integration contract.
+pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- --target mock --scenario happy-path
 ```
 
 Phase 4b provider-backed routes are loopback-only and reject wildcard/LAN

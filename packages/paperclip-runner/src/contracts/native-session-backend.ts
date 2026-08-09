@@ -1,10 +1,13 @@
 import type {
-  NativeRunEvent,
   NativeRunIdentity,
-  NativeRunResult,
   NativeSessionCapabilities,
   NativeUserMessage,
 } from "./types.js";
+import type {
+  PrpEvent,
+  PrpStructuredRunResult,
+  PrpTerminalState,
+} from "../protocol/phase1-contract.js";
 
 export interface NativeSessionBackendDescriptor {
   kind: "runner" | "remote" | "mock";
@@ -21,8 +24,11 @@ export interface OpenNativeSessionInput {
 export interface PersistedNativeSession {
   backendKind: NativeSessionBackendDescriptor["kind"];
   sessionId: string;
+  identity: NativeRunIdentity;
   providerSessionId?: string | null;
   cursor?: string | null;
+  semanticResult?: PrpStructuredRunResult | null;
+  terminal?: PrpTerminalState | null;
 }
 
 export interface NativeSessionRecoveryResult {
@@ -34,12 +40,16 @@ export interface NativeSessionRecoveryResult {
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
-  events(input?: { afterCursor?: string | null }): AsyncIterable<NativeRunEvent>;
+  events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
   startTurn(input: { message: NativeUserMessage }): Promise<{ turnId: string }>;
   steer?(input: { turnId: string; message: NativeUserMessage }): Promise<void>;
   interrupt?(input: { turnId?: string; reason?: string }): Promise<void>;
   cancel?(input: { reason: string }): Promise<void>;
-  result(): Promise<NativeRunResult | null>;
+  result(): Promise<{
+    result: PrpStructuredRunResult;
+    terminal: PrpTerminalState;
+    turnId: string | null;
+  } | null>;
   snapshot(): Promise<PersistedNativeSession>;
   close(input: { reason: string }): Promise<void>;
 }

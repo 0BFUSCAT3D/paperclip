@@ -41,3 +41,10 @@
   input, complete Section 18 finalization/arbitration, kill switch, exact file
   allowlist, conformance matrix, and mock/native/legacy tutorial commands before
   production code.
+* **Phase 6 integration implementation**: Added persisted default-off runtime
+  selection, the database-backed public control-plane port, package-owned
+  normalized Codex sessions, canonical event allocation/replay, immutable
+  completion/result/finalization records, server-owned status arbitration and
+  audit, native cancellation, migration coverage, a runnable tutorial, and
+  deterministic mock/real-port evidence while retaining legacy as the kill-
+  switch path.

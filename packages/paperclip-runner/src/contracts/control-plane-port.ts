@@ -3,14 +3,42 @@ import type {
   NativeRunIdentity,
   NativeRunResult,
 } from "./types.js";
+import type {
+  PrpEvent,
+  PrpStructuredRunResult,
+  PrpTerminalState,
+} from "../protocol/phase1-contract.js";
 
 export interface OpenControlPlaneRunInput {
   identity: NativeRunIdentity;
   backendKind: "runner" | "remote" | "mock";
+  sourceInstanceId?: string;
 }
 
 export interface AppendedEventReceipt {
   cursor: number;
+  highestContiguousSourceSeq: number;
+  disposition: "committed" | "duplicate";
+}
+
+export interface ReplayControlPlaneEventsInput {
+  runId: string;
+  sourceInstanceId: string;
+  afterSourceSeq: number;
+  limit: number;
+}
+
+export interface ReplayedControlPlaneEvents {
+  events: PrpEvent[];
+  highestContiguousSourceSeq: number;
+}
+
+export interface CompleteControlPlaneRunInput {
+  result: PrpStructuredRunResult;
+  terminal: PrpTerminalState;
+  turnId?: string | null;
+  callerResultId?: string | null;
+  callerDedupeKey?: string | null;
 }
 
 /**
@@ -21,6 +49,7 @@ export interface AppendedEventReceipt {
  */
 export interface ControlPlanePort {
   openRun(input: OpenControlPlaneRunInput): Promise<void>;
-  appendEvent(event: NativeRunEvent): Promise<AppendedEventReceipt>;
-  completeRun(result: NativeRunResult): Promise<void>;
+  appendEvent(event: NativeRunEvent | PrpEvent): Promise<AppendedEventReceipt>;
+  replayEvents(input: ReplayControlPlaneEventsInput): Promise<ReplayedControlPlaneEvents>;
+  completeRun(result: NativeRunResult | CompleteControlPlaneRunInput): Promise<void>;
 }

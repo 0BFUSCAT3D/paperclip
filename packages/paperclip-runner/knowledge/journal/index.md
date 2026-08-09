@@ -14,3 +14,5 @@
 * [Phase 5 UX gate — reusable console and SDK component plan](2026-08-08-phase-05-ux-plan.md) - Frozen consumer-facing component contracts, five extension points, pcr- token rules, and the mini-consumer tracer flow for the SDK extraction.
 * [Phase 5 browser SDK and second consumer](2026-08-08-phase-05-sdk.md) - Versioned browser/React exports, the public reference console and mini consumer, exact reducer authority, and fake/real driver evidence.
 * [Phase 6 thin Paperclip adapter design](2026-08-09-phase-06-design.md) - Proposed public-port seam, feature flag, kill switch, company/auth/governance boundary, durable replay, conformance matrix, and tutorial contract.
+* [Phase 6 feature-flagged Paperclip adapter implementation](2026-08-09-phase-06-implementation.md) - Persisted selection, production port, public-session task, canonical event allocation, server-owned finalization, cancellation, and kill-switch evidence.
+* [Phase 6 thin Paperclip adapter implementation](2026-08-09-phase-06-implementation.md) - Default-off native selection, package-owned sessions, canonical persistence/replay, server-owned finalization, recovery, and compatibility evidence.
