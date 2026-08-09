@@ -4001,6 +4001,19 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/board/chat/conversations/{conversationRef}",
+  tags: ["instance"],
+  summary:
+    "Resolve a Conference Room conversation reference without creating a conversation (requires enableConferenceRoomChat)",
+  request: {
+    params: z.object({ conversationRef: z.string() }),
+    query: z.object({ companyId: z.string() }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Access / invites / members ───────────────────────────────────────────────
 
 registry.registerPath({
