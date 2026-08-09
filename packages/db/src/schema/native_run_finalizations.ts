@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -16,7 +16,7 @@ export const nativeRunFinalizations = pgTable("native_run_finalizations", {
   assessmentId: uuid("assessment_id"),
   decisionId: uuid("decision_id"),
   failureCode: text("failure_code"),
-  failureDetail: text("failure_detail"),
+  failureDetail: jsonb("failure_detail").$type<Record<string, unknown>>(),
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

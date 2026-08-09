@@ -12,6 +12,7 @@ import type {
   NativeRunEvent,
   NativeRunResult,
   OpenControlPlaneRunInput,
+  PersistedNativeSession,
   PrpEvent,
   PrpTerminalState,
   ReplayControlPlaneEventsInput,
@@ -40,6 +41,12 @@ function isPrpEvent(value: NativeRunEvent | PrpEvent): value is PrpEvent {
 
 function isCompleteInput(value: NativeRunResult | CompleteControlPlaneRunInput): value is CompleteControlPlaneRunInput {
   return "result" in value && "terminal" in value;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function assertTerminal(value: unknown): asserts value is PrpTerminalState {
@@ -88,6 +95,69 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       throw new Error("native_open_run_not_authorized");
     }
     this.#sessionId = identity.sessionId;
+  }
+
+  async loadSessionCheckpoint(): Promise<PersistedNativeSession | null> {
+    const run = await this.#db.select({
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      runtimeMode: heartbeatRuns.runtimeMode,
+      nativeSessionId: heartbeatRuns.nativeSessionId,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, this.#binding.runId))
+      .limit(1).then((rows) => rows[0] ?? null);
+    if (
+      !run
+      || run.companyId !== this.#binding.companyId
+      || run.agentId !== this.#binding.agentId
+      || run.runtimeMode !== "native"
+    ) throw new Error("native_session_checkpoint_binding_mismatch");
+    const candidate = record(run.runnerProfileJson).sessionCheckpoint;
+    if (candidate === undefined || candidate === null) return null;
+    const snapshot = record(candidate) as Partial<PersistedNativeSession>;
+    const identity = record(snapshot.identity);
+    if (
+      typeof snapshot.sessionId !== "string"
+      || identity.companyId !== this.#binding.companyId
+      || identity.issueId !== this.#binding.issueId
+      || identity.runId !== this.#binding.runId
+      || identity.agentId !== this.#binding.agentId
+      || identity.sessionId !== run.nativeSessionId
+    ) throw new Error("native_session_checkpoint_invalid");
+    return structuredClone(snapshot as PersistedNativeSession);
+  }
+
+  async checkpointSession(snapshot: PersistedNativeSession): Promise<void> {
+    const identity = snapshot.identity;
+    if (
+      identity.companyId !== this.#binding.companyId
+      || identity.issueId !== this.#binding.issueId
+      || identity.runId !== this.#binding.runId
+      || identity.agentId !== this.#binding.agentId
+      || this.#sessionId !== identity.sessionId
+    ) throw new Error("native_session_checkpoint_binding_mismatch");
+    await this.#db.transaction(async (tx) => {
+      const run = await tx.select().from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, this.#binding.runId)).for("update").limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (
+        !run
+        || run.companyId !== this.#binding.companyId
+        || run.agentId !== this.#binding.agentId
+        || run.runtimeMode !== "native"
+        || run.nativeSessionId !== identity.sessionId
+      ) throw new Error("native_session_checkpoint_binding_mismatch");
+      await tx.update(heartbeatRuns).set({
+        runnerProfileJson: {
+          ...record(run.runnerProfileJson),
+          sessionCheckpoint: structuredClone(snapshot) as unknown as Record<string, unknown>,
+        },
+        sessionIdAfter: snapshot.providerSessionId ?? snapshot.sessionId,
+        nativePhase: snapshot.semanticResult ? "workspace_finalizing" : "observed",
+        nativePhaseUpdatedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, this.#binding.runId));
+    });
   }
 
   async appendEvent(value: NativeRunEvent | PrpEvent) {
@@ -197,7 +267,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         .where(and(eq(nativeRunResults.runId, this.#binding.runId), or(...callerConditions)))
         .limit(1).then((rows) => rows[0] ?? null);
       if (existing) {
-        if (existing.canonicalSha256 !== canonicalSha256) throw new Error("native_result_idempotency_conflict");
+        if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
         return;
       }
       const resultJson = {
@@ -222,14 +292,21 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         runId: this.#binding.runId,
         companyId: this.#binding.companyId,
         issueId: this.#binding.issueId,
-        phase: "result_persisted",
+        phase: "workspace_finalizing",
         resultId: inserted.id,
       }).onConflictDoUpdate({
         target: nativeRunFinalizations.runId,
-        set: { phase: "result_persisted", resultId: inserted.id, failureCode: null, failureDetail: null, updatedAt: new Date() },
+        set: {
+          phase: "workspace_finalizing",
+          resultId: inserted.id,
+          failureCode: null,
+          failureDetail: null,
+          nextAttemptAt: null,
+          updatedAt: new Date(),
+        },
       });
       await tx.update(heartbeatRuns).set({
-        nativePhase: "result_persisted",
+        nativePhase: "workspace_finalizing",
         nativePhaseUpdatedAt: new Date(),
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));

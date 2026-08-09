@@ -26,5 +26,6 @@ export const workAssessments = pgTable("work_assessments", {
   supersedesAssessmentId: uuid("supersedes_assessment_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
-  resultInputUq: uniqueIndex("work_assessments_result_input_uq").on(table.resultId, table.inputDigest),
+  issueInputUq: uniqueIndex("work_assessments_company_issue_input_uq")
+    .on(table.companyId, table.issueId, table.inputDigest),
 }));

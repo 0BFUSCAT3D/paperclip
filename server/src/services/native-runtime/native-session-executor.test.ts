@@ -25,6 +25,38 @@ const execution = {
   completionContract: { id: "contract", sha256: "sha" },
 } as NativeExecutionInputV1;
 
+function leaseDb(): Db {
+  const coordinator = {
+    runId: execution.binding.runId,
+    companyId: execution.binding.companyId,
+    issueId: execution.binding.issueId,
+    phase: "observed",
+    attempt: 0,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    resultId: null,
+  };
+  const update = () => ({
+    set: () => ({ where: async () => [] }),
+  });
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          for: () => ({
+            limit: () => Promise.resolve([coordinator]),
+          }),
+        }),
+      }),
+    }),
+    update,
+  };
+  return {
+    transaction: async (operation: (transaction: Db) => Promise<unknown>) => operation(tx as unknown as Db),
+    update,
+  } as unknown as Db;
+}
+
 describe("native session cancellation", () => {
   beforeEach(() => {
     state.cancel.mockReset();
@@ -49,14 +81,16 @@ describe("native session cancellation", () => {
 
   it("routes control-plane cancellation to the active normalized session and removes the handle", async () => {
     const running = executePaperclipNativeSession({
-      db: {} as Db,
+      db: leaseDb(),
       execution,
       runnerInstanceId: "runner",
     });
     await vi.waitFor(() => expect(state.release).toBeTypeOf("function"));
 
     await expect(cancelNativeSession(execution.binding.runId, "budget hard stop")).resolves.toBe(true);
+    await expect(cancelNativeSession(execution.binding.runId, "duplicate budget stop")).resolves.toBe(true);
     expect(state.cancel).toHaveBeenCalledWith({ reason: "budget hard stop" });
+    expect(state.cancel).toHaveBeenCalledTimes(1);
 
     state.release?.();
     await running;

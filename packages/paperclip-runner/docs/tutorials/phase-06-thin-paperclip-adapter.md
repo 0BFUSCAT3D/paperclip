@@ -29,29 +29,45 @@ PHASE6_SCRATCH="${PAPERCLIP_RUN_SCRATCH_DIR:-$(mktemp -d)}"
 pnpm --filter @paperclipai/paperclip-runner exec vitest run \
   src/conformance/control-plane-port.test.ts \
   src/backends/harness-driver-backend.test.ts \
-  src/contracts/native-execution.test.ts
+  src/contracts/native-execution.test.ts \
+  src/native-session-runtime.test.ts
 
 pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- \
   --target mock --scenario happy-path
 ```
 
-Expected: five targeted tests pass and the trace reports `resolvedMode` as
+Expected: six targeted tests pass and the trace reports `resolvedMode` as
 `native`, three replay-stable events, a successful workspace barrier, and one
-server-owned `done` decision.
+mock server-owned `done` decision. This tracer does not connect to Paperclip.
 
 ## 2. Prove the database-backed Paperclip port
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner build:typescript
 pnpm --filter @paperclipai/server exec vitest run \
-  src/services/native-runtime/paperclip-control-plane-port.test.ts \
-  src/services/native-runtime/runtime-mode.test.ts \
-  src/services/native-runtime/status-arbiter.test.ts
+  src/__tests__/native-runner-phase6.integration.test.ts \
+  src/__tests__/heartbeat-native-runner-selection.test.ts \
+  src/__tests__/heartbeat-native-runner-cancellation.test.ts \
+  src/__tests__/heartbeat-run-event-sequencing.test.ts \
+  src/__tests__/native-runner-input-boundary.test.ts \
+  src/__tests__/native-run-finalizer.test.ts \
+  src/__tests__/native-status-arbiter-corpus.test.ts \
+  src/__tests__/native-finalization-recovery.test.ts \
+  src/__tests__/native-finalization-migration.test.ts \
+  src/__tests__/legacy-finalization-regression.test.ts
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. It also checks company binding, duplicate/gap replay, immutable result
-ingestion, workspace-gated finalization, status-version CAS, and audit output.
+port. Twenty-five targeted tests check company binding, duplicate/gap replay,
+checkpoint recovery, immutable result ingestion, durable-evidence authority,
+workspace-gated finalization, atomic liveness rollback, status-version CAS,
+migration repair, legacy byte equivalence, and audit output. All database tests
+start embedded PostgreSQL and do not skip when a developer database URL is
+absent.
+
+The command above is the repeatable internal canary and post-kill-switch legacy
+proof. The remaining sections are an optional live-provider rollout procedure;
+they were not run during remediation and require explicit operator authority to
+change an instance flag and agent profile.
 
 ## 3. Enable one isolated agent
 

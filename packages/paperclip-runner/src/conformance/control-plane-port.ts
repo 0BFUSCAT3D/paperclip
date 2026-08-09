@@ -41,7 +41,7 @@ export const CONTROL_PLANE_CONFORMANCE_RESULT: PrpStructuredRunResult = {
     remainingWork: [],
   },
   evidence: [{ kind: "event", ref: "event:2" }],
-  verification: [{ commandOrCheck: "phase6-conformance", status: "passed" }],
+  verification: [{ commandOrCheck: "phase6-conformance", status: "passed", artifactRef: "event:2" }],
   attentionRequests: [],
   artifacts: [],
 };

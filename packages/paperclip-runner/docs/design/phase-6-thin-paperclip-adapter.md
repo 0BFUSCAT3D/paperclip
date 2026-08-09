@@ -695,6 +695,29 @@ allowlist amendment and CTO review. In particular, Phase 6 must not change a
 concrete legacy adapter, approval authority, browser UI, workspace policy,
 budget policy, or activity semantics merely to make the tracer pass.
 
+### Remediation allowlist amendment (2026-08-09)
+
+The implementation review found four seam-local paths whose names differed
+from the provisional list above. They are added without expanding authority:
+
+```text
+packages/paperclip-runner/src/native-session-runtime.ts
+packages/paperclip-runner/src/native-session-runtime.test.ts
+server/src/services/native-runtime/native-session-executor.ts
+server/src/services/native-runtime/native-session-executor.test.ts
+server/src/services/native-runtime/paperclip-control-plane-port.test.ts
+server/src/services/native-runtime/status-arbiter.test.ts
+packages/paperclip-runner/docs/design/phase-6-thin-paperclip-adapter.md
+```
+
+The package runtime files own persisted provider-session recovery. The server
+executor files own only the run-scoped cancellation handle and coordinator
+lease around that package runtime. The colocated port and arbiter tests exercise
+the same approved database and pure-policy seams exposed through the named
+`server/src/__tests__` matrix entry points. This amendment does not authorize
+changes to a concrete legacy adapter, approval authority, UI, workspace policy,
+budget policy, or runner/provider/session behavior outside the package.
+
 ## Commands the implementation must make runnable
 
 These commands are the acceptance contract for the implementation issue. They

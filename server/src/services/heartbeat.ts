@@ -57,6 +57,7 @@ import {
   issueThreadInteractions,
   issues,
   issueWorkProducts,
+  nativeRunFinalizations,
   projects,
   projectWorkspaces,
   routineRevisions,
@@ -15335,22 +15336,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             contract: completionContract.contract,
           },
         });
-        await db.update(heartbeatRuns).set({
-          runtimeMode: "native",
-          runtimeModeResolverVersion: nativeRuntimeResolution.resolverVersion,
-          runtimeModeReason: nativeRuntimeResolution.reason,
-          runtimeModeResolvedAt: run.runtimeModeResolvedAt ?? new Date(),
-          runnerProfileJson: nativeRuntimeResolution.profile,
-          runnerInstanceId: nativeRunnerInstanceId,
-          nativeSessionId,
-          driverKind: "codex_app_server",
-          driverVersion: "phase6-v1",
-          completionContractId: completionContract.row.id,
-          completionContractSha256: completionContract.row.canonicalSha256,
-          nativePhase: run.nativePhase ?? "selected",
-          nativePhaseUpdatedAt: run.nativePhaseUpdatedAt ?? new Date(),
-          updatedAt: new Date(),
-        }).where(eq(heartbeatRuns.id, run.id));
+        await db.transaction(async (tx) => {
+          const lockedRun = await tx.select().from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, run.id)).for("update").limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!lockedRun) throw new Error("native_runtime_run_missing");
+          if (lockedRun.runtimeModeResolvedAt && lockedRun.runtimeMode !== "native") {
+            throw new Error("native_runtime_mode_conflict");
+          }
+          await tx.update(heartbeatRuns).set({
+            runtimeMode: "native",
+            runtimeModeResolverVersion: lockedRun.runtimeModeResolverVersion ?? nativeRuntimeResolution.resolverVersion,
+            runtimeModeReason: lockedRun.runtimeModeReason ?? nativeRuntimeResolution.reason,
+            runtimeModeResolvedAt: lockedRun.runtimeModeResolvedAt ?? new Date(),
+            runnerProfileJson: {
+              ...nativeRuntimeResolution.profile,
+              ...parseObject(lockedRun.runnerProfileJson),
+            },
+            runnerInstanceId: lockedRun.runnerInstanceId ?? nativeRunnerInstanceId,
+            nativeSessionId: lockedRun.nativeSessionId ?? nativeSessionId,
+            driverKind: lockedRun.driverKind ?? "codex_app_server",
+            driverVersion: lockedRun.driverVersion ?? "phase6-v1",
+            completionContractId: lockedRun.completionContractId ?? completionContract.row.id,
+            completionContractSha256: lockedRun.completionContractSha256 ?? completionContract.row.canonicalSha256,
+            nativePhase: lockedRun.nativePhase ?? "observed",
+            nativePhaseUpdatedAt: lockedRun.nativePhaseUpdatedAt ?? new Date(),
+            updatedAt: new Date(),
+          }).where(eq(heartbeatRuns.id, run.id));
+          await tx.insert(nativeRunFinalizations).values({
+            runId: run.id,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            phase: "observed",
+          }).onConflictDoNothing();
+        });
       } else {
         await db.update(heartbeatRuns).set({
           runtimeMode: "legacy",

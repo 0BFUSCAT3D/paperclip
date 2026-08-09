@@ -13,39 +13,44 @@ This record verifies the default-off Phase 6 tracer at the approved
 `ControlPlanePort`/`NativeSessionBackend` boundary. No browser surface changed,
 so Phase 6 has command/database evidence rather than screenshots.
 
+The counts below are the PAP-16875 remediation rerun. “Internal canary” means
+the selected-task database test through the public package session contract;
+it does not mean that a new live Codex provider task was dispatched.
+
 # Package contract and mock tracer
 
 ```sh
 pnpm --filter @paperclipai/paperclip-runner exec vitest run \
   src/conformance/control-plane-port.test.ts \
   src/backends/harness-driver-backend.test.ts \
-  src/contracts/native-execution.test.ts
+  src/contracts/native-execution.test.ts \
+  src/native-session-runtime.test.ts
 
 pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- \
   --target mock --scenario happy-path
 ```
 
-Result: three files and five tests passed. The stable trace reported native
+Result: four files and six tests passed. The stable trace reported native
 mode, `runStatus=succeeded`, three events, contiguous source sequence 3,
 `workspaceFinalizeStatus=succeeded`, zero legacy invocations, and a server-owned
-`done` decision with status version 0 -> 1.
+`done` decision with status version 0 -> 1. Restart recovery reused the bound
+provider session checkpoint, opened no second session or turn, retained the
+existing accepted result event, and appended only the missing terminal fact.
 
 # Real Paperclip adapter and public-session task
 
-```sh
-pnpm --filter @paperclipai/paperclip-runner build:typescript
-pnpm --filter @paperclipai/server exec vitest run \
-  src/services/native-runtime/paperclip-control-plane-port.test.ts \
-  src/services/native-runtime/runtime-mode.test.ts \
-  src/services/native-runtime/status-arbiter.test.ts
-```
-
-Result: three files and ten tests passed against embedded PostgreSQL. The same
-package conformance suite passed unchanged against `PaperclipControlPlanePort`.
+The complete acceptance gate below passed 25 tests in ten files against
+embedded PostgreSQL with zero skipped tests. Database-backed tests start their
+own database instead of skipping when a developer `DATABASE_URL` is absent.
+The same package conformance suite passed unchanged against
+`PaperclipControlPlanePort`.
 A selected task then ran end-to-end through `executeNativeSession`, the public
 backend/port contracts, durable PRP events, immutable result ingestion,
 workspace finalization, assessment, CAS status decision, and audit persistence.
-The issue moved from `in_progress` version 0 to `done` version 1.
+The issue moved from `in_progress` version 0 to `done` version 1 only after its
+criterion and verification cited an approved, issue-scoped durable work
+product. A model-only result remained non-terminal and received a persisted
+continuation wake.
 
 The focused corpus also proved:
 
@@ -55,12 +60,37 @@ The focused corpus also proved:
 - company/run/agent/issue/source bindings reject mismatches;
 - source gaps remain visible, identical retries deduplicate, and replay is
   exclusive and byte-stable;
-- incomplete/review/yield/cancelled results remain non-terminal;
-- only a first-class reported blocker selects `blocked`;
+- incomplete/review/yield/cancelled results receive a durable review,
+  continuation, or recovery path;
+- only a task-wide blocker with a named owner and action selects `blocked`;
 - a completion decision writes immutable assessment/decision/effect records and
-  an activity-log audit row.
+  an activity-log audit row;
 - a failed workspace barrier preserves the accepted semantic result, leaves the
-  issue status unchanged, and records a recoverable `workspace_failed` phase.
+  issue status unchanged, and records a leased `retryable_failure` plus recovery
+  owner/action;
+- four injected failures prove interactions, wakes, blocker bindings, status,
+  decisions, and effects roll back together before retry ownership is recorded.
+
+The acceptance-matrix entry points also passed as one 10-file, 25-test gate:
+
+```sh
+pnpm --filter @paperclipai/server exec vitest run \
+  src/__tests__/heartbeat-native-runner-cancellation.test.ts \
+  src/__tests__/heartbeat-native-runner-selection.test.ts \
+  src/__tests__/native-run-finalizer.test.ts \
+  src/__tests__/native-runner-input-boundary.test.ts \
+  src/__tests__/native-runner-phase6.integration.test.ts \
+  src/__tests__/native-finalization-recovery.test.ts \
+  src/__tests__/heartbeat-run-event-sequencing.test.ts \
+  src/__tests__/legacy-finalization-regression.test.ts \
+  src/__tests__/native-finalization-migration.test.ts \
+  src/__tests__/native-status-arbiter-corpus.test.ts
+```
+
+This gate proves concurrent event allocation, duplicate-only migration repair,
+bounded retry exhaustion, kill-switch legacy byte compatibility, and complete
+Section 18.13 fixture-to-consumer traceability in addition to the direct suites.
+It is the repeatable internal native canary and post-kill-switch legacy proof.
 
 # Compile and migration checks
 
@@ -72,22 +102,29 @@ pnpm --filter @paperclipai/db typecheck
 ```
 
 Result: all checks passed. Migration numbering and safety passed. Migration
-0211 deterministically resequences historical heartbeat events before adding
-the unique run sequence invariant, backfills each run's next allocator value,
-and installs issue status-version tracking.
+0211 preserves existing unique heartbeat cursors, deterministically moves only
+duplicate rows above each run's former maximum, backfills the next allocator
+value, and installs issue status-version tracking.
 
-Focused legacy regression:
+Focused migration, allocator, recovery, and legacy rehearsal:
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \
-  src/__tests__/heartbeat-workspace-finalize-branch.test.ts \
-  src/__tests__/heartbeat-process-recovery.test.ts \
-  src/__tests__/heartbeat-runtime-state.test.ts
+  src/services/native-runtime/paperclip-control-plane-port.test.ts \
+  src/__tests__/native-finalization-recovery.test.ts \
+  src/__tests__/legacy-finalization-regression.test.ts \
+  src/__tests__/native-finalization-migration.test.ts \
+  src/__tests__/heartbeat-run-event-sequencing.test.ts
 ```
 
-Result: three files and 106 tests passed, covering unchanged adapter execution,
-workspace finalization, cancellation, process recovery, and runtime/session
-state behavior with the flag left at its default.
+Result: five files and 11 tests passed with zero skips. The production-shaped
+0211 rehearsal began with legacy event sequences `[1,5,5,9]`, retained the
+original unique cursors and first `5`, moved only the later duplicate to `10`,
+seeded `next_event_seq=11`, preserved every non-sequence field byte-for-byte,
+and enforced uniqueness. Thirty-two concurrent mixed event writers produced a
+gap-free allocator stream. Invalid native finalization exhausted its
+three-attempt budget into named recovery without touching issue status. The
+legacy snapshot remained byte-equivalent with zero native history rows.
 
 # Credential, governance, budget, and legacy boundaries
 
@@ -113,14 +150,16 @@ pnpm --filter @paperclipai/server exec vitest run \
   -t "daily cost cap"
 ```
 
-Result: native cancellation reached the active normalized session and removed
-the handle afterward; the daily cost hard stop cancelled a queued run before
-any adapter execution.
+Result: native cancellation reached the active normalized session exactly once
+across duplicate cancellation requests and removed the handle afterward. The
+daily cost hard stop cancelled a queued run before any adapter execution.
 
-# Remaining operational checkpoint
+# Deferred live-provider checkpoint
 
 The [Phase 6 tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
 contains the exact board-authorized commands for enabling one local agent,
 running and inspecting a live Codex task, disabling the flag, proving a fresh
 legacy selection, and restoring the agent profile. Those commands intentionally
-do not pass credentials to the package or model.
+do not pass credentials to the package or model. They were not run during this
+remediation because changing live instance and agent rollout state requires
+operator approval; no new live-provider evidence is claimed here.

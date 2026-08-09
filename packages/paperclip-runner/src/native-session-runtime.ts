@@ -62,7 +62,10 @@ async function consumeTurn(session: NativeSession, controlPlane: ControlPlanePor
 export async function executeNativeSession(options: ExecuteNativeSessionOptions): Promise<NativeSessionExecutionResult> {
   const input = parseNativeExecutionInput(options.input);
   const descriptor = await options.backend.descriptor();
-  const normalizedSessionId = input.session.normalizedSessionId ?? randomUUID();
+  const persistedSession = await options.controlPlane.loadSessionCheckpoint?.() ?? null;
+  const normalizedSessionId = persistedSession?.identity.sessionId
+    ?? input.session.normalizedSessionId
+    ?? randomUUID();
   await options.controlPlane.openRun({
     identity: {
       runId: input.binding.runId,
@@ -75,49 +78,134 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
     sourceInstanceId: options.runnerInstanceId,
   });
 
-  const session = await options.backend.openSession({
-    identity: {
-      runId: input.binding.runId,
-      sessionId: normalizedSessionId,
-      companyId: input.binding.companyId,
-      issueId: input.binding.issueId,
-      agentId: input.binding.agentId,
-    },
-    workingDirectory: input.workspace.cwd,
-  });
+  const identity = {
+    runId: input.binding.runId,
+    sessionId: normalizedSessionId,
+    companyId: input.binding.companyId,
+    issueId: input.binding.issueId,
+    agentId: input.binding.agentId,
+  };
+  if (
+    persistedSession
+    && (
+      persistedSession.identity.runId !== identity.runId
+      || persistedSession.identity.companyId !== identity.companyId
+      || persistedSession.identity.issueId !== identity.issueId
+      || persistedSession.identity.agentId !== identity.agentId
+      || persistedSession.identity.sessionId !== identity.sessionId
+    )
+  ) throw new Error("native_session_checkpoint_binding_mismatch");
+  let recovered = false;
+  let session: NativeSession;
+  if (persistedSession) {
+    if (!options.backend.recoverSession) {
+      throw new Error("native_session_recovery_unavailable: refusing to open a second provider session");
+    }
+    const recovery = await options.backend.recoverSession(persistedSession);
+    if (!recovery.recovered || !recovery.session) {
+      throw new Error(`native_session_recovery_failed: ${recovery.reason ?? "unknown"}`);
+    }
+    session = recovery.session;
+    recovered = true;
+  } else {
+    session = await options.backend.openSession({
+      identity,
+      workingDirectory: input.workspace.cwd,
+    });
+  }
   options.onSession?.(session);
   try {
-    const consuming = consumeTurn(session, options.controlPlane, options.timeoutMs ?? 900_000);
-    await session.startTurn({
-      message: { role: "user", text: JSON.stringify(buildNativeModelEnvelope(input)) },
-    });
-    const consumed = await consuming;
-    const completed = await session.result();
+    const checkpoint = async () => {
+      if (options.controlPlane.checkpointSession) {
+        await options.controlPlane.checkpointSession(await session.snapshot());
+      }
+    };
+    await checkpoint();
+
+    let consumed = { event: null as PrpEvent | null, eventCount: 0, highestContiguousSourceSeq: 0 };
+    let completed = persistedSession?.semanticResult && persistedSession.terminal
+      ? {
+          result: persistedSession.semanticResult,
+          terminal: persistedSession.terminal,
+          turnId: persistedSession.activeTurnId ?? null,
+        }
+      : null;
+    if (!completed) {
+      const consuming = consumeTurn(session, options.controlPlane, options.timeoutMs ?? 900_000);
+      if (!recovered || !persistedSession?.activeTurnId) {
+        await session.startTurn({
+          message: { role: "user", text: JSON.stringify(buildNativeModelEnvelope(input)) },
+        });
+        await checkpoint();
+      }
+      const terminalEvent = await consuming;
+      consumed = terminalEvent;
+      completed = await session.result();
+      await checkpoint();
+    }
     if (completed === null) throw new Error("native_finalization_missing: session returned no semantic result");
-    const terminal = terminalFromEvent(consumed.event, completed.result.reportedWorkDisposition);
-    let controlSeq = 0;
-    const controlEvent = (eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent => ({
+    let terminal: PrpTerminalState;
+    if (persistedSession?.semanticResult && persistedSession.terminal) {
+      terminal = persistedSession.terminal;
+    } else {
+      terminal = terminalFromEvent(consumed.event!, completed.result.reportedWorkDisposition);
+    }
+    const eventTurnId = completed.turnId
+      ?? persistedSession?.activeTurnId
+      ?? persistedSession?.terminalTurns?.at(-1)?.turnId
+      ?? consumed.event?.turnId;
+    const controlEvent = (
+      sourceSeq: number,
+      eventType: PrpEvent["eventType"],
+      payload: Record<string, unknown>,
+    ): PrpEvent => ({
       schema: "paperclip.prp.event.v1",
-      sourceEventId: `${options.controlPlaneInstanceId}:${input.binding.runId}:${++controlSeq}`,
-      sourceSeq: controlSeq,
+      sourceEventId: `${options.controlPlaneInstanceId}:${input.binding.runId}:${sourceSeq}`,
+      sourceSeq,
       sourceInstanceId: options.controlPlaneInstanceId,
       sourceKind: "control_plane",
       runId: input.binding.runId,
       normalizedSessionId,
-      turnId: completed.turnId ?? consumed.event.turnId,
+      ...(eventTurnId ? { turnId: eventTurnId } : {}),
       eventType,
       schemaVersion: 1,
       priority: 0,
       emittedAt: new Date().toISOString(),
       payload,
     });
-    for (const event of [
-      controlEvent("run.result.accepted", { result: completed.result }),
-      controlEvent("run.terminal", terminal as unknown as Record<string, unknown>),
-    ]) {
+    const expectedControlEvents = [
+      controlEvent(1, "run.result.accepted", { result: completed.result }),
+      controlEvent(2, "run.terminal", terminal as unknown as Record<string, unknown>),
+    ];
+    const controlReplay = await options.controlPlane.replayEvents({
+      runId: input.binding.runId,
+      sourceInstanceId: options.controlPlaneInstanceId,
+      afterSourceSeq: 0,
+      limit: 10,
+    });
+    const replayBySequence = new Map(controlReplay.events.map((event) => [event.sourceSeq, event]));
+    for (const existing of controlReplay.events) {
+      const expected = expectedControlEvents[existing.sourceSeq - 1];
+      if (
+        expected === undefined
+        || existing.eventType !== expected.eventType
+        || canonicalJson(existing.payload) !== canonicalJson(expected.payload)
+      ) {
+        throw new Error(`native_control_event_replay_conflict:${existing.sourceSeq}`);
+      }
+    }
+    consumed.highestContiguousSourceSeq = Math.max(
+      consumed.highestContiguousSourceSeq,
+      controlReplay.highestContiguousSourceSeq,
+    );
+    for (const event of expectedControlEvents) {
+      if (replayBySequence.has(event.sourceSeq)) continue;
       const receipt = await options.controlPlane.appendEvent(event);
       consumed.eventCount += receipt.disposition === "committed" ? 1 : 0;
-      consumed.highestContiguousSourceSeq = Math.max(consumed.highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
+      consumed.highestContiguousSourceSeq = Math.max(
+        consumed.highestContiguousSourceSeq,
+        receipt.highestContiguousSourceSeq,
+      );
     }
     await options.controlPlane.completeRun({
       result: completed.result,
@@ -127,6 +215,11 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
       callerDedupeKey: `${input.binding.runId}:${input.completionContract.sha256}`,
     });
     const snapshot = await session.snapshot();
+    await options.controlPlane.checkpointSession?.({
+      ...snapshot,
+      semanticResult: completed.result,
+      terminal,
+    });
     return {
       result: completed.result,
       terminal,
@@ -143,4 +236,16 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
     options.onSession?.(null);
     await session.close({ reason: "native session execution complete" });
   }
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
 }

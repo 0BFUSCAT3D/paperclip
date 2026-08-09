@@ -8,6 +8,7 @@ import type {
   PrpStructuredRunResult,
   PrpTerminalState,
 } from "../protocol/phase1-contract.js";
+import type { PersistedNativeSession } from "./native-session-backend.js";
 
 export interface OpenControlPlaneRunInput {
   identity: NativeRunIdentity;
@@ -49,6 +50,8 @@ export interface CompleteControlPlaneRunInput {
  */
 export interface ControlPlanePort {
   openRun(input: OpenControlPlaneRunInput): Promise<void>;
+  loadSessionCheckpoint?(): Promise<PersistedNativeSession | null>;
+  checkpointSession?(snapshot: PersistedNativeSession): Promise<void>;
   appendEvent(event: NativeRunEvent | PrpEvent): Promise<AppendedEventReceipt>;
   replayEvents(input: ReplayControlPlaneEventsInput): Promise<ReplayedControlPlaneEvents>;
   completeRun(result: NativeRunResult | CompleteControlPlaneRunInput): Promise<void>;

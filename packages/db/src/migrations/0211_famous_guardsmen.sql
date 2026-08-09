@@ -28,7 +28,7 @@ CREATE TABLE "native_run_finalizations" (
 	"assessment_id" uuid,
 	"decision_id" uuid,
 	"failure_code" text,
-	"failure_detail" text,
+	"failure_detail" jsonb,
 	"next_attempt_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -76,14 +76,14 @@ CREATE TABLE "status_decisions" (
 	"company_id" uuid NOT NULL,
 	"issue_id" uuid NOT NULL,
 	"assessment_id" uuid NOT NULL,
-	"decision_version" integer NOT NULL,
+	"decision_version" bigint NOT NULL,
 	"policy_version" text NOT NULL,
 	"from_status" text NOT NULL,
 	"to_status" text NOT NULL,
 	"reason_code" text NOT NULL,
 	"decision_json" jsonb NOT NULL,
 	"decision_digest" text NOT NULL,
-	"application_state" text DEFAULT 'pending' NOT NULL,
+	"application_state" text DEFAULT 'proposed' NOT NULL,
 	"supersedes_decision_id" uuid,
 	"applied_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -133,16 +133,35 @@ ALTER TABLE "heartbeat_runs" ADD COLUMN "native_phase" text;--> statement-breakp
 ALTER TABLE "heartbeat_runs" ADD COLUMN "native_phase_updated_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "issues" ADD COLUMN "status_version" bigint DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "issues" ADD COLUMN "last_status_decision_id" uuid;--> statement-breakpoint
--- Historical event writers computed max(seq) outside their insert transaction. Repair any
--- collisions deterministically before enforcing the native runner's single-writer invariant.
-WITH resequenced AS (
-	SELECT "id", row_number() OVER (PARTITION BY "run_id" ORDER BY "created_at", "id") AS "new_seq"
+-- Historical event writers computed max(seq) outside their insert transaction. Preserve every
+-- existing unique cursor and the first row at each duplicated cursor. Only later colliding rows
+-- move above the run's pre-migration maximum, in deterministic legacy order.
+WITH ranked AS (
+	SELECT
+		"id",
+		"run_id",
+		"seq",
+		"created_at",
+		row_number() OVER (
+			PARTITION BY "run_id", "seq"
+			ORDER BY "created_at", "id"
+		) AS "duplicate_ordinal",
+		max("seq") OVER (PARTITION BY "run_id") AS "old_run_max"
 	FROM "heartbeat_run_events"
+), duplicate_repairs AS (
+	SELECT
+		"id",
+		"old_run_max" + row_number() OVER (
+			PARTITION BY "run_id"
+			ORDER BY "seq", "created_at", "id"
+		) AS "new_seq"
+	FROM ranked
+	WHERE "duplicate_ordinal" > 1
 )
 UPDATE "heartbeat_run_events" AS event
-SET "seq" = resequenced."new_seq"
-FROM resequenced
-WHERE event."id" = resequenced."id";--> statement-breakpoint
+SET "seq" = duplicate_repairs."new_seq"
+FROM duplicate_repairs
+WHERE event."id" = duplicate_repairs."id";--> statement-breakpoint
 UPDATE "heartbeat_runs" AS run
 SET "next_event_seq" = COALESCE((
 	SELECT max(event."seq") + 1
@@ -189,10 +208,11 @@ CREATE UNIQUE INDEX "native_run_results_run_fingerprint_uq" ON "native_run_resul
 CREATE UNIQUE INDEX "native_run_results_run_caller_result_uq" ON "native_run_results" USING btree ("run_id","caller_result_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "native_run_results_run_caller_dedupe_uq" ON "native_run_results" USING btree ("run_id","caller_dedupe_key");--> statement-breakpoint
 CREATE UNIQUE INDEX "status_decision_effects_decision_ordinal_uq" ON "status_decision_effects" USING btree ("decision_id","ordinal");--> statement-breakpoint
-CREATE UNIQUE INDEX "status_decision_effects_idempotency_uq" ON "status_decision_effects" USING btree ("idempotency_key");--> statement-breakpoint
-CREATE UNIQUE INDEX "status_decisions_assessment_version_uq" ON "status_decisions" USING btree ("assessment_id","decision_version");--> statement-breakpoint
-CREATE UNIQUE INDEX "status_decisions_issue_digest_uq" ON "status_decisions" USING btree ("issue_id","decision_digest");--> statement-breakpoint
-CREATE UNIQUE INDEX "work_assessments_result_input_uq" ON "work_assessments" USING btree ("result_id","input_digest");--> statement-breakpoint
+CREATE UNIQUE INDEX "status_decision_effects_company_idempotency_uq" ON "status_decision_effects" USING btree ("company_id","idempotency_key");--> statement-breakpoint
+CREATE UNIQUE INDEX "status_decisions_company_issue_version_uq" ON "status_decisions" USING btree ("company_id","issue_id","decision_version");--> statement-breakpoint
+CREATE UNIQUE INDEX "status_decisions_company_assessment_uq" ON "status_decisions" USING btree ("company_id","assessment_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "status_decisions_company_issue_digest_uq" ON "status_decisions" USING btree ("company_id","issue_id","decision_digest");--> statement-breakpoint
+CREATE UNIQUE INDEX "work_assessments_company_issue_input_uq" ON "work_assessments" USING btree ("company_id","issue_id","input_digest");--> statement-breakpoint
 -- paperclip:migration-safety-ignore large-create-index-not-concurrently: duplicate rows are deterministically resequenced above before this invariant is enabled in the same transaction.
 CREATE UNIQUE INDEX "heartbeat_run_events_run_seq_uq" ON "heartbeat_run_events" USING btree ("run_id","seq");--> statement-breakpoint
 -- paperclip:migration-safety-ignore large-create-index-not-concurrently: nullable native source IDs mean historical rows need no backfill and the invariant must commit atomically with the new columns.

@@ -34,16 +34,27 @@ existing server authority and keep legacy execution as the default.
    handle; never fall back to legacy inside a selected native run.
 8. Keep the feature default false. Recovery reads persisted run/coordinator
    state and therefore remains correct after the flag is disabled.
+9. Persist provider session checkpoints and recover them fail-closed; a restart
+   may reconcile missing control facts but may not open a second provider
+   session for the same run.
+10. Treat model citations as claims. Only server-verifiable durable records can
+    satisfy completion criteria, and every non-terminal decision must create or
+    bind a real review, wake, blocker, or recovery path in the status transaction.
 
 # Evidence
 
 - [Phase 6 verification](../evidence/2026-08-09-phase-06-verification.md)
 - [Phase 6 reference](../../docs/phase-06-thin-paperclip-adapter.md)
 - [Runnable tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
-- Package conformance: three files, five tests passed.
-- Database-backed port/session/finalizer corpus: three files, ten tests passed.
-- Legacy heartbeat finalization/recovery/runtime corpus: three files, 106 tests
-  passed.
+- Package conformance and recovery: four files, six tests passed.
+- Phase 6 acceptance-matrix entry points: ten files, twenty-five tests passed
+  with zero skips, including the database-backed selected-task canary, four
+  atomic-liveness failpoints, migration, sequencing, bounded recovery, and
+  legacy compatibility.
+- Focused database rehearsal: five files, eleven tests passed with zero skips;
+  the legacy event/read snapshot was byte-equivalent and had zero native rows.
+- Section 18.13 source corpus: 52 fixtures, all 70 matrix rows, and 18 structural
+  checks passed with every fixture bound to a named consumer.
 - Runner, shared, server, and database typechecks passed; migration safety
   passed.
 
@@ -69,6 +80,10 @@ existing server authority and keep legacy execution as the default.
 - Live operator proof depends on a board-authorized local instance and an
   already authenticated Codex installation; deterministic CI uses the same
   public session contract with a scripted backend.
+- The remediation did not dispatch a new live provider task or mutate rollout
+  settings. The verified “internal canary” and post-kill-switch trace are the
+  real embedded-PostgreSQL selected-task and legacy-snapshot cases; the live
+  tutorial remains an explicit operator checkpoint.
 
 # Follow-up questions
 

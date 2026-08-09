@@ -24318,7 +24318,7 @@
         },
         "failure_detail": {
           "name": "failure_detail",
-          "type": "text",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -32244,9 +32244,15 @@
           "method": "btree",
           "with": {}
         },
-        "status_decision_effects_idempotency_uq": {
-          "name": "status_decision_effects_idempotency_uq",
+        "status_decision_effects_company_idempotency_uq": {
+          "name": "status_decision_effects_company_idempotency_uq",
           "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "idempotency_key",
               "isExpression": false,
@@ -32338,7 +32344,7 @@
         },
         "decision_version": {
           "name": "decision_version",
-          "type": "integer",
+          "type": "bigint",
           "primaryKey": false,
           "notNull": true
         },
@@ -32383,7 +32389,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'pending'"
+          "default": "'proposed'"
         },
         "supersedes_decision_id": {
           "name": "supersedes_decision_id",
@@ -32406,11 +32412,17 @@
         }
       },
       "indexes": {
-        "status_decisions_assessment_version_uq": {
-          "name": "status_decisions_assessment_version_uq",
+        "status_decisions_company_issue_version_uq": {
+          "name": "status_decisions_company_issue_version_uq",
           "columns": [
             {
-              "expression": "assessment_id",
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -32427,9 +32439,36 @@
           "method": "btree",
           "with": {}
         },
-        "status_decisions_issue_digest_uq": {
-          "name": "status_decisions_issue_digest_uq",
+        "status_decisions_company_assessment_uq": {
+          "name": "status_decisions_company_assessment_uq",
           "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "assessment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "status_decisions_company_issue_digest_uq": {
+          "name": "status_decisions_company_issue_digest_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
             {
               "expression": "issue_id",
               "isExpression": false,
@@ -39258,11 +39297,17 @@
         }
       },
       "indexes": {
-        "work_assessments_result_input_uq": {
-          "name": "work_assessments_result_input_uq",
+        "work_assessments_company_issue_input_uq": {
+          "name": "work_assessments_company_issue_input_uq",
           "columns": [
             {
-              "expression": "result_id",
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issue_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

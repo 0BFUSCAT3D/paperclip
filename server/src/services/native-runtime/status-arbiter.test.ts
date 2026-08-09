@@ -1,72 +1,97 @@
 import { describe, expect, it } from "vitest";
-import { classifyNativeEvidence } from "./evidence-classifier.js";
+import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { arbitrateNativeStatus } from "./status-arbiter.js";
 
-function result(overrides: Record<string, unknown> = {}) {
+function assessment(overrides: Partial<NativeEvidenceAssessment> = {}): NativeEvidenceAssessment {
   return {
-    reportedWorkDisposition: "done",
+    objectiveSatisfied: true,
+    allCriteriaSatisfied: true,
+    verificationPassed: true,
+    hasBlockingRemainingWork: false,
+    reportedDisposition: "done",
     summary: "Complete",
-    completionClaim: {
-      objectiveSatisfied: true,
-      criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: ["test"] }],
-      remainingWork: [],
-    },
-    verification: [{ commandOrCheck: "test", status: "passed" }],
+    contractRevisionMatches: true,
+    criterionAssessments: [],
+    verificationAssessments: [],
+    acceptedEvidenceRefs: ["event:2"],
+    missingRequirements: [],
+    rejectedEvidence: [],
+    unverifiableEvidence: [],
+    blocker: null,
+    continuation: null,
+    attentionRequests: [],
     ...overrides,
   };
 }
 
+function arbitrate(overrides: Partial<Parameters<typeof arbitrateNativeStatus>[0]> = {}) {
+  return arbitrateNativeStatus({
+    assessment: assessment(),
+    terminalState: "succeeded",
+    workspaceFinalizeStatus: "succeeded",
+    agentId: "agent",
+    priorIssueStatus: "in_progress",
+    ...overrides,
+  });
+}
+
 describe("native status authority", () => {
-  it("marks done only from successful finalization and complete evidence", () => {
-    const assessment = classifyNativeEvidence(result());
-    expect(arbitrateNativeStatus({
-      assessment,
-      terminalState: "succeeded",
-      workspaceFinalizeStatus: "succeeded",
-      agentId: "agent",
-    }).toStatus).toBe("done");
+  it("marks done only from successful finalization and complete durable evidence", () => {
+    expect(arbitrate()).toEqual(expect.objectContaining({
+      toStatus: "done",
+      reasonCode: "completion_contract_satisfied",
+      effects: [{ kind: "release_checkout" }],
+    }));
+    expect(arbitrate({
+      assessment: assessment({ verificationPassed: false, missingRequirements: ["test"] }),
+    }).toStatus).toBe("in_progress");
   });
 
-  it("keeps incomplete, review, cancelled, and yielded work non-terminal", () => {
-    for (const reportedWorkDisposition of ["needs_review", "yielded"] as const) {
-      expect(arbitrateNativeStatus({
-        assessment: classifyNativeEvidence(result({ reportedWorkDisposition })),
-        terminalState: "succeeded",
-        workspaceFinalizeStatus: "succeeded",
-        agentId: "agent",
-      }).toStatus).toBe("in_progress");
-    }
-    expect(arbitrateNativeStatus({
-      assessment: classifyNativeEvidence(result()),
-      terminalState: "cancelled",
-      workspaceFinalizeStatus: "succeeded",
-      agentId: "agent",
-    }).toStatus).toBe("in_progress");
-    expect(arbitrateNativeStatus({
-      assessment: classifyNativeEvidence(result()),
-      terminalState: "succeeded",
-      workspaceFinalizeStatus: "succeeded",
-      approvalGateSatisfied: false,
-      agentId: "agent",
+  it("creates explicit liveness paths for review, continuation, cancellation, and governance", () => {
+    expect(arbitrate({
+      assessment: assessment({ reportedDisposition: "needs_review" }),
+    })).toEqual(expect.objectContaining({
+      toStatus: "in_review",
+      effects: [expect.objectContaining({ kind: "create_review_interaction" })],
+    }));
+    expect(arbitrate({
+      assessment: assessment({
+        reportedDisposition: "yielded",
+        continuation: { kind: "retry", summary: "Retry the task", idempotencyKey: "retry-task" },
+      }),
     })).toEqual(expect.objectContaining({
       toStatus: "in_progress",
-      reasonCode: "approval_gate_pending",
+      effects: [expect.objectContaining({ kind: "enqueue_continuation", continuationKind: "retry" })],
+    }));
+    expect(arbitrate({ terminalState: "cancelled" })).toEqual(expect.objectContaining({
+      toStatus: "in_progress",
+      effects: [expect.objectContaining({ kind: "record_recovery", cause: "native_run_cancelled" })],
+    }));
+    expect(arbitrate({ governanceGate: { kind: "interaction", id: "interaction" } })).toEqual(expect.objectContaining({
+      toStatus: "in_review",
+      reasonCode: "governance_gate_pending",
+      effects: [{ kind: "bind_governance", gate: { kind: "interaction", id: "interaction" } }],
     }));
   });
 
-  it("blocks only on a first-class blocker or failed workspace finalization", () => {
-    const explicitBlocker = classifyNativeEvidence(result({
-      reportedWorkDisposition: "blocked",
-      blocker: { owner: { kind: "board" }, unblockAction: "Approve access" },
-    }));
-    expect(arbitrateNativeStatus({
-      assessment: explicitBlocker,
-      terminalState: "succeeded",
-      workspaceFinalizeStatus: "succeeded",
-      agentId: "agent",
+  it("blocks only for a task-wide blocker with a named owner and action", () => {
+    expect(arbitrate({
+      assessment: assessment({
+        reportedDisposition: "blocked",
+        blocker: { boardOwned: true, scope: "task_wide", unblockAction: "Approve access" },
+      }),
     })).toEqual(expect.objectContaining({
       toStatus: "blocked",
       unblockDescriptor: { owner: "board", action: "Approve access" },
+      effects: [{ kind: "bind_blocker", owner: "board", action: "Approve access" }],
+    }));
+  });
+
+  it("preserves authoritative terminal statuses", () => {
+    expect(arbitrate({ priorIssueStatus: "done" })).toEqual(expect.objectContaining({
+      toStatus: "done",
+      reasonCode: "terminal_status_preserved",
+      effects: [],
     }));
   });
 });

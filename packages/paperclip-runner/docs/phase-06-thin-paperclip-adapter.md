@@ -32,6 +32,8 @@ contract are persisted before provider execution.
 `PaperclipControlPlanePort` implements the package's `ControlPlanePort`:
 
 - `openRun` verifies company/run/issue/agent/contract binding;
+- `loadSessionCheckpoint` and `checkpointSession` bind restart state to the
+  same company/run/issue/agent/session identity;
 - `appendEvent` validates PRP, commits through the shared per-run allocator,
   deduplicates source identity by canonical digest, and acknowledges afterward;
 - `replayEvents` uses an exclusive source cursor;
@@ -51,21 +53,41 @@ versions, native run metadata, and native source identity on heartbeat events.
 All event writers allocate from the row-locked `heartbeat_runs.next_event_seq`.
 
 Finalization runs only after result persistence and workspace finalization. The
-pure arbiter marks `done` only when the terminal state succeeded, the objective
-and every criterion are satisfied, verification passed, and no blocking work
-remains. It marks `blocked` only for a first-class reported blocker. A failed
-workspace barrier preserves the immutable native result, fails the run, and
-leaves issue status unchanged. Review/yield/incomplete/failure/cancellation
-remain non-terminal.
-Status projection is a versioned CAS and emits an audit record.
+server verifies cited evidence against company- and issue-scoped durable
+events, work products, approvals, interactions, or attachments; model claims
+alone cannot complete an issue. The pure arbiter marks `done` only when the
+terminal state succeeded, every criterion and verification has accepted
+durable evidence, and no blocking work remains. It marks `blocked` only for a
+task-wide first-class blocker with a named owner and action. Review, retry,
+continuation, blocker, and recovery effects materialize atomically with the
+status-version CAS and audit record.
 
 ## Recovery and safety
 
 The finalization reconciler selects persisted `runtime_mode=native` rows; it
-does not consult the current flag. Cancellation uses a run-scoped normalized
-session handle before the existing process cleanup. Native execution does not
-construct a Paperclip JWT, managed MCP access, legacy context, or raw adapter
-environment.
+does not consult the current flag. Per-attempt leases prevent concurrent
+session/finalization ownership, while retryable failures retain the immutable
+result and a first-class recovery action. A recovered session replays its
+checkpoint and appends only missing control-plane facts instead of opening a
+second provider session. Cancellation uses a run-scoped normalized session
+handle before the existing process cleanup. Native execution does not construct
+a Paperclip JWT, managed MCP access, legacy context, or raw adapter environment.
+
+## Verification status
+
+The deterministic package suite and the real embedded-PostgreSQL Paperclip
+suite prove selection, replay/conflict handling, authoritative evidence,
+status/liveness atomicity, session/finalization recovery, migration repair,
+bounded cancellation/retry, and a byte-equivalent legacy read snapshot. The
+database suite is the internal native canary: it executes one selected task
+through the public package session contract and applies one server-owned
+decision. Its post-kill-switch legacy case has zero native history rows.
+
+No new live provider task was dispatched during the remediation review. A live
+Codex canary remains an operator-run rollout check because it requires changing
+the instance flag and one agent profile. The package `trace:phase6` command is a
+mock contract tracer; real Paperclip proof is the database-backed server matrix
+and the explicitly gated procedure in the tutorial.
 
 See the [runnable tutorial](tutorials/phase-06-thin-paperclip-adapter.md), the
 [verification record](../knowledge/evidence/2026-08-09-phase-06-verification.md),

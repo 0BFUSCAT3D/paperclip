@@ -56,6 +56,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       providerSessionId: snapshot.providerSessionId,
       runId: snapshot.identity.runId,
       normalizedSessionId: snapshot.identity.sessionId,
+      activeTurnId: snapshot.activeTurnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? null,
       lastSourceSequence: parseCursor(snapshot.cursor),
       ...(snapshot.semanticResult === undefined || snapshot.semanticResult === null
         ? {}
@@ -63,9 +64,12 @@ export class HarnessDriverBackend implements NativeSessionBackend {
             semanticResult: {
               result: snapshot.semanticResult,
               fingerprint: canonicalJson(snapshot.semanticResult),
-              turnId: "recovered",
-            },
-          }),
+              turnId: snapshot.activeTurnId ?? snapshot.terminalTurns?.at(-1)?.turnId ?? "recovered",
+          },
+        }),
+      terminalTurns: snapshot.terminalTurns ?? [],
+      pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
+      lineage: snapshot.lineage ?? [],
     };
     const recovered = await this.#driver.recoverSession(persisted);
     if (!recovered.recovered || recovered.session === undefined) {
@@ -181,6 +185,10 @@ class HarnessNativeSession implements NativeSession {
           : String(snapshot.lastSourceSequence),
       semanticResult: snapshot.semanticResult?.result ?? null,
       terminal: this.#terminal,
+      activeTurnId: snapshot.activeTurnId ?? snapshot.semanticResult?.turnId ?? null,
+      terminalTurns: snapshot.terminalTurns ?? [],
+      pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
+      lineage: snapshot.lineage ?? [],
     };
   }
 

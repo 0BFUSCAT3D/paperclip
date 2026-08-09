@@ -8,6 +8,11 @@ import type {
   PrpStructuredRunResult,
   PrpTerminalState,
 } from "../protocol/phase1-contract.js";
+import type {
+  HarnessRuntimeRequest,
+  HarnessThreadLineageEntry,
+  PersistedHarnessTurnTerminal,
+} from "./harness-driver.js";
 
 export interface NativeSessionBackendDescriptor {
   kind: "runner" | "remote" | "mock";
@@ -29,6 +34,10 @@ export interface PersistedNativeSession {
   cursor?: string | null;
   semanticResult?: PrpStructuredRunResult | null;
   terminal?: PrpTerminalState | null;
+  activeTurnId?: string | null;
+  terminalTurns?: PersistedHarnessTurnTerminal[];
+  pendingRuntimeRequests?: HarnessRuntimeRequest[];
+  lineage?: HarnessThreadLineageEntry[];
 }
 
 export interface NativeSessionRecoveryResult {

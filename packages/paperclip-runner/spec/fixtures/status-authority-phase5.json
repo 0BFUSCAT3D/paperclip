@@ -33,7 +33,7 @@
     {
       "id": "incomplete-evidence-no-live-path",
       "mode": "native",
-      "covers": { "decisionRows": ["SD-03"], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-06"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["incomplete_evidence", "atomic_liveness"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "missing_required_test", "trigger": "runner_finalizer", "fault": "continuation_insert_failure" },
       "expected": { "runStatus": "failed", "statusAction": "preserve", "reasonCode": "side_effect_planning_failed", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["enqueue_continuation", "status_version_increment"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
@@ -42,7 +42,7 @@
     {
       "id": "prior-status-preserved-without-live-path",
       "mode": "native",
-      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "covers": { "decisionRows": ["SD-03"], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-06"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["atomic_liveness", "reconciliation"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "no_durable_continuation", "trigger": "runner_finalizer" },
       "expected": { "runStatus": "failed", "statusAction": "preserve", "reasonCode": "prior_status_preserved_no_live_path", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["set_issue_status", "enqueue_continuation", "bind_blocker", "bind_reviewer"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },

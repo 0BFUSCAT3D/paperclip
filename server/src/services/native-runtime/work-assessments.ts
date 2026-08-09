@@ -11,7 +11,9 @@ export async function recordNativeWorkAssessment(input: {
   runId: string;
   turnId: string | null;
   contractId: string;
+  contractCanonicalSha256: string;
   resultId: string;
+  resultCanonicalSha256: string;
   priorIssueStatus: string;
   priorStatusVersion: number;
   priorDecisionId: string | null;
@@ -22,14 +24,21 @@ export async function recordNativeWorkAssessment(input: {
   const assessmentJson = input.assessment as unknown as Record<string, unknown>;
   const inputDigest = nativeSha256({
     contractId: input.contractId,
+    contractCanonicalSha256: input.contractCanonicalSha256,
     resultId: input.resultId,
+    resultCanonicalSha256: input.resultCanonicalSha256,
     priorIssueStatus: input.priorIssueStatus,
     priorStatusVersion: input.priorStatusVersion,
+    priorDecisionId: input.priorDecisionId,
+    triggerKind: "native_result",
+    triggerRef: input.resultId,
+    triggerActorCompanyId: input.companyId,
+    triggerCapability: "server_native_finalizer",
     policyVersion: input.policyVersion,
     assessment: assessmentJson,
   });
   const existing = await input.db.select().from(workAssessments).where(and(
-    eq(workAssessments.resultId, input.resultId),
+    eq(workAssessments.issueId, input.issueId),
     eq(workAssessments.inputDigest, inputDigest),
   )).limit(1).then((rows) => rows[0] ?? null);
   if (existing) return existing;

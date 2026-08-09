@@ -23,5 +23,6 @@ export const statusDecisionEffects = pgTable("status_decision_effects", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   decisionOrdinalUq: uniqueIndex("status_decision_effects_decision_ordinal_uq").on(table.decisionId, table.ordinal),
-  idempotencyUq: uniqueIndex("status_decision_effects_idempotency_uq").on(table.idempotencyKey),
+  idempotencyUq: uniqueIndex("status_decision_effects_company_idempotency_uq")
+    .on(table.companyId, table.idempotencyKey),
 }));
