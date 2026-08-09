@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase 7I scenario chat — annotated mockup (ix-checkbox-01)</title>
+<style>
+  /* Static mockup only. Values mirror the package --pcr-* token layer;
+     the implementation must consume the real tokens, never these copies.
+     Query params: ?view=activity (mobile Activity segment), ?state=streaming. */
+  :root {
+    --bg: #f7f7f5; --fg: #191917; --card: #ffffff; --muted: #efefeb;
+    --muted-fg: #66665f; --border: #deded7; --primary: #242420; --primary-fg: #fff;
+    --success: #17633a; --success-surface: #e9f5ed;
+    --warning: #8a5a10; --warning-surface: #fff4dc;
+    --danger: #a02f2f; --danger-surface: #fceaea;
+    --accent: #2f5fa8; --accent-fg: #fff; --accent-surface: #e9f0fa;
+    --raised: #fcfcfa; --ring: #66665f;
+    --sans: Inter, ui-sans-serif, system-ui, sans-serif;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --r-sm: 0.375rem; --r-md: 0.625rem;
+    --shadow: 0 0.0625rem 0.125rem rgb(0 0 0 / 0.05);
+    --touch: 2.75rem;
+  }
+  * { box-sizing: border-box; min-width: 0; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 400 0.875rem/1.5 var(--sans);
+         display: flex; flex-direction: column; }
+  header.app, .legend, .segbar { flex: none; }
+  .mono { font-family: var(--mono); }
+  .xs { font-size: 0.75rem; }
+  .muted-fg { color: var(--muted-fg); }
+
+  /* annotation callouts */
+  .co { display: inline-flex; align-items: center; justify-content: center; width: 1.05rem; height: 1.05rem;
+        border-radius: 999px; background: var(--accent); color: var(--accent-fg); font-size: 0.68rem;
+        font-weight: 600; flex: none; vertical-align: text-bottom; }
+  .legend { display: flex; flex-wrap: wrap; gap: 0.3rem 0.75rem; padding: 0.3rem 1rem;
+            background: var(--accent-surface); border-bottom: 1px solid var(--border); font-size: 0.7rem; }
+  .legend span.item { display: inline-flex; gap: 0.25rem; align-items: center; color: var(--fg); }
+
+  header.app { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 1rem;
+               background: var(--raised); border-bottom: 1px solid var(--border); }
+  header.app h1 { font-size: 0.875rem; font-weight: 600; margin: 0; }
+  header.app .corpus { margin-left: auto; color: var(--muted-fg); font-size: 0.75rem; }
+
+  .badge { display: inline-flex; align-items: center; gap: 0.25rem; border-radius: 999px; padding: 0.05rem 0.5rem;
+           font-size: 0.7rem; font-weight: 500; border: 1px solid var(--border); background: var(--muted);
+           color: var(--fg); white-space: nowrap; }
+  .badge.cp { background: var(--muted); color: var(--muted-fg); }
+  .badge.always { background: var(--accent-surface); color: var(--accent); border-color: transparent; }
+  .badge.optional { background: var(--warning-surface); color: var(--warning); border-color: transparent; }
+  .badge.deny { background: var(--danger-surface); color: var(--danger); border-color: transparent; }
+  .badge.allow { background: var(--success-surface); color: var(--success); border-color: transparent; }
+  .badge.live { background: var(--accent-surface); color: var(--accent); border-color: transparent; }
+  .badge.grp { background: var(--card); }
+
+  .btn { border: 1px solid var(--border); background: var(--card); border-radius: var(--r-sm);
+         padding: 0.3rem 0.9rem; font: inherit; font-size: 0.8rem; font-weight: 500; min-height: 2rem; }
+  .btn.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+  .btn:disabled { opacity: 0.5; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+  .seg button { border: 0; background: var(--card); padding: 0.25rem 0.75rem; font: inherit; font-size: 0.78rem; color: var(--muted-fg); }
+  .seg button.on { background: var(--primary); color: var(--primary-fg); }
+
+  .shell { display: grid; grid-template-columns: 17rem minmax(0,1fr) 26rem; flex: 1; min-height: 0; }
+
+  /* ---------- left rail: reused 7F picker (slim render) ---------- */
+  nav.picker { border-right: 1px solid var(--border); background: var(--raised); overflow-y: auto;
+               padding: 0.75rem; display: flex; flex-direction: column; gap: 0.6rem; }
+  .search { display: block; width: 100%; height: 2rem; border: 1px solid var(--border); border-radius: var(--r-sm);
+            padding: 0 0.5rem; font: inherit; background: var(--card); color: var(--muted-fg); }
+  .group-h { font-size: 0.75rem; font-weight: 600; color: var(--muted-fg); margin: 0.4rem 0 0.1rem;
+             display: flex; justify-content: space-between; }
+  ul.cases { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .case { display: grid; gap: 0 0.5rem; padding: 0.375rem 0.5rem; border-radius: var(--r-sm); border-left: 3px solid transparent; }
+  .case .id { font-family: var(--mono); font-size: 0.72rem; color: var(--muted-fg); }
+  .case .t { font-size: 0.78rem; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .case.sel { background: var(--accent-surface); border-left-color: var(--accent); }
+  .facet-note { font-size: 0.72rem; color: var(--muted-fg); border: 1px dashed var(--border);
+                border-radius: var(--r-sm); padding: 0.35rem 0.5rem; }
+
+  /* ---------- center: chat ---------- */
+  main.chat { display: flex; flex-direction: column; overflow: hidden; }
+  .chat-scroll { overflow-y: auto; padding: 1rem 1.25rem 0.5rem; display: flex; flex-direction: column;
+                 gap: 0.6rem; max-width: 48rem; width: 100%; margin: 0 auto; flex: 1; }
+  .sess { display: flex; flex-direction: column; gap: 0.4rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); }
+  .sess .row1 { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .sess h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+  .sess .controls { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+
+  .cpa { background: var(--muted); border-radius: var(--r-md); padding: 0.5rem 0.75rem; display: flex;
+         gap: 0.5rem; align-items: flex-start; }
+  .cpa .glyph { color: var(--muted-fg); font-size: 0.8rem; line-height: 1.4; }
+  .cpa p { margin: 0; font-size: 0.8rem; }
+  .cpa .why { color: var(--muted-fg); font-size: 0.72rem; }
+
+  .u-turn { align-self: flex-end; max-width: 85%; background: var(--accent-surface); border-radius: var(--r-md);
+            padding: 0.45rem 0.75rem; font-size: 0.85rem; }
+  .m-turn { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md);
+            padding: 0.5rem 0.75rem; box-shadow: var(--shadow); max-width: 95%; }
+  .m-turn p { margin: 0.15rem 0; font-size: 0.85rem; }
+  .caret::after { content: "▌"; color: var(--muted-fg); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .toolcall { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--raised);
+              margin-left: 1.25rem; }
+  .toolcall .sumline { display: flex; gap: 0.5rem; align-items: center; padding: 0.45rem 0.75rem;
+                       font-size: 0.8rem; flex-wrap: wrap; min-height: var(--touch); }
+  .toolcall .op { font-family: var(--mono); font-weight: 600; font-size: 0.78rem; }
+  .toolcall .outcome { color: var(--muted-fg); font-size: 0.75rem; }
+  .toolcall .body { border-top: 1px solid var(--border); padding: 0.5rem 0.75rem; display: grid; gap: 0.4rem; }
+  .kv { display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.15rem 0.5rem; font-size: 0.75rem; margin: 0; }
+  .kv dt { color: var(--muted-fg); }
+  .kv dd { margin: 0; font-family: var(--mono); font-size: 0.72rem; overflow-wrap: anywhere; }
+  pre.json { margin: 0; background: var(--muted); border-radius: var(--r-sm); padding: 0.4rem 0.5rem;
+             font-family: var(--mono); font-size: 0.7rem; line-height: 1.45; overflow-x: auto; }
+  .toolcall.denied { border-color: var(--danger); }
+  .toolcall.denied .sumline { background: var(--danger-surface); border-radius: var(--r-md) var(--r-md) 0 0; }
+  .deny-detail { padding: 0.5rem 0.75rem; border-top: 1px solid var(--border); font-size: 0.78rem; }
+  .deny-detail strong { color: var(--danger); }
+  .redaction { display: inline-flex; gap: 0.25rem; align-items: center; background: var(--muted);
+               border-radius: 999px; padding: 0 0.4rem; font-size: 0.7rem; color: var(--muted-fg); }
+
+  .turn-strip { display: flex; gap: 0.5rem; align-items: center; width: 100%; text-align: left;
+                border: 1px solid var(--border); background: var(--card); border-radius: var(--r-md);
+                padding: 0.45rem 0.75rem; font: inherit; font-size: 0.75rem; color: var(--muted-fg);
+                min-height: var(--touch); cursor: pointer; flex-wrap: wrap; }
+  .turn-strip .lbl { font-weight: 600; color: var(--fg); }
+  .turn-strip .ok { color: var(--success); }
+  .turn-strip .bad { color: var(--danger); }
+
+  .composer { border-top: 1px solid var(--border); background: var(--raised); padding: 0.6rem 1.25rem 0.75rem; }
+  .composer-inner { max-width: 48rem; margin: 0 auto; display: flex; flex-direction: column; gap: 0.3rem; }
+  .composer-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+  .composer textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: var(--r-md);
+                       font: inherit; font-size: 0.85rem; padding: 0.5rem 0.6rem; min-height: var(--touch);
+                       background: var(--card); }
+  .composer .hint { font-size: 0.7rem; color: var(--muted-fg); }
+
+  /* ---------- right rail: activity stream ---------- */
+  aside.activity { border-left: 1px solid var(--border); background: var(--raised); overflow-y: auto;
+                   padding: 0.75rem; display: flex; flex-direction: column; gap: 0.6rem; }
+  .act-head { display: flex; align-items: baseline; gap: 0.5rem; }
+  .act-head h3 { margin: 0; font-size: 0.8rem; font-weight: 600; }
+  .filters { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+  .fchip { border: 1px solid var(--border); background: var(--card); border-radius: 999px;
+           padding: 0.15rem 0.6rem; font: inherit; font-size: 0.72rem; color: var(--muted-fg); min-height: 1.75rem; }
+  .fchip.on { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+
+  .turn-group { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--card); }
+  .tg-head { display: flex; gap: 0.5rem; align-items: center; padding: 0.5rem 0.65rem; font-size: 0.78rem;
+             font-weight: 600; flex-wrap: wrap; min-height: var(--touch); }
+  .tg-head .sum { font-weight: 400; color: var(--muted-fg); font-size: 0.72rem; }
+  .tg-body { border-top: 1px solid var(--border); padding: 0.5rem 0.65rem; display: flex; flex-direction: column; gap: 0.55rem; }
+  .sect h4 { margin: 0 0 0.2rem; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+             letter-spacing: 0.04em; color: var(--muted-fg); }
+  .row { display: flex; gap: 0.4rem; align-items: baseline; font-size: 0.75rem; padding: 0.15rem 0; flex-wrap: wrap; }
+  .row .mono { font-size: 0.72rem; }
+  .row.deny { background: var(--danger-surface); border-radius: var(--r-sm); padding: 0.25rem 0.4rem; }
+  .diff-domain { display: flex; justify-content: space-between; font-size: 0.75rem; padding: 0.15rem 0; gap: 0.5rem; }
+  .diff-field { font-family: var(--mono); font-size: 0.7rem; overflow-wrap: anywhere; color: var(--fg);
+                background: var(--muted); border-radius: var(--r-sm); padding: 0.2rem 0.4rem; margin: 0.15rem 0; }
+  .unchanged { color: var(--muted-fg); font-size: 0.72rem; }
+  .verdict { display: flex; gap: 0.4rem; align-items: center; font-size: 0.78rem; font-weight: 600;
+             color: var(--success); }
+  .verdict.session { border-top: 1px dashed var(--border); padding-top: 0.4rem; }
+
+  /* ---------- mobile ---------- */
+  .segbar { display: none; }
+  @media (max-width: 63.98rem) {
+    .shell { display: flex; flex-direction: column; }
+    nav.picker, aside.activity { display: none; }
+    body.view-activity main.chat { display: none; }
+    body.view-activity aside.activity { display: flex; border-left: 0; flex: 1; }
+    .segbar { display: flex; position: sticky; top: 0; z-index: 5; gap: 0.25rem; padding: 0.4rem 0.75rem;
+              background: var(--raised); border-bottom: 1px solid var(--border); }
+    .segbar button { flex: 1; min-height: var(--touch); border: 1px solid var(--border); background: var(--card);
+                     border-radius: var(--r-sm); font: inherit; font-size: 0.8rem; display: inline-flex;
+                     align-items: center; justify-content: center; gap: 0.35rem; }
+    .segbar button.on { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+    .chat-scroll { padding: 0.75rem 0.75rem 0.5rem; }
+    .composer { padding: 0.5rem 0.75rem 0.65rem; }
+    .toolcall { margin-left: 0.5rem; }
+    header.app .corpus { display: none; }
+  }
+
+  /* ---------- streaming variant ---------- */
+  .streaming-only { display: none; }
+  body.state-streaming .streaming-only { display: block; }
+  body.state-streaming .settled-only { display: none; }
+</style>
+</head>
+<body>
+<header class="app">
+  <h1>Phase 7 scenario chat — mock control plane</h1>
+  <span class="corpus">106 scenarios · 16 groups · mock adapter only, no credentials in the browser</span>
+</header>
+<div class="legend" aria-label="Annotation legend">
+  <span class="item"><span class="co">1</span> session header + status + reset/replay</span>
+  <span class="item"><span class="co">2</span> control-plane strip (turn 0 seed)</span>
+  <span class="item"><span class="co">3</span> user turn</span>
+  <span class="item"><span class="co">4</span> model output</span>
+  <span class="item"><span class="co">5</span> semantic tool call (expanded)</span>
+  <span class="item"><span class="co">6</span> denied operation</span>
+  <span class="item"><span class="co">7</span> turn activity strip</span>
+  <span class="item"><span class="co">8</span> composer</span>
+  <span class="item"><span class="co">9</span> per-turn activity group</span>
+  <span class="item"><span class="co">10</span> mobile segments + deny chip</span>
+</div>
+
+<div class="segbar" role="radiogroup" aria-label="Chat sections">
+  <button type="button" id="seg-chat" role="radio" aria-checked="true"><span class="co">10</span> Chat</button>
+  <button type="button" id="seg-activity" role="radio" aria-checked="false">Activity <span class="badge deny">1 deny</span></button>
+</div>
+
+<div class="shell">
+  <nav class="picker" aria-label="Scenario picker">
+    <input class="search" value="" placeholder="Search 106 scenarios…" aria-label="Search scenarios" />
+    <div class="facet-note">7F picker reused as-is: group · case · disposition · role · claim · parity facets</div>
+    <div class="group-h"><span>Interactions <span class="mono">ix</span></span><span>9</span></div>
+    <ul class="cases">
+      <li class="case"><span class="id">ix-questions-01</span><span class="t">Structured questions use ask-user form</span></li>
+      <li class="case sel"><span class="id">ix-checkbox-01</span><span class="t">Subset selection from a known list is a checkbox confirmation</span></li>
+      <li class="case"><span class="id">ix-confirmation-01</span><span class="t">Yes/no plan approval binds the revision</span></li>
+    </ul>
+    <div class="group-h"><span>Approvals <span class="mono">ap</span></span><span>6</span></div>
+    <ul class="cases">
+      <li class="case"><span class="id">ap-mcp-gate-01</span><span class="t">Gated tool call opens one approval card</span></li>
+    </ul>
+  </nav>
+
+  <main class="chat" aria-label="Scenario chat">
+    <div class="chat-scroll">
+      <div class="sess">
+        <div class="row1">
+          <span class="co">1</span>
+          <span class="mono xs muted-fg">ix-checkbox-01</span>
+          <h2>Subset selection from a known list is a checkbox confirmation</h2>
+        </div>
+        <div class="row1">
+          <span class="badge grp">Interactions <span class="mono">ix</span></span>
+          <span class="badge always">Always tool</span>
+          <span class="badge live">Live · Codex (bounded)</span>
+          <span class="badge allow">✓ Parity · 2 turns pass</span>
+        </div>
+        <div class="controls">
+          <span class="seg" role="radiogroup" aria-label="Session mode">
+            <button type="button">Replay (scripted)</button>
+            <button type="button" class="on">Codex (bounded)</button>
+          </span>
+          <button type="button" class="btn settled-only">Reset session…</button>
+          <button type="button" class="btn settled-only">Replay</button>
+          <button type="button" class="btn streaming-only" disabled title="Disabled while a turn is running">Reset session…</button>
+          <span class="streaming-only xs muted-fg">Controls disabled while turn 3 is running</span>
+        </div>
+      </div>
+
+      <div class="cpa">
+        <span class="glyph">⌘</span>
+        <div>
+          <p><span class="co">2</span> <strong>Control plane</strong> seeded <span class="mono">ix-checkbox-01</span>, routed the scoped wake, and checked out task <span class="mono">MCK-102</span> — no agent tool exists for this.</p>
+          <p class="why">Session start · 4 events · exposure: 8 always · 2 optional · 5 control-plane (no tool)</p>
+        </div>
+      </div>
+
+      <div class="u-turn"><span class="co">3</span> Read the task and confirm which files I should delete before you act.</div>
+
+      <div class="m-turn">
+        <p><span class="co">4</span> I read task <span class="mono">MCK-102</span>. It asks for a cleanup of generated fixture files. Before touching anything I need your selection, so I'm raising a checkbox confirmation with the candidate files.</p>
+      </div>
+
+      <div class="toolcall">
+        <div class="sumline">
+          <span class="co">5</span>
+          <span class="op">request_human_input</span>
+          <span class="badge always">Always tool</span>
+          <span class="outcome">kind=checkbox · committed</span>
+        </div>
+        <div class="body">
+          <dl class="kv">
+            <dt>operation</dt><dd>request_human_input@1</dd>
+            <dt>claims</dt><dd>(always catalog — none required)</dd>
+            <dt>idempotency</dt><dd>checkbox:MCK-102:cleanup:rev-3 · first commit</dd>
+            <dt>redactions</dt><dd><span class="redaction">••• redacted secret-hygiene</span></dd>
+          </dl>
+          <pre class="json">{ "kind": "checkbox", "prompt": "Check the files to delete.",
+  "options": [ { "id": "draft-report-march" }, { "id": "tmp-export-2025" } ],
+  "minSelected": 0 }</pre>
+        </div>
+      </div>
+
+      <div class="toolcall denied">
+        <div class="sumline">
+          <span class="co">6</span>
+          <span class="op">decide_approval</span>
+          <span class="badge optional">Optional tool</span>
+          <span class="badge deny">✕ Denied</span>
+        </div>
+        <div class="deny-detail">
+          <strong>Denied:</strong> missing claim <span class="mono">approval:decide</span>.
+          The authorization engine rejected the call before any state was read — no protected
+          state is included in this record.
+        </div>
+      </div>
+
+      <div class="cpa">
+        <span class="glyph">⌘</span>
+        <div>
+          <p><strong>Control plane</strong> registered the pending interaction and scheduled the continuation wake — interaction continuations are routed by the control plane, not requested again.</p>
+          <p class="why">state change: interactions +1 · wake scheduled (fixture time t+3)</p>
+        </div>
+      </div>
+
+      <button type="button" class="turn-strip">
+        <span class="co">7</span>
+        <span class="lbl">Turn 2 activity</span>
+        <span>2 tools</span> · <span class="bad">✕ 1 denied</span> · <span>2 control plane</span> ·
+        <span>diff 2 domains</span> · <span class="ok">✓ parity pass</span>
+      </button>
+
+      <div class="m-turn streaming-only">
+        <p class="caret">Checking the interaction result before finishing the task</p>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="composer-row settled-only">
+          <span class="co">8</span>
+          <textarea rows="2" aria-label="Message">Once I answer the checkbox, finish the task.</textarea>
+          <button type="button" class="btn primary">Send</button>
+        </div>
+        <p class="hint settled-only">Enter sends. Shift and Enter add a line.</p>
+        <div class="composer-row streaming-only">
+          <span class="co">8</span>
+          <textarea rows="2" aria-label="Message" placeholder="Steer the running turn…"></textarea>
+          <button type="button" class="btn primary">Steer</button>
+          <button type="button" class="btn">Stop</button>
+        </div>
+        <p class="hint streaming-only">Enter steers the running turn. Escape moves focus to Stop.</p>
+      </div>
+    </div>
+  </main>
+
+  <aside class="activity" aria-label="Mock activity stream">
+    <div class="act-head"><h3>Activity</h3><span class="xs muted-fg">every record emitted by the mock core</span></div>
+    <div class="filters">
+      <button type="button" class="fchip on">All</button>
+      <button type="button" class="fchip">Tools</button>
+      <button type="button" class="fchip">Authorization</button>
+      <button type="button" class="fchip">Control plane</button>
+      <button type="button" class="fchip">Diffs</button>
+      <button type="button" class="fchip">Parity</button>
+    </div>
+
+    <div class="turn-group">
+      <div class="tg-head">Session start <span class="sum">4 control-plane events · exposure 8 / 2 / 5</span></div>
+    </div>
+
+    <div class="turn-group">
+      <div class="tg-head">Turn 1 <span class="sum">1 tool · 1 allow · diff 0 · ✓ pass</span></div>
+    </div>
+
+    <div class="turn-group">
+      <div class="tg-head"><span class="co">9</span> Turn 2 <span class="sum">2 tools · 1 denied · 2 control plane · ✓ pass</span></div>
+      <div class="tg-body">
+        <div class="sect">
+          <h4>Exposed tools</h4>
+          <div class="row"><span class="badge always">Always · 8</span><span class="badge optional">Optional · 2</span><span class="badge cp">Control plane — no tool · 5</span></div>
+        </div>
+        <div class="sect">
+          <h4>Calls and results</h4>
+          <div class="row"><span class="mono">request_human_input</span><span class="badge allow">✓ committed</span></div>
+          <div class="row deny"><span class="mono">decide_approval</span><span class="badge deny">✕ denied</span></div>
+        </div>
+        <div class="sect">
+          <h4>Authorization</h4>
+          <div class="row"><span class="badge allow">✓ Allow</span><span class="mono">request_human_input</span><span class="xs muted-fg">always catalog</span></div>
+          <div class="row deny"><span class="badge deny">✕ Deny</span><span class="mono">decide_approval</span><span class="xs">missing <span class="mono">approval:decide</span></span></div>
+        </div>
+        <div class="sect">
+          <h4>Control plane</h4>
+          <div class="row"><span class="badge cp">Control plane</span><span class="xs">interaction registered · continuation wake scheduled (t+3)</span></div>
+        </div>
+        <div class="sect">
+          <h4>State diff — turn 2</h4>
+          <div class="diff-domain"><span>interactions</span><span class="xs muted-fg">1 added</span></div>
+          <div class="diff-field">interactions[itx-91].status: (none) → pending</div>
+          <div class="diff-domain"><span>tasks</span><span class="xs muted-fg">1 changed</span></div>
+          <div class="diff-field">tasks[MCK-102].status: in_progress → in_review</div>
+          <div class="diff-domain"><span>comments · documents · approvals · artifacts · blockers · workspace · budget · run</span><span class="unchanged">unchanged</span></div>
+        </div>
+        <div class="sect">
+          <h4>Parity — turn 2</h4>
+          <div class="verdict">✓ Pass · 3 assertions · 3 pass</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="turn-group streaming-only">
+      <div class="tg-head">Turn 3 <span class="sum">running — records append as the mock core emits them</span></div>
+    </div>
+
+    <div class="verdict session settled-only">✓ Session parity · Pass · 6 assertions · 6 pass · 0 forbidden operations invoked</div>
+  </aside>
+</div>
+
+<script>
+  // Deterministic mockup states for capture: ?view=activity, ?state=streaming
+  const params = new URLSearchParams(location.search);
+  if (params.get("view") === "activity") {
+    document.body.classList.add("view-activity");
+    document.getElementById("seg-chat").setAttribute("aria-checked", "false");
+    const seg = document.getElementById("seg-activity");
+    seg.setAttribute("aria-checked", "true");
+    seg.classList.add("on");
+  } else {
+    document.getElementById("seg-chat").classList.add("on");
+  }
+  if (params.get("state") === "streaming") document.body.classList.add("state-streaming");
+</script>
+</body>
+</html>
