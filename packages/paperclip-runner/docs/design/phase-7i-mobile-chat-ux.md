@@ -1,6 +1,8 @@
 # Phase 7I Interaction Map — Mobile Chat with Visible Mock Activity
 
-Status: **approved UX contract for 7I implementation** (PAP-16914, 2026-08-09).
+Status: **approved UX contract**, implemented in PAP-16916 (2026-08-09).
+Deviations taken during implementation are recorded in §11a; the §11 matrix is
+recorded by `pnpm run record:phase7i`.
 Owner: UXDesigner. Implementer: 7I implementation (PAP-16916), consuming the
 existing 7C mock adapter, 7D semantic catalog, and 7F explorer components.
 Companion records: [Phase 7 interaction map](phase-7-scenario-explorer-ux.md)
@@ -321,9 +323,9 @@ the correct active segment and no horizontal scrollbar.
 | --- | --- | --- | --- |
 | 1 | `chat-home` | `#/chat` | Picker + chat intro; no dead panels. |
 | 2 | `chat-session` | `#/chat/ix-checkbox-01?replay=fake` | Turn-0 control-plane strips; user/model/tool/control-plane grammars all distinguishable; turn activity strips with counts; composer in its mode-correct state; desktop shows the activity rail with the newest turn expanded. |
-| 3 | `chat-denied` | `#/chat/ap-mcp-gate-01?replay=fake&view=activity&turn=1` | Denied call on danger surface in both conversation and authorization section; missing claim + reason; Activity segment chip counting the deny (mobile). |
-| 4 | `chat-activity-diff` | `#/chat/ix-checkbox-01?replay=fake&view=activity&turn=2` | Turn group with exposure counts, calls, authorization, control-plane rows, per-turn state diff (changed vs unchanged domains), reconciliation/wake row, turn parity verdict. |
-| 5 | `chat-streaming` | live route, staged | Streaming model card, composer `active-turn` (Steer/Stop), pending activity group header, disabled session controls with reasons. Exempt from pixel determinism; capture once per viewport. |
+| 3 | `chat-denied` | `#/chat/ap-mcp-gate-01?replay=fake&view=activity&turn=2` | Denied call on danger surface in both conversation and authorization section; missing claim + reason; Activity segment chip counting the deny (mobile). |
+| 4 | `chat-activity-diff` | `#/chat/ix-checkbox-01?replay=fake&view=activity&turn=3` | Turn group with exposure counts, calls, authorization, control-plane rows, per-turn state diff (changed vs unchanged domains), reconciliation/wake row, turn parity verdict. |
+| 5 | `chat-streaming` | `#/chat/ap-mcp-gate-01?replay=fake&stage=streaming` | Streaming model card, composer `active-turn` (Steer/Stop), pending activity group header, disabled session controls with reasons. Exempt from pixel determinism; capture once per viewport. |
 
 The scripted fixtures for `ix-checkbox-01` and `ap-mcp-gate-01` chat
 sessions are new 7I fixtures (the 7F fake-agent plans are single-shot, not
@@ -333,6 +335,59 @@ grouping is actually exercised.
 Acceptance procedure: UXDesigner reviews all ten images against this matrix
 before 7I implementation is accepted; deviations are fixed or recorded as
 revisions in this document — silent divergence fails the gate (7F §9 rule).
+
+## 11a. Revisions recorded during 7I implementation (PAP-16916)
+
+Silent divergence fails the §11 gate, so every deviation the implementation
+made from §1–§11 is recorded here rather than left for a reviewer to discover.
+
+1. **Mode names: `Scripted (deterministic)` / `Codex (bounded)`, and the
+   composer stays usable in scripted mode.** §3 said replay mode renders the
+   composer `disconnected` because "free-text input is a live-driver
+   capability". With the provider relay unavailable in the package-local demo
+   (the same 7F §3.1 condition), that rule would have made the phase's own
+   acceptance — "a user can complete successful and denied mock Paperclip
+   interactions from chat" — unreachable. Scripted mode therefore accepts a
+   prompt and drives the next recorded turn against the live mock core, and the
+   composer note says exactly that, with the number of scripted turns left. The
+   board is never told a model wrote the reply.
+2. **`replay=fake` plays once per session, not per route.** An explicit
+   **Reset session** on a `replay=fake` route returns to the seeded turn 0 and
+   stays there; the route's auto-play applies to the first session only.
+   Otherwise reset would be undone in the same frame by the route replaying,
+   which is the opposite of what §2 promises.
+3. **`stage=streaming` added to §9.** §11 shot 5 said "live route, staged".
+   Staging by hand is a race, so the route parameter holds the last scripted
+   turn mid-reveal and the shell reports `data-chat-state="streaming"` — a
+   stable, linkable wait target. `pending` covers the mid-reveal transition.
+4. **`data-chat-state` lives on the shell, not only on `chat-shell`.** On the
+   mobile Activity segment the chat column is hidden, so a wait target that
+   only existed inside it was unreachable exactly where the evidence is. Both
+   elements now carry it.
+5. **Tool cards reuse the 7F transcript disclosure rather than the SDK
+   `tool-item`.** `ToolItem` requires a reducer `SessionItemSnapshot`, which a
+   semantic call is not. The 7F rendering already follows the same
+   `pcr-disclosure` grammar `ToolItem` itself uses, and reusing it keeps one
+   description of a semantic call across both surfaces. `Message`, `Composer`,
+   `Dialog`, `Badge`, and `Banner` are used as specified.
+6. **Turn 0 reports `Pass`, not a blank verdict.** The seed makes exactly one
+   checkable claim — control-plane work with no agent tool — and reports a
+   verdict over that claim alone. Turns that did no agent work and made no
+   control-plane claim report `Not run`; no turn ever reports a verdict for
+   work nobody did.
+7. **A third authored turn for `ix-checkbox-01`.** §11 shot 4 asks for a
+   wake/reconciliation row, but the mock core schedules the continuation wake
+   when an interaction is **resolved**, not when it is requested. Turn 3 is the
+   board answering its own checkbox — a control-plane-owned action with no
+   agent tool — which is a better demonstration of the phase's point than a
+   fabricated wake would have been. Shot 4's route is therefore `turn=3`.
+8. **Filtering the picker no longer clears the selected case on the chat
+   surface.** Narrowing the rail must not end a live session; the explorer
+   keeps its existing behaviour.
+9. **Evidence captures neutralise the sticky composer.** A full-page capture
+   stretches the viewport to the content height, which leaves a sticky element
+   floating mid-document. Pinning is proven by a browser test that scrolls the
+   transcript and asserts the composer is still on screen.
 
 ## 12. Out of scope / rejected
 

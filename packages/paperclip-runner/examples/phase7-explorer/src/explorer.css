@@ -572,6 +572,267 @@ body {
   position: static;
 }
 
+
+/* Phase 7I — chat surface (7I interaction map §1-§5) ------------------ *
+ *
+ * The activity rail is wider than the 7F inspector because it carries the
+ * per-turn evidence rather than a tab of it. Everything else is the same
+ * shell, the same tokens, and the same two-channel grammar.
+ */
+
+.pcr7-shell[data-surface="chat"] .pcr7-columns {
+  grid-template-columns: var(--pcr-rail-width) minmax(0, 1fr) var(--pcr-activity-width);
+}
+
+.pcr7-surface-nav {
+  display: flex;
+  gap: var(--pcr-space-2);
+  flex-wrap: wrap;
+}
+
+.pcr7-chat {
+  display: grid;
+  gap: var(--pcr-space-3);
+  align-content: start;
+  min-width: 0;
+}
+
+.pcr7-session-header {
+  display: grid;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-session-header .pcr7-run-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-session-header .pcr7-run-controls > .pcr7-muted {
+  flex-basis: 100%;
+}
+
+.pcr7-chat-scroll {
+  min-width: 0;
+}
+
+.pcr7-chat-conversation,
+.pcr7-chat-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--pcr-space-3);
+  min-width: 0;
+}
+
+.pcr7-chat-turn {
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-chat-entry {
+  min-width: 0;
+}
+
+/*
+ * The board's own words are the only right-aligned thing on the surface, so a
+ * stranger can find "what did I ask" without reading a single label.
+ */
+.pcr7-user-message {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pcr7-user-message p {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-accent-surface);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  max-width: 85%;
+  overflow-wrap: anywhere;
+}
+
+.pcr7-chat-seed-label,
+.pcr7-activity-prompt {
+  margin: 0;
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.pcr7-turn-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pcr-space-2);
+  width: 100%;
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-muted);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pcr7-turn-strip[data-active="true"] {
+  border-color: var(--pcr-accent);
+}
+
+.pcr7-turn-strip-label {
+  font-weight: var(--pcr-weight-semibold);
+  font-size: var(--pcr-font-size-sm);
+}
+
+.pcr7-turn-strip-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-turn-count {
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-turn-count[data-tone="danger"] {
+  color: var(--pcr-danger);
+}
+
+.pcr7-turn-pending {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-surface-raised);
+  border: 0.0625rem dashed var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-streaming-caret {
+  display: inline-block;
+  width: var(--pcr-space-2);
+  height: var(--pcr-space-3);
+  margin-right: var(--pcr-space-2);
+  background: var(--pcr-accent);
+  vertical-align: middle;
+  animation: pcr7-caret var(--pcr-motion-medium) steps(2, start) infinite alternate;
+}
+
+@keyframes pcr7-caret {
+  to {
+    opacity: 0.2;
+  }
+}
+
+.pcr7-chat-failure {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-danger-surface);
+  border: 0.0625rem solid var(--pcr-danger);
+  border-radius: var(--pcr-radius-md);
+  color: var(--pcr-danger);
+  font-size: var(--pcr-font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.pcr7-chat-composer {
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-segment-chip {
+  color: var(--pcr-danger);
+}
+
+/* Activity stream ---------------------------------------------------- */
+
+.pcr7-activity {
+  display: grid;
+  gap: var(--pcr-space-3);
+  min-width: 0;
+}
+
+.pcr7-activity-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-activity-group {
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  background: var(--pcr-surface-raised);
+  min-width: 0;
+}
+
+.pcr7-activity-group h3 {
+  margin: 0;
+}
+
+.pcr7-activity-group-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pcr-space-1);
+  width: 100%;
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--pcr-weight-semibold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pcr7-activity-group-title {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  font-size: var(--pcr-font-size-sm);
+}
+
+.pcr7-activity-group-body {
+  display: grid;
+  gap: var(--pcr-space-3);
+  padding: 0 var(--pcr-space-3) var(--pcr-space-3);
+  min-width: 0;
+}
+
+.pcr7-activity-section {
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-activity-calls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-activity-verdict {
+  margin: 0;
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-diff-domain {
+  display: grid;
+  gap: var(--pcr-space-1);
+  min-width: 0;
+}
+
 /* Responsive: one content-driven breakpoint (UX map §6) -------------- */
 
 @media (max-width: 64rem) {
@@ -595,8 +856,31 @@ body {
 
   .pcr7-shell[data-segment="scenarios"] .pcr7-rail,
   .pcr7-shell[data-segment="run"] .pcr7-center,
-  .pcr7-shell[data-segment="inspect"] .pcr7-inspector {
+  .pcr7-shell[data-segment="chat"] .pcr7-center,
+  .pcr7-shell[data-segment="inspect"] .pcr7-inspector,
+  .pcr7-shell[data-segment="activity"] .pcr7-inspector {
     display: grid;
+  }
+
+  /*
+   * The composer sits in the thumb zone on the Chat segment. It is sticky
+   * rather than fixed so it never covers the last turn strip when the
+   * conversation is short.
+   */
+  .pcr7-shell[data-segment="chat"] .pcr7-chat-composer {
+    position: sticky;
+    bottom: 0;
+    padding: var(--pcr-space-2) 0;
+    background: var(--pcr-background);
+    z-index: var(--pcr-z-banner);
+  }
+
+  .pcr7-shell[data-surface="chat"] .pcr7-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pcr7-user-message p {
+    max-width: 100%;
   }
 
   .pcr7-expected-observed {

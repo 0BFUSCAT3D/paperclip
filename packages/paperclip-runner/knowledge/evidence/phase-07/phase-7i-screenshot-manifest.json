@@ -1,0 +1,47 @@
+{
+  "schema": "paperclip.phase7.screenshot-manifest.v1",
+  "source": "docs/design/phase-7i-mobile-chat-ux.md §11",
+  "viewports": [
+    "1440x900",
+    "390x844"
+  ],
+  "shots": [
+    {
+      "slug": "chat-home",
+      "route": "#/chat",
+      "state": null
+    },
+    {
+      "slug": "chat-session",
+      "route": "#/chat/ix-checkbox-01?replay=fake",
+      "state": "settled"
+    },
+    {
+      "slug": "chat-denied",
+      "route": "#/chat/ap-mcp-gate-01?replay=fake&view=activity&turn=2",
+      "state": "settled"
+    },
+    {
+      "slug": "chat-activity-diff",
+      "route": "#/chat/ix-checkbox-01?replay=fake&view=activity&turn=3",
+      "state": "settled"
+    },
+    {
+      "slug": "chat-streaming",
+      "route": "#/chat/ap-mcp-gate-01?replay=fake&stage=streaming",
+      "state": "streaming"
+    }
+  ],
+  "files": [
+    "phase-7i-chat-activity-diff-1440x900.png",
+    "phase-7i-chat-activity-diff-390x844.png",
+    "phase-7i-chat-denied-1440x900.png",
+    "phase-7i-chat-denied-390x844.png",
+    "phase-7i-chat-home-1440x900.png",
+    "phase-7i-chat-home-390x844.png",
+    "phase-7i-chat-session-1440x900.png",
+    "phase-7i-chat-session-390x844.png",
+    "phase-7i-chat-streaming-1440x900.png",
+    "phase-7i-chat-streaming-390x844.png"
+  ]
+}

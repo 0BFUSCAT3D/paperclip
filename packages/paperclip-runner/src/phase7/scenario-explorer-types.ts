@@ -90,9 +90,21 @@ interface Phase7TimelineBase {
   sequence: number;
   /** Fixture-clock instant. Never a wall clock — see UX map §7. */
   at: string;
+  /**
+   * Turn this entry belongs to. Turn 0 is the control-plane session seed
+   * (checkout, wake routing, initial exposure) that exists before any agent
+   * or user input; turns count from 1 in artifact order. The UI groups on
+   * this number and never derives turn boundaries itself (7I map §10).
+   */
+  turn: number;
 }
 
 export type Phase7TimelineEntry =
+  | (Phase7TimelineBase & {
+      kind: "user_message";
+      channel: "user";
+      text: string;
+    })
   | (Phase7TimelineBase & {
       kind: "agent_message";
       channel: "agent";
@@ -261,6 +273,60 @@ export interface Phase7RunArtifact {
   parity: Phase7ParityReport;
   /** Harness failure, if the scenario could not be executed to completion. */
   failure: { message: string } | null;
+}
+
+/**
+ * Phase 7I per-turn record.
+ *
+ * The chat surface groups evidence by turn, so every fact it groups has to be
+ * produced here rather than derived in a component: the runtime owns turn
+ * boundaries, per-turn exposure, the per-turn diff, and the per-turn verdict
+ * (7I interaction map §10, "data contract extension").
+ */
+export interface Phase7ChatTurn {
+  /** 0 is the control-plane session seed; user turns count from 1. */
+  turn: number;
+  /** The user text that opened the turn; null for the seed turn. */
+  prompt: string | null;
+  status: "running" | "settled" | "failed";
+  /** Sequence range of this turn's timeline entries, inclusive. */
+  firstSequence: number;
+  lastSequence: number;
+  exposure: Phase7Exposure;
+  authorizationRecords: Phase7AuthorizationRecord[];
+  diff: Phase7StateDiff;
+  /**
+   * Wake scheduling, blocker resolution, and terminal reconciliation recorded
+   * during the turn. Always a subset of the turn's control-plane entries.
+   */
+  reconciliationEvents: Array<{
+    sequence: number;
+    action: string;
+    summary: string;
+    stateRevision: number;
+  }>;
+  parity: Phase7ParityReport;
+  counts: {
+    calls: number;
+    denied: number;
+    controlPlane: number;
+    changedDomains: number;
+  };
+  failure: { message: string } | null;
+}
+
+export type Phase7ChatSessionStatus = "idle" | "running" | "settled" | "failed";
+
+/**
+ * A chat session artifact is a run artifact plus its turn decomposition. Every
+ * session-level record keeps its 7F meaning so the existing explorer panels
+ * render it unchanged.
+ */
+export interface Phase7ChatSessionArtifact extends Phase7RunArtifact {
+  turns: Phase7ChatTurn[];
+  status: Phase7ChatSessionStatus;
+  /** Scripted turns still available to send, for the replay/primed hints. */
+  remainingScriptedTurns: number;
 }
 
 export interface Phase7SnapshotPair {

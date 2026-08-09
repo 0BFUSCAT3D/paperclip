@@ -46,6 +46,16 @@ export const OPERATION_RESULT_REF = (ordinal: number): string => `$operation-res
 
 export const OPERATION_RESULT_REF_PATTERN = /^\$operation-result:(\d+)$/;
 
+/**
+ * Placeholder for an interaction the conversation itself opened. The Phase 7I
+ * chat needs it so the board can answer, in a later turn, the very interaction
+ * an earlier turn created — without a script ever naming a generated id.
+ */
+export const CREATED_INTERACTION_REF = (ordinal: number): string =>
+  `$created-interaction:${ordinal}`;
+
+export const CREATED_INTERACTION_REF_PATTERN = /^\$created-interaction:(\d+)$/;
+
 export interface Phase7ScenarioPlan {
   steps: Phase7PlanStep[];
   /**

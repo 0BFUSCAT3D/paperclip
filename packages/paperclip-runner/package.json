@@ -73,6 +73,7 @@
     "record:phase4b": "pnpm run build:typescript && node scripts/record-phase4b-evidence.mjs",
     "record:phase4": "pnpm run build:typescript && node scripts/record-phase4-evidence.mjs",
     "record:phase7": "node scripts/record-phase7-evidence.mjs",
+    "record:phase7i": "node scripts/record-phase7i-evidence.mjs",
     "diagnose:phase3": "pnpm run trace:phase3",
     "record:phase3": "pnpm run build:typescript && pnpm run build:phase2-binaries && node scripts/record-phase3-evidence.mjs",
     "record:phase3:lost-ack": "pnpm run trace:phase3 -- --fault lost-ack --output knowledge/evidence/phase-03-lost-ack.json",

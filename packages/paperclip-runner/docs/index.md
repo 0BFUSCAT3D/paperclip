@@ -15,6 +15,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 5: run the SDK console and mini consumer](tutorials/phase-05-sdk-console.md) — exercise the versioned public browser/React surface in two independent consumers against fake and real drivers.
 - [Phase 6: run the thin Paperclip adapter](tutorials/phase-06-thin-paperclip-adapter.md) — prove mock/real conformance, run one feature-flagged local task, inspect replay/finalization, disable the kill switch, and verify legacy fallback.
 - [Phase 7: explore the capability contract and scenario explorer](tutorials/phase-07-scenario-explorer.md) — prove the 106-case conformance suite, open the read-only browser explorer over the mock control plane, and run the focused verification set, all from a clean checkout with no Paperclip service or external eval repository.
+- [Phase 7I: chat with the mock control plane](tutorials/phase-07i-scenario-chat.md) — send prompts to a Phase 7 scenario and watch the mock Paperclip activity for every turn: exposure, typed calls, denials, control-plane-owned actions, state diffs, wakes, and per-turn parity.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -35,9 +36,11 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 7 authorization and exposure](phase-07-authorization-and-exposure.md)
 - [Phase 7 eval-derived conformance](phase-07-eval-conformance.md)
 - [Phase 7 browser scenario explorer](phase-07-scenario-explorer.md)
+- [Phase 7I interactive scenario chat](phase-07i-scenario-chat.md)
 - [Phase 7 future binding boundary (Phase 8 / ACPX)](phase-07-future-binding-boundary.md)
 - [Phase 7 verification commands](phase-07-verification-commands.md)
 - [Phase 7 scenario explorer UX interaction map](design/phase-7-scenario-explorer-ux.md)
+- [Phase 7I mobile chat UX interaction map](design/phase-7i-mobile-chat-ux.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)

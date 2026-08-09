@@ -3,6 +3,8 @@ import * as React from "react";
 import { Tabs, type TabDefinition } from "@paperclipai/paperclip-runner/react";
 import {
   phase7RunScenario,
+  Phase7ChatSession,
+  type Phase7ChatSessionArtifact,
   type Phase7EvalSuiteLookup,
   type Phase7ParityStatus,
   type Phase7RunArtifact,
@@ -21,11 +23,18 @@ import { buildFacets, ScenarioPicker, type Phase7PickerFacets } from "./componen
 import { RunHeader } from "./components/run-header.js";
 import { ScenarioTranscript } from "./components/scenario-transcript.js";
 import { EmptyState, Mono } from "./components/primitives.js";
+import { ChatSurface, type Phase7ChatState } from "./components/chat-surface.js";
+import {
+  ActivityEmptyState,
+  ActivityStream,
+  activityDenialCount,
+} from "./components/chat-activity-stream.js";
 import { DISPOSITION_LABEL } from "./labels.js";
 import {
   EMPTY_FILTERS,
   parsePhase7Route,
   serializePhase7Route,
+  type Phase7ActivityFilter,
   type Phase7Filters,
   type Phase7InspectorView,
   type Phase7Route,
@@ -47,10 +56,28 @@ export interface ExplorerAppProps {
   initialRoute?: Phase7Route;
   /** Test seam: run scenarios synchronously through an injected runner. */
   runScenario?: typeof phase7RunScenario;
+  /** Test seam: open chat sessions through an injected session factory. */
+  openSession?: typeof Phase7ChatSession.open;
 }
 
 type RunState = "idle" | "pending" | "settled" | "failed";
-type Segment = "scenarios" | "run" | "inspect";
+/**
+ * Mobile segments. The explorer and the chat are two surfaces in one shell, so
+ * they share the segmented-control mechanism but never its labels: "Run" and
+ * "Chat" are different jobs and must not look like the same tab renamed.
+ */
+type Segment = "scenarios" | "run" | "inspect" | "chat" | "activity";
+
+const EXPLORER_SEGMENTS = ["scenarios", "run", "inspect"] as const;
+const CHAT_SEGMENTS = ["scenarios", "chat", "activity"] as const;
+
+const SEGMENT_LABEL: Record<Segment, string> = {
+  scenarios: "Scenarios",
+  run: "Run",
+  inspect: "Inspect",
+  chat: "Chat",
+  activity: "Activity",
+};
 
 const INSPECTOR_TABS: readonly TabDefinition[] = [
   { id: "context", label: "Context" },
@@ -65,6 +92,7 @@ export function ExplorerApp({
   codexAvailable = false,
   initialRoute,
   runScenario = phase7RunScenario,
+  openSession,
 }: ExplorerAppProps) {
   const [route, setRoute] = React.useState<Phase7Route>(
     () => initialRoute ?? parsePhase7Route(typeof window === "undefined" ? "#/" : window.location.hash),
@@ -72,12 +100,13 @@ export function ExplorerApp({
   const [artifacts, setArtifacts] = React.useState<Record<string, Phase7RunArtifact>>({});
   const [runState, setRunState] = React.useState<RunState>("idle");
   const [mode, setMode] = React.useState<"fake" | "codex">(route.run ?? "fake");
-  const [segment, setSegment] = React.useState<Segment>(() =>
-    route.caseId === null ? "scenarios" : route.view === "transcript" ? "run" : "inspect",
-  );
+  const [segment, setSegment] = React.useState<Segment>(() => defaultSegment(route));
   const [replayPosition, setReplayPosition] = React.useState(0);
   const [highlight, setHighlight] = React.useState<number | null>(null);
   const [runFocusRequest, setRunFocusRequest] = React.useState(0);
+  const [chatArtifact, setChatArtifact] = React.useState<Phase7ChatSessionArtifact | null>(null);
+  const [chatState, setChatState] = React.useState<Phase7ChatState>("seeding");
+  const [stripFocusRequest, setStripFocusRequest] = React.useState({ turn: 0, nonce: 0 });
   const shellRef = React.useRef<HTMLDivElement>(null);
   const runHeaderRef = React.useRef<HTMLElement>(null);
 
@@ -102,13 +131,22 @@ export function ExplorerApp({
   // button) has to move the mobile segment too, or the route says "parity"
   // while the screen still shows the picker.
   React.useEffect(() => {
-    setSegment(route.caseId === null ? "scenarios" : route.view === "transcript" ? "run" : "inspect");
-  }, [route.caseId, route.view]);
+    setSegment(defaultSegment(route));
+  }, [route.caseId, route.chatView, route.surface, route.view]);
 
   React.useEffect(() => {
     if (runFocusRequest === 0 || selected === null) return;
     runHeaderRef.current?.focus();
   }, [runFocusRequest, selected]);
+
+  React.useEffect(() => {
+    if (stripFocusRequest.nonce === 0) return;
+    document
+      .querySelector<HTMLButtonElement>(
+        `[data-testid="turn-activity-strip-${stripFocusRequest.turn}"]`,
+      )
+      ?.focus();
+  }, [stripFocusRequest]);
 
   React.useEffect(() => {
     const cycleRegions = (event: KeyboardEvent): void => {
@@ -207,22 +245,67 @@ export function ExplorerApp({
   }
 
   function setFilters(patch: Partial<Phase7Filters>): void {
-    navigate({ ...route, caseId: null, filters: { ...route.filters, ...patch } });
+    // Narrowing the picker must not end a live chat session, so the chat
+    // surface keeps its case while the explorer still returns to the corpus.
+    const caseId = route.surface === "chat" ? route.caseId : null;
+    navigate({ ...route, caseId, filters: { ...route.filters, ...patch } });
     setSegment("scenarios");
   }
+
+  function setChatView(next: "chat" | "activity"): void {
+    navigate({ ...route, chatView: next });
+  }
+
+  function openTurn(turn: number): void {
+    navigate({ ...route, chatView: "activity", turn });
+    setSegment("activity");
+  }
+
+  function backToChat(turn: number): void {
+    navigate({ ...route, chatView: "chat", turn });
+    setSegment("chat");
+    // Focus after the commit: on mobile the strip is still hidden at this point.
+    setStripFocusRequest((request) => ({ turn, nonce: request.nonce + 1 }));
+  }
+
+  const chat = route.surface === "chat";
+  const denials = chatArtifact === null ? 0 : activityDenialCount(chatArtifact);
 
   return (
     <div
       ref={shellRef}
       className="pcr-root pcr7-shell"
       data-run-state={settled}
+      data-surface={route.surface}
+      data-chat-state={chat && selected !== null ? chatState : undefined}
       data-segment={segment}
       data-testid="explorer-shell"
       aria-keyshortcuts="F6 Control+."
     >
       <a className="pcr7-skip-link" href="#run-view">
-        Skip to run view
+        Skip to {chat ? "the chat" : "run view"}
       </a>
+
+      <nav className="pcr7-surface-nav" aria-label="Surfaces" data-testid="surface-nav">
+        <button
+          type="button"
+          className="pcr7-chip"
+          aria-pressed={!chat}
+          data-testid="surface-explorer"
+          onClick={() => navigate({ ...route, surface: "explorer" })}
+        >
+          Scenario explorer
+        </button>
+        <button
+          type="button"
+          className="pcr7-chip"
+          aria-pressed={chat}
+          data-testid="surface-chat"
+          onClick={() => navigate({ ...route, surface: "chat" })}
+        >
+          Scenario chat
+        </button>
+      </nav>
       <p className="pcr7-visually-hidden">
         Region shortcut: press F6, or Control+Period when the browser reserves F6, to cycle the
         scenario picker, run view, and inspector.
@@ -236,18 +319,27 @@ export function ExplorerApp({
       <div
         className="pcr7-segmented pcr7-segmented--mobile"
         role="radiogroup"
-        aria-label="Explorer sections"
+        aria-label={chat ? "Chat sections" : "Explorer sections"}
       >
-        {(["scenarios", "run", "inspect"] as const).map((value) => (
+        {(chat ? CHAT_SEGMENTS : EXPLORER_SEGMENTS).map((value) => (
           <button
             key={value}
             type="button"
             role="radio"
             aria-checked={segment === value}
             data-testid={`segment-${value}`}
-            onClick={() => setSegment(value)}
+            onClick={() => {
+              setSegment(value);
+              if (chat && (value === "chat" || value === "activity")) setChatView(value);
+            }}
           >
-            {value === "scenarios" ? "Scenarios" : value === "run" ? "Run" : "Inspect"}
+            {SEGMENT_LABEL[value]}
+            {chat && value === "activity" && denials > 0 ? (
+              <span className="pcr7-segment-chip" data-testid="segment-activity-denials">
+                {" "}
+                · {denials} deny
+              </span>
+            ) : null}
           </button>
         ))}
       </div>
@@ -266,7 +358,12 @@ export function ExplorerApp({
           onCommitSelection={commitCase}
         />
 
-        <main className="pcr7-center" id="run-view" aria-label="Scenario run" tabIndex={-1}>
+        <main
+          className="pcr7-center"
+          id="run-view"
+          aria-label={chat ? "Scenario chat" : "Scenario run"}
+          tabIndex={-1}
+        >
           {route.caseId !== null && selected === null ? (
             <UnknownScenarioCard
               caseId={route.caseId}
@@ -276,7 +373,22 @@ export function ExplorerApp({
               }}
             />
           ) : selected === null ? (
-            <IntroCard index={index} onSelect={selectCase} />
+            <IntroCard index={index} chat={chat} onSelect={selectCase} />
+          ) : chat ? (
+            <ChatSurface
+              entry={selected}
+              autoReplay={route.replay === "fake"}
+              stageStreaming={route.stage === "streaming"}
+              codexAvailable={codexAvailable}
+              activeTurn={route.turn}
+              onOpenTurn={openTurn}
+              onOpenParity={() => openTurn(chatArtifact?.turns.at(-1)?.turn ?? 0)}
+              onArtifactChange={setChatArtifact}
+              onStateChange={setChatState}
+              onCancelScenarioSwitch={(entryId) => navigate({ ...route, caseId: entryId })}
+              openSession={openSession}
+              headerRef={runHeaderRef}
+            />
           ) : (
             <>
               <RunHeader
@@ -329,8 +441,28 @@ export function ExplorerApp({
           )}
         </main>
 
-        <aside className="pcr7-inspector" aria-label="Scenario inspector" tabIndex={-1}>
-          {selected === null ? (
+        <aside
+          className="pcr7-inspector"
+          aria-label={chat ? "Turn activity" : "Scenario inspector"}
+          tabIndex={-1}
+        >
+          {chat ? (
+            selected === null || chatArtifact === null ? (
+              <ActivityEmptyState />
+            ) : (
+              <ActivityStream
+                artifact={chatArtifact}
+                filter={route.activityFilter}
+                onFilterChange={(filter: Phase7ActivityFilter) =>
+                  navigate({ ...route, activityFilter: filter })
+                }
+                openTurn={route.turn}
+                onOpenTurn={openTurn}
+                onBackToChat={backToChat}
+                showBackToChat={segment === "activity"}
+              />
+            )
+          ) : selected === null ? (
             <CorpusSummary index={index} />
           ) : (
             <InspectorTabs
@@ -406,9 +538,11 @@ function UnknownScenarioCard({ caseId, onBack }: { caseId: string; onBack: () =>
 
 function IntroCard({
   index,
+  chat,
   onSelect,
 }: {
   index: Phase7ScenarioIndex;
+  chat: boolean;
   onSelect: (id: string) => void;
 }) {
   const examples = ["hb-scoped-wake-01", "ap-mcp-gate-01", "rs-question-only-01"].filter((id) =>
@@ -416,14 +550,20 @@ function IntroCard({
   );
   return (
     <section className="pcr7-intro" data-testid="explorer-intro">
-      <p className="pcr-eyebrow">Phase 7 scenario explorer — mock control plane</p>
+      <p className="pcr-eyebrow">
+        Phase 7 scenario {chat ? "chat" : "explorer"} — mock control plane
+      </p>
       <h1>{index.entries.length} scenarios across {index.groups.length} eval groups</h1>
       <p>
-        Every scenario runs against the deterministic mock control plane in this page. The explorer
-        renders records the runtime produced: it holds no credential, decides no policy, and owns no
-        control-plane state.
+        Every scenario runs against the deterministic mock control plane in this page. The
+        {chat ? " chat" : " explorer"} renders records the runtime produced: it holds no credential,
+        decides no policy, and owns no control-plane state.
       </p>
-      <p className="pcr7-label">Pick a scenario from the rail, or start here</p>
+      <p className="pcr7-label">
+        {chat
+          ? "Pick a scenario to start chatting, or start here"
+          : "Pick a scenario from the rail, or start here"}
+      </p>
       <ul className="pcr7-exposure" data-testid="intro-examples">
         {examples.map((id) => (
           <li key={id}>
@@ -477,6 +617,17 @@ function CorpusSummary({ index }: { index: Phase7ScenarioIndex }) {
       <EmptyState title="Pick a scenario to inspect." />
     </div>
   );
+}
+
+/**
+ * Which region a route should land on when the viewport only shows one. A deep
+ * link that says "activity" has to move the segment too, or the route claims
+ * one thing while the screen shows another.
+ */
+function defaultSegment(route: Phase7Route): Segment {
+  if (route.caseId === null) return "scenarios";
+  if (route.surface === "chat") return route.chatView === "activity" ? "activity" : "chat";
+  return route.view === "transcript" ? "run" : "inspect";
 }
 
 function findEntry(index: Phase7ScenarioIndex, id: string): Phase7ScenarioIndexEntry | null {

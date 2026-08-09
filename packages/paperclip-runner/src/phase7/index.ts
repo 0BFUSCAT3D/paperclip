@@ -28,10 +28,21 @@ export {
   type Phase7ScenarioPlan,
 } from "./scenario-plan.js";
 export { phase7RunScenario, type Phase7RunScenarioOptions } from "./scenario-runner.js";
+export {
+  phase7ChatScript,
+  type Phase7ChatScript,
+  type Phase7ChatScriptTurn,
+} from "./chat-script.js";
+export {
+  phase7ReplayChatSession,
+  Phase7ChatSession,
+  type Phase7ChatSessionOptions,
+} from "./chat-session.js";
 export { phase7StateDiff } from "./state-diff.js";
 export {
   phase7EvalSuiteLookup,
   phase7ScenarioParity,
+  phase7TurnParity,
   type Phase7EvalSuiteCaseResult,
   type Phase7EvalSuiteLookup,
 } from "./scenario-parity.js";

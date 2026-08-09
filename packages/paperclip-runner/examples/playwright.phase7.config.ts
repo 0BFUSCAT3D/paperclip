@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "phase7-explorer.spec.ts",
+  testMatch: /phase7-(explorer|chat)\.spec\.ts/,
   fullyParallel: false,
   workers: 1,
   timeout: 120_000,

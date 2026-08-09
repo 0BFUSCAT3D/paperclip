@@ -8,6 +8,28 @@
 
 export type Phase7InspectorView = "transcript" | "context" | "authorization" | "diff" | "parity";
 
+/** The explorer reviews a corpus; the chat drives one session. Same shell. */
+export type Phase7Surface = "explorer" | "chat";
+
+export type Phase7ChatView = "chat" | "activity";
+
+export type Phase7ActivityFilter =
+  | "all"
+  | "tools"
+  | "authorization"
+  | "control"
+  | "diff"
+  | "parity";
+
+export const PHASE7_ACTIVITY_FILTERS: readonly Phase7ActivityFilter[] = [
+  "all",
+  "tools",
+  "authorization",
+  "control",
+  "diff",
+  "parity",
+];
+
 export const PHASE7_INSPECTOR_VIEWS: readonly Phase7InspectorView[] = [
   "transcript",
   "context",
@@ -26,9 +48,21 @@ export interface Phase7Filters {
 }
 
 export interface Phase7Route {
+  surface: Phase7Surface;
   caseId: string | null;
   run: "fake" | "codex" | null;
+  /** `replay=fake` auto-plays the scripted session for screenshot routes. */
+  replay: "fake" | null;
   view: Phase7InspectorView;
+  chatView: Phase7ChatView;
+  /** Anchors and expands one turn group in the activity stream. */
+  turn: number | null;
+  activityFilter: Phase7ActivityFilter;
+  /**
+   * Holds the last scripted turn mid-stream so the streaming state can be
+   * captured deterministically instead of raced by hand.
+   */
+  stage: "streaming" | null;
   filters: Phase7Filters;
 }
 
@@ -46,13 +80,23 @@ export function parsePhase7Route(hash: string): Phase7Route {
   const [pathPart = "", queryPart = ""] = raw.split("?", 2);
   const params = new URLSearchParams(queryPart);
   const segments = pathPart.split("/").filter((segment) => segment.length > 0);
-  const caseId = segments[0] === "case" && segments[1] !== undefined ? decodeURIComponent(segments[1]) : null;
+  const surface: Phase7Surface = segments[0] === "chat" ? "chat" : "explorer";
+  const caseSegment = surface === "chat" ? segments[1] : segments[0] === "case" ? segments[1] : undefined;
+  const caseId = caseSegment === undefined ? null : decodeURIComponent(caseSegment);
   const run = params.get("run");
   const view = params.get("view");
+  const turn = Number.parseInt(params.get("turn") ?? "", 10);
+  const filter = params.get("filter");
   return {
+    surface,
     caseId,
     run: run === "fake" || run === "codex" ? run : null,
+    replay: params.get("replay") === "fake" ? "fake" : null,
     view: isInspectorView(view) ? view : "transcript",
+    chatView: view === "activity" ? "activity" : "chat",
+    turn: Number.isInteger(turn) && turn >= 0 ? turn : null,
+    activityFilter: isActivityFilter(filter) ? filter : "all",
+    stage: params.get("stage") === "streaming" ? "streaming" : null,
     filters: {
       group: params.get("group"),
       disposition: params.get("disposition"),
@@ -66,6 +110,7 @@ export function parsePhase7Route(hash: string): Phase7Route {
 
 export function serializePhase7Route(route: Phase7Route): string {
   const params = new URLSearchParams();
+  if (route.surface === "chat") return serializeChatRoute(route, params);
   if (route.run !== null) params.set("run", route.run);
   if (route.view !== "transcript") params.set("view", route.view);
   if (route.caseId === null) {
@@ -114,6 +159,21 @@ export function hasActiveFilters(filters: Phase7Filters): boolean {
   return activeFilterChips(filters).length > 0;
 }
 
+function serializeChatRoute(route: Phase7Route, params: URLSearchParams): string {
+  if (route.replay !== null) params.set("replay", route.replay);
+  if (route.chatView !== "chat") params.set("view", route.chatView);
+  if (route.turn !== null) params.set("turn", String(route.turn));
+  if (route.activityFilter !== "all") params.set("filter", route.activityFilter);
+  if (route.stage !== null) params.set("stage", route.stage);
+  const path = route.caseId === null ? "/chat" : `/chat/${encodeURIComponent(route.caseId)}`;
+  const query = params.toString();
+  return `#${path}${query.length > 0 ? `?${query}` : ""}`;
+}
+
 function isInspectorView(value: string | null): value is Phase7InspectorView {
   return value !== null && (PHASE7_INSPECTOR_VIEWS as readonly string[]).includes(value);
+}
+
+function isActivityFilter(value: string | null): value is Phase7ActivityFilter {
+  return value !== null && (PHASE7_ACTIVITY_FILTERS as readonly string[]).includes(value);
 }

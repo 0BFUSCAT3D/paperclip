@@ -43,8 +43,20 @@ export function ScenarioTranscript({
   );
 }
 
-function TimelineEntryBody({ entry }: { entry: Phase7TimelineEntry }) {
+/**
+ * One timeline entry in the transcript grammar. Shared with the Phase 7I chat
+ * so a semantic call, a denial, and a control-plane strip look the same
+ * wherever they are read.
+ */
+export function TimelineEntryBody({ entry }: { entry: Phase7TimelineEntry }) {
   switch (entry.kind) {
+    case "user_message":
+      return (
+        <div className="pcr7-user-message">
+          <p>{entry.text}</p>
+        </div>
+      );
+
     case "agent_message":
       return (
         <div className="pcr7-agent-message">
