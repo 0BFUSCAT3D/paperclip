@@ -54,16 +54,23 @@ existing server authority and keep legacy execution as the default.
 - [Phase 6 reference](../../docs/phase-06-thin-paperclip-adapter.md)
 - [Runnable tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
 - Package conformance and recovery: four files, seven tests passed.
-- Phase 6 acceptance-matrix entry points: thirteen files, thirty-nine tests passed
+- Phase 6 acceptance-matrix entry points: thirteen files, forty-one tests passed
   with zero skips, including the database-backed selected-task canary, six
   atomic-liveness failpoints, migration, sequencing, bounded recovery, and
   legacy compatibility.
 - The migration rehearsal rewound to a production-shaped pre-0211 schema and
   applied the complete migration; the actual flag-off heartbeat executed the
   legacy adapter/finalizer and created zero native rows.
-- Section 18.13 source corpus: 52 fixture executions and 70 unique matrix-row
-  executions passed through production consumers with observed result/effect
-  digests; expected-object hashing and import-only aliases were removed.
+- Section 18.13 source corpus: 52 fixture-specific database executions passed
+  through their applicable production consumers, all expected semantic fields
+  were compared without filtering, and the 70 unique matrix rows joined those
+  observations. Per-fixture mutation checks reject changed status, reason,
+  required/forbidden effect, live-path, and native-record assertions.
+- The production heartbeat reaper resumed one persisted result-less run through
+  the original execution/finalization path with the flag disabled. It recovered
+  an already-active scripted provider turn and produced exactly one result,
+  assessment, decision/effect set, and terminal run without a new run, session,
+  turn, or legacy call. The provider boundary remains scripted, not live Codex.
 - Runner, shared, server, and database typechecks passed; migration safety
   passed.
 

@@ -94,7 +94,11 @@ import {
   reconcileNativeFinalizations,
   resolveNativeRuntimeMode,
 } from "./native-runtime/index.js";
-import { parseNativeExecutionInput } from "@paperclipai/paperclip-runner";
+import {
+  parseNativeExecutionInput,
+  type NativeExecutionInputV1,
+  type NativeSessionBackend,
+} from "@paperclipai/paperclip-runner";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -6528,6 +6532,12 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  /**
+   * Provider-boundary seam for persisted native-run recovery tests. Keeping
+   * the seam here exercises the production reaper, claim, execution, package
+   * session loop, persistence port, and finalizer without spawning a provider.
+   */
+  nativeSessionBackendFactory?: (execution: NativeExecutionInputV1) => NativeSessionBackend;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -13520,7 +13530,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return promise;
   }
 
-  async function executeRun(runId: string, options: { nativeLeaseOwner?: string } = {}) {
+  async function executeRun(runId: string, runOptions: { nativeLeaseOwner?: string } = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
 
     let run = await getRun(runId);
@@ -15647,7 +15657,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             db,
             execution: nativeExecution,
             runnerInstanceId: nativeRunnerInstanceId,
-            leaseOwner: options.nativeLeaseOwner,
+            leaseOwner: runOptions.nativeLeaseOwner,
+            backend: options.nativeSessionBackendFactory?.(nativeExecution),
           });
         } else {
           const adapterContext = { ...context };

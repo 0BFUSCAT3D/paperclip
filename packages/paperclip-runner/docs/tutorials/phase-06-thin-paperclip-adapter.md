@@ -60,13 +60,19 @@ pnpm --filter @paperclipai/server exec vitest run \
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. Thirty-nine targeted tests check company binding, duplicate/gap replay,
+port. Forty-one targeted tests check company binding, duplicate/gap replay,
 checkpoint recovery, immutable result ingestion, durable-evidence authority,
 workspace-gated finalization, atomic liveness rollback, status-version CAS,
 migration repair, legacy byte equivalence, typed interaction materialization,
 same-run pre-result resumption, lease races, and audit output. All database tests
 start embedded PostgreSQL and do not skip when a developer database URL is
 absent.
+
+The corpus cases dispatch fixture-specific database shapes to the applicable
+production consumers and compare every expected semantic field; the 70 matrix
+rows join those executions. The recovery case uses a scripted provider only at
+the backend boundary while the real heartbeat reaper, lease claim, original
+run execution, persistence port, finalizer, and terminal projection execute.
 
 The command above is the repeatable scripted internal canary and actual
 flag-off legacy-heartbeat proof. It is not a live-provider canary. The remaining

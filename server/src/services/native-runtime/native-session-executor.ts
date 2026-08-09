@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { AdapterExecutionResult } from "../../adapters/index.js";
 import type { NativeFinalizationResult } from "@paperclipai/shared";
-import type { NativeExecutionInputV1, NativeSession } from "@paperclipai/paperclip-runner";
+import type {
+  NativeExecutionInputV1,
+  NativeSession,
+  NativeSessionBackend,
+} from "@paperclipai/paperclip-runner";
 import {
   createCodexNativeSessionBackend,
   executeNativeSession,
@@ -48,6 +52,8 @@ export async function executePaperclipNativeSession(input: {
   execution: NativeExecutionInputV1;
   runnerInstanceId: string;
   leaseOwner?: string;
+  /** Test seam at the provider boundary; production always uses the package Codex backend. */
+  backend?: NativeSessionBackend;
 }): Promise<AdapterExecutionResult> {
   const leaseOwner = input.leaseOwner ?? `${input.runnerInstanceId}:${randomUUID()}`;
   const leaseNow = new Date();
@@ -99,7 +105,8 @@ export async function executePaperclipNativeSession(input: {
   try {
     native = await executeNativeSession({
       input: input.execution,
-      backend: createCodexNativeSessionBackend(input.execution, { runnerInstanceId: input.runnerInstanceId }),
+      backend: input.backend
+        ?? createCodexNativeSessionBackend(input.execution, { runnerInstanceId: input.runnerInstanceId }),
       controlPlane,
       runnerInstanceId: input.runnerInstanceId,
       controlPlaneInstanceId,

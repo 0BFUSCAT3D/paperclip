@@ -39,7 +39,7 @@ existing accepted result event, and appended only the missing terminal fact.
 
 # Real Paperclip adapter and public-session task
 
-The complete acceptance gate below passed 39 tests in thirteen files against
+The complete acceptance gate below passed 41 tests in thirteen files against
 embedded PostgreSQL with zero skipped tests. Database-backed tests start their
 own database instead of skipping when a developer `DATABASE_URL` is absent.
 The same package conformance suite passed unchanged against
@@ -63,7 +63,10 @@ The focused corpus also proved:
   bindings fail closed in the shared mock/real port suite;
 - result-less transport loss dispatches the original persisted native run from
   its closed envelope/provider checkpoint after a database lease, including
-  flag-off restart and active-turn recovery without a second session or turn;
+  flag-off restart and active-turn recovery without a second run, provider
+  session, or turn; the scripted provider boundary returns one result and the
+  real heartbeat/finalizer path persists one assessment, decision/effect set,
+  and terminal projection without invoking the legacy adapter;
 - resolved confirmations and question answers enter the persisted native input
   only through the authorized issue-interaction service; governed, unresolved,
   unsupported, or self-approved paths fail closed without credentials;
@@ -79,7 +82,7 @@ The focused corpus also proved:
   bindings, recovery, status,
   decisions, and effects roll back together before retry ownership is recorded.
 
-The acceptance-matrix entry points passed as one 13-file, 39-test gate:
+The acceptance-matrix entry points passed as one 13-file, 41-test gate:
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \
@@ -100,11 +103,15 @@ pnpm --filter @paperclipai/server exec vitest run \
 
 This gate proves concurrent event allocation, duplicate-only migration repair,
 bounded retry exhaustion, actual flag-off legacy execution, and executable
-Section 18.13 fixture-to-consumer traceability. Each of the 52 fixtures and 70
-unique matrix rows invokes production consumers; the test hashes observed
-decisions/effects, never the fixture's `expected` object. The selected-task
-canary remains scripted at the provider boundary, while the legacy heartbeat is
-an actual adapter/finalizer execution.
+Section 18.13 fixture-to-consumer traceability. Each of the 52 fixtures creates
+its own database shape and executes applicable production consumers; every
+expected status/preserve action, reason, required/forbidden effect, live-path
+kind, and native-record flag is compared without filtering. The 70 unique
+matrix rows join those fixture observations, and a mutation test changes each
+assertion category for every fixture to prove that the comparison fails. The
+selected-task and recovery canaries remain scripted only at the provider
+boundary, while the production Paperclip persistence/finalization paths and the
+flag-off legacy adapter/finalizer path execute for real.
 
 # Compile and migration checks
 

@@ -1,6 +1,6 @@
 # Phase 6 Thin Paperclip Adapter Boundary
 
-Status: proposed for CTO approval
+Status: design approved; implementation gate pending CTO re-review
 Date: 2026-08-09
 Decision scope: the first feature-flagged Paperclip native run, including the
 normative native finalizer and server-owned Section 18 status arbitration
@@ -736,6 +736,41 @@ the same approved database and pure-policy seams exposed through the named
 changes to a concrete legacy adapter, approval authority, UI, workspace policy,
 budget policy, or runner/provider/session behavior outside the package.
 
+### Remediation 2 test-seam amendment (2026-08-09)
+
+The following already-listed files receive one provider-boundary test seam for
+the persisted recovery proof:
+
+```text
+server/src/services/heartbeat.ts
+server/src/services/native-runtime/native-session-executor.ts
+server/src/__tests__/native-session-resumption.test.ts
+server/src/__tests__/native-status-arbiter-corpus.test.ts
+```
+
+`heartbeatService` may receive an optional native-backend factory, and the
+native session executor may receive the resulting `NativeSessionBackend`.
+Production supplies neither option and therefore still constructs the
+package-owned Codex backend exactly as before. The embedded-PostgreSQL test
+uses this seam only at the external provider boundary; it still executes the
+production orphan reaper, database lease claim, `executeRun`, package session
+recovery, control-plane port, workspace barrier, evidence classifier, status
+committer, finalizer, and terminal heartbeat projection. No package contract,
+provider/session behavior, legacy adapter, approval authority, workspace
+policy, or UI surface changes.
+
+The corpus test remains in its pre-approved matrix path. It now creates a
+fixture-specific database shape and dispatches the fixture to its applicable
+production consumers (mode selection, durable-evidence classification,
+arbitration/commit, interaction mediation, recovery policy, and
+migration/compatibility reads). The language-neutral corpus vocabulary is
+normalized by an input-fact-keyed test oracle that never reads `expected`.
+Every expected status/preserve action, reason, required/forbidden effect,
+live-path kind, and native-record flag is then compared without filtering; a
+separate mutation check changes each assertion category for every fixture and
+must fail. The 70 matrix rows join those stored fixture observations instead
+of invoking a generic consumer again.
+
 ## Commands the implementation must make runnable
 
 These commands are the acceptance contract for the implementation issue. They
@@ -790,7 +825,7 @@ pnpm --filter @paperclipai/server exec vitest run \
 
 pnpm --filter @paperclipai/server exec vitest run \
   src/__tests__/native-status-arbiter-corpus.test.ts \
-  -t "emits one result for every Section 18.13 fixture and consumer"
+  -t "executes all 52 fixtures in their production consumers"
 ```
 
 Legacy fallback proof after disabling the flag:

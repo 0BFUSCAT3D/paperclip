@@ -85,13 +85,30 @@ fail closed; no credentials enter the model envelope.
 
 ## Verification status
 
-The deterministic package suite and the real embedded-PostgreSQL Paperclip
-suite prove selection, replay/conflict handling, authoritative evidence,
-status/liveness atomicity, session/finalization recovery, migration repair,
-bounded cancellation/retry, and a byte-equivalent legacy read snapshot. The
-database suite is the internal native canary: it executes one selected task
-through the public package session contract and applies one server-owned
-decision. Its post-kill-switch legacy case has zero native history rows.
+The deterministic package suite and the embedded-PostgreSQL Paperclip suite
+prove selection, replay/conflict handling, authoritative evidence,
+status/liveness atomicity, migration repair, bounded cancellation/retry, and a
+byte-equivalent legacy read snapshot. The database suite is the internal
+native canary: it executes one selected task through the public package session
+contract and applies one server-owned decision. Its post-kill-switch legacy
+case has zero native history rows.
+
+The Section 18.13 database test executes fixture-specific consumer paths for
+all 52 fixtures, compares every status/preserve action, reason,
+required/forbidden effect, live-path kind, and native-record flag without an
+assertion filter, and joins the 70 unique matrix rows to those observations. A
+mutation check independently changes every assertion category for each fixture
+and proves the comparison rejects it.
+
+Result-less same-run recovery is also proven through the production heartbeat
+seam: a persisted envelope/checkpoint is leased by `reapOrphanedRuns`, enters
+the original `executeRun`, recovers an already-active provider turn, and reaches
+one persisted result, assessment, decision/effect set, and terminal heartbeat
+projection. The test runs with the native flag disabled and asserts one run,
+no new provider session or turn, no legacy adapter execution, lease-race
+exclusion, cancellation/exhaustion exclusion, and missing-checkpoint
+fail-closed behavior. The provider itself is scripted; this is not live Codex
+evidence.
 
 No new live provider task was dispatched during the remediation review. A live
 Codex canary remains an operator-run rollout check because it requires changing
