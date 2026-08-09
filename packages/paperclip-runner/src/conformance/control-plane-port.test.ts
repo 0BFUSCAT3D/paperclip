@@ -19,6 +19,11 @@ describe("ControlPlanePort conformance", () => {
       highestContiguousSourceSeq: 3,
       duplicateDisposition: "duplicate",
       terminalReplayIdempotent: true,
+      openBindingRejected: true,
+      eventIdMutationRejected: true,
+      eventSequenceMutationRejected: true,
+      replayBindingRejected: true,
+      resultMutationRejected: true,
     });
   });
 

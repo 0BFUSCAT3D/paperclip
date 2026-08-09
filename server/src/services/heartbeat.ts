@@ -86,12 +86,15 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import {
   buildNativeExecutionInput,
   cancelNativeSession,
+  dispatchNativeSessionResumptions,
   ensureNativeCompletionContract,
   executePaperclipNativeSession,
   finalizeNativeRun,
+  materializeNativeInteractionResponses,
   reconcileNativeFinalizations,
   resolveNativeRuntimeMode,
 } from "./native-runtime/index.js";
+import { parseNativeExecutionInput } from "@paperclipai/paperclip-runner";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -713,6 +716,13 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+
+class NativeSessionResumeScheduledError extends Error {
+  constructor(readonly original: unknown) {
+    super("Persisted native session resume scheduled");
+    this.name = "NativeSessionResumeScheduledError";
+  }
+}
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -13026,6 +13036,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.warn({ err: error }, "failed to reconcile persisted native finalizations before orphan reaping");
     });
 
+    // Result-less transport loss is resumed on the original run. The database
+    // lease is claimed before dispatch so concurrent service instances cannot
+    // open competing recoveries; executeRun receives the exact claimed owner.
+    const nativeResumeClaims = await dispatchNativeSessionResumptions({
+      db,
+      runnerInstanceId: runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || "paperclip-heartbeat",
+      now,
+      dispatch: (claim) => {
+        const execution = executeRun(claim.runId, { nativeLeaseOwner: claim.leaseOwner }).catch((error) => {
+          logger.error({ err: error, runId: claim.runId }, "persisted native session resume failed");
+        });
+        activeRunExecutionPromises.add(execution);
+        void execution.finally(() => activeRunExecutionPromises.delete(execution));
+      },
+    }).catch((error) => {
+      logger.warn({ err: error }, "failed to claim persisted native session resumptions");
+      return [];
+    });
+    const resumedRunIds = new Set(nativeResumeClaims.map((claim) => claim.runId));
+
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select({
@@ -13063,6 +13093,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
+      if (resumedRunIds.has(run.id)) continue;
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
@@ -13489,7 +13520,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return promise;
   }
 
-  async function executeRun(runId: string) {
+  async function executeRun(runId: string, options: { nativeLeaseOwner?: string } = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
 
     let run = await getRun(runId);
@@ -15316,26 +15347,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
         nativeRunnerInstanceId = run.runnerInstanceId ?? randomUUID();
         const nativeSessionId = run.nativeSessionId ?? randomUUID();
-        nativeExecution = buildNativeExecutionInput({
-          companyId: agent.companyId,
-          runId: run.id,
-          issue: issueRef,
-          agentId: agent.id,
-          workspace: {
-            id: persistedExecutionWorkspace.id,
-            cwd: executionWorkspace.cwd,
-            repoUrl: executionWorkspace.repoUrl,
-            repoRef: executionWorkspace.repoRef,
-            branchName: executionWorkspace.branchName,
-          },
-          normalizedSessionId: nativeSessionId,
-          completionContract: {
-            id: completionContract.row.id,
-            sha256: completionContract.row.canonicalSha256,
-            schemaVersion: completionContract.row.schemaVersion,
-            contract: completionContract.contract,
-          },
-        });
+        const persistedProfile = parseObject(run.runnerProfileJson);
+        if (persistedProfile.nativeExecutionInput !== undefined) {
+          nativeExecution = parseNativeExecutionInput(persistedProfile.nativeExecutionInput);
+          if (
+            nativeExecution.binding.companyId !== agent.companyId
+            || nativeExecution.binding.runId !== run.id
+            || nativeExecution.binding.issueId !== issueRef.id
+            || nativeExecution.binding.agentId !== agent.id
+            || nativeExecution.binding.executionWorkspaceId !== persistedExecutionWorkspace.id
+            || nativeExecution.completionContract.id !== completionContract.row.id
+            || nativeExecution.completionContract.sha256 !== completionContract.row.canonicalSha256
+          ) throw new Error("native_execution_input_persisted_binding_mismatch");
+        } else {
+          const interactionId = readNonEmptyString(context.interactionId);
+          const interactionResponses = await materializeNativeInteractionResponses({
+            db,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            runId: run.id,
+            agentId: agent.id,
+            interactionIds: interactionId ? [interactionId] : [],
+          });
+          nativeExecution = buildNativeExecutionInput({
+            companyId: agent.companyId,
+            runId: run.id,
+            issue: issueRef,
+            agentId: agent.id,
+            workspace: {
+              id: persistedExecutionWorkspace.id,
+              cwd: executionWorkspace.cwd,
+              repoUrl: executionWorkspace.repoUrl,
+              repoRef: executionWorkspace.repoRef,
+              branchName: executionWorkspace.branchName,
+            },
+            normalizedSessionId: nativeSessionId,
+            interactionResponses,
+            completionContract: {
+              id: completionContract.row.id,
+              sha256: completionContract.row.canonicalSha256,
+              schemaVersion: completionContract.row.schemaVersion,
+              contract: completionContract.contract,
+            },
+          });
+        }
         await db.transaction(async (tx) => {
           const lockedRun = await tx.select().from(heartbeatRuns)
             .where(eq(heartbeatRuns.id, run.id)).for("update").limit(1)
@@ -15352,6 +15407,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             runnerProfileJson: {
               ...nativeRuntimeResolution.profile,
               ...parseObject(lockedRun.runnerProfileJson),
+              nativeExecutionInput: parseObject(lockedRun.runnerProfileJson).nativeExecutionInput ?? nativeExecution,
             },
             runnerInstanceId: lockedRun.runnerInstanceId ?? nativeRunnerInstanceId,
             nativeSessionId: lockedRun.nativeSessionId ?? nativeSessionId,
@@ -15591,6 +15647,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             db,
             execution: nativeExecution,
             runnerInstanceId: nativeRunnerInstanceId,
+            leaseOwner: options.nativeLeaseOwner,
           });
         } else {
           const adapterContext = { ...context };
@@ -15662,6 +15719,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       } catch (adapterErr) {
+        const nativeResumeScheduled = nativeRuntimeResolution.kind === "native"
+          ? await db.select({
+              phase: nativeRunFinalizations.phase,
+              resultId: nativeRunFinalizations.resultId,
+            }).from(nativeRunFinalizations)
+              .where(eq(nativeRunFinalizations.runId, run.id))
+              .limit(1)
+              .then((rows) => rows[0]?.phase === "retryable_failure" && rows[0]?.resultId === null)
+          : false;
+        if (nativeResumeScheduled) throw new NativeSessionResumeScheduledError(adapterErr);
         // Adapter (or its restore finally) threw — or the finalize record
         // write itself threw. Either way the workspace may be in a partial
         // state. Best-effort record finalize=failed so the dependent readiness
@@ -16110,6 +16177,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       );
     } catch (err) {
+      if (err instanceof NativeSessionResumeScheduledError) {
+        const coordinator = await db.select({
+          nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
+          attempt: nativeRunFinalizations.attempt,
+        }).from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, run.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        await appendRunEvent(run, seq++, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "native session transport interrupted; same-run resume persisted",
+          payload: {
+            attempt: coordinator?.attempt ?? null,
+            nextAttemptAt: coordinator?.nextAttemptAt?.toISOString() ?? null,
+            fallbackSuppressed: true,
+          },
+        }).catch(() => undefined);
+        return;
+      }
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),

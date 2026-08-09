@@ -40,8 +40,9 @@ contract are persisted before provider execution.
 - `completeRun` validates and idempotently persists the immutable structured
   result plus terminal fact.
 
-The package-owned `HarnessDriverBackend` is the approved
-`NativeSessionBackend`. Core passes only the closed `NativeExecutionInputV1`.
+The package-owned Codex native backend is the production
+`NativeSessionBackend`; the harness backend remains the deterministic test
+adapter. Core passes only the closed `NativeExecutionInputV1`.
 The model receives the smaller `NativeModelEnvelopeV1`; bindings and credential
 references do not cross that boundary.
 
@@ -64,14 +65,23 @@ status-version CAS and audit record.
 
 ## Recovery and safety
 
-The finalization reconciler selects persisted `runtime_mode=native` rows; it
-does not consult the current flag. Per-attempt leases prevent concurrent
-session/finalization ownership, while retryable failures retain the immutable
-result and a first-class recovery action. A recovered session replays its
-checkpoint and appends only missing control-plane facts instead of opening a
-second provider session. Cancellation uses a run-scoped normalized session
-handle before the existing process cleanup. Native execution does not construct
-a Paperclip JWT, managed MCP access, legacy context, or raw adapter environment.
+Recovery selects persisted `runtime_mode=native` coordinators and does not
+consult the current flag. Result-less transport loss retains the original run,
+closed native input, provider checkpoint, retry attempt, and recovery action;
+a database lease dispatches that same run after restart. Missing checkpoints,
+cancellation, and retry exhaustion fail closed without opening a new provider
+session or falling into legacy. Result-bearing rows continue through the
+workspace/finalization reconciler. A recovered package session inspects the
+provider snapshot before starting a turn, so an active provider turn is not
+duplicated. Cancellation uses a run-scoped normalized session handle before the
+existing process cleanup. Native execution does not construct a Paperclip JWT,
+managed MCP access, legacy context, or raw adapter environment.
+
+Resolved `request_confirmation` and `ask_user_questions` wakes are projected
+through the existing authorized issue-interaction service and bound to the
+company, issue, run, agent, and interaction identities in the persisted input.
+Governed tool actions, unsupported kinds, unresolved rows, and self-resolution
+fail closed; no credentials enter the model envelope.
 
 ## Verification status
 

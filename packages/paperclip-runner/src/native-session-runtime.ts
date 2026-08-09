@@ -120,19 +120,24 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
         await options.controlPlane.checkpointSession(await session.snapshot());
       }
     };
-    await checkpoint();
+    const recoveredSnapshot = await session.snapshot();
+    await options.controlPlane.checkpointSession?.(recoveredSnapshot);
 
     let consumed = { event: null as PrpEvent | null, eventCount: 0, highestContiguousSourceSeq: 0 };
-    let completed = persistedSession?.semanticResult && persistedSession.terminal
+    const completionSnapshot = recoveredSnapshot.semanticResult && recoveredSnapshot.terminal
+      ? recoveredSnapshot
+      : persistedSession;
+    let completed = completionSnapshot?.semanticResult && completionSnapshot.terminal
       ? {
-          result: persistedSession.semanticResult,
-          terminal: persistedSession.terminal,
-          turnId: persistedSession.activeTurnId ?? null,
+          result: completionSnapshot.semanticResult,
+          terminal: completionSnapshot.terminal,
+          turnId: completionSnapshot.activeTurnId ?? null,
         }
       : null;
     if (!completed) {
       const consuming = consumeTurn(session, options.controlPlane, options.timeoutMs ?? 900_000);
-      if (!recovered || !persistedSession?.activeTurnId) {
+      const recoveredActiveTurnId = recoveredSnapshot.activeTurnId ?? persistedSession?.activeTurnId ?? null;
+      if (!recovered || !recoveredActiveTurnId) {
         await session.startTurn({
           message: { role: "user", text: JSON.stringify(buildNativeModelEnvelope(input)) },
         });
@@ -145,8 +150,8 @@ export async function executeNativeSession(options: ExecuteNativeSessionOptions)
     }
     if (completed === null) throw new Error("native_finalization_missing: session returned no semantic result");
     let terminal: PrpTerminalState;
-    if (persistedSession?.semanticResult && persistedSession.terminal) {
-      terminal = persistedSession.terminal;
+    if (completionSnapshot?.semanticResult && completionSnapshot.terminal) {
+      terminal = completionSnapshot.terminal;
     } else {
       terminal = terminalFromEvent(consumed.event!, completed.result.reportedWorkDisposition);
     }

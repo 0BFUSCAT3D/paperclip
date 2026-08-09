@@ -272,6 +272,11 @@ describe("PaperclipControlPlanePort conformance", () => {
       highestContiguousSourceSeq: 3,
       duplicateDisposition: "duplicate",
       terminalReplayIdempotent: true,
+      openBindingRejected: true,
+      eventIdMutationRejected: true,
+      eventSequenceMutationRejected: true,
+      replayBindingRejected: true,
+      resultMutationRejected: true,
     });
     await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).resolves.toHaveLength(1);
     await finalizeNativeRun({

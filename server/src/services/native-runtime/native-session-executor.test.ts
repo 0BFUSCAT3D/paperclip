@@ -13,7 +13,11 @@ vi.mock("@paperclipai/paperclip-runner", () => ({
   executeNativeSession: state.execute,
 }));
 
-import { cancelNativeSession, executePaperclipNativeSession } from "./native-session-executor.js";
+import {
+  cancelNativeSession,
+  executePaperclipNativeSession,
+  nativeSessionFailureDisposition,
+} from "./native-session-executor.js";
 
 const execution = {
   binding: {
@@ -114,5 +118,26 @@ describe("native session cancellation", () => {
 
     state.release?.();
     await running;
+  });
+});
+
+describe("native session bounded recovery", () => {
+  it("retries the same run twice and stops at the third failed attempt", () => {
+    const now = new Date("2026-08-09T00:00:00.000Z");
+    expect(nativeSessionFailureDisposition(1, now)).toEqual({
+      phase: "retryable_failure",
+      failureCode: "native_session_interrupted",
+      nextAttemptAt: new Date("2026-08-09T00:00:30.000Z"),
+    });
+    expect(nativeSessionFailureDisposition(2, now)).toEqual({
+      phase: "retryable_failure",
+      failureCode: "native_session_interrupted",
+      nextAttemptAt: new Date("2026-08-09T00:00:30.000Z"),
+    });
+    expect(nativeSessionFailureDisposition(3, now)).toEqual({
+      phase: "terminal_failure",
+      failureCode: "native_session_retry_exhausted",
+      nextAttemptAt: null,
+    });
   });
 });

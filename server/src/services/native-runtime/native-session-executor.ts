@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { AdapterExecutionResult } from "../../adapters/index.js";
 import type { NativeFinalizationResult } from "@paperclipai/shared";
 import type { NativeExecutionInputV1, NativeSession } from "@paperclipai/paperclip-runner";
@@ -10,6 +10,7 @@ import type { Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -17,6 +18,15 @@ type ActiveNativeSession = {
 };
 
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
+
+export function nativeSessionFailureDisposition(attempt: number, now = new Date()) {
+  const exhausted = attempt >= 3;
+  return {
+    phase: exhausted ? "terminal_failure" as const : "retryable_failure" as const,
+    failureCode: exhausted ? "native_session_retry_exhausted" as const : "native_session_interrupted" as const,
+    nextAttemptAt: exhausted ? null : new Date(now.getTime() + 30_000),
+  };
+}
 
 export async function cancelNativeSession(runId: string, reason: string): Promise<boolean> {
   const active = activeNativeSessions.get(runId);
@@ -37,11 +47,12 @@ export async function executePaperclipNativeSession(input: {
   db: Db;
   execution: NativeExecutionInputV1;
   runnerInstanceId: string;
+  leaseOwner?: string;
 }): Promise<AdapterExecutionResult> {
-  const leaseOwner = `${input.runnerInstanceId}:${randomUUID()}`;
+  const leaseOwner = input.leaseOwner ?? `${input.runnerInstanceId}:${randomUUID()}`;
   const leaseNow = new Date();
   const leaseExpiresAt = new Date(leaseNow.getTime() + 20 * 60_000);
-  await input.db.transaction(async (tx) => {
+  const attempt = await input.db.transaction(async (tx) => {
     const coordinator = await tx.select().from(nativeRunFinalizations)
       .where(and(
         eq(nativeRunFinalizations.runId, input.execution.binding.runId),
@@ -71,6 +82,7 @@ export async function executePaperclipNativeSession(input: {
       nativePhaseUpdatedAt: leaseNow,
       updatedAt: leaseNow,
     }).where(eq(heartbeatRuns.id, coordinator.runId));
+    return coordinator.attempt + 1;
   });
   const controlPlaneInstanceId = `${input.runnerInstanceId}:control`;
   const controlPlane = new PaperclipControlPlanePort(input.db, {
@@ -101,22 +113,57 @@ export async function executePaperclipNativeSession(input: {
     });
   } catch (error) {
     const now = new Date();
-    await input.db.update(nativeRunFinalizations).set({
-      phase: "retryable_failure",
-      leaseOwner: null,
-      leaseExpiresAt: null,
-      failureCode: "native_session_interrupted",
-      failureDetail: {
-        message: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
-        recoveryOwner: { kind: "agent", agentId: input.execution.binding.agentId },
-        nextAction: "Resume the persisted native provider session after the retry delay.",
-      },
-      nextAttemptAt: new Date(now.getTime() + 30_000),
-      updatedAt: now,
-    }).where(and(
-      eq(nativeRunFinalizations.runId, input.execution.binding.runId),
-      eq(nativeRunFinalizations.leaseOwner, leaseOwner),
-    ));
+    const { phase, failureCode, nextAttemptAt } = nativeSessionFailureDisposition(attempt, now);
+    const exhausted = phase === "terminal_failure";
+    const message = error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000);
+    await input.db.transaction(async (tx) => {
+      const updated = await tx.update(nativeRunFinalizations).set({
+        phase,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        failureCode,
+        failureDetail: {
+          message,
+          originalFailureCode: "native_session_interrupted",
+          recoveryOwner: { kind: "agent", agentId: input.execution.binding.agentId },
+          nextAction: exhausted
+            ? "Inspect the persisted native session after its bounded resume budget was exhausted."
+            : "Resume this same run from its persisted native provider checkpoint after the retry delay.",
+        },
+        nextAttemptAt,
+        updatedAt: now,
+      }).where(and(
+        eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+        eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+      )).returning({ runId: nativeRunFinalizations.runId }).then((rows) => rows[0] ?? null);
+      if (!updated) throw new Error("native_session_lease_lost");
+      await tx.update(heartbeatRuns).set({
+        nativePhase: phase,
+        nativePhaseUpdatedAt: now,
+        error: message,
+        errorCode: failureCode,
+        updatedAt: now,
+      }).where(eq(heartbeatRuns.id, input.execution.binding.runId));
+      await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
+        companyId: input.execution.binding.companyId,
+        sourceIssueId: input.execution.binding.issueId,
+        kind: "active_run_watchdog",
+        ownerType: "agent",
+        ownerAgentId: input.execution.binding.agentId,
+        cause: failureCode,
+        fingerprint: createHash("sha256")
+          .update(`${input.execution.binding.runId}:${failureCode}`)
+          .digest("hex"),
+        evidence: { runId: input.execution.binding.runId, coordinatorAttempt: attempt },
+        nextAction: exhausted
+          ? "Inspect or explicitly restart the exhausted persisted native session."
+          : "Resume the persisted native session on the same heartbeat run.",
+        wakePolicy: nextAttemptAt
+          ? { kind: "resume_native_run", runId: input.execution.binding.runId, notBefore: nextAttemptAt.toISOString() }
+          : null,
+        maxAttempts: 3,
+      });
+    });
     throw error;
   }
   await input.db.update(nativeRunFinalizations).set({

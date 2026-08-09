@@ -51,21 +51,26 @@ pnpm --filter @paperclipai/server exec vitest run \
   src/__tests__/native-runner-input-boundary.test.ts \
   src/__tests__/native-run-finalizer.test.ts \
   src/__tests__/native-status-arbiter-corpus.test.ts \
+  src/__tests__/native-interaction-bridge.test.ts \
+  src/__tests__/native-session-resumption.test.ts \
   src/__tests__/native-finalization-recovery.test.ts \
   src/__tests__/native-finalization-migration.test.ts \
-  src/__tests__/legacy-finalization-regression.test.ts
+  src/__tests__/legacy-finalization-regression.test.ts \
+  src/services/native-runtime/native-session-executor.test.ts
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. Twenty-eight targeted tests check company binding, duplicate/gap replay,
+port. Thirty-nine targeted tests check company binding, duplicate/gap replay,
 checkpoint recovery, immutable result ingestion, durable-evidence authority,
 workspace-gated finalization, atomic liveness rollback, status-version CAS,
-migration repair, legacy byte equivalence, and audit output. All database tests
+migration repair, legacy byte equivalence, typed interaction materialization,
+same-run pre-result resumption, lease races, and audit output. All database tests
 start embedded PostgreSQL and do not skip when a developer database URL is
 absent.
 
-The command above is the repeatable internal canary and post-kill-switch legacy
-proof. The remaining sections are an optional live-provider rollout procedure;
+The command above is the repeatable scripted internal canary and actual
+flag-off legacy-heartbeat proof. It is not a live-provider canary. The remaining
+sections are an optional live-provider rollout procedure;
 they were not run during remediation and require explicit operator authority to
 change an instance flag and agent profile.
 

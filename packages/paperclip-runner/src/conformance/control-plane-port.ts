@@ -10,6 +10,11 @@ export interface ControlPlanePortConformanceSnapshot {
   highestContiguousSourceSeq: number;
   duplicateDisposition: "duplicate";
   terminalReplayIdempotent: boolean;
+  openBindingRejected: boolean;
+  eventIdMutationRejected: boolean;
+  eventSequenceMutationRejected: boolean;
+  replayBindingRejected: boolean;
+  resultMutationRejected: boolean;
 }
 
 export interface ControlPlanePortConformanceHarness {
@@ -83,6 +88,16 @@ export async function runControlPlanePortConformance(
   await harness.start?.();
   try {
     await harness.port.openRun(CONTROL_PLANE_CONFORMANCE_OPEN);
+    let openBindingRejected = false;
+    try {
+      await harness.port.openRun({
+        ...CONTROL_PLANE_CONFORMANCE_OPEN,
+        identity: { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, issueId: "forged-issue" },
+      });
+    } catch {
+      openBindingRejected = true;
+    }
+    if (!openBindingRejected) throw new Error("mismatched run binding was accepted");
     const first = await harness.port.appendEvent(CONTROL_PLANE_CONFORMANCE_EVENTS[0]);
     if (first.disposition !== "committed" || first.highestContiguousSourceSeq !== 1) {
       throw new Error("first event did not commit at cursor 1");
@@ -93,6 +108,27 @@ export async function runControlPlanePortConformance(
     if (recovered.highestContiguousSourceSeq !== 3) throw new Error("source gap did not recover");
     const duplicate = await harness.port.appendEvent(CONTROL_PLANE_CONFORMANCE_EVENTS[1]);
     if (duplicate.disposition !== "duplicate") throw new Error("identical duplicate was not idempotent");
+    let eventIdMutationRejected = false;
+    try {
+      await harness.port.appendEvent({
+        ...CONTROL_PLANE_CONFORMANCE_EVENTS[1],
+        payload: { mutated: true },
+      });
+    } catch {
+      eventIdMutationRejected = true;
+    }
+    if (!eventIdMutationRejected) throw new Error("mutated event id replay was accepted");
+    let eventSequenceMutationRejected = false;
+    try {
+      await harness.port.appendEvent({
+        ...CONTROL_PLANE_CONFORMANCE_EVENTS[1],
+        sourceEventId: "runner-phase6-conformance:mutated-sequence-two",
+        payload: { mutated: true },
+      });
+    } catch {
+      eventSequenceMutationRejected = true;
+    }
+    if (!eventSequenceMutationRejected) throw new Error("mutated source sequence replay was accepted");
 
     const replay = await harness.port.replayEvents({
       runId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId,
@@ -103,6 +139,18 @@ export async function runControlPlanePortConformance(
     if (replay.events.map((entry) => entry.sourceSeq).join(",") !== "2,3") {
       throw new Error("exclusive replay cursor returned the wrong event set");
     }
+    let replayBindingRejected = false;
+    try {
+      await harness.port.replayEvents({
+        runId: "forged-run",
+        sourceInstanceId: "runner-phase6-conformance",
+        afterSourceSeq: 0,
+        limit: 10,
+      });
+    } catch {
+      replayBindingRejected = true;
+    }
+    if (!replayBindingRejected) throw new Error("mismatched replay binding was accepted");
 
     const completion: CompleteControlPlaneRunInput = {
       result: CONTROL_PLANE_CONFORMANCE_RESULT,
@@ -113,11 +161,26 @@ export async function runControlPlanePortConformance(
     };
     await harness.port.completeRun(completion);
     await harness.port.completeRun(completion);
+    let resultMutationRejected = false;
+    try {
+      await harness.port.completeRun({
+        ...completion,
+        result: { ...completion.result, summary: "mutated result replay" },
+      });
+    } catch {
+      resultMutationRejected = true;
+    }
+    if (!resultMutationRejected) throw new Error("mutated result replay was accepted");
     return {
       eventCount: replay.highestContiguousSourceSeq,
       highestContiguousSourceSeq: replay.highestContiguousSourceSeq,
       duplicateDisposition: duplicate.disposition,
       terminalReplayIdempotent: true,
+      openBindingRejected,
+      eventIdMutationRejected,
+      eventSequenceMutationRejected,
+      replayBindingRejected,
+      resultMutationRejected,
     };
   } finally {
     await harness.stop?.();

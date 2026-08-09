@@ -703,16 +703,30 @@ from the provisional list above. They are added without expanding authority:
 ```text
 packages/paperclip-runner/src/native-session-runtime.ts
 packages/paperclip-runner/src/native-session-runtime.test.ts
+packages/paperclip-runner/src/contracts/native-execution.ts
+packages/paperclip-runner/src/contracts/native-execution.test.ts
+packages/paperclip-runner/src/backends/codex-native-backend.ts
 packages/paperclip-runner/spec/fixtures/status-authority-phase5.json
+packages/adapter-utils/package.json
+packages/shared/src/index.ts
+packages/shared/src/types/index.ts
+packages/shared/src/validators/index.ts
 server/src/services/native-runtime/native-session-executor.ts
 server/src/services/native-runtime/native-session-executor.test.ts
 server/src/services/native-runtime/evidence-classifier.test.ts
 server/src/services/native-runtime/paperclip-control-plane-port.test.ts
 server/src/services/native-runtime/status-arbiter.test.ts
+server/src/services/recovery/service.ts
 packages/paperclip-runner/docs/design/phase-6-thin-paperclip-adapter.md
 ```
 
-The package runtime files own persisted provider-session recovery. The corpus
+The package runtime, closed native-input contract, and Codex backend files own
+persisted provider-session recovery and construction. The adapter-utils
+metadata declares the package dependency used by the approved native
+finalization result type; the shared barrels only expose the already-reviewed
+types and validators. The recovery service touch reuses the existing
+source-scoped recovery action and wake path rather than creating new authority.
+The corpus
 edit moves two existing coverage labels between fixtures without changing any
 fixture input or expected outcome, eliminating an unjoinable fixture. The server
 executor files own only the run-scoped cancellation handle and coordinator

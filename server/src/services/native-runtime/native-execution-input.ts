@@ -1,4 +1,8 @@
-import type { NativeExecutionInputV1, StrictCompletionContractInput } from "@paperclipai/paperclip-runner";
+import type {
+  NativeExecutionInputV1,
+  NativeInteractionResponseEnvelope,
+  StrictCompletionContractInput,
+} from "@paperclipai/paperclip-runner";
 import { parseNativeExecutionInput } from "@paperclipai/paperclip-runner";
 
 /** Closed constructor: callers cannot spread legacy context or environment data. */
@@ -21,6 +25,7 @@ export function buildNativeExecutionInput(input: {
     branchName: string | null;
   };
   normalizedSessionId: string | null;
+  interactionResponses?: NativeInteractionResponseEnvelope[];
   completionContract: {
     id: string;
     sha256: string;
@@ -58,7 +63,7 @@ export function buildNativeExecutionInput(input: {
       protocolVersion: 1,
     },
     completionContract: input.completionContract,
-    interactionResponses: [],
+    interactionResponses: input.interactionResponses ?? [],
     credentialBindings: [],
   });
 }
