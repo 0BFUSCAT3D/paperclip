@@ -4,7 +4,7 @@ title: Phase 6 thin Paperclip adapter verification
 description: Targeted package, database-port, finalization, security-boundary, feature-selection, and legacy fallback evidence.
 tags: [native-runner, phase-6, verification, paperclip, replay, finalization]
 status: stable
-generated: { by: openai/gpt-5.6, at: 2026-08-09T05:20:00Z }
+generated: { by: openai/gpt-5.6, at: 2026-08-09T05:52:00Z }
 ---
 
 # Scope
@@ -13,7 +13,7 @@ This record verifies the default-off Phase 6 tracer at the approved
 `ControlPlanePort`/`NativeSessionBackend` boundary. No browser surface changed,
 so Phase 6 has command/database evidence rather than screenshots.
 
-The counts below are the PAP-16877 remediation rerun. “Internal canary” means
+The counts below are the PAP-16878 remediation rerun. “Internal canary” means
 the selected-task database test through the public package session contract;
 it does not mean that a new live Codex provider task was dispatched.
 
@@ -39,7 +39,7 @@ existing accepted result event, and appended only the missing terminal fact.
 
 # Real Paperclip adapter and public-session task
 
-The complete acceptance gate below passed 41 tests in thirteen files against
+The complete acceptance gate below passed 42 tests in thirteen files against
 embedded PostgreSQL with zero skipped tests. Database-backed tests start their
 own database instead of skipping when a developer `DATABASE_URL` is absent.
 The same package conformance suite passed unchanged against
@@ -76,13 +76,13 @@ The focused corpus also proved:
 - a completion decision writes immutable assessment/decision/effect records and
   an activity-log audit row;
 - a failed workspace barrier preserves the accepted semantic result, leaves the
-  issue status unchanged, and records a leased `retryable_failure` plus recovery
-  owner/action;
+  issue status/version unchanged, commits the fact-based preserve decision and
+  concrete recovery target, and records a leased `retryable_failure`;
 - six injected failures prove governance binding, interactions, wakes, blocker
   bindings, recovery, status,
   decisions, and effects roll back together before retry ownership is recorded.
 
-The acceptance-matrix entry points passed as one 13-file, 41-test gate:
+The acceptance-matrix entry points passed as one 13-file, 42-test gate:
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \
@@ -113,7 +113,10 @@ explicit responsible finalizer, terminal projection, attention, cancellation,
 committer, reconciliation, compatibility, or migration consumer; the row fails
 if that consumer was not executed or its returned semantics differ. A mutation
 test changes every expected field for every fixture and proves comparison
-failure. No test-owned policy table supplies an observation. The selected-task
+failure. Every required native effect is joined to its actual target state,
+each decision replay retains one identity and one delivery attempt, and an
+unknown effect rolls the entire transaction back. No test-owned scenario
+policy supplies an observation. The selected-task
 and recovery canaries remain scripted only at the provider boundary, while the
 production Paperclip persistence/finalization paths and the flag-off legacy
 adapter/finalizer path execute for real.

@@ -15326,7 +15326,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : resolveNativeRuntimeMode({
             enabled: resolvedInstanceSettings.experimental.enableNativeRunner === true,
             runtimeConfig: agent.runtimeConfig,
-            agent: { status: runningAgent.status, adapterType: agent.adapterType },
+            agent: { id: agent.id, status: runningAgent.status, adapterType: agent.adapterType },
             issue: issueRef,
             target: executionTarget,
             workspaceId: persistedExecutionWorkspace?.id ?? null,
@@ -18737,7 +18737,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const running = runningProcesses.get(run.id);
     try {
-      await cancelNativeSession(run.id, reason);
+      await cancelNativeSession(run.id, reason, { db, scope: "run" });
       if (running) {
         await terminateHeartbeatRunProcess({
           pid: running.child.pid ?? run.processPid,

@@ -47,6 +47,16 @@ existing server authority and keep legacy execution as the default.
 12. Project supported resolved interaction responses through the existing
     authorized issue-interaction service. Governed, unresolved, unsupported,
     cross-boundary, or self-approved requests fail closed without credentials.
+13. Remove fixture-scenario arbitration from production. Finalization consumes
+    durable evidence facts, and attention, cancellation, reconciliation,
+    compatibility, and migration consumers are invoked from their live server
+    paths.
+14. Handle every native status effect exhaustively. A delivered row is written
+    only after its named target exists or changes; pending delivery verifies the
+    original target, and unknown effects or target types roll back.
+15. Prove at-most-once materialization by replaying each corpus decision and
+    requiring one decision identity, one delivery attempt, and the persisted
+    target state.
 
 # Evidence
 
@@ -54,7 +64,7 @@ existing server authority and keep legacy execution as the default.
 - [Phase 6 reference](../../docs/phase-06-thin-paperclip-adapter.md)
 - [Runnable tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
 - Package conformance and recovery: four files, seven tests passed.
-- Phase 6 acceptance-matrix entry points: thirteen files, forty-one tests passed
+- Phase 6 acceptance-matrix entry points: thirteen files, forty-two tests passed
   with zero skips, including the database-backed selected-task canary, six
   atomic-liveness failpoints, migration, sequencing, bounded recovery, and
   legacy compatibility.
@@ -69,6 +79,10 @@ existing server authority and keep legacy execution as the default.
   count. All 70 matrix rows require their named consumer execution and compare
   that consumer's semantics. Per-fixture mutation checks reject changes to
   every expected field; no test-owned policy table supplies observations.
+- All native effect observations resolve to actual interaction, wake, issue,
+  recovery, run, workspace-operation, contract, decision, or governance state.
+  Unknown effects fail before any decision, ledger, status-version, or
+  coordinator mutation.
 - The production heartbeat reaper resumed one persisted result-less run through
   the original execution/finalization path with the flag disabled. It recovered
   an already-active scripted provider turn and produced exactly one result,

@@ -61,7 +61,9 @@ terminal state succeeded, every criterion and verification has accepted
 durable evidence, and no blocking work remains. It marks `blocked` only for a
 task-wide first-class blocker with a named owner and action. Review, retry,
 continuation, blocker, and recovery effects materialize atomically with the
-status-version CAS and audit record.
+status-version CAS and audit record. The committer has no catch-all delivery:
+all native effect kinds must create or mutate their named target, and unknown
+effects fail the transaction closed.
 
 ## Recovery and safety
 
@@ -104,7 +106,17 @@ committer, reconciliation, compatibility, or migration consumer and fails if
 that consumer did not execute or returned different semantics. A per-fixture
 mutation check independently changes every expected field and proves the
 comparison rejects it; there is no test-owned policy table supplying observed
-semantics.
+semantics. Finalizer observations come from the live fact-based arbiter rather
+than a fixture-state switch. Every delivered effect is joined to an actual
+persisted target, replay is required to retain the same decision with one
+delivery attempt, and an unknown-effect test proves the transaction leaves no
+decision, ledger, issue-version, or coordinator mutation.
+
+The production call graph invokes the fact consumers from heartbeat
+finalization, interaction-response projection, normalized session
+cancellation, finalization reconciliation, and runtime compatibility/migration
+selection. The corpus uses those same exported entry points and fails its row
+when their returned semantics or materialized target state changes.
 
 Result-less same-run recovery is also proven through the production heartbeat
 seam: a persisted envelope/checkpoint is leased by `reapOrphanedRuns`, enters

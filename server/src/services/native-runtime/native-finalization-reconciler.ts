@@ -1,32 +1,135 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
+import {
+  heartbeatRuns,
+  issues,
+  nativeRunFinalizations,
+  statusDecisionEffects,
+  workspaceOperations,
+} from "@paperclipai/db";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
+import { dispatchPendingNativeStatusEffects } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import {
-  arbitrateNativeStatusScenario,
+  NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
-  type NativeStatusAuthorityScenario,
+  type NativeStatusDecision,
 } from "./status-arbiter.js";
 
-const RECONCILIATION_STATUS_SCENARIOS = new Set<NativeStatusAuthorityScenario>([
-  "equivalent_attention_family", "identical_result_before_ack", "reused_id_changed_material",
-  "result_preserved", "decision_committed_delivery_pending", "board_cancelled_before_cas",
-  "new_evidence_satisfies_contract", "new_policy_requires_review", "dependency_now_done",
-  "explicit_resume_capability", "authorized_writer_incremented_version",
-]);
+export type NativeReconciliationFacts = {
+  equivalentAttentionFamily?: boolean;
+  canonicalReplay?: boolean;
+  callerMaterialConflict?: boolean;
+  workspaceOperationPending?: boolean;
+  undeliveredEffectCount?: number;
+  authoritativeStatusChanged?: boolean;
+  newEvidenceSatisfiesContract?: boolean;
+  dependencyResolved?: boolean;
+  authorizedResume?: boolean;
+  policyVersionChanged?: boolean;
+  statusVersionAdvanced?: boolean;
+};
 
 /** Append-only recovery/reconciliation re-arbitration from durable facts. */
 export function resolveNativeReconciliationStatus(input: {
-  scenario: NativeStatusAuthorityScenario;
+  facts: NativeReconciliationFacts;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
   agentId: string;
-}) {
-  if (!RECONCILIATION_STATUS_SCENARIOS.has(input.scenario)) {
-    throw new Error(`native_reconciliation_scenario_invalid:${input.scenario}`);
+}): NativeStatusDecision {
+  const preserve = (reasonCode: string, effects: NativeStatusDecision["effects"]): NativeStatusDecision => ({
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve",
+    toStatus: input.priorIssueStatus,
+    reasonCode,
+    unblockDescriptor: null,
+    effects,
+  });
+  const continuation = (reasonCode: string, effects: NativeStatusDecision["effects"] = []): NativeStatusDecision => ({
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "in_progress",
+    toStatus: "in_progress",
+    reasonCode,
+    unblockDescriptor: null,
+    effects: [{
+      kind: "enqueue_continuation",
+      continuationKind: "same_agent",
+      summary: `Continue native reconciliation after ${reasonCode}.`,
+      idempotencyKey: `native-reconciliation:${reasonCode}`,
+      agentId: input.agentId,
+    }, ...effects],
+  });
+
+  if (input.facts.equivalentAttentionFamily) {
+    return preserve("attention_duplicate_suppressed", [{ kind: "link_canonical_request" }]);
   }
-  return arbitrateNativeStatusScenario(input);
+
+  if (input.facts.callerMaterialConflict) {
+    return preserve("structured_result_replay_conflict", [{
+      kind: "record_finalization_error",
+      cause: "structured_result_replay_conflict",
+      nextAction: "Use a fresh canonical result identity.",
+      agentId: input.agentId,
+    }]);
+  }
+  if (input.facts.authoritativeStatusChanged) {
+    return preserve("prior_status_terminal_preserved", [{ kind: "append_superseding_assessment" }]);
+  }
+  if (input.facts.policyVersionChanged) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_review",
+      toStatus: "in_review",
+      reasonCode: "completion_review_required",
+      unblockDescriptor: null,
+      effects: [
+        { kind: "bind_reviewer", prompt: "Review the superseding native policy assessment." },
+        { kind: "append_superseding_assessment" },
+      ],
+    };
+  }
+  if (input.facts.statusVersionAdvanced) {
+    return preserve("arbitration_conflict_reloaded", [
+      { kind: "increment_status_version" },
+      { kind: "schedule_reconciliation" },
+    ]);
+  }
+  if (input.facts.newEvidenceSatisfiesContract) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "done",
+      toStatus: "done",
+      reasonCode: "decision_superseded_by_new_evidence",
+      unblockDescriptor: null,
+      effects: [{ kind: "release_checkout" }],
+    };
+  }
+  if (input.facts.dependencyResolved) return continuation("dependency_resolved");
+  if (input.facts.authorizedResume) return continuation("authorized_resume");
+  if ((input.facts.undeliveredEffectCount ?? 0) > 0) {
+    return continuation("live_continuation_registered", [{ kind: "dispatch_pending_effect" }]);
+  }
+  if (input.facts.workspaceOperationPending) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "done",
+      toStatus: "done",
+      reasonCode: "completion_contract_satisfied",
+      unblockDescriptor: null,
+      effects: [{ kind: "resume_workspace_operation" }, { kind: "release_checkout" }],
+    };
+  }
+  if (input.facts.canonicalReplay) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "done",
+      toStatus: "done",
+      reasonCode: "completion_contract_satisfied",
+      unblockDescriptor: null,
+      effects: [{ kind: "release_checkout" }],
+    };
+  }
+  throw new Error("native_reconciliation_facts_invalid");
 }
 
 export type NativeSessionResumeClaim = { runId: string; leaseOwner: string };
@@ -179,9 +282,20 @@ export async function claimNativeSessionResumptions(input: {
 
 /** Recovery is keyed only by persisted mode/coordinator state, never the live flag. */
 export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
-  const rows = await db.select({ runId: heartbeatRuns.id })
+  const rows = await db.select({
+    runId: heartbeatRuns.id,
+    companyId: heartbeatRuns.companyId,
+    agentId: heartbeatRuns.agentId,
+    issueId: nativeRunFinalizations.issueId,
+    issueStatus: issues.status,
+    decisionId: nativeRunFinalizations.decisionId,
+  })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+    .innerJoin(issues, and(
+      eq(issues.id, nativeRunFinalizations.issueId),
+      eq(issues.companyId, heartbeatRuns.companyId),
+    ))
     .where(and(
       eq(heartbeatRuns.runtimeMode, "native"),
       isNotNull(nativeRunFinalizations.resultId),
@@ -199,6 +313,33 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
     ));
   const results = [];
   for (const row of rows) {
+    const pendingEffects = row.decisionId
+      ? await db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
+          eq(statusDecisionEffects.companyId, row.companyId),
+          eq(statusDecisionEffects.issueId, row.issueId),
+          eq(statusDecisionEffects.decisionId, row.decisionId),
+          inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
+        ))
+      : [];
+    if (row.decisionId && pendingEffects.length > 0) {
+      const decision = resolveNativeReconciliationStatus({
+        facts: { undeliveredEffectCount: pendingEffects.length },
+        priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,
+        agentId: row.agentId,
+      });
+      if (!decision.effects.some((effect) => effect.kind === "dispatch_pending_effect")) {
+        throw new Error("native_reconciliation_pending_effect_policy_missing");
+      }
+      const deliveredEffectIds = await dispatchPendingNativeStatusEffects({
+        db,
+        companyId: row.companyId,
+        issueId: row.issueId,
+        decisionId: row.decisionId,
+        runId: row.runId,
+      });
+      results.push({ runId: row.runId, phase: "committed", deliveredEffectIds });
+      continue;
+    }
     const barrier = await db.select({ status: workspaceOperations.status })
       .from(workspaceOperations)
       .where(and(
@@ -209,6 +350,14 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       .limit(1)
       .then((entries) => entries[0] ?? null);
     if (!barrier || !["succeeded", "failed"].includes(barrier.status)) continue;
+    const replayDecision = resolveNativeReconciliationStatus({
+      facts: { canonicalReplay: true },
+      priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,
+      agentId: row.agentId,
+    });
+    if (replayDecision.reasonCode !== "completion_contract_satisfied") {
+      throw new Error("native_reconciliation_replay_policy_invalid");
+    }
     try {
       results.push(await finalizeNativeRun({
         db,

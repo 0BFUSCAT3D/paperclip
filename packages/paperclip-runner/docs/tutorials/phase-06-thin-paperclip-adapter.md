@@ -60,7 +60,7 @@ pnpm --filter @paperclipai/server exec vitest run \
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. Forty-one targeted tests check company binding, duplicate/gap replay,
+port. Forty-two targeted tests check company binding, duplicate/gap replay,
 checkpoint recovery, immutable result ingestion, durable-evidence authority,
 workspace-gated finalization, atomic liveness rollback, status-version CAS,
 migration repair, legacy byte equivalence, typed interaction materialization,
@@ -76,7 +76,11 @@ decision count, maximum wake count, and maximum notification count. Every one
 of the 70 matrix rows requires evidence from its responsible finalizer,
 terminal projection, attention, cancellation, committer, reconciliation,
 compatibility, or migration consumer; a missing call or changed return fails
-the row. The recovery case uses a scripted provider only at the backend
+the row. Each native effect must also have a delivered, company-bound target
+row or concrete target-state mutation, and replay must retain one decision and
+one delivery attempt. A separate unknown-effect case proves the status
+transaction fails closed without partial rows. The recovery case uses a
+scripted provider only at the backend
 boundary while the real heartbeat reaper, lease claim, original run execution,
 persistence port, finalizer, and terminal projection execute.
 

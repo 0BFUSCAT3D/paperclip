@@ -1,6 +1,6 @@
 # Phase 6 Thin Paperclip Adapter Boundary
 
-Status: design approved; implementation remediated; CTO conformance re-review pending
+Status: design approved; remediation 4 implemented; CTO conformance re-review pending
 Date: 2026-08-09
 Decision scope: the first feature-flagged Paperclip native run, including the
 normative native finalizer and server-owned Section 18 status arbitration
@@ -796,6 +796,32 @@ reconciliation, compatibility, or migration consumer, and the row fails if
 that consumer did not execute or returned different semantics. No hand-written
 test policy table supplies observed outcomes and no row is satisfied by a
 coverage-label join to a generic observation.
+
+### Remediation 4 live-consumer and effect-materialization amendment (2026-08-09)
+
+The fixture-keyed scenario arbiter is removed. Finalization now calls the same
+fact-based arbiter as the heartbeat finalizer, while attention, cancellation,
+reconciliation, compatibility, and migration decisions accept canonical facts
+and each has a non-test production caller. The corpus constructs those durable
+facts, invokes the production consumer, and uses that return plus persisted
+issue, run, decision, interaction, wake, recovery, workspace-operation, and
+contract rows as its observation.
+
+`StatusDecisionCommitter` handles every `NativeStatusEffect` explicitly. Each
+case creates or changes its named target before its delivered ledger row is
+written. Reconciliation acknowledges a pending effect only after its existing
+company- and issue-bound target is verified. An unknown effect or target type
+throws inside the transaction, leaving the decision, effect ledger, issue
+status/version, and finalization coordinator unchanged. Corpus replay calls the
+committer twice and requires one decision identity and exactly one delivery
+attempt per target; audit-only attention and replacement-turn paths likewise
+assert their real target state.
+
+The 52-fixture/70-row proof therefore depends on runtime-reachable consumer
+returns and materialized state. Removing a production consumer invocation,
+changing its facts or decision, suppressing its target mutation, duplicating a
+delivery, or restoring a synthetic `issue_checkout` fallback fails the focused
+database gate.
 
 ## Commands the implementation must make runnable
 

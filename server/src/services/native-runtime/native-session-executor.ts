@@ -11,13 +11,14 @@ import {
   executeNativeSession,
 } from "@paperclipai/paperclip-runner";
 import type { Db } from "@paperclipai/db";
-import { and, eq } from "drizzle-orm";
-import { heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import {
-  arbitrateNativeStatusScenario,
+  NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
+  type NativeStatusDecision,
 } from "./status-arbiter.js";
 
 type ActiveNativeSession = {
@@ -36,10 +37,60 @@ export function nativeSessionFailureDisposition(attempt: number, now = new Date(
   };
 }
 
-export async function cancelNativeSession(runId: string, reason: string): Promise<boolean> {
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+export function cancelNativeSession(runId: string, reason: string): Promise<boolean>;
+export function cancelNativeSession(
+  runId: string,
+  reason: string,
+  options: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean },
+): Promise<{ dispatched: boolean; decision: NativeStatusDecision | null }>;
+export async function cancelNativeSession(
+  runId: string,
+  reason: string,
+  options?: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean },
+): Promise<boolean | { dispatched: boolean; decision: NativeStatusDecision | null }> {
+  let decision: NativeStatusDecision | null = null;
+  if (options) {
+    const run = await options.db.select({
+      agentId: heartbeatRuns.agentId,
+      companyId: heartbeatRuns.companyId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1).then((rows) => rows[0] ?? null);
+    const context = record(run?.contextSnapshot);
+    const issueId = typeof context.issueId === "string"
+      ? context.issueId
+      : typeof context.taskId === "string" ? context.taskId : null;
+    const issue = run && issueId
+      ? await options.db.select({ status: issues.status }).from(issues).where(and(
+          eq(issues.id, issueId),
+          eq(issues.companyId, run.companyId),
+        )).limit(1).then((rows) => rows[0] ?? null)
+      : null;
+    if (run && issue) {
+      decision = resolveNativeCancellationStatus({
+        scope: options.scope ?? "run",
+        priorIssueStatus: issue.status as NativeAuthoritativeIssueStatus,
+        agentId: run.agentId,
+        replacementAccepted: options.replacementAccepted,
+      });
+      if (options.replacementAccepted && decision.effects.some((effect) => effect.kind === "accept_replacement_turn")) {
+        await options.db.update(heartbeatRuns).set({
+          status: "running",
+          continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
+          nextAction: "Accept a replacement native turn on the existing run.",
+          updatedAt: new Date(),
+        }).where(eq(heartbeatRuns.id, runId));
+      }
+    }
+  }
   const active = activeNativeSessions.get(runId);
-  if (!active) return false;
-  if (active.cancelRequested) return true;
+  if (!active) return options ? { dispatched: false, decision } : false;
+  if (active.cancelRequested) return options ? { dispatched: true, decision } : true;
   active.cancelRequested = true;
   try {
     if (active.session.cancel) await active.session.cancel({ reason });
@@ -48,7 +99,7 @@ export async function cancelNativeSession(runId: string, reason: string): Promis
     active.cancelRequested = false;
     throw error;
   }
-  return true;
+  return options ? { dispatched: true, decision } : true;
 }
 
 /** Authenticated cancellation scope projected through the shared arbiter. */
@@ -56,11 +107,36 @@ export function resolveNativeCancellationStatus(input: {
   scope: "turn" | "run" | "issue";
   priorIssueStatus: NativeAuthoritativeIssueStatus;
   agentId: string;
-}) {
-  const scenario = input.scope === "turn"
-    ? "turn_scope" as const
-    : input.scope === "run" ? "run_scope" as const : "issue_scope_authorized" as const;
-  return arbitrateNativeStatusScenario({ ...input, scenario });
+  replacementAccepted?: boolean;
+}): NativeStatusDecision {
+  if (input.scope === "turn") {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve",
+      toStatus: input.priorIssueStatus,
+      reasonCode: input.replacementAccepted ? null : "cancellation_turn_only",
+      unblockDescriptor: null,
+      effects: [{ kind: "accept_replacement_turn" }],
+    };
+  }
+  if (input.scope === "run") {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve",
+      toStatus: input.priorIssueStatus,
+      reasonCode: "cancellation_run_only",
+      unblockDescriptor: null,
+      effects: [{ kind: "release_run_resources" }],
+    };
+  }
+  return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "cancelled",
+    toStatus: "cancelled",
+    reasonCode: "cancellation_issue_authorized",
+    unblockDescriptor: null,
+    effects: [{ kind: "release_checkout" }, { kind: "cancel_continuations" }],
+  };
 }
 
 export async function executePaperclipNativeSession(input: {

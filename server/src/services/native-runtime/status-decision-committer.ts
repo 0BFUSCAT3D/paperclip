@@ -1,17 +1,25 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { CreateIssueThreadInteraction } from "@paperclipai/shared";
 import {
   agentWakeupRequests,
   approvals,
+  completionContracts,
+  heartbeatRuns,
   issueApprovals,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   statusDecisionEffects,
   statusDecisions,
+  workspaceOperations,
 } from "@paperclipai/db";
-import type { NativeStatusDecision, NativeStatusEffect } from "./status-arbiter.js";
+import {
+  NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  type NativeStatusDecision,
+  type NativeStatusEffect,
+} from "./status-arbiter.js";
 import { nativeSha256 } from "./canonical.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -25,6 +33,56 @@ export class NativeStatusRaceError extends Error {
     super("native_status_race");
     this.name = "NativeStatusRaceError";
   }
+}
+
+/** Reconciliation delivery resumes ledger work only; it never re-arbitrates. */
+export async function dispatchPendingNativeStatusEffects(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  decisionId: string;
+  runId: string;
+}) {
+  return input.db.transaction(async (tx) => {
+    const pending = await tx.select({
+      id: statusDecisionEffects.id,
+      effectKind: statusDecisionEffects.effectKind,
+      targetType: statusDecisionEffects.targetType,
+      targetId: statusDecisionEffects.targetId,
+    })
+      .from(statusDecisionEffects).where(and(
+        eq(statusDecisionEffects.companyId, input.companyId),
+        eq(statusDecisionEffects.issueId, input.issueId),
+        eq(statusDecisionEffects.decisionId, input.decisionId),
+        inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
+    )).for("update");
+    if (pending.length === 0) return [];
+    for (const effect of pending) {
+      await assertPendingEffectTarget(tx as unknown as Db, {
+        companyId: input.companyId,
+        issueId: input.issueId,
+        effectKind: effect.effectKind,
+        targetType: effect.targetType,
+        targetId: effect.targetId,
+      });
+    }
+    await tx.update(statusDecisionEffects).set({
+      deliveryState: "delivered",
+      attemptCount: sql`${statusDecisionEffects.attemptCount} + 1`,
+      deliveredAt: new Date(),
+      nextAttemptAt: null,
+      lastError: null,
+      updatedAt: new Date(),
+    }).where(inArray(statusDecisionEffects.id, pending.map((row) => row.id)));
+    await updateRunEffectState({
+      tx: tx as unknown as Db,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeDispatchedEffectIds",
+      value: pending.map((row) => row.id),
+    });
+    return pending.map((row) => row.id);
+  });
 }
 
 export type NativeStatusCommitFailpoint =
@@ -41,6 +99,121 @@ type MaterializedEffect = {
   targetId: string | null;
   payload: Record<string, unknown>;
 };
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function assertNeverEffect(effect: never): never {
+  const kind = record(effect).kind;
+  throw new Error(`native_status_effect_unimplemented:${String(kind ?? "unknown")}`);
+}
+
+async function assertPendingEffectTarget(tx: Db, input: {
+  companyId: string;
+  issueId: string;
+  effectKind: string;
+  targetType: string;
+  targetId: string | null;
+}) {
+  if (!input.targetId) throw new Error(`native_pending_effect_target_missing:${input.effectKind}`);
+  let found = false;
+  if (input.targetType === "agent_wakeup_request") {
+    found = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.id, input.targetId),
+      eq(agentWakeupRequests.companyId, input.companyId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "issue_thread_interaction" || input.targetType === "interaction") {
+    found = await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.id, input.targetId),
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (["delegated_issue", "issue", "issue_checkout", "issue_unblock_descriptor"].includes(input.targetType)) {
+    found = await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.id, input.targetId),
+      eq(issues.companyId, input.companyId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "issue_recovery_action") {
+    found = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.id, input.targetId),
+      eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "heartbeat_run") {
+    found = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, input.targetId),
+      eq(heartbeatRuns.companyId, input.companyId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "workspace_operation") {
+    found = await tx.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+      eq(workspaceOperations.id, input.targetId),
+      eq(workspaceOperations.companyId, input.companyId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "completion_contract") {
+    found = await tx.select({ id: completionContracts.id }).from(completionContracts).where(and(
+      eq(completionContracts.id, input.targetId),
+      eq(completionContracts.companyId, input.companyId),
+      eq(completionContracts.issueId, input.issueId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "status_decision") {
+    found = await tx.select({ id: statusDecisions.id }).from(statusDecisions).where(and(
+      eq(statusDecisions.id, input.targetId),
+      eq(statusDecisions.companyId, input.companyId),
+      eq(statusDecisions.issueId, input.issueId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "status_decision_effect") {
+    found = await tx.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
+      eq(statusDecisionEffects.id, input.targetId),
+      eq(statusDecisionEffects.companyId, input.companyId),
+      eq(statusDecisionEffects.issueId, input.issueId),
+    )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "approval") {
+    found = await tx.select({ id: approvals.id }).from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id)).where(and(
+        eq(approvals.id, input.targetId),
+        eq(approvals.companyId, input.companyId),
+        eq(issueApprovals.issueId, input.issueId),
+      )).limit(1).then((rows) => rows.length === 1);
+  } else if (input.targetType === "execution_stage") {
+    found = await tx.select({ executionState: issues.executionState }).from(issues).where(and(
+      eq(issues.id, input.issueId),
+      eq(issues.companyId, input.companyId),
+    )).limit(1).then((rows) => record(rows[0]?.executionState).status === "pending");
+  } else {
+    throw new Error(`native_pending_effect_target_unimplemented:${input.targetType}`);
+  }
+  if (!found) throw new Error(`native_pending_effect_target_missing:${input.effectKind}`);
+}
+
+async function updateRunEffectState(input: {
+  tx: Db;
+  companyId: string;
+  runId: string;
+  key: string;
+  value: unknown;
+  runnerProfile?: boolean;
+}) {
+  const run = await input.tx.select({
+    id: heartbeatRuns.id,
+    resultJson: heartbeatRuns.resultJson,
+    runnerProfileJson: heartbeatRuns.runnerProfileJson,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, input.runId),
+    eq(heartbeatRuns.companyId, input.companyId),
+  )).for("update").limit(1).then((rows) => rows[0] ?? null);
+  if (!run) throw new Error("native_status_run_missing");
+  const target = input.runnerProfile ? record(run.runnerProfileJson) : record(run.resultJson);
+  await input.tx.update(heartbeatRuns).set({
+    ...(input.runnerProfile
+      ? { runnerProfileJson: { ...target, [input.key]: input.value } }
+      : { resultJson: { ...target, [input.key]: input.value } }),
+    updatedAt: new Date(),
+  }).where(eq(heartbeatRuns.id, input.runId));
+  return run.id;
+}
 
 function failAt(actual: NativeStatusCommitFailpoint, requested?: NativeStatusCommitFailpoint) {
   if (actual === requested) throw new Error(`native_status_failpoint:${actual}`);
@@ -269,6 +442,14 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "bind_blocker") {
     failAt("blocker_materialization", input.failpoint);
+    const [bound] = await input.tx.update(issues).set({
+      unblockDescriptor: { owner: effect.owner, action: effect.action },
+      updatedAt: new Date(),
+    }).where(and(
+      eq(issues.id, input.issue.id),
+      eq(issues.companyId, input.companyId),
+    )).returning({ id: issues.id });
+    if (!bound) throw new Error("native_blocker_binding_not_persisted");
     let wakeId: string | null = null;
     if (effect.owner !== "board") {
       wakeId = await enqueueWake({
@@ -283,9 +464,9 @@ async function materializeDecisionEffect(input: {
     }
     return {
       effectKind: effect.kind,
-      targetType: effect.owner === "board" ? "board" : "agent_wakeup_request",
-      targetId: wakeId,
-      payload: { owner: effect.owner, action: effect.action },
+      targetType: "issue_unblock_descriptor",
+      targetId: bound.id,
+      payload: { owner: effect.owner, action: effect.action, wakeId },
     };
   }
   if (effect.kind === "schedule_retry") {
@@ -334,17 +515,41 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "release_run_resources") {
     failAt("recovery_materialization", input.failpoint);
+    const [released] = await input.tx.update(heartbeatRuns).set({
+      processPid: null,
+      processGroupId: null,
+      processStartedAt: null,
+      nativePhase: "committed",
+      nativePhaseUpdatedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+    )).returning({ id: heartbeatRuns.id });
+    if (!released) throw new Error("native_run_resources_not_released");
     return {
       effectKind: effect.kind,
       targetType: "heartbeat_run",
-      targetId: input.runId,
-      payload: {},
+      targetId: released.id,
+      payload: { processReleased: true },
     };
   }
-  if (effect.kind === "record_expiry" || effect.kind === "schedule_reconciliation") {
+  if (effect.kind === "record_expiry") {
     failAt("recovery_materialization", input.failpoint);
     if (!input.issue.assigneeAgentId) throw new Error("native_recovery_owner_missing");
-    const cause = effect.kind === "record_expiry" ? "attention_expired" : "native_reconciliation_required";
+    const interaction = await input.tx.select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issue.id),
+        inArray(issueThreadInteractions.status, ["pending", "expired"]),
+      )).for("update").limit(1).then((rows) => rows[0] ?? null);
+    if (!interaction) throw new Error("native_attention_expiry_target_missing");
+    await input.tx.update(issueThreadInteractions).set({
+      status: "expired",
+      resolvedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(issueThreadInteractions.id, interaction.id));
+    const cause = "attention_expired";
     const recovery = await issueRecoveryActionService(input.tx).upsertSourceScoped({
       companyId: input.companyId,
       sourceIssueId: input.issue.id,
@@ -354,9 +559,31 @@ async function materializeDecisionEffect(input: {
       cause,
       fingerprint: nativeSha256({ runId: input.runId, decisionId: input.decisionId, cause }),
       evidence: { runId: input.runId, decisionId: input.decisionId },
-      nextAction: effect.kind === "record_expiry"
-        ? "Review the expired attention route and choose a new authorized path."
-        : "Reconcile the native decision against the latest issue status version.",
+      nextAction: "Review the expired attention route and choose a new authorized path.",
+      wakePolicy: null,
+      maxAttempts: 3,
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "issue_thread_interaction",
+      targetId: interaction.id,
+      payload: { cause, recoveryActionId: recovery.id },
+    };
+  }
+  if (effect.kind === "schedule_reconciliation") {
+    failAt("recovery_materialization", input.failpoint);
+    if (!input.issue.assigneeAgentId) throw new Error("native_recovery_owner_missing");
+    const cause = "native_reconciliation_required";
+    const recovery = await issueRecoveryActionService(input.tx).upsertSourceScoped({
+      companyId: input.companyId,
+      sourceIssueId: input.issue.id,
+      kind: "active_run_watchdog",
+      ownerType: "agent",
+      ownerAgentId: input.issue.assigneeAgentId,
+      cause,
+      fingerprint: nativeSha256({ runId: input.runId, decisionId: input.decisionId, cause }),
+      evidence: { runId: input.runId, decisionId: input.decisionId },
+      nextAction: "Reconcile the native decision against the latest issue status version.",
       wakePolicy: null,
       maxAttempts: 3,
     });
@@ -365,6 +592,340 @@ async function materializeDecisionEffect(input: {
       targetType: "issue_recovery_action",
       targetId: recovery.id,
       payload: { cause },
+    };
+  }
+  if (effect.kind === "accept_replacement_turn") {
+    const [run] = await input.tx.update(heartbeatRuns).set({
+      status: "running",
+      continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
+      nextAction: "Accept a replacement native turn on the existing run.",
+      updatedAt: new Date(),
+    }).where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+    )).returning({ id: heartbeatRuns.id, continuationAttempt: heartbeatRuns.continuationAttempt });
+    if (!run) throw new Error("native_replacement_turn_not_accepted");
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId: run.id,
+      payload: { continuationAttempt: run.continuationAttempt },
+    };
+  }
+  if (effect.kind === "cancel_continuations") {
+    const wakeRows = await input.tx.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+        sql`coalesce(
+          ${agentWakeupRequests.payload} ->> 'issueId',
+          ${agentWakeupRequests.payload} ->> 'taskId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+          ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+        ) = ${input.issue.id}`,
+      ));
+    if (wakeRows.length > 0) {
+      await input.tx.update(agentWakeupRequests).set({
+        status: "cancelled",
+        finishedAt: new Date(),
+        error: "Cancelled by native issue cancellation",
+        updatedAt: new Date(),
+      }).where(inArray(agentWakeupRequests.id, wakeRows.map((row) => row.id)));
+    }
+    const interactionRows = await input.tx.select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issue.id),
+        eq(issueThreadInteractions.status, "pending"),
+      ));
+    if (interactionRows.length > 0) {
+      await input.tx.update(issueThreadInteractions).set({
+        status: "cancelled",
+        resolvedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(inArray(issueThreadInteractions.id, interactionRows.map((row) => row.id)));
+    }
+    const [run] = await input.tx.update(heartbeatRuns).set({
+      status: "cancelled",
+      finishedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+    )).returning({ id: heartbeatRuns.id });
+    if (!run) throw new Error("native_continuation_cancellation_run_missing");
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId: run.id,
+      payload: {
+        cancelledWakeIds: wakeRows.map((row) => row.id),
+        cancelledInteractionIds: interactionRows.map((row) => row.id),
+      },
+    };
+  }
+  if (effect.kind === "append_superseding_assessment") {
+    if (!input.issue.lastStatusDecisionId) throw new Error("native_superseded_decision_missing");
+    const [decision] = await input.tx.update(statusDecisions).set({
+      supersedesDecisionId: input.issue.lastStatusDecisionId,
+    }).where(and(
+      eq(statusDecisions.id, input.decisionId),
+      eq(statusDecisions.companyId, input.companyId),
+    )).returning({ id: statusDecisions.id });
+    if (!decision) throw new Error("native_superseding_assessment_not_linked");
+    return {
+      effectKind: effect.kind,
+      targetType: "status_decision",
+      targetId: decision.id,
+      payload: { supersedesDecisionId: input.issue.lastStatusDecisionId },
+    };
+  }
+  if (effect.kind === "dispatch_pending_effect") {
+    const pending = await input.tx.select({ id: statusDecisionEffects.id })
+      .from(statusDecisionEffects).where(and(
+        eq(statusDecisionEffects.companyId, input.companyId),
+        eq(statusDecisionEffects.issueId, input.issue.id),
+        inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
+      )).for("update");
+    if (pending.length === 0) throw new Error("native_pending_effect_missing");
+    await input.tx.update(statusDecisionEffects).set({
+      deliveryState: "delivered",
+      attemptCount: sql`${statusDecisionEffects.attemptCount} + 1`,
+      deliveredAt: new Date(),
+      nextAttemptAt: null,
+      lastError: null,
+      updatedAt: new Date(),
+    }).where(inArray(statusDecisionEffects.id, pending.map((row) => row.id)));
+    await updateRunEffectState({
+      tx: input.tx,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeDispatchedEffectIds",
+      value: pending.map((row) => row.id),
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId: input.runId,
+      payload: { dispatchedEffectIds: pending.map((row) => row.id) },
+    };
+  }
+  if (effect.kind === "increment_status_version") {
+    const [updated] = await input.tx.update(issues).set({
+      statusVersion: sql`${issues.statusVersion} + 1`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(issues.id, input.issue.id),
+      eq(issues.companyId, input.companyId),
+    )).returning({ id: issues.id, statusVersion: issues.statusVersion });
+    if (!updated) throw new Error("native_status_version_not_incremented");
+    return {
+      effectKind: effect.kind,
+      targetType: "issue",
+      targetId: updated.id,
+      payload: { statusVersion: updated.statusVersion },
+    };
+  }
+  if (effect.kind === "record_shadow_decision") {
+    const targetId = await updateRunEffectState({
+      tx: input.tx,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeShadowDecision",
+      value: { decisionId: input.decisionId, applicationState: "shadow" },
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId,
+      payload: { decisionId: input.decisionId, applicationState: "shadow" },
+    };
+  }
+  if (effect.kind === "render_four_layers") {
+    const targetId = await updateRunEffectState({
+      tx: input.tx,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeOutcomeLayers",
+      value: {
+        runStatus: "persisted",
+        issueStatus: input.issue.status,
+        claim: "preserved",
+        decisionId: input.decisionId,
+      },
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId,
+      payload: { layerCount: 4 },
+    };
+  }
+  if (effect.kind === "materialize_contract") {
+    const contract = await input.tx.select({ id: completionContracts.id, canonicalSha256: completionContracts.canonicalSha256 })
+      .from(completionContracts).where(and(
+        eq(completionContracts.companyId, input.companyId),
+        eq(completionContracts.issueId, input.issue.id),
+      )).orderBy(desc(completionContracts.revision)).limit(1).then((rows) => rows[0] ?? null);
+    if (!contract) throw new Error("native_completion_contract_missing");
+    await input.tx.update(heartbeatRuns).set({
+      completionContractId: contract.id,
+      completionContractSha256: contract.canonicalSha256,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+    ));
+    return {
+      effectKind: effect.kind,
+      targetType: "completion_contract",
+      targetId: contract.id,
+      payload: { canonicalSha256: contract.canonicalSha256 },
+    };
+  }
+  if (effect.kind === "record_mode_labeled_divergence") {
+    const targetId = await updateRunEffectState({
+      tx: input.tx,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeLegacyDivergence",
+      value: { mode: "native", decisionId: input.decisionId, classified: true },
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId,
+      payload: { mode: "native", classified: true },
+    };
+  }
+  if (effect.kind === "record_mode_native") {
+    const [run] = await input.tx.update(heartbeatRuns).set({
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(heartbeatRuns.id, input.runId),
+      eq(heartbeatRuns.companyId, input.companyId),
+    )).returning({ id: heartbeatRuns.id });
+    if (!run) throw new Error("native_runtime_mode_not_recorded");
+    return { effectKind: effect.kind, targetType: "heartbeat_run", targetId: run.id, payload: { runtimeMode: "native" } };
+  }
+  if (effect.kind === "record_policy_version") {
+    const targetId = await updateRunEffectState({
+      tx: input.tx,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeStatusPolicyVersion",
+      value: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      runnerProfile: true,
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId,
+      payload: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION },
+    };
+  }
+  if (effect.kind === "finish_as_native") {
+    const targetId = await updateRunEffectState({
+      tx: input.tx,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeKillSwitchDisposition",
+      value: "finish_as_native",
+    });
+    await input.tx.update(heartbeatRuns).set({ runtimeMode: "native", updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, input.runId));
+    return { effectKind: effect.kind, targetType: "heartbeat_run", targetId, payload: { runtimeMode: "native" } };
+  }
+  if (effect.kind === "stop_new_native_dispatch") {
+    const targetId = await updateRunEffectState({
+      tx: input.tx,
+      companyId: input.companyId,
+      runId: input.runId,
+      key: "nativeDispatchAfterRun",
+      value: "legacy",
+      runnerProfile: true,
+    });
+    return { effectKind: effect.kind, targetType: "heartbeat_run", targetId, payload: { nextDispatchMode: "legacy" } };
+  }
+  if (effect.kind === "resume_workspace_operation") {
+    const previous = await input.tx.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, input.companyId),
+      eq(workspaceOperations.heartbeatRunId, input.runId),
+      eq(workspaceOperations.phase, "workspace_finalize"),
+    )).orderBy(desc(workspaceOperations.createdAt)).limit(1).then((rows) => rows[0] ?? null);
+    if (!previous) throw new Error("native_workspace_operation_missing");
+    const [resumed] = await input.tx.insert(workspaceOperations).values({
+      companyId: input.companyId,
+      executionWorkspaceId: previous.executionWorkspaceId,
+      heartbeatRunId: input.runId,
+      issueId: input.issue.id,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      exitCode: 0,
+      metadata: { resumedFromOperationId: previous.id, nativeDecisionId: input.decisionId },
+      finishedAt: new Date(),
+    }).returning({ id: workspaceOperations.id });
+    if (!resumed) throw new Error("native_workspace_operation_not_resumed");
+    return {
+      effectKind: effect.kind,
+      targetType: "workspace_operation",
+      targetId: resumed.id,
+      payload: { resumedFromOperationId: previous.id },
+    };
+  }
+  if (effect.kind === "record_stale_response") {
+    const interaction = await input.tx.select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issue.id),
+        inArray(issueThreadInteractions.status, ["answered", "accepted", "rejected", "expired"]),
+      )).orderBy(desc(issueThreadInteractions.updatedAt)).limit(1).then((rows) => rows[0] ?? null);
+    if (!interaction) throw new Error("native_stale_response_missing");
+    await input.tx.update(issueThreadInteractions).set({
+      summary: "Response retained for audit after native supersession.",
+      updatedAt: new Date(),
+    }).where(eq(issueThreadInteractions.id, interaction.id));
+    return { effectKind: effect.kind, targetType: "issue_thread_interaction", targetId: interaction.id, payload: { status: "superseded" } };
+  }
+  if (effect.kind === "link_canonical_request") {
+    const interactions = await input.tx.select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issue.id),
+      )).orderBy(asc(issueThreadInteractions.createdAt)).limit(2);
+    if (interactions.length < 2) throw new Error("native_attention_canonical_pair_missing");
+    const canonical = interactions[0]!;
+    const duplicate = interactions[1]!;
+    await input.tx.update(issueThreadInteractions).set({
+      summary: `Canonical native attention request: ${canonical.id}`,
+      updatedAt: new Date(),
+    }).where(eq(issueThreadInteractions.id, duplicate.id));
+    return {
+      effectKind: effect.kind,
+      targetType: "issue_thread_interaction",
+      targetId: duplicate.id,
+      payload: { canonicalRequestId: canonical.id },
+    };
+  }
+  if (effect.kind === "release_checkout") {
+    const [released] = await input.tx.update(issues).set({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(issues.id, input.issue.id),
+      eq(issues.companyId, input.companyId),
+    )).returning({ id: issues.id });
+    if (!released) throw new Error("native_checkout_not_released");
+    return {
+      effectKind: effect.kind,
+      targetType: "issue_checkout",
+      targetId: released.id,
+      payload: { checkoutRunId: null, executionRunId: null },
     };
   }
   if (effect.kind === "record_recovery") {
@@ -389,12 +950,7 @@ async function materializeDecisionEffect(input: {
       payload: { cause: effect.cause, nextAction: effect.nextAction },
     };
   }
-  return {
-    effectKind: effect.kind,
-    targetType: "issue_checkout",
-    targetId: input.issue.id,
-    payload: { checkoutRunId: input.issue.checkoutRunId, executionRunId: input.issue.executionRunId },
-  };
+  return assertNeverEffect(effect);
 }
 
 export async function commitNativeStatusDecision(input: {
@@ -425,15 +981,25 @@ export async function commitNativeStatusDecision(input: {
       eq(issues.id, input.issueId),
       eq(issues.companyId, input.companyId),
     )).for("update").limit(1).then((rows) => rows[0] ?? null);
+    if (!issue) throw new NativeStatusRaceError();
+    if (coordinator.phase === "committed" && coordinator.decisionId) {
+      const existingDecision = await tx.select().from(statusDecisions).where(and(
+        eq(statusDecisions.id, coordinator.decisionId),
+        eq(statusDecisions.companyId, input.companyId),
+        eq(statusDecisions.issueId, input.issueId),
+      )).limit(1).then((rows) => rows[0] ?? null);
+      if (!existingDecision) throw new Error("native_committed_decision_missing");
+      return { decision: existingDecision, issue, replayed: true };
+    }
     if (
-      !issue
-      || issue.status !== input.priorStatus
+      issue.status !== input.priorStatus
       || Number(issue.statusVersion) !== input.priorStatusVersion
       || issue.lastStatusDecisionId !== input.priorDecisionId
     ) {
       throw new NativeStatusRaceError();
     }
     const decisionJson = {
+      statusAction: input.decision.statusAction,
       toStatus: input.decision.toStatus,
       reasonCode,
       unblockDescriptor: input.decision.unblockDescriptor,
@@ -452,7 +1018,7 @@ export async function commitNativeStatusDecision(input: {
       eq(statusDecisions.issueId, input.issueId),
       eq(statusDecisions.decisionDigest, decisionDigest),
     )).limit(1).then((rows) => rows[0] ?? null);
-    if (decisionRow?.applicationState === "applied") {
+    if (decisionRow?.applicationState === "applied" || decisionRow?.applicationState === "proposed") {
       return { decision: decisionRow, issue, replayed: true };
     }
     if (!decisionRow) {
@@ -485,24 +1051,34 @@ export async function commitNativeStatusDecision(input: {
       }));
     }
 
-    failAt("status_projection", input.failpoint);
-    const updated = await issueService(tx as unknown as Db).update(input.issueId, {
-      status: input.decision.toStatus,
-      statusVersion: input.priorStatusVersion + 1,
-      lastStatusDecisionId: decisionRow.id,
-      unblockDescriptor: input.decision.unblockDescriptor,
-      actorAgentId: null,
-      actorUserId: null,
-    }, tx, publications);
-    if (!updated) throw new NativeStatusRaceError();
-    materialized.unshift({
-      effectKind: "issue_status_projection",
-      targetType: "issue",
-      targetId: input.issueId,
-      payload: { fromStatus: issue.status, toStatus: input.decision.toStatus, reasonCode },
-    });
+    let updated: typeof issues.$inferSelect;
+    if (input.decision.statusAction === "preserve") {
+      updated = await tx.select().from(issues).where(and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+      )).limit(1).then((rows) => rows[0] ?? null) as typeof issues.$inferSelect;
+      if (!updated) throw new NativeStatusRaceError();
+    } else {
+      failAt("status_projection", input.failpoint);
+      const projected = await issueService(tx as unknown as Db).update(input.issueId, {
+        status: input.decision.toStatus,
+        statusVersion: input.priorStatusVersion + 1,
+        lastStatusDecisionId: decisionRow.id,
+        unblockDescriptor: input.decision.unblockDescriptor,
+        actorAgentId: null,
+        actorUserId: null,
+      }, tx, publications);
+      if (!projected) throw new NativeStatusRaceError();
+      updated = projected;
+      materialized.unshift({
+        effectKind: "issue_status_projection",
+        targetType: "issue",
+        targetId: input.issueId,
+        payload: { fromStatus: issue.status, toStatus: input.decision.toStatus, reasonCode },
+      });
+    }
 
-    if (input.decision.toStatus === "done" && issue.status !== "done") {
+    if (input.decision.statusAction === "done" && issue.status !== "done") {
       const issueSvc = issueService(tx as unknown as Db);
       const dependents = await issueSvc.listWakeableBlockedDependents(input.issueId);
       for (const dependent of dependents) {
@@ -564,24 +1140,34 @@ export async function commitNativeStatusDecision(input: {
         deliveredAt: new Date(),
       }).onConflictDoNothing();
     }
-    await tx.update(statusDecisions).set({ applicationState: "applied", appliedAt: new Date() })
+    const shadowOnly = input.decision.effects.some((effect) => effect.kind === "record_shadow_decision");
+    const finalizationError = input.decision.effects.find((effect) => effect.kind === "record_finalization_error");
+    const applicationState = shadowOnly ? "proposed" : "applied";
+    await tx.update(statusDecisions).set({
+      applicationState,
+      appliedAt: shadowOnly ? null : new Date(),
+    })
       .where(eq(statusDecisions.id, decisionRow.id));
     await tx.update(nativeRunFinalizations).set({
-      phase: "committed",
+      phase: finalizationError ? "retryable_failure" : "committed",
       assessmentId: input.assessmentId,
       decisionId: decisionRow.id,
       leaseOwner: null,
       leaseExpiresAt: null,
-      failureCode: null,
-      failureDetail: null,
-      nextAttemptAt: null,
+      failureCode: finalizationError?.cause ?? null,
+      failureDetail: finalizationError ? {
+        originalFailureCode: finalizationError.cause,
+        recoveryOwner: { kind: "agent", agentId: finalizationError.agentId },
+        nextAction: finalizationError.nextAction,
+      } : null,
+      nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
       updatedAt: new Date(),
     }).where(eq(nativeRunFinalizations.runId, input.runId));
     const { publication } = await persistActivity(tx as unknown as Db, {
       companyId: input.companyId,
       actorType: "system",
       actorId: "native-status-committer",
-      action: "issue.updated",
+      action: input.decision.statusAction === "preserve" ? "issue.status_decision_recorded" : "issue.updated",
       entityType: "issue",
       entityId: input.issueId,
       issueId: input.issueId,
@@ -598,7 +1184,7 @@ export async function commitNativeStatusDecision(input: {
     });
     publications.push(publication);
     return {
-      decision: { ...decisionRow, applicationState: "applied" },
+      decision: { ...decisionRow, applicationState },
       issue: updated,
       replayed: false,
     };

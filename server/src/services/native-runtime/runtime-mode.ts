@@ -1,18 +1,24 @@
 import {
-  arbitrateNativeStatusScenario,
+  NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
-  type NativeStatusAuthorityScenario,
+  type NativeStatusDecision,
 } from "./status-arbiter.js";
 
 export const NATIVE_RUNTIME_RESOLVER_VERSION = "phase6-v1" as const;
 
 export type NativeRuntimeResolution =
-  | { kind: "legacy"; resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION; reason: string }
+  | {
+      kind: "legacy";
+      resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
+      reason: string;
+      authorityDecision?: NativeStatusDecision;
+    }
   | {
       kind: "native";
       resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
       reason: "eligible_opt_in";
       profile: { mode: "native"; backend: "codex_app_server"; protocolVersion: 1 };
+      authorityDecision: NativeStatusDecision;
     };
 
 export class NativeRuntimeEligibilityError extends Error {
@@ -32,7 +38,7 @@ function record(value: unknown): Record<string, unknown> {
 export function resolveNativeRuntimeMode(input: {
   enabled: boolean;
   runtimeConfig: unknown;
-  agent: { status: string; adapterType: string | null };
+  agent: { id?: string; status: string; adapterType: string | null };
   issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
   target: { kind?: string } | null | undefined;
   workspaceId: string | null;
@@ -40,7 +46,20 @@ export function resolveNativeRuntimeMode(input: {
   const nativeRunner = record(record(input.runtimeConfig).nativeRunner);
   const mode = nativeRunner.mode;
   if (!input.enabled) {
-    return { kind: "legacy", resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION, reason: "instance_flag_disabled" };
+    const compatibility = resolveNativeCompatibilityStatus({
+      facts: { shadowApplicationDisabled: true },
+      priorIssueStatus: "in_progress",
+      agentId: input.agent.id ?? "00000000-0000-4000-8000-000000000000",
+    });
+    if (!compatibility.effects.some((effect) => effect.kind === "record_shadow_decision")) {
+      throw new NativeRuntimeEligibilityError("disabled native application must remain shadow-only");
+    }
+    return {
+      kind: "legacy",
+      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
+      reason: "instance_flag_disabled",
+      authorityDecision: compatibility,
+    };
   }
   if (mode === undefined || mode === "legacy") {
     return { kind: "legacy", resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION, reason: "agent_not_opted_in" };
@@ -58,11 +77,20 @@ export function resolveNativeRuntimeMode(input: {
   if (!input.workspaceId || input.target?.kind && input.target.kind !== "local") {
     throw new NativeRuntimeEligibilityError("a realized local workspace is required");
   }
+  const rollout = resolveNativeMigrationStatus({
+    facts: { applicationEnabled: true },
+    priorIssueStatus: "in_progress",
+    agentId: input.agent.id ?? "00000000-0000-4000-8000-000000000000",
+  });
+  if (!rollout.effects.some((effect) => effect.kind === "record_mode_native")) {
+    throw new NativeRuntimeEligibilityError("native rollout policy did not select native mode");
+  }
   return {
     kind: "native",
     resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
     reason: "eligible_opt_in",
     profile: { mode: "native", backend: "codex_app_server", protocolVersion: 1 },
+    authorityDecision: rollout,
   };
 }
 
@@ -126,34 +154,144 @@ export function inspectNativeMigrationState(input: {
   } as const;
 }
 
-const COMPATIBILITY_STATUS_SCENARIOS = new Set<NativeStatusAuthorityScenario>([
-  "safe_partial_parse", "explicit_resume_capability", "shadow_application_disabled",
-  "mixed_ledger", "authorized_writer_incremented_version",
-]);
+export type NativeCompatibilityFacts = {
+  invalidNativeFinalization?: boolean;
+  terminalResumeAuthorized?: boolean;
+  shadowApplicationDisabled?: boolean;
+  mixedLedger?: boolean;
+  statusWriterAdvancedVersion?: boolean;
+};
 
 export function resolveNativeCompatibilityStatus(input: {
-  scenario: NativeStatusAuthorityScenario;
+  facts: NativeCompatibilityFacts;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
   agentId: string;
-}) {
-  if (!COMPATIBILITY_STATUS_SCENARIOS.has(input.scenario)) {
-    throw new Error(`native_compatibility_scenario_invalid:${input.scenario}`);
+}): NativeStatusDecision {
+  const preserve = (reasonCode: string, effects: NativeStatusDecision["effects"]): NativeStatusDecision => ({
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve",
+    toStatus: input.priorIssueStatus,
+    reasonCode,
+    unblockDescriptor: null,
+    effects,
+  });
+  if (input.facts.invalidNativeFinalization) {
+    return preserve("native_finalization_invalid", [{
+      kind: "record_finalization_error",
+      cause: "native_finalization_invalid",
+      nextAction: "Repair the persisted native result.",
+      agentId: input.agentId,
+    }]);
   }
-  return arbitrateNativeStatusScenario(input);
+  if (input.facts.terminalResumeAuthorized) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "authorized_resume",
+      unblockDescriptor: null,
+      effects: [{
+        kind: "enqueue_continuation",
+        continuationKind: "same_agent",
+        summary: "Resume the terminal issue through the authorized compatibility path.",
+        idempotencyKey: "native-compatibility:authorized-resume",
+        agentId: input.agentId,
+      }],
+    };
+  }
+  if (input.facts.shadowApplicationDisabled) {
+    return preserve("completion_contract_satisfied", [{ kind: "record_shadow_decision" }]);
+  }
+  if (input.facts.mixedLedger) {
+    return preserve("completion_contract_satisfied", [{ kind: "render_four_layers" }]);
+  }
+  if (input.facts.statusWriterAdvancedVersion) {
+    return preserve("arbitration_conflict_reloaded", [
+      { kind: "increment_status_version" },
+      { kind: "schedule_reconciliation" },
+    ]);
+  }
+  throw new Error("native_compatibility_facts_invalid");
 }
 
-const MIGRATION_STATUS_SCENARIOS = new Set<NativeStatusAuthorityScenario>([
-  "shadow_compute", "classified_native_legacy_divergence", "allowlisted_company_adapter_policy",
-  "cohort_policy_pinned", "kill_switch_during_active_native_run",
-]);
+export type NativeMigrationFacts = {
+  shadowMaterialization?: boolean;
+  classifiedDivergence?: boolean;
+  applicationEnabled?: boolean;
+  policyPinned?: boolean;
+  killSwitchActiveForNewRuns?: boolean;
+};
 
 export function resolveNativeMigrationStatus(input: {
-  scenario: NativeStatusAuthorityScenario;
+  facts: NativeMigrationFacts;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
   agentId: string;
-}) {
-  if (!MIGRATION_STATUS_SCENARIOS.has(input.scenario)) {
-    throw new Error(`native_migration_scenario_invalid:${input.scenario}`);
+}): NativeStatusDecision {
+  const preserve = (reasonCode: string, effects: NativeStatusDecision["effects"]): NativeStatusDecision => ({
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve",
+    toStatus: input.priorIssueStatus,
+    reasonCode,
+    unblockDescriptor: null,
+    effects,
+  });
+  if (input.facts.shadowMaterialization) {
+    return preserve("completion_contract_satisfied", [
+      { kind: "materialize_contract" },
+      { kind: "record_shadow_decision" },
+    ]);
   }
-  return arbitrateNativeStatusScenario(input);
+  if (input.facts.classifiedDivergence) {
+    return preserve("completion_evidence_incomplete", [{ kind: "record_mode_labeled_divergence" }]);
+  }
+  if (input.facts.killSwitchActiveForNewRuns) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "live_continuation_registered",
+      unblockDescriptor: null,
+      effects: [
+        {
+          kind: "enqueue_continuation",
+          continuationKind: "same_agent",
+          summary: "Finish the already-active run in native mode.",
+          idempotencyKey: "native-migration:kill-switch-active-run",
+          agentId: input.agentId,
+        },
+        { kind: "finish_as_native" },
+        { kind: "stop_new_native_dispatch" },
+      ],
+    };
+  }
+  if (input.facts.policyPinned) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "done",
+      toStatus: "done",
+      reasonCode: "completion_contract_satisfied",
+      unblockDescriptor: null,
+      effects: [{ kind: "record_mode_native" }, { kind: "record_policy_version" }],
+    };
+  }
+  if (input.facts.applicationEnabled) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "live_continuation_registered",
+      unblockDescriptor: null,
+      effects: [
+        {
+          kind: "enqueue_continuation",
+          continuationKind: "same_agent",
+          summary: "Continue the allowlisted native run.",
+          idempotencyKey: "native-migration:application-enabled",
+          agentId: input.agentId,
+        },
+        { kind: "record_mode_native" },
+      ],
+    };
+  }
+  throw new Error("native_migration_facts_invalid");
 }

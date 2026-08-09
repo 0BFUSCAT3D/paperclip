@@ -14,11 +14,9 @@ import {
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import {
   arbitrateNativeStatus,
-  arbitrateNativeStatusScenario,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
   type NativeGovernanceGate,
-  type NativeStatusAuthorityScenario,
 } from "./status-arbiter.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
@@ -49,17 +47,9 @@ export function projectNativeTerminalRunStatus(
   return terminalState === "active" ? "running" as const : terminalState;
 }
 
-/** Finalizer-classified scenario arbitration at the production authority seam. */
-export function resolveNativeFinalizerStatus(input: {
-  scenario: NativeStatusAuthorityScenario;
-  priorIssueStatus: NativeAuthoritativeIssueStatus;
-  agentId: string;
-  governanceGate?: NativeGovernanceGate | null;
-  blockerAction?: string;
-} | Parameters<typeof arbitrateNativeStatus>[0]) {
-  return "scenario" in input
-    ? arbitrateNativeStatusScenario(input)
-    : arbitrateNativeStatus(input);
+/** Fact-based arbitration at the production finalization authority seam. */
+export function resolveNativeFinalizerStatus(input: Parameters<typeof arbitrateNativeStatus>[0]) {
+  return arbitrateNativeStatus(input);
 }
 
 async function pendingNativeGovernance(input: {
@@ -283,18 +273,6 @@ export async function finalizeNativeRun(input: {
     if (input.projectRunStatus) await projectCommittedRun({ db: input.db, run, coordinator });
     return coordinator;
   }
-  if (input.workspaceFinalizeStatus === "failed") {
-    return recordRetryableFailure({
-      db: input.db,
-      run,
-      coordinator,
-      failureCode: "workspace_finalization_failed",
-      message: "Native result preserved; issue status intentionally unchanged.",
-      nextAction: "Repair and re-run workspace finalization for the persisted native result.",
-      projectRunStatus: input.projectRunStatus,
-    });
-  }
-
   const [resultRow, contractRow] = await Promise.all([
     input.db.select().from(nativeRunResults)
       .where(and(
@@ -395,16 +373,20 @@ export async function finalizeNativeRun(input: {
         failpoint: input.failpoint,
       });
       const now = new Date();
+      const finalizationFailed = decision.effects.some((effect) => effect.kind === "record_finalization_error");
+      const finalizationPhase = finalizationFailed ? "retryable_failure" : "committed";
       await input.db.update(heartbeatRuns).set({
-        ...(input.projectRunStatus ? {
-          status: terminalState === "succeeded" ? "succeeded" : terminalState === "cancelled" ? "cancelled" : "failed",
+        ...(input.projectRunStatus || finalizationFailed ? {
+          status: finalizationFailed
+            ? "failed"
+            : terminalState === "succeeded" ? "succeeded" : terminalState === "cancelled" ? "cancelled" : "failed",
           finishedAt: now,
         } : {}),
-        nativePhase: "committed",
+        nativePhase: finalizationPhase,
         nativePhaseUpdatedAt: now,
         resultJson: {
           ...record(run.resultJson),
-          finalizationPhase: "committed",
+          finalizationPhase,
           assessmentId: assessmentRow.id,
           decisionId: committed.decision.id,
           authoritativeDecision: decision.toStatus,
@@ -416,7 +398,7 @@ export async function finalizeNativeRun(input: {
         },
         updatedAt: now,
       }).where(eq(heartbeatRuns.id, run.id));
-      return { ...coordinator, phase: "committed", assessmentId: assessmentRow.id, decisionId: committed.decision.id };
+      return { ...coordinator, phase: finalizationPhase, assessmentId: assessmentRow.id, decisionId: committed.decision.id };
     } catch (error) {
       if (error instanceof NativeStatusRaceError && attempt < 2) {
         supersedesAssessmentId = assessmentRow.id;
