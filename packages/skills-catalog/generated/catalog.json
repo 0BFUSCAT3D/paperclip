@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-09T19:26:15.528Z",
+  "generatedAt": "2026-08-09T19:30:17.702Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -565,7 +565,7 @@
       "category": "knowledge",
       "slug": "okf-knowledge",
       "name": "okf-knowledge",
-      "description": "Export a company's knowledge — agent memory, skills, issue decisions, documents, and Content Machine sources — into a portable Open Knowledge Format (OKF) v0.1 bundle, and consume an external OKF bundle as agent-readable, interlinkable knowledge. Use when asked to back up, share, hand off, or import company knowledge in a tool-neutral markdown format.",
+      "description": "Export company knowledge—agent memory, skills, decisions, documents, and sources—into portable Open Knowledge Format (OKF) bundles, or consume external bundles as agent-readable, linked knowledge. Use for tool-neutral markdown backups, sharing, handoffs, and imports.",
       "path": "catalog/optional/knowledge/okf-knowledge",
       "entrypoint": "SKILL.md",
       "trustLevel": "scripts_executables",
@@ -589,8 +589,8 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 5374,
-          "sha256": "848925d0f6cf534a359b52220b4b2b174c903725dec3800615561f99a5679ac7"
+          "sizeBytes": 5288,
+          "sha256": "e2644c8310c3d798aa9d504575db24eb0a5da6e8f119dee4568606499dedb1a8"
         },
         {
           "path": "references/importing-okf.md",
@@ -677,7 +677,7 @@
           "sha256": "1bb899ac725d925bde49b54c479d12bfea047a98a09edbe16e619c346f0442f4"
         }
       ],
-      "contentHash": "sha256:a5b3ad80f0d59b8fd69e8955f22bfabfe36bf8824a749e3fefe6b56b8dee6237"
+      "contentHash": "sha256:545f4640f21285f495b7ccc764f60d104c2c21a119f3d761c84f5a3cdbb3e67e"
     },
     {
       "id": "paperclipai:optional:product:design-critique",

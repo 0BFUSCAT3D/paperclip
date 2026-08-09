@@ -1,6 +1,6 @@
 ---
 name: okf-knowledge
-description: Export a company's knowledge — agent memory, skills, issue decisions, documents, and Content Machine sources — into a portable Open Knowledge Format (OKF) v0.1 bundle, and consume an external OKF bundle as agent-readable, interlinkable knowledge. Use when asked to back up, share, hand off, or import company knowledge in a tool-neutral markdown format.
+description: Export company knowledge—agent memory, skills, decisions, documents, and sources—into portable Open Knowledge Format (OKF) bundles, or consume external bundles as agent-readable, linked knowledge. Use for tool-neutral markdown backups, sharing, handoffs, and imports.
 key: paperclipai/optional/knowledge/okf-knowledge
 recommendedForRoles:
   - manager
