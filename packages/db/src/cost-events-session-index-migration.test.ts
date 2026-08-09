@@ -49,7 +49,7 @@ d("cost_events issue and session token index migration", () => {
     // Idempotency: re-running the migration statements against an already
     // migrated database must be a no-op, not an error.
     const migrationSql = await readFile(
-      fileURLToPath(new URL("./migrations/0211_cost_events_issue_session_token_indexes.sql", import.meta.url)),
+      fileURLToPath(new URL("./migrations/0212_cost_events_issue_session_token_indexes.sql", import.meta.url)),
       "utf8",
     );
     const statements = migrationSql
