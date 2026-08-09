@@ -6,6 +6,19 @@ on:
       - "master"
     tags:
       - "v*"
+  # Manual builds so an unmerged ref can be previewed before it lands. This
+  # publishes a SHA-tagged image and no `latest`/`v*` (release) tag — it is a
+  # review image, not a release — and the deploy tooling accepts the resulting
+  # `sha-<short>` tag as an ordinary app ref, so nothing downstream changes.
+  # Deliberately not the release workflow: that one publishes a stable `v*`
+  # release, a far bigger act than building a preview image.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag, or commit SHA to build. Defaults to the ref this run was dispatched on."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -26,9 +39,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          # push/tag builds resolve to github.sha — the checkout default, so
+          # their behaviour is unchanged. A manual run may override it with the
+          # `ref` input to build an unmerged branch, tag, or commit.
+          ref: ${{ inputs.ref || github.sha }}
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
+
+      # Pin every downstream reference to the exact commit that was checked
+      # out. On push/tag builds this equals github.sha; on a manual run it is
+      # the head of the `ref` input, which can differ from github.sha (the ref
+      # the dispatch ran on). The SHA image tag and the commit stamped into the
+      # image are both derived from this, so a manual build always tags the
+      # commit it actually built.
+      - name: Resolve build ref
+        id: resolve-ref
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Building ${GITHUB_REF} at ${sha}"
 
       # `.git` is dockerignored, so a running image cannot derive its own
       # version and otherwise reports the source package.json placeholder in
@@ -140,7 +172,11 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha
+            # push/tag builds keep the stock sha tag (sha-<short> of github.sha).
+            # A manual run may build a ref other than github.sha, so it tags the
+            # resolved commit instead — same sha-<short> format, correct commit.
+            type=sha,enable=${{ github.event_name != 'workflow_dispatch' }}
+            type=raw,value=sha-${{ steps.resolve-ref.outputs.short_sha }},enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
@@ -155,7 +191,7 @@ jobs:
           target: production
           build-args: |
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
-            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            PAPERCLIP_BUILD_COMMIT=${{ steps.resolve-ref.outputs.sha }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
           platforms: linux/amd64,linux/arm64
           push: true
@@ -183,9 +219,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          # push/tag builds resolve to github.sha — the checkout default, so
+          # their behaviour is unchanged. A manual run may override it with the
+          # `ref` input to build an unmerged branch, tag, or commit.
+          ref: ${{ inputs.ref || github.sha }}
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
+
+      # Pin every downstream reference to the exact commit that was checked
+      # out. On push/tag builds this equals github.sha; on a manual run it is
+      # the head of the `ref` input, which can differ from github.sha (the ref
+      # the dispatch ran on). The SHA image tag and the commit stamped into the
+      # image are both derived from this, so a manual build always tags the
+      # commit it actually built.
+      - name: Resolve build ref
+        id: resolve-ref
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Building ${GITHUB_REF} at ${sha}"
 
       # `.git` is dockerignored, so a running image cannot derive its own
       # version and otherwise reports the source package.json placeholder in
@@ -301,7 +356,11 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha
+            # push/tag builds keep the stock sha tag (sha-<short> of github.sha).
+            # A manual run may build a ref other than github.sha, so it tags the
+            # resolved commit instead — same sha-<short> format, correct commit.
+            type=sha,enable=${{ github.event_name != 'workflow_dispatch' }}
+            type=raw,value=sha-${{ steps.resolve-ref.outputs.short_sha }},enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
@@ -316,7 +375,7 @@ jobs:
           build-args: |
             CLOUD_BUNDLED_PLUGINS=daytona
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
-            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            PAPERCLIP_BUILD_COMMIT=${{ steps.resolve-ref.outputs.sha }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
           # amd64 only, unlike the self-hosted image above: the cloud variant
           # is consumed exclusively by managed-deployment hosts, which run
