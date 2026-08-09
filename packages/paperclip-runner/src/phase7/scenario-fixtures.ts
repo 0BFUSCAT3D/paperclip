@@ -219,6 +219,10 @@ function applySeedKind(
       return;
     case "interaction_pending":
       refs.interactionId = "interaction-seed-1";
+      const selectedOptionIds =
+        entry.id === "ix-checkbox-result-01"
+          ? ["selected-task-1", "selected-task-2", "selected-task-3", "selected-task-4"]
+          : ["accept"];
       seed.interactions = [
         {
           id: refs.interactionId,
@@ -230,7 +234,7 @@ function applySeedKind(
           payload: { options: ["accept", "revise"] },
           targetRevisionId: null,
           continuationPolicy: "wake_assignee",
-          result: { outcome: "accepted", selectedOptionIds: ["accept"] },
+          result: { outcome: "accepted", selectedOptionIds },
           createdAt: at(0),
           resolvedAt: at(120),
         },

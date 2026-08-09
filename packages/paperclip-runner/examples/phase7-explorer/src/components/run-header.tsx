@@ -33,6 +33,7 @@ export interface RunHeaderProps {
   onRun: () => void;
   onModeChange: (mode: "fake" | "codex") => void;
   onOpenParity: () => void;
+  headerRef?: React.Ref<HTMLElement>;
 }
 
 export function RunHeader({
@@ -45,13 +46,14 @@ export function RunHeader({
   onRun,
   onModeChange,
   onOpenParity,
+  headerRef,
 }: RunHeaderProps) {
   const verdict = artifact?.parity.verdict ?? "not_run";
   const passing = artifact?.parity.assertions.filter((assertion) => assertion.status === "pass").length ?? 0;
   const total = artifact?.parity.assertions.length ?? 0;
 
   return (
-    <header className="pcr7-run-header" data-testid="run-header">
+    <header ref={headerRef} className="pcr7-run-header" data-testid="run-header" tabIndex={-1}>
       <div className="pcr7-run-title">
         <Mono>{entry.id}</Mono>
         <h1>{entry.title}</h1>

@@ -14,6 +14,12 @@ import type { Phase7ScenarioFixture } from "./scenario-fixtures.js";
 export type Phase7PlanStep =
   | { kind: "agent_message"; text: string }
   | {
+      kind: "control_plane_action";
+      action: string;
+      summary: string;
+      detail: Phase7JsonValue;
+    }
+  | {
       kind: "tool_call";
       operationId: string;
       input: Phase7JsonValue;
@@ -30,6 +36,15 @@ export type Phase7PlanStep =
 export const CREATED_TASK_REF = (ordinal: number): string => `$created-task:${ordinal}`;
 
 export const CREATED_TASK_REF_PATTERN = /^\$created-task:(\d+)$/;
+
+/**
+ * Placeholder for the observable result of an earlier semantic operation.
+ * This lets a deterministic plan model the real two-step tool contract:
+ * receive a result id, then inspect that result explicitly.
+ */
+export const OPERATION_RESULT_REF = (ordinal: number): string => `$operation-result:${ordinal}`;
+
+export const OPERATION_RESULT_REF_PATTERN = /^\$operation-result:(\d+)$/;
 
 export interface Phase7ScenarioPlan {
   steps: Phase7PlanStep[];
@@ -250,6 +265,50 @@ const AUTHORED_PLANS: Record<string, PlanFactory> = {
     ],
   }),
 
+  "ix-checkbox-result-01": (entry, fixture) => {
+    const interaction = fixture.seed.interactions?.find(
+      (candidate) => candidate.id === fixture.refs.interactionId,
+    );
+    const selectedOptionIds = selectedIds(interaction?.result ?? null);
+    return {
+      restraint: false,
+      controlPlaneCapabilities: [...CHECKOUT_CAPABILITIES],
+      steps: [
+        {
+          kind: "control_plane_action",
+          action: "route_wake",
+          summary:
+            "Control plane routed the interaction continuation with `result.selectedOptionIds` — no agent tool exists for this.",
+          detail: {
+            interactionId: fixture.refs.interactionId,
+            result: { selectedOptionIds },
+          },
+        },
+        read(
+          "get_task_context",
+          {},
+          "Read the continuation wake and its linked interaction result.",
+        ),
+        read(
+          "inspect_operation_result",
+          { operationResultId: OPERATION_RESULT_REF(1) },
+          "Inspect the context result before acting on `result.selectedOptionIds`.",
+        ),
+        ...selectedOptionIds.map((optionId, index) =>
+          write(
+            "create_task",
+            {
+              title: `Selected continuation task: ${optionId}`,
+              description: `Created from ${entry.id} result.selectedOptionIds entry ${optionId}.`,
+            },
+            `selected-${index + 1}`,
+            `Create the task selected by continuation option ${optionId}.`,
+          ),
+        ),
+      ],
+    };
+  },
+
   "rf-api-mgr-heartbeat-01": (entry) => ({
     restraint: false,
     controlPlaneCapabilities: [...CHECKOUT_CAPABILITIES, BUDGET_CAPABILITY],
@@ -353,6 +412,12 @@ const AUTHORED_PLANS: Record<string, PlanFactory> = {
     ],
   }),
 };
+
+function selectedIds(result: Phase7JsonValue): string[] {
+  if (typeof result !== "object" || result === null || Array.isArray(result)) return [];
+  const ids = result.selectedOptionIds;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+}
 
 /* ------------------------------------------------------------------ *
  * Derived plans — every remaining case.

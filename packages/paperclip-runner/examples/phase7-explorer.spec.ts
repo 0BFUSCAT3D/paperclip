@@ -80,6 +80,16 @@ test.describe("route determinism", () => {
     await expect(page.locator("main")).toContainText("Run to produce the deterministic timeline.");
     await expect(page.locator('[data-testid="run-button"]')).toBeVisible();
   });
+
+  test("an unknown case route renders a named error and returns to the picker", async ({ page }) => {
+    await open(page, "#/case/not-a-real-scenario");
+    await expect(page.locator('[data-testid="unknown-scenario"]')).toContainText(
+      "No scenario named not-a-real-scenario",
+    );
+    await page.getByRole("link", { name: "Back to the scenario picker" }).click();
+    await expect(page.locator('[data-testid="explorer-intro"]')).toBeVisible();
+    expect(page.url()).toContain("#/");
+  });
 });
 
 test.describe("acceptance evidence", () => {
@@ -122,6 +132,20 @@ test.describe("acceptance evidence", () => {
     await expect(page.locator('[data-testid="redaction-chip"]').first()).toBeVisible();
     const body = await page.locator("body").innerText();
     expect(body).not.toContain("fixture-secret-value-not-a-real-credential");
+  });
+
+  test("checkbox continuation routes, inspects, and acts on selectedOptionIds", async ({ page }) => {
+    await open(page, "#/case/ix-checkbox-result-01?run=fake&view=transcript");
+    const entries = page.locator('[data-testid="transcript"] > li');
+    await expect(entries.filter({ hasText: "result.selectedOptionIds" }).first()).toContainText(
+      "Control plane routed",
+    );
+    await expect(entries.filter({ hasText: "inspect_operation_result" }).first()).toBeVisible();
+    await expect(
+      page.locator('[data-testid="transcript"] [data-channel="agent"]', {
+        hasText: "create_task",
+      }),
+    ).toHaveCount(8);
   });
 });
 
@@ -166,6 +190,34 @@ test.describe("keyboard and accessibility", () => {
     await expect(list).toHaveAttribute("aria-activedescendant", String(second));
   });
 
+  test("picker type-ahead selects a match and Enter moves focus to the run header", async ({ page }) => {
+    await open(page, "#/?group=ix");
+    const list = page.locator('[data-testid="case-list"]');
+    await list.focus();
+    await page.keyboard.type("ix-checkbox-result");
+    await expect(list).toHaveAttribute(
+      "aria-activedescendant",
+      "case-row-ix-checkbox-result-01",
+    );
+    await page.keyboard.press("Enter");
+    await expect(page.locator('[data-testid="run-header"]')).toBeFocused();
+  });
+
+  test("the documented shortcut cycles picker, run, and inspector regions", async ({ page }) => {
+    await open(page, "#/case/hb-scoped-wake-01?run=fake&view=context");
+    await expect(page.locator('[data-testid="explorer-shell"]')).toHaveAttribute(
+      "aria-keyshortcuts",
+      "F6 Control+.",
+    );
+    await page.locator('[data-testid="scenario-picker"]').focus();
+    await page.keyboard.press("Control+.");
+    await expect(page.locator("main#run-view")).toBeFocused();
+    await page.keyboard.press("Control+.");
+    await expect(page.locator("aside[aria-label='Scenario inspector']")).toBeFocused();
+    await page.keyboard.press("Control+.");
+    await expect(page.locator('[data-testid="scenario-picker"]')).toBeFocused();
+  });
+
   test("inspector tabs follow the WAI-ARIA arrow-key pattern", async ({ page }) => {
     await open(page, "#/case/hb-scoped-wake-01?run=fake&view=context");
     // Exactly one tablist on the page: the mobile section switcher is a
@@ -178,6 +230,12 @@ test.describe("keyboard and accessibility", () => {
     await page.keyboard.press("ArrowRight");
     await expect(selected).toContainText("State diff");
     await expect(page.locator('[role="tabpanel"]')).toBeVisible();
+    for (const name of ["context", "authorization", "diff", "parity"]) {
+      await expect(page.locator(`[data-testid="inspector-tab-${name}"]`)).toHaveAttribute(
+        "role",
+        "tab",
+      );
+    }
   });
 
   test("every interactive control is reachable and named", async ({ page }) => {
@@ -205,6 +263,14 @@ test.describe("keyboard and accessibility", () => {
       "Scenario run settled — verdict pass",
     );
   });
+
+  test("a denied transcript result has exactly one assertive announcement", async ({ page }) => {
+    await open(page, "#/case/ap-mcp-gate-01?run=fake&view=transcript");
+    const announcement = page.locator('[data-testid="denial-announcement"]');
+    await expect(announcement).toHaveCount(1);
+    await expect(announcement).toHaveAttribute("aria-live", "assertive");
+    await expect(announcement).toContainText("request_approval denied");
+  });
 });
 
 test.describe("responsive", () => {
@@ -231,5 +297,18 @@ test.describe("responsive", () => {
       () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
     );
     expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test("explorer badge overrides preserve exact labels and intrinsic width", async ({ page }) => {
+    await open(page, "#/case/hb-scoped-wake-01?run=fake&view=transcript");
+    const badge = page.locator('.pcr-disclosure-summary [data-slot="badge"]').first();
+    await expect(badge).toBeVisible();
+    const metrics = await badge.evaluate((element) => ({
+      textTransform: getComputedStyle(element).textTransform,
+      width: element.getBoundingClientRect().width,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(metrics.textTransform).toBe("none");
+    expect(metrics.width + 0.5).toBeGreaterThanOrEqual(metrics.scrollWidth);
   });
 });

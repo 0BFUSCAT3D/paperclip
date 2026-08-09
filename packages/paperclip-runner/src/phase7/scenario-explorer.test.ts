@@ -223,6 +223,61 @@ describe("phase 7 scenario runs", () => {
     expect(artifact.diff.domains.find((domain) => domain.domain === "artifacts")?.changed).toBe(true);
   });
 
+  it("routes a checkbox continuation, inspects its result, then acts on selectedOptionIds", async () => {
+    const artifact = await phase7RunScenario(entryFor("ix-checkbox-result-01"));
+    const routeWake = artifact.timeline.find(
+      (item) => item.kind === "control_plane_action" && item.action === "route_wake",
+    );
+    expect(routeWake).toMatchObject({
+      kind: "control_plane_action",
+      detail: {
+        result: {
+          selectedOptionIds: [
+            "selected-task-1",
+            "selected-task-2",
+            "selected-task-3",
+            "selected-task-4",
+          ],
+        },
+      },
+    });
+
+    const calls = artifact.timeline.filter((item) => item.kind === "semantic_call");
+    expect(calls.map((item) => item.operationId)).toEqual([
+      "get_task_context",
+      "inspect_operation_result",
+      "create_task",
+      "create_task",
+      "create_task",
+      "create_task",
+    ]);
+    const inspected = artifact.timeline.find(
+      (item) => item.kind === "semantic_result" && item.operationId === "inspect_operation_result",
+    );
+    expect(inspected).toMatchObject({
+      kind: "semantic_result",
+      value: {
+        wake: {
+          payload: {
+            result: {
+              selectedOptionIds: [
+                "selected-task-1",
+                "selected-task-2",
+                "selected-task-3",
+                "selected-task-4",
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(
+      artifact.diff.domains
+        .find((domain) => domain.domain === "tasks")
+        ?.rows.filter((row) => row.change === "added"),
+    ).toHaveLength(4);
+  });
+
   it("shows first-class blocker edges in the state diff", async () => {
     const artifact = await phase7RunScenario(entryFor("bl-create-blocked-01"));
     const blockers = artifact.diff.domains.find((domain) => domain.domain === "blockers");

@@ -77,6 +77,9 @@ export function ExplorerApp({
   );
   const [replayPosition, setReplayPosition] = React.useState(0);
   const [highlight, setHighlight] = React.useState<number | null>(null);
+  const [runFocusRequest, setRunFocusRequest] = React.useState(0);
+  const shellRef = React.useRef<HTMLDivElement>(null);
+  const runHeaderRef = React.useRef<HTMLElement>(null);
 
   const selected = route.caseId === null ? null : findEntry(index, route.caseId);
   const artifact = selected === null ? null : (artifacts[selected.id] ?? null);
@@ -101,6 +104,33 @@ export function ExplorerApp({
   React.useEffect(() => {
     setSegment(route.caseId === null ? "scenarios" : route.view === "transcript" ? "run" : "inspect");
   }, [route.caseId, route.view]);
+
+  React.useEffect(() => {
+    if (runFocusRequest === 0 || selected === null) return;
+    runHeaderRef.current?.focus();
+  }, [runFocusRequest, selected]);
+
+  React.useEffect(() => {
+    const cycleRegions = (event: KeyboardEvent): void => {
+      const documentedAlternative = event.ctrlKey && event.code === "Period";
+      if (event.code !== "F6" && !documentedAlternative) return;
+      const regions = shellRef.current?.querySelectorAll<HTMLElement>(
+        ".pcr7-rail, .pcr7-center, .pcr7-inspector",
+      );
+      if (regions === undefined || regions.length === 0) return;
+      event.preventDefault();
+      const current = [...regions].findIndex((region) => region.contains(document.activeElement));
+      const delta = event.shiftKey ? -1 : 1;
+      const next = current < 0
+        ? event.shiftKey
+          ? regions.length - 1
+          : 0
+        : (current + delta + regions.length) % regions.length;
+      regions[next]?.focus();
+    };
+    document.addEventListener("keydown", cycleRegions, true);
+    return () => document.removeEventListener("keydown", cycleRegions, true);
+  }, []);
 
   const run = React.useCallback(
     async (entry: Phase7ScenarioIndexEntry) => {
@@ -166,6 +196,11 @@ export function ExplorerApp({
     setReplayPosition(artifacts[id]?.timeline.length ?? 0);
   }
 
+  function commitCase(id: string): void {
+    selectCase(id);
+    setRunFocusRequest((request) => request + 1);
+  }
+
   function setView(next: Phase7InspectorView): void {
     navigate({ ...route, view: next });
     if (next !== "transcript") setSegment("inspect");
@@ -178,14 +213,20 @@ export function ExplorerApp({
 
   return (
     <div
+      ref={shellRef}
       className="pcr-root pcr7-shell"
       data-run-state={settled}
       data-segment={segment}
       data-testid="explorer-shell"
+      aria-keyshortcuts="F6 Control+."
     >
       <a className="pcr7-skip-link" href="#run-view">
         Skip to run view
       </a>
+      <p className="pcr7-visually-hidden">
+        Region shortcut: press F6, or Control+Period when the browser reserves F6, to cycle the
+        scenario picker, run view, and inspector.
+      </p>
 
       {/*
         A radiogroup, not a tablist: the three regions stay landmarks
@@ -222,10 +263,19 @@ export function ExplorerApp({
           onFilterChange={setFilters}
           onClearFilters={() => setFilters(EMPTY_FILTERS)}
           onSelect={selectCase}
+          onCommitSelection={commitCase}
         />
 
-        <main className="pcr7-center" id="run-view" aria-label="Scenario run">
-          {selected === null ? (
+        <main className="pcr7-center" id="run-view" aria-label="Scenario run" tabIndex={-1}>
+          {route.caseId !== null && selected === null ? (
+            <UnknownScenarioCard
+              caseId={route.caseId}
+              onBack={() => {
+                navigate({ ...route, caseId: null, run: null, view: "transcript" });
+                setSegment("scenarios");
+              }}
+            />
+          ) : selected === null ? (
             <IntroCard index={index} onSelect={selectCase} />
           ) : (
             <>
@@ -252,6 +302,7 @@ export function ExplorerApp({
                 onRun={() => void run(selected)}
                 onModeChange={setMode}
                 onOpenParity={() => setView("parity")}
+                headerRef={runHeaderRef}
               />
               <p className="pcr7-visually-hidden" role="status" aria-live="polite">
                 {runState === "settled"
@@ -278,11 +329,11 @@ export function ExplorerApp({
           )}
         </main>
 
-        <aside className="pcr7-inspector" aria-label="Scenario inspector">
+        <aside className="pcr7-inspector" aria-label="Scenario inspector" tabIndex={-1}>
           {selected === null ? (
             <CorpusSummary index={index} />
           ) : (
-            <Tabs
+            <InspectorTabs
               items={INSPECTOR_TABS.map((tab) =>
                 tab.id === "authorization" && artifact !== null
                   ? {
@@ -311,11 +362,45 @@ export function ExplorerApp({
               ) : (
                 <ParityPanel parity={artifact?.parity ?? null} />
               )}
-            </Tabs>
+            </InspectorTabs>
           )}
         </aside>
       </div>
     </div>
+  );
+}
+
+function InspectorTabs(props: React.ComponentProps<typeof Tabs>) {
+  const assignTestIds = React.useCallback((node: HTMLDivElement | null) => {
+    if (node === null) return;
+    for (const tab of node.querySelectorAll<HTMLElement>('[role="tab"][data-tab-id]')) {
+      tab.setAttribute("data-testid", `inspector-tab-${tab.dataset.tabId}`);
+    }
+  }, []);
+  return (
+    <div ref={assignTestIds} data-testid="inspector-tabs">
+      <Tabs {...props} />
+    </div>
+  );
+}
+
+function UnknownScenarioCard({ caseId, onBack }: { caseId: string; onBack: () => void }) {
+  return (
+    <section className="pcr7-intro" role="alert" data-testid="unknown-scenario">
+      <p className="pcr-eyebrow">Scenario not found</p>
+      <h1>No scenario named <Mono>{caseId}</Mono></h1>
+      <p>The route does not match a case in this generated scenario index.</p>
+      <a
+        className="pcr7-linkish"
+        href="#/"
+        onClick={(event) => {
+          event.preventDefault();
+          onBack();
+        }}
+      >
+        Back to the scenario picker
+      </a>
+    </section>
   );
 }
 

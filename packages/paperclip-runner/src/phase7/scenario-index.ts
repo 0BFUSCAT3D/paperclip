@@ -148,6 +148,7 @@ const RF_FAMILY_CLAIMS: Array<[string, string[]]> = [
 
 /** Case-level overrides where the case, not the fixture, sets the posture. */
 const CASE_PROFILES: Record<string, Partial<Phase7ScenarioProfile>> = {
+  "ix-checkbox-result-01": { claims: DELEGATION_CLAIMS },
   "wk-ask-mode-01": { taskMode: "ask" },
   "wk-plan-directive-01": { taskMode: "planning" },
   "wk-plan-directive-02": { taskMode: "planning" },

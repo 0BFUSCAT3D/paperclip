@@ -98,6 +98,10 @@ body {
 .pcr7-input:focus-visible,
 .pcr7-facet-value:focus-visible,
 .pcr7-case-list:focus-visible,
+.pcr7-rail:focus-visible,
+.pcr7-center:focus-visible,
+.pcr7-inspector:focus-visible,
+.pcr7-run-header:focus-visible,
 .pcr7-chip:focus-visible,
 .pcr7-linkish:focus-visible,
 .pcr7-segmented button:focus-visible {

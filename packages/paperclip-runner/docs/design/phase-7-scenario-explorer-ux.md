@@ -540,3 +540,11 @@ session at both viewports.
     defaults are collapsed exactly as §4.3 specifies (verified in the gate's
     live session); the expanded captures are a deliberate evidence choice,
     not the default density.
+
+13. **UX-gate keyboard follow-up.** The explorer handles `F6` for region
+    cycling when the browser delivers that key to the page. Chromium reserves
+    bare `F6` for browser chrome, so the documented in-page alternative is
+    `Control+Period`; `aria-keyshortcuts` exposes both bindings. Either binding
+    cycles picker (`nav`) → run (`main`) → inspector (`complementary`), with
+    `Shift+F6` cycling in reverse where bare `F6` is available. The skip link
+    remains unchanged.

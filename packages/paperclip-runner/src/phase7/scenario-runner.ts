@@ -16,9 +16,13 @@ import {
   type Phase7SemanticToolDescriptor,
   type Phase7ToolInvocationResult,
 } from "../tools/phase7-semantic-tool-types.js";
-import { phase7ScenarioFixture } from "./scenario-fixtures.js";
+import {
+  phase7ScenarioFixture,
+  type Phase7ScenarioFixture,
+} from "./scenario-fixtures.js";
 import {
   CREATED_TASK_REF_PATTERN,
+  OPERATION_RESULT_REF_PATTERN,
   phase7ScenarioPlan,
   type Phase7PlanStep,
   type Phase7ScenarioPlan,
@@ -73,6 +77,7 @@ export async function phase7RunScenario(
   let decisionCursor = 0;
   let wakeCursor = 0;
   const createdTaskIds: string[] = [];
+  const operationResultIds: string[] = [];
 
   const before = snapshotOf(adapter);
   const context = await adapter.openFixtureRun({
@@ -85,7 +90,10 @@ export async function phase7RunScenario(
     },
     backendKind: "mock",
     sourceInstanceId: "phase7-scenario-explorer",
-    wake: { reason: entry.wakeReason, payload: { scenarioId: entry.id, mode } },
+    wake: {
+      reason: entry.wakeReason,
+      payload: continuationWakePayload(entry, fixture, mode),
+    },
     capabilities: entry.scenarioClaims,
   });
 
@@ -132,6 +140,21 @@ export async function phase7RunScenario(
         });
         continue;
       }
+      if (step.kind === "control_plane_action") {
+        timeline.push({
+          sequence: ++sequence,
+          at: fixtureInstant(adapter),
+          kind: "control_plane_action",
+          channel: "control_plane",
+          action: step.action,
+          summary: step.summary,
+          detail: step.detail,
+          auditRef: null,
+          decisionRef: null,
+          stateRevision: adapter.snapshot().revision,
+        });
+        continue;
+      }
       sequence = await executeToolStep({
         step,
         entry,
@@ -140,6 +163,7 @@ export async function phase7RunScenario(
         timeline,
         sequence,
         createdTaskIds,
+        operationResultIds,
       });
       drainControlPlane();
     }
@@ -213,13 +237,14 @@ interface ToolStepInput {
   timeline: Phase7TimelineEntry[];
   sequence: number;
   createdTaskIds: string[];
+  operationResultIds: string[];
 }
 
 async function executeToolStep(input: ToolStepInput): Promise<number> {
-  const { step, entry, runtime, adapter, timeline, createdTaskIds } = input;
+  const { step, entry, runtime, adapter, timeline, createdTaskIds, operationResultIds } = input;
   let sequence = input.sequence;
   const descriptor = phase7SemanticTool(step.operationId);
-  const resolvedInput = resolveCreatedRefs(step.input, createdTaskIds);
+  const resolvedInput = resolvePlanRefs(step.input, createdTaskIds, operationResultIds);
   // The catalog, not the plan, decides which operations need an idempotency
   // key; plans only override the suffix when one step must differ from another.
   const suffix =
@@ -255,6 +280,7 @@ async function executeToolStep(input: ToolStepInput): Promise<number> {
   if (call?.kind === "semantic_call") call.authorizationSequence = result.authorization.sequence;
 
   if (result.ok) {
+    operationResultIds.push(result.operationResultId);
     for (const ref of result.commandResult?.entityRefs ?? []) {
       if (ref.startsWith("task:") && ref.slice(5) !== adapterActiveTaskId(adapter)) {
         createdTaskIds.push(ref.slice(5));
@@ -308,19 +334,49 @@ function adapterActiveTaskId(adapter: Phase7MockControlPlaneAdapter): string {
   return run?.taskId ?? "";
 }
 
-function resolveCreatedRefs(value: Phase7JsonValue, createdTaskIds: string[]): Phase7JsonValue {
+function resolvePlanRefs(
+  value: Phase7JsonValue,
+  createdTaskIds: string[],
+  operationResultIds: string[],
+): Phase7JsonValue {
   if (typeof value === "string") {
-    const match = CREATED_TASK_REF_PATTERN.exec(value);
-    if (match === null) return value;
-    return createdTaskIds[Number(match[1]) - 1] ?? value;
+    const createdTask = CREATED_TASK_REF_PATTERN.exec(value);
+    if (createdTask !== null) return createdTaskIds[Number(createdTask[1]) - 1] ?? value;
+    const operationResult = OPERATION_RESULT_REF_PATTERN.exec(value);
+    if (operationResult !== null) {
+      return operationResultIds[Number(operationResult[1]) - 1] ?? value;
+    }
+    return value;
   }
-  if (Array.isArray(value)) return value.map((item) => resolveCreatedRefs(item, createdTaskIds));
+  if (Array.isArray(value)) {
+    return value.map((item) => resolvePlanRefs(item, createdTaskIds, operationResultIds));
+  }
   if (typeof value === "object" && value !== null) {
     return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [key, resolveCreatedRefs(child, createdTaskIds)]),
+      Object.entries(value).map(([key, child]) => [
+        key,
+        resolvePlanRefs(child, createdTaskIds, operationResultIds),
+      ]),
     );
   }
   return value;
+}
+
+function continuationWakePayload(
+  entry: Phase7ScenarioIndexEntry,
+  fixture: Phase7ScenarioFixture,
+  mode: Phase7RunMode,
+): Phase7JsonValue {
+  if (entry.id !== "ix-checkbox-result-01") return { scenarioId: entry.id, mode };
+  const interaction = fixture.seed.interactions?.find(
+    (candidate) => candidate.id === fixture.refs.interactionId,
+  );
+  return {
+    scenarioId: entry.id,
+    mode,
+    interactionId: fixture.refs.interactionId,
+    result: interaction?.result ?? null,
+  };
 }
 
 /**

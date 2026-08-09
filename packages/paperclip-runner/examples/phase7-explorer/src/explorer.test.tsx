@@ -21,9 +21,13 @@ import {
 } from "./components/inspector-panels.js";
 import { ScenarioTranscript } from "./components/scenario-transcript.js";
 import { RunHeader } from "./components/run-header.js";
-import { ScenarioPicker, buildFacets } from "./components/scenario-picker.js";
-import { matches } from "./app.js";
-import { EMPTY_FILTERS } from "./route.js";
+import {
+  ScenarioPicker,
+  buildFacets,
+  findTypeaheadMatch,
+} from "./components/scenario-picker.js";
+import { ExplorerApp, matches } from "./app.js";
+import { EMPTY_FILTERS, parsePhase7Route } from "./route.js";
 
 const MANIFEST_PATH = resolve(import.meta.dirname, "../../../spec/phase-07/eval-traceability.yaml");
 
@@ -96,6 +100,7 @@ describe("scenario picker", () => {
         onFilterChange={() => {}}
         onClearFilters={() => {}}
         onSelect={() => {}}
+        onCommitSelection={() => {}}
       />,
     );
     expect(markup).toContain('role="listbox"');
@@ -126,6 +131,7 @@ describe("scenario picker", () => {
         onFilterChange={() => {}}
         onClearFilters={() => {}}
         onSelect={() => {}}
+        onCommitSelection={() => {}}
       />,
     );
     expect(markup).toContain('data-testid="clear-filters"');
@@ -146,10 +152,24 @@ describe("scenario picker", () => {
         onFilterChange={() => {}}
         onClearFilters={() => {}}
         onSelect={() => {}}
+        onCommitSelection={() => {}}
       />,
     );
     expect(markup).toContain("No scenarios match these filters.");
     expect(markup).toContain("Clear filters");
+  });
+
+  it("type-ahead matches case IDs and titles and wraps after the active option", () => {
+    const interactionCases = index.entries.filter((entry) => entry.group === "ix");
+    expect(findTypeaheadMatch(interactionCases, null, "ix-checkbox-r")?.id).toBe(
+      "ix-checkbox-result-01",
+    );
+    expect(findTypeaheadMatch(interactionCases, "ix-checkbox-01", "checkbox continuation")?.id).toBe(
+      "ix-checkbox-result-01",
+    );
+    expect(findTypeaheadMatch(interactionCases, "ix-checkbox-result-01", "i")?.id).not.toBe(
+      "ix-checkbox-result-01",
+    );
   });
 });
 
@@ -174,6 +194,8 @@ describe("scenario transcript", () => {
     expect(markup).toContain('data-outcome="denied"');
     expect(markup).toContain("required_claim_missing");
     expect(markup).toContain("not returned — the denial carries no task data");
+    expect(markup).toContain('data-testid="denial-announcement"');
+    expect(markup).toContain('aria-live="assertive"');
   });
 
   it("keeps restraint legible when the correct behaviour is absence", () => {
@@ -205,6 +227,27 @@ describe("scenario transcript", () => {
       <ScenarioTranscript timeline={artifact.timeline} highlightSequence={null} />,
     );
     expect(markup).toContain('data-testid="escape-hatch-banner"');
+  });
+});
+
+describe("explorer shell fallbacks", () => {
+  it("renders a named unknown-case error with a picker link", () => {
+    const markup = renderToStaticMarkup(
+      <ExplorerApp index={index} initialRoute={parsePhase7Route("#/case/not-a-real-scenario")} />,
+    );
+    expect(markup).toContain('data-testid="unknown-scenario"');
+    expect(markup).toContain("No scenario named");
+    expect(markup).toContain("not-a-real-scenario");
+    expect(markup).toContain('href="#/"');
+    expect(markup).toContain("Back to the scenario picker");
+  });
+
+  it("keeps the frozen SDK badge fixes scoped to the explorer stylesheet", async () => {
+    const css = await readFile(resolve(import.meta.dirname, "explorer.css"), "utf8");
+    expect(css).toContain('.pcr7-shell .pcr-disclosure-summary > [data-slot="badge"]');
+    expect(css).toContain("flex: none");
+    expect(css).toContain(".pcr7-shell .pcr-badge");
+    expect(css).toContain("text-transform: none");
   });
 });
 

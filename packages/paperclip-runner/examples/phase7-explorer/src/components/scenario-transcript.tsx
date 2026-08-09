@@ -118,6 +118,17 @@ function TimelineEntryBody({ entry }: { entry: Phase7TimelineEntry }) {
           data-outcome={entry.outcome}
           data-testid={`result-${entry.sequence}`}
         >
+          {entry.outcome === "denied" ? (
+            <p
+              className="pcr7-visually-hidden"
+              role="alert"
+              aria-live="assertive"
+              aria-atomic="true"
+              data-testid="denial-announcement"
+            >
+              Operation {entry.operationId} denied. {entry.failure?.reason}
+            </p>
+          ) : null}
           <summary className="pcr-disclosure-summary">
             <span>{entry.summary}</span>
             <Badge tone={denied ? "danger" : "success"}>

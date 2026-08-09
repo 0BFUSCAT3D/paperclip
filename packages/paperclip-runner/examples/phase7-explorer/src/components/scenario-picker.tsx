@@ -37,6 +37,7 @@ export interface ScenarioPickerProps {
   onFilterChange: (next: Partial<Phase7Filters>) => void;
   onClearFilters: () => void;
   onSelect: (id: string) => void;
+  onCommitSelection: (id: string) => void;
 }
 
 const FACET_ORDER: Array<{ key: keyof Phase7PickerFacets; label: string }> = [
@@ -57,11 +58,28 @@ export function ScenarioPicker({
   onFilterChange,
   onClearFilters,
   onSelect,
+  onCommitSelection,
 }: ScenarioPickerProps) {
   const searchId = React.useId();
   const listRef = React.useRef<HTMLDivElement>(null);
+  const typeahead = React.useRef("");
+  const typeaheadTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const chips = activeFilterChips(filters);
   const grouped = groupEntries(visible);
+
+  React.useEffect(
+    () => () => {
+      if (typeaheadTimer.current !== null) clearTimeout(typeaheadTimer.current);
+    },
+    [],
+  );
+
+  React.useEffect(() => {
+    if (selectedId === null) return;
+    listRef.current
+      ?.querySelector<HTMLElement>(`#${CSS.escape(`case-row-${selectedId}`)}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
 
   function move(delta: number) {
     if (visible.length === 0) return;
@@ -84,11 +102,30 @@ export function ScenarioPicker({
       event.preventDefault();
       const last = visible[visible.length - 1];
       if (last !== undefined) onSelect(last.id);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const selected = visible.find((entry) => entry.id === selectedId) ?? visible[0];
+      if (selected !== undefined) onCommitSelection(selected.id);
+    } else if (isTypeaheadKey(event)) {
+      event.preventDefault();
+      if (typeaheadTimer.current !== null) clearTimeout(typeaheadTimer.current);
+      typeahead.current += event.key.toLowerCase();
+      const next = findTypeaheadMatch(visible, selectedId, typeahead.current);
+      if (next !== null) onSelect(next.id);
+      typeaheadTimer.current = setTimeout(() => {
+        typeahead.current = "";
+        typeaheadTimer.current = null;
+      }, 700);
     }
   }
 
   return (
-    <nav className="pcr7-rail" aria-label="Scenario picker" data-testid="scenario-picker">
+    <nav
+      className="pcr7-rail"
+      aria-label="Scenario picker"
+      data-testid="scenario-picker"
+      tabIndex={-1}
+    >
       <div className="pcr7-rail-head">
         <h2 className="pcr7-rail-title">Scenarios</h2>
         <p className="pcr7-muted" data-testid="scenario-count">
@@ -196,7 +233,7 @@ export function ScenarioPicker({
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      onSelect(entry.id);
+                      onCommitSelection(entry.id);
                     }
                   }}
                   tabIndex={-1}
@@ -220,6 +257,38 @@ export function ScenarioPicker({
       )}
     </nav>
   );
+}
+
+function isTypeaheadKey(event: React.KeyboardEvent): boolean {
+  return (
+    event.key.length === 1 &&
+    event.key.trim().length > 0 &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey
+  );
+}
+
+export function findTypeaheadMatch(
+  entries: readonly Phase7ScenarioIndexEntry[],
+  selectedId: string | null,
+  rawQuery: string,
+): Phase7ScenarioIndexEntry | null {
+  if (entries.length === 0) return null;
+  const normalized = rawQuery.trim().toLowerCase();
+  if (normalized.length === 0) return null;
+  const query = [...normalized].every((character) => character === normalized[0])
+    ? normalized[0]!
+    : normalized;
+  const selectedIndex = entries.findIndex((entry) => entry.id === selectedId);
+  for (let offset = 1; offset <= entries.length; offset += 1) {
+    const index = (Math.max(selectedIndex, -1) + offset) % entries.length;
+    const entry = entries[index]!;
+    if (entry.id.toLowerCase().startsWith(query) || entry.title.toLowerCase().startsWith(query)) {
+      return entry;
+    }
+  }
+  return null;
 }
 
 function groupEntries(
