@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import type {
   Phase7FixtureApproval,
@@ -13,7 +13,11 @@ import {
 } from "./phase7-semantic-tool-catalog.js";
 import { Phase7SemanticToolRuntime, validateJsonSchema } from "./phase7-semantic-tool-runtime.js";
 import { Phase7CodexToolBinding, Phase7FakeAgentToolBinding } from "./phase7-tool-bindings.js";
-import { PHASE7_CONTROL_PLANE_OWNED_OPERATION_IDS } from "./phase7-semantic-tool-types.js";
+import {
+  PHASE7_CONTROL_PLANE_OWNED_OPERATION_IDS,
+  type Phase7ModelToolSuccess,
+  type Phase7ToolSuccess,
+} from "./phase7-semantic-tool-types.js";
 
 const OPEN = {
   identity: {
@@ -293,8 +297,10 @@ describe("Phase 7 exposure and authorization", () => {
 });
 
 describe("Phase 7 security policy", () => {
-  it("redacts secret values from records and stored operation results", async () => {
-    const secret = "fixture-secret-value";
+  it("separates model-only secret delivery from every observable result boundary", async () => {
+    expectTypeOf<Phase7ModelToolSuccess>().not.toMatchTypeOf<Phase7ToolSuccess>();
+
+    const secret = "PHASE7_SECRET_SENTINEL_f42d4fbc";
     const { runtime } = await runtimeFor({
       scenarioGrants: ["secrets:values:read"],
       policy: { allowSecretValueAccess: true },
@@ -305,9 +311,11 @@ describe("Phase 7 security policy", () => {
       operationId: "read_secret_value",
       input: { name: "DEPLOY_TOKEN" },
     });
-    expect(result).toMatchObject({ ok: true, value: { name: "DEPLOY_TOKEN", value: secret } });
+    expect(result).toMatchObject({
+      ok: true,
+      value: { name: "DEPLOY_TOKEN", value: "[SECRET_VALUE]" },
+    });
     if (!result.ok) throw new Error("expected secret read success");
-    expect(JSON.stringify(runtime.authorizationRecords())).not.toContain(secret);
     expect(result.authorization.redactions).toEqual([
       { path: "$.value", replacement: "[SECRET_VALUE]" },
     ]);
@@ -318,11 +326,69 @@ describe("Phase 7 security policy", () => {
     });
     expect(inspected).toMatchObject({ ok: true, value: { value: "[SECRET_VALUE]" } });
 
+    const modelDelivery = await runtime.invokeForModel({
+      operationId: "read_secret_value",
+      input: { name: "DEPLOY_TOKEN" },
+    });
+    expect(modelDelivery.readModelResult()).toMatchObject({
+      schema: "paperclip.phase7.model-tool-result.v1",
+      ok: true,
+      value: { name: "DEPLOY_TOKEN", value: secret },
+    });
+    expect(modelDelivery.observableResult).toMatchObject({
+      schema: "paperclip.phase7.tool-result.v1",
+      ok: true,
+      value: { name: "DEPLOY_TOKEN", value: "[SECRET_VALUE]" },
+    });
+
+    const observablePayloads = {
+      publicInvocation: result,
+      trace: { toolResult: modelDelivery },
+      snapshot: structuredClone(modelDelivery),
+      browser: { toolResult: modelDelivery.observableResult },
+      authorization: runtime.authorizationRecords(),
+    };
+    expect(JSON.stringify(observablePayloads)).not.toContain(secret);
+
+    const failing = await runtimeFor({
+      scenarioGrants: ["secrets:values:read"],
+      policy: { allowSecretValueAccess: true },
+      resolveSecretValue: () => {
+        throw new Error(`resolver rejected ${secret}`);
+      },
+    });
+    const failedDelivery = await failing.runtime.invokeForModel({
+      operationId: "read_secret_value",
+      input: { name: "DEPLOY_TOKEN" },
+    });
+    expect(failedDelivery.observableResult).toMatchObject({
+      ok: false,
+      error: { code: "operation_unsupported", reason: "mock_operation_rejected" },
+    });
+    expect(JSON.stringify({
+      error: failedDelivery,
+      authorization: failing.runtime.authorizationRecords(),
+    })).not.toContain(secret);
+
+    let unclaimedResolverCalls = 0;
     const ungranted = await runtimeFor({
       scenarioGrants: ["secrets:values:read"],
-      resolveSecretValue: () => secret,
+      resolveSecretValue: () => {
+        unclaimedResolverCalls += 1;
+        return secret;
+      },
     });
     expect(ungranted.runtime.visibleTools().tools.map((tool) => tool.operationId)).not.toContain("read_secret_value");
+    const unclaimedDelivery = await ungranted.runtime.invokeForModel({
+      operationId: "read_secret_value",
+      input: { name: "DEPLOY_TOKEN" },
+    });
+    expect(unclaimedDelivery.readModelResult()).toMatchObject({
+      ok: false,
+      error: { code: "policy_denied", reason: "secret_value_access_disabled" },
+    });
+    expect(unclaimedResolverCalls).toBe(0);
+    expect(JSON.stringify(unclaimedDelivery)).not.toContain(secret);
   });
 
   it("prohibits self approval even with the role and explicit decision claim", async () => {

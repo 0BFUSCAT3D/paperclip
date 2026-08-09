@@ -9,6 +9,9 @@ import { Phase7ToolAuthorizationEngine } from "./phase7-tool-authorization.js";
 import type {
   Phase7AuthorizationRecord,
   Phase7JsonSchema,
+  Phase7ModelToolDelivery,
+  Phase7ModelToolInvocationResult,
+  Phase7ModelToolSuccess,
   Phase7PolicyDenial,
   Phase7ScenarioToolPolicy,
   Phase7SemanticToolDescriptor,
@@ -53,7 +56,36 @@ export class Phase7SemanticToolRuntime {
     return this.#authorization.records();
   }
 
+  /** Returns only the result shape allowed to cross observable boundaries. */
   async invoke(invocation: Phase7ToolInvocation): Promise<Phase7ToolInvocationResult> {
+    return (await this.#invoke(invocation, false)).observableResult;
+  }
+
+  /**
+   * Invokes a tool for provider delivery. The raw result remains in a capsule
+   * that serializes and clones as the redacted observable result.
+   */
+  async invokeForModel(invocation: Phase7ToolInvocation): Promise<Phase7ModelToolDelivery> {
+    const result = await this.#invoke(invocation, true);
+    const modelResult = result.modelResult !== undefined
+      ? result.modelResult
+      : !result.observableResult.ok
+        ? result.observableResult
+        : undefined;
+    if (modelResult === undefined) throw new Error("model delivery result was not produced");
+    return new Phase7ModelToolDeliveryImpl(
+      result.observableResult,
+      modelResult,
+    );
+  }
+
+  async #invoke(
+    invocation: Phase7ToolInvocation,
+    includeModelResult: boolean,
+  ): Promise<{
+    observableResult: Phase7ToolInvocationResult;
+    modelResult?: Phase7ModelToolInvocationResult;
+  }> {
     const context = this.#context();
     const authorization = this.#authorization.authorizeInvocation(
       invocation.operationId,
@@ -61,11 +93,13 @@ export class Phase7SemanticToolRuntime {
       context,
     );
     if (authorization.outcome !== "allowed") {
-      return this.#denial(
-        invocation.operationId,
-        authorization,
-        authorization.outcome === "absent" ? "operation_absent" : "policy_denied",
-      );
+      return {
+        observableResult: this.#denial(
+          invocation.operationId,
+          authorization,
+          authorization.outcome === "absent" ? "operation_absent" : "policy_denied",
+        ),
+      };
     }
 
     const descriptor = phase7SemanticTool(invocation.operationId)!;
@@ -76,7 +110,7 @@ export class Phase7SemanticToolRuntime {
         context,
         "input_schema_invalid",
       );
-      return this.#denial(invocation.operationId, denied, "input_invalid");
+      return { observableResult: this.#denial(invocation.operationId, denied, "input_invalid") };
     }
     if (descriptor.idempotency === "required" && !invocation.idempotencyKey?.trim()) {
       const denied = this.#authorization.denyInvocation(
@@ -84,7 +118,7 @@ export class Phase7SemanticToolRuntime {
         context,
         "idempotency_key_required",
       );
-      return this.#denial(invocation.operationId, denied, "input_invalid");
+      return { observableResult: this.#denial(invocation.operationId, denied, "input_invalid") };
     }
     if (invocation.operationId === "decide_approval" && this.#isSelfApproval(invocation.input)) {
       const denied = this.#authorization.denyInvocation(
@@ -92,7 +126,7 @@ export class Phase7SemanticToolRuntime {
         context,
         "self_approval_conflict",
       );
-      return this.#denial(invocation.operationId, denied, "policy_denied");
+      return { observableResult: this.#denial(invocation.operationId, denied, "policy_denied") };
     }
 
     const beforeRevision = this.#adapter.snapshot().revision;
@@ -105,24 +139,39 @@ export class Phase7SemanticToolRuntime {
         execution.entityRefs,
       );
       const resultId = execution.commandResult?.commandId ?? `tool-result-${++this.#resultSequence}`;
+      const observableValue = redactForBoundary(descriptor, execution.value, "output");
+      const observableCommandResult = execution.commandResult === null
+        ? null
+        : redactForBoundary(descriptor, toJsonValue(execution.commandResult), "output") as Phase7ToolSuccess["commandResult"];
       const success: Phase7ToolSuccess = {
         schema: "paperclip.phase7.tool-result.v1",
         ok: true,
         operationId: invocation.operationId,
         operationResultId: resultId,
-        value: execution.value,
-        commandResult: execution.commandResult,
+        value: observableValue,
+        commandResult: observableCommandResult,
         authorization: finalAuthorization,
       };
-      this.#operationResults.set(resultId, redactStoredResult(descriptor, execution.value));
-      return deepFreeze(success);
+      this.#operationResults.set(resultId, structuredClone(observableValue));
+      const observableResult = deepFreeze(success);
+      if (!includeModelResult) return { observableResult };
+      const modelResult: Phase7ModelToolSuccess = deepFreeze({
+        schema: "paperclip.phase7.model-tool-result.v1",
+        ok: true,
+        operationId: invocation.operationId,
+        operationResultId: resultId,
+        value: structuredClone(execution.value),
+        commandResult: execution.commandResult === null ? null : structuredClone(execution.commandResult),
+        authorization: finalAuthorization,
+      });
+      return { observableResult, modelResult };
     } catch {
       const denied = this.#authorization.denyInvocation(
         invocation.operationId,
         context,
         "mock_operation_rejected",
       );
-      return this.#denial(invocation.operationId, denied, "operation_unsupported");
+      return { observableResult: this.#denial(invocation.operationId, denied, "operation_unsupported") };
     }
   }
 
@@ -443,15 +492,42 @@ function matchesType(type: NonNullable<Phase7JsonSchema["type"]>, value: Phase7J
   }
 }
 
-function redactStoredResult(
+function redactForBoundary(
   descriptor: Phase7SemanticToolDescriptor,
   value: Phase7JsonValue,
+  boundary: Phase7SemanticToolDescriptor["redaction"][number]["appliesTo"][number],
 ): Phase7JsonValue {
-  if (!descriptor.redaction.some((rule) => rule.appliesTo.includes("output"))) return structuredClone(value);
-  if (descriptor.operationId === "read_secret_value" && typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return { ...value, value: "[SECRET_VALUE]" };
+  let redacted = structuredClone(value);
+  for (const rule of descriptor.redaction) {
+    if (!rule.appliesTo.includes(boundary)) continue;
+    redacted = replaceJsonPath(redacted, rule.path, rule.replacement);
   }
-  return structuredClone(value);
+  return redacted;
+}
+
+function replaceJsonPath(
+  value: Phase7JsonValue,
+  path: string,
+  replacement: Phase7JsonValue,
+): Phase7JsonValue {
+  if (path === "$") return replacement;
+  if (!path.startsWith("$.")) return value;
+  const segments = path.slice(2).split(".");
+  if (segments.some((segment) => segment.length === 0)) return value;
+
+  const root = structuredClone(value);
+  let cursor: Phase7JsonValue = root;
+  for (const segment of segments.slice(0, -1)) {
+    if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return root;
+    const next: Phase7JsonValue | undefined = cursor[segment];
+    if (next === undefined) return root;
+    cursor = next;
+  }
+  if (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)) return root;
+  const leaf = segments.at(-1)!;
+  if (!(leaf in cursor)) return root;
+  cursor[leaf] = replacement;
+  return root;
 }
 
 function optionalStringArray(value: Phase7JsonValue | undefined): string[] | undefined {
@@ -479,4 +555,26 @@ function deepFreeze<T>(value: T): T {
   Object.freeze(value);
   for (const child of Object.values(value)) deepFreeze(child);
   return value;
+}
+
+class Phase7ModelToolDeliveryImpl implements Phase7ModelToolDelivery {
+  readonly observableResult: Phase7ToolInvocationResult;
+  readonly #modelResult: Phase7ModelToolInvocationResult;
+
+  constructor(
+    observableResult: Phase7ToolInvocationResult,
+    modelResult: Phase7ModelToolInvocationResult,
+  ) {
+    this.observableResult = observableResult;
+    this.#modelResult = modelResult;
+    Object.freeze(this);
+  }
+
+  readModelResult(): Phase7ModelToolInvocationResult {
+    return deepFreeze(structuredClone(this.#modelResult));
+  }
+
+  toJSON(): Phase7ToolInvocationResult {
+    return this.observableResult;
+  }
 }

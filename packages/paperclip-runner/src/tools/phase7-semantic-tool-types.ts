@@ -159,6 +159,37 @@ export interface Phase7ToolSuccess {
 
 export type Phase7ToolInvocationResult = Phase7ToolSuccess | Phase7PolicyDenial;
 
+/**
+ * A result intended only for the provider/model tool-response channel.
+ *
+ * The distinct schema prevents this value from being assigned to an observable
+ * tool-result sink. Callers receive it only by explicitly opening a
+ * {@link Phase7ModelToolDelivery}; the delivery capsule itself serializes to
+ * its redacted observable result.
+ */
+export interface Phase7ModelToolSuccess {
+  schema: "paperclip.phase7.model-tool-result.v1";
+  ok: true;
+  operationId: string;
+  operationResultId: string;
+  value: Phase7JsonValue;
+  commandResult: Phase7CommandResult | null;
+  authorization: Phase7AuthorizationRecord;
+}
+
+export type Phase7ModelToolInvocationResult = Phase7ModelToolSuccess | Phase7PolicyDenial;
+
+export interface Phase7ModelToolDelivery {
+  /** Safe for traces, snapshots, persistence, errors, and browser payloads. */
+  readonly observableResult: Phase7ToolInvocationResult;
+
+  /** Explicitly opens the narrowly scoped provider/model delivery value. */
+  readModelResult(): Phase7ModelToolInvocationResult;
+
+  /** Accidental JSON serialization is always the observable redacted form. */
+  toJSON(): Phase7ToolInvocationResult;
+}
+
 export interface Phase7ToolInvocation {
   operationId: string;
   input: Phase7JsonValue;
