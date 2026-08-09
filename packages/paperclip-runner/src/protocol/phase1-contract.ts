@@ -1,21 +1,20 @@
-import {
-  Ajv2020,
-  type ErrorObject,
-  type ValidateFunction,
-} from "ajv/dist/2020.js";
+import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import type { FromSchema } from "json-schema-to-ts";
 
 import {
   capabilitiesSchema,
   commandSchema,
   eventSchema,
-  fixtureSchema,
   identitySchema,
-  prpSchemaBundle,
   requestSchema,
   resultSchema,
   terminalSchema,
 } from "./generated/schema-bundle.js";
+import {
+  eventValidator as standaloneEventValidator,
+  fixtureValidator as standaloneFixtureValidator,
+  resultValidator as standaloneResultValidator,
+} from "./generated/standalone-validators.js";
 
 export const PRP_PROTOCOL_NAME = "paperclip.runner";
 export const PRP_PROTOCOL_VERSION = 1;
@@ -69,32 +68,12 @@ export interface ProtocolVersionRange {
   max: number;
 }
 
-const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
-ajv.addFormat("date-time", {
-  type: "string",
-  validate(value: string) {
-    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value);
-  },
-});
-for (const schema of Object.values(prpSchemaBundle)) {
-  ajv.addSchema(schema);
-}
-
-const registeredFixtureValidator = ajv.getSchema(fixtureSchema.$id);
-if (registeredFixtureValidator === undefined) {
-  throw new Error("PRP fixture validator was not registered");
-}
-const fixtureValidator = registeredFixtureValidator as ValidateFunction<PrpFixture>;
-const registeredEventValidator = ajv.getSchema(eventSchema.$id);
-if (registeredEventValidator === undefined) {
-  throw new Error("PRP event validator was not registered");
-}
-const eventValidator = registeredEventValidator as ValidateFunction<PrpEvent>;
-const registeredResultValidator = ajv.getSchema(resultSchema.$id);
-if (registeredResultValidator === undefined) {
-  throw new Error("PRP structured result validator was not registered");
-}
-const resultValidator = registeredResultValidator as ValidateFunction<PrpStructuredRunResult>;
+// The validators are generated from the same checked-in schemas as the types.
+// Keeping compilation out of the runtime lets strict CSP deployments retain
+// `script-src 'self'` without AJV attempting dynamic JavaScript evaluation.
+const fixtureValidator = standaloneFixtureValidator as ValidateFunction<PrpFixture>;
+const eventValidator = standaloneEventValidator as ValidateFunction<PrpEvent>;
+const resultValidator = standaloneResultValidator as ValidateFunction<PrpStructuredRunResult>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)

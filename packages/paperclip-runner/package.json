@@ -31,7 +31,7 @@
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace",
     "build:browser": "vite build --config vite.config.ts",
     "build:phase5": "vite build --config vite.phase5.config.ts",
-    "build:phase7": "vite build --config vite.phase7.config.ts",
+    "build:phase7": "vite build --config vite.phase7.config.ts && node scripts/check-phase7-csp-bundle.mjs",
     "typecheck": "pnpm run typecheck:typescript && pnpm run typecheck:rust && pnpm run typecheck:browser",
     "typecheck:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
     "typecheck:rust": "cargo check --manifest-path runner/Cargo.toml --locked --workspace",
