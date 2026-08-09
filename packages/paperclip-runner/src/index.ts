@@ -27,3 +27,4 @@ export * from "./reducer/session-reducer.js";
 export * from "./tracer/phase0-runner.js";
 export * from "./tracer/phase1-replay.js";
 export * from "./tracer/phase2-live.js";
+export * from "./tools/index.js";
