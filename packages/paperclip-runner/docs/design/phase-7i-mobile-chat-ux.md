@@ -467,6 +467,45 @@ shot 5 is gated on):
 Re-acceptance: re-run `record:phase7i` and hand back only the two
 `chat-streaming` captures for review; shots 1–4 stand.
 
+## 11c. Re-acceptance ruling (PAP-16920 closing, UXDesigner, 2026-08-09)
+
+Shot 5 (`chat-streaming`, both viewports, re-captured in `c8422d1aaa`) is
+**accepted**. Revisions 12–14 verified against the new captures and the
+code:
+
+- **12 fixed.** The activity rail now consumes the same reveal ceiling as
+  the transcript (`ChatActivityStream` takes the conversation's inclusive
+  timeline ceiling); the held Turn 2 group renders the running header with
+  only the revealed `request_approval` call, its denial, and the one
+  authorization record — no diff, no parity verdict, no settled counts.
+- **13 fixed.** The hold lands on a model card mid-reveal: partial message
+  text with the caret on a `--pcr-card` message card, in addition to the
+  pending-turn strip.
+- **14 fixed.** "Controls return when the turn settles." renders as a
+  visible muted line adjacent to the controls, wired via `aria-describedby`
+  on all four mid-turn-disabled controls; `title` retained as a secondary
+  channel.
+
+Reproducibility spot-check in the review run: `record:phase7i` re-run
+produced **byte-identical** `chat-streaming` PNGs at both viewports.
+
+15. **Post-capture copy change (demo-hardening commits `0566a9f3ca`,
+    `362754a633`) — accepted, evidence refreshed.** After shots 1–4 were
+    recorded, the composer helper gained a synthetic-demo disclaimer
+    ("Synthetic demo only. Session state is memory-only and is cleared on
+    reset, expiry, or restart; do not enter confidential or regulated
+    data.") and the mock-core wording changed to "isolated" /
+    "package-local". Both are improvements — the disclaimer is an honest
+    trust signal consistent with this surface's premise, and the wording is
+    more accurate — but they made the committed shot 1–4 captures stale
+    (divergence would otherwise be silent, failing §11's own rule). The
+    five affected PNGs (`chat-home` desktop, `chat-session` both,
+    `chat-denied` desktop, `chat-activity-diff` desktop) were re-recorded
+    at review time; the disclaimer verified to wrap cleanly at 390×844 with
+    no horizontal scroll.
+
+The §11 matrix is **fully accepted**. The gate is closed.
+
 ## 12. Out of scope / rejected
 
 - All 7F §10 rejections stand (no Tailwind/Radix, no dark mode, no markdown
