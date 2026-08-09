@@ -4,7 +4,7 @@ Status: **approved UX contract for 7F implementation** (PAP-16899, 2026-08-09).
 Owner: UXDesigner. Implementer: 7F (browser scenario explorer), integrating
 7C mock adapter output and 7E parity output.
 Companion records: [Phase 7A capability contract](../phase-07-capability-contract.md),
-`spec/phase-07/eval-traceability.yaml`, [Phase 7 plan](/PAP/issues/PAP-16897#document-plan),
+`spec/phase-07/eval-traceability.yaml`, the Phase 7 plan (PAP-16897),
 [Phase 4b interaction map](phase-4b-interaction-map.md),
 [Phase 5 component decisions](phase-5-component-decisions.md).
 Mockup: [`mockups/phase-7-scenario-explorer.html`](mockups/phase-7-scenario-explorer.html)
@@ -431,3 +431,63 @@ fails the gate.
   never recomputes assertions.
 - No live-Paperclip or ACPX affordances; the future binding boundary stays a
   docs note, not a UI surface.
+
+## 11. Revisions recorded during 7F implementation
+
+Per §9, deviations are written here rather than left silent. All of the
+following were found while building the explorer (PAP-16904) and are now part
+of the contract.
+
+1. **Timeline entry kinds extended.** §8 listed `semantic_call`,
+   `semantic_result`, `control_plane_action`, and `protocol_event_ref`. The
+   agent channel also needs plain model turns and the restraint note §3.2
+   requires, so the artifact adds `agent_message` and `system_note`. Protocol
+   event references ride on `semantic_result.protocolEventRefs` rather than
+   standing as their own entry, keeping the semantic view primary.
+
+2. **Parity is computed by the runtime, not the browser — and not by 7E.**
+   §4.4 and §10 forbid the UI from judging assertions, and they do: the
+   package-local scenario runner (`src/phase7/scenario-parity.ts`) produces the
+   verdict from the traceability expectations and the recorded artifact. Phase
+   7E's own per-case result is carried through verbatim in a separately
+   labelled "Phase 7E conformance suite" block and is never merged into, or
+   used to overrule, the assertion list. When no 7E report is bundled the block
+   reads **Not run**.
+
+3. **Actor role, task mode, and scenario claims are declared, not inferred.**
+   §8 assigned `actorRole`/`taskMode` to 7C's index generator; 7C shipped
+   without them. They are now declared in `src/phase7/scenario-index.ts` as an
+   explicit fixture/case profile table, alongside the catalog claims each
+   scenario grants. A claim that cannot unlock any operation in the scenario's
+   task mode or for its actor role is dropped from the profile, so no scenario
+   renders a grant chip that unlocks nothing.
+
+4. **The mobile section switcher is a `radiogroup`, not a `tablist`.** §1 asked
+   for the Phase 4b segmented control. The Phase 4b console renders it only in
+   compact mode; the explorer keeps one CSS-driven tree, so a `tablist` would
+   put two tablists in the document and model the three landmarks as tabpanels.
+   The three regions stay `nav`/`main`/`complementary`, and the only `tablist`
+   on the page is the inspector's.
+
+5. **Two token-layer overrides, scoped to the explorer.** The SDK gives every
+   direct `span` child of a disclosure summary `min-width: 0`; a `Badge` is
+   also a `span` and sets `white-space: nowrap`, so at 390px badges were
+   squeezed below their own content and pushed the page into horizontal scroll.
+   The SDK badge also applies `text-transform: capitalize`, which renders
+   "Optional Tool" and "Not Run" against the §0 vocabulary. Both are corrected
+   in `examples/phase7-explorer/src/explorer.css` under `.pcr7-shell`; the
+   frozen `0.1.2` sheet is unchanged. **These are SDK defects worth fixing at
+   the next SDK revision, not explorer quirks.**
+
+6. **Only the case list scrolls in its own box.** The rails are otherwise in
+   page flow. §9 evidence is captured full-page, and an inner scroll container
+   on the rail clipped exactly what the matrix asks to see (all 16 group facets
+   and their counts). The 106-row case list keeps a bounded height so the page
+   stays navigable.
+
+7. **Shot 2's route uses `parity=not_run`.** §9 specified
+   `#/?group=ix&disposition=always_agent_tool&parity=pass`. Parity status is a
+   property of a *run*, and the picker route runs nothing, so `parity=pass`
+   selects zero scenarios on a cold load. The recorded route filters on
+   `not_run`, which is the honest cold-load state and still demonstrates
+   chips, live counts, disabled zero-count values, and Clear filters.

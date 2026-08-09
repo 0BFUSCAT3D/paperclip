@@ -11,7 +11,8 @@
     "paths": {
       "@paperclipai/paperclip-runner/browser": ["src/browser/index.ts"],
       "@paperclipai/paperclip-runner/react": ["src/react/index.ts"],
-      "@paperclipai/paperclip-runner/styles.css": ["styles.css"]
+      "@paperclipai/paperclip-runner/styles.css": ["styles.css"],
+      "@paperclip-runner-local/phase7": ["src/phase7/index.ts"]
     }
   },
   "include": [
@@ -19,5 +20,6 @@
     "devtools/browser/src/**/*.tsx",
     "examples/*/src/**/*.ts",
     "examples/*/src/**/*.tsx"
-  ]
+  ],
+  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
 }

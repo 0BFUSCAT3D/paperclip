@@ -1,0 +1,84 @@
+{
+  "schema": "paperclip.phase7.screenshot-manifest.v1",
+  "source": "docs/design/phase-7-scenario-explorer-ux.md §9",
+  "viewports": [
+    "1440x900",
+    "390x844"
+  ],
+  "shots": [
+    {
+      "slug": "explorer-home",
+      "route": "#/"
+    },
+    {
+      "slug": "picker-filtered",
+      "route": "#/?group=ix&disposition=always_agent_tool&parity=not_run"
+    },
+    {
+      "slug": "hb-heartbeat",
+      "route": "#/case/hb-scoped-wake-01?run=fake&view=transcript"
+    },
+    {
+      "slug": "wk-planning",
+      "route": "#/case/wk-plan-directive-01?run=fake&view=transcript"
+    },
+    {
+      "slug": "bl-blockers-diff",
+      "route": "#/case/bl-create-blocked-01?run=fake&view=diff"
+    },
+    {
+      "slug": "ap-approval-denied",
+      "route": "#/case/ap-mcp-gate-01?run=fake&view=authorization"
+    },
+    {
+      "slug": "ar-artifacts",
+      "route": "#/case/ar-upload-before-done-01?run=fake&view=transcript"
+    },
+    {
+      "slug": "ix-interaction",
+      "route": "#/case/ix-checkbox-01?run=fake&view=transcript"
+    },
+    {
+      "slug": "rf-manager",
+      "route": "#/case/rf-api-mgr-heartbeat-01?run=fake&view=context"
+    },
+    {
+      "slug": "mh-multihop",
+      "route": "#/case/mh-subtask-tree-01?run=fake&view=parity"
+    },
+    {
+      "slug": "rs-restraint",
+      "route": "#/case/rs-question-only-01?run=fake&view=parity"
+    },
+    {
+      "slug": "rs-secret-redaction",
+      "route": "#/case/rs-secret-hygiene-01?run=fake&view=transcript"
+    }
+  ],
+  "files": [
+    "ap-approval-denied-1440x900.png",
+    "ap-approval-denied-390x844.png",
+    "ar-artifacts-1440x900.png",
+    "ar-artifacts-390x844.png",
+    "bl-blockers-diff-1440x900.png",
+    "bl-blockers-diff-390x844.png",
+    "explorer-home-1440x900.png",
+    "explorer-home-390x844.png",
+    "hb-heartbeat-1440x900.png",
+    "hb-heartbeat-390x844.png",
+    "ix-interaction-1440x900.png",
+    "ix-interaction-390x844.png",
+    "mh-multihop-1440x900.png",
+    "mh-multihop-390x844.png",
+    "picker-filtered-1440x900.png",
+    "picker-filtered-390x844.png",
+    "rf-manager-1440x900.png",
+    "rf-manager-390x844.png",
+    "rs-restraint-1440x900.png",
+    "rs-restraint-390x844.png",
+    "rs-secret-redaction-1440x900.png",
+    "rs-secret-redaction-390x844.png",
+    "wk-planning-1440x900.png",
+    "wk-planning-390x844.png"
+  ]
+}

@@ -35,6 +35,16 @@
 
 ## 2026-08-09
 
+* **Phase 7F browser scenario explorer**: Added the package-local scenario
+  index with declared actor roles, task modes, and catalog claims; deterministic
+  fixture seeds and fake-agent plans for all 106 eval cases; a run-artifact
+  runtime producing tool exposure, control-plane actions, authorization records,
+  a ten-domain immutable state diff, and a parity verdict that carries Phase 7E
+  output through without re-judging it; the read-only explorer over the frozen
+  SDK with hash routing, both transcript channels, and four inspector tabs; 45
+  unit and 19 browser tests; and the twenty-four-image screenshot acceptance
+  set.
+
 * **Phase 6 integration design**: Specified the default-off thin Paperclip
   adapter seam, public port reconciliation, first-class persisted mode/result
   recovery, canonical per-run event allocation, typed credential-free native
