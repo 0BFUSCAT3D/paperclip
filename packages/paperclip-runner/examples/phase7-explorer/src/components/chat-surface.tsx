@@ -4,6 +4,7 @@ import { Composer, Dialog, Button } from "@paperclipai/paperclip-runner/react";
 import {
   Phase7ChatSession,
   type Phase7ChatSessionArtifact,
+  type Phase7ChatSessionOptions,
   type Phase7ScenarioIndexEntry,
 } from "@paperclip-runner-local/phase7";
 
@@ -14,10 +15,9 @@ import { EmptyState } from "./primitives.js";
 /**
  * Phase 7I chat surface.
  *
- * Owns one live `Phase7ChatSession` and nothing else: no protocol state, no
- * policy decision, no credential. Prompts go to the package-local mock control
- * plane in this page, and the records that come back are rendered as they
- * arrived.
+ * Owns one live session client and nothing else: no protocol state, no policy
+ * decision, no credential. Prompts go to the package-local mock control plane,
+ * and the records that come back are rendered as they arrived.
  *
  * Session identity is deliberately explicit. `activeEntry` is the scenario the
  * open session belongs to, which is not always the scenario the route names:
@@ -26,6 +26,19 @@ import { EmptyState } from "./primitives.js";
  */
 
 export type Phase7ChatState = "seeding" | "pending" | "streaming" | "settled" | "failed";
+
+export interface Phase7ChatSessionClient {
+  artifact(): Phase7ChatSessionArtifact;
+  nextPrompt(): string | null;
+  send(prompt: string): Promise<Phase7ChatSessionArtifact>;
+  replay(): Promise<Phase7ChatSessionArtifact>;
+  close(): Promise<void>;
+}
+
+export type OpenPhase7ChatSession = (
+  entry: Phase7ScenarioIndexEntry,
+  options?: Phase7ChatSessionOptions,
+) => Promise<Phase7ChatSessionClient>;
 
 export interface ChatSurfaceProps {
   entry: Phase7ScenarioIndexEntry;
@@ -46,7 +59,7 @@ export interface ChatSurfaceProps {
   onStateChange: (state: Phase7ChatState) => void;
   /** Called when the board declines a scenario switch, to restore the route. */
   onCancelScenarioSwitch: (entryId: string) => void;
-  openSession?: typeof Phase7ChatSession.open;
+  openSession?: OpenPhase7ChatSession;
   headerRef?: React.Ref<HTMLElement>;
 }
 
@@ -61,7 +74,7 @@ export function ChatSurface({
   onArtifactChange,
   onStateChange,
   onCancelScenarioSwitch,
-  openSession = Phase7ChatSession.open,
+  openSession = (nextEntry, options) => Phase7ChatSession.open(nextEntry, options),
   headerRef,
 }: ChatSurfaceProps) {
   const [artifact, setArtifact] = React.useState<Phase7ChatSessionArtifact | null>(null);
@@ -72,7 +85,7 @@ export function ChatSurface({
   const [revealed, setRevealed] = React.useState(0);
   const [mode, setMode] = React.useState<Phase7ChatMode>("scripted");
   const [confirm, setConfirm] = React.useState<"none" | "reset" | "switch">("none");
-  const sessionRef = React.useRef<Phase7ChatSession | null>(null);
+  const sessionRef = React.useRef<Phase7ChatSessionClient | null>(null);
   const composerRef = React.useRef<HTMLDivElement>(null);
 
   const switching = entry.id !== activeEntry.id;
@@ -275,10 +288,14 @@ export function ChatSurface({
         />
         <p className="pcr7-muted" data-testid="composer-scope-note">
           {mode === "scripted"
-            ? `Scripted mode — your prompt drives the next recorded turn against the in-page mock control plane. ${
+            ? `Scripted mode — your prompt drives the next recorded turn against the isolated mock control plane. ${
                 artifact?.remainingScriptedTurns ?? 0
               } scripted turn${(artifact?.remainingScriptedTurns ?? 0) === 1 ? "" : "s"} left.`
             : "Codex mode drives the same mock control plane through the server-side relay; no provider credential reaches this page."}
+        </p>
+        <p className="pcr7-muted">
+          Synthetic demo only. Session state is memory-only and is cleared on reset, expiry, or restart;
+          do not enter confidential or regulated data.
         </p>
       </div>
 

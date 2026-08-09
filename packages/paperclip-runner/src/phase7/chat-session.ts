@@ -104,12 +104,28 @@ export class Phase7ChatSession {
     entry: Phase7ScenarioIndexEntry,
     options: Phase7ChatSessionOptions = {},
   ): Promise<Phase7ChatSession> {
+    const fixture = phase7ScenarioFixture(entry);
+    const adapter = new Phase7MockControlPlaneAdapter(fixture.seed);
+    return await Phase7ChatSession.openWithMockAdapter(entry, adapter, options);
+  }
+
+  /**
+   * Server composition seam for the hardened Phase 7I demo.
+   *
+   * The deployment entrypoint constructs the concrete mock adapter itself and
+   * passes that already-selected implementation here. HTTP input, environment
+   * variables, and dependency injection cannot select a different adapter.
+   */
+  static async openWithMockAdapter(
+    entry: Phase7ScenarioIndexEntry,
+    adapter: Phase7MockControlPlaneAdapter,
+    options: Phase7ChatSessionOptions = {},
+  ): Promise<Phase7ChatSession> {
     const mode = options.mode ?? "fake";
     const fixture = phase7ScenarioFixture(entry);
     const script = phase7ChatScript(entry, fixture);
     const runId = `run-phase7-chat-${entry.id}`;
 
-    const adapter = new Phase7MockControlPlaneAdapter(fixture.seed);
     await adapter.start();
     const beforeSeed = snapshotOf(adapter);
 

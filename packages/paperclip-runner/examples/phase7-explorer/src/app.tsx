@@ -3,7 +3,6 @@ import * as React from "react";
 import { Tabs, type TabDefinition } from "@paperclipai/paperclip-runner/react";
 import {
   phase7RunScenario,
-  Phase7ChatSession,
   type Phase7ChatSessionArtifact,
   type Phase7EvalSuiteLookup,
   type Phase7ParityStatus,
@@ -23,7 +22,11 @@ import { buildFacets, ScenarioPicker, type Phase7PickerFacets } from "./componen
 import { RunHeader } from "./components/run-header.js";
 import { ScenarioTranscript } from "./components/scenario-transcript.js";
 import { EmptyState, Mono } from "./components/primitives.js";
-import { ChatSurface, type Phase7ChatState } from "./components/chat-surface.js";
+import {
+  ChatSurface,
+  type OpenPhase7ChatSession,
+  type Phase7ChatState,
+} from "./components/chat-surface.js";
 import {
   ActivityEmptyState,
   ActivityStream,
@@ -57,7 +60,7 @@ export interface ExplorerAppProps {
   /** Test seam: run scenarios synchronously through an injected runner. */
   runScenario?: typeof phase7RunScenario;
   /** Test seam: open chat sessions through an injected session factory. */
-  openSession?: typeof Phase7ChatSession.open;
+  openSession?: OpenPhase7ChatSession;
 }
 
 type RunState = "idle" | "pending" | "settled" | "failed";
@@ -555,7 +558,7 @@ function IntroCard({
       </p>
       <h1>{index.entries.length} scenarios across {index.groups.length} eval groups</h1>
       <p>
-        Every scenario runs against the deterministic mock control plane in this page. The
+        Every scenario runs against the deterministic, package-local mock control plane. The
         {chat ? " chat" : " explorer"} renders records the runtime produced: it holds no credential,
         decides no policy, and owns no control-plane state.
       </p>

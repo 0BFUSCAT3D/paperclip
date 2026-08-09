@@ -12,6 +12,7 @@ import evalReport from "virtual:phase7-eval-report";
 import manifestSource from "virtual:phase7-scenario-manifest";
 
 import { ExplorerApp } from "./app.js";
+import { Phase7RemoteChatSession } from "./remote-chat-session.js";
 
 /**
  * Package-local entry. The scenario index and every fixture are bundled from
@@ -29,5 +30,6 @@ createRoot(container).render(
     index={index}
     evalSuite={evalReport === null ? undefined : phase7EvalSuiteLookup(evalReport)}
     codexAvailable={false}
+    openSession={Phase7RemoteChatSession.available() ? Phase7RemoteChatSession.open : undefined}
   />,
 );

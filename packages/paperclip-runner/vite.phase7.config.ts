@@ -18,6 +18,7 @@ const packageRoot = fileURLToPath(new URL(".", import.meta.url));
  */
 export default defineConfig({
   root: resolve(packageRoot, "examples"),
+  base: "./",
   plugins: [react(), phase7ExplorerFixturesPlugin()],
   resolve: {
     alias: [
