@@ -90,7 +90,8 @@ fail closed; no credentials enter the model envelope.
 The deterministic package suite and the embedded-PostgreSQL Paperclip suite
 prove selection, replay/conflict handling, authoritative evidence,
 status/liveness atomicity, migration repair, bounded cancellation/retry, and a
-byte-equivalent legacy read snapshot. The database suite is the internal
+byte-equivalent legacy read snapshot. The thirteen-file database gate contains
+46 tests with zero skips. The database suite is the internal
 native canary: it executes one selected task through the public package session
 contract and applies one server-owned decision. Its post-kill-switch legacy
 case has zero native history rows.
@@ -119,7 +120,12 @@ entrypoint. Accepted attention starts at the immutable package-result row:
 request-specific assessment, and then delegates an eligible same-company
 target through `issueService`, creates a human issue-thread interaction, or
 persists a cross-company rejection decision/recovery/audit trail.
-`routeNativeAttention` is an internal helper, not the operational test ingress.
+Duplicate and stale targets finish as committed audit-only coordinators with
+zero decisions, wakes, notifications, or issue status/version changes. Their
+run receipt names the exact interaction target, and replay neither adds an
+assessment nor updates that interaction again. Missing and cross-company audit
+targets fail closed. `routePersistedNativeResultAttention` and
+`routeNativeAttention` are internal helpers, not operational test ingresses.
 Reconciliation selects the persisted
 status/evidence/policy branches and executes workspace recovery through the
 workspace operation recorder. The rollout kill switch is only the global
@@ -131,12 +137,14 @@ profile reset. Pending replay
 only acknowledges its original decision-scoped target after verifying that the
 target still exists.
 
-Direct resolver calls are explicitly pure policy/read-model tests. They do not
+Direct resolver and persisted-router calls are explicitly policy/internal
+helper tests. They do not
 satisfy an operational fixture without a runtime-reachable entrypoint receipt
-and concrete durable target. Sabotage removes the persisted accepted-attention
-input, changes the real global-flag input, removes cancellation/reconciliation
-actions, and deletes a pending replay target; mapped fixtures fail while their
-pure resolver labels remain unchanged.
+and concrete durable target. Sabotage removes the finalizer-owned accepted-
+attention path for the duplicate and stale fixtures, changes the real global-
+flag input, removes cancellation/reconciliation actions, and deletes a pending
+replay target; mapped fixtures fail while their pure resolver labels remain
+unchanged.
 
 Result-less same-run recovery is also proven through the production heartbeat
 seam: a persisted envelope/checkpoint is leased by `reapOrphanedRuns`, enters

@@ -224,6 +224,31 @@ check("duplicate attention creates no status decision or unbounded loop", () => 
   return `${duplicates.length} duplicate fixture(s) bounded at zero decisions/wakes/notifications`;
 });
 
+check("audit-only duplicate and stale fixtures retain exact durable targets", () => {
+  const expected = new Map([
+    ["duplicate-and-fresh-key-question", ["equivalent_attention_family", "link_canonical_request"]],
+    ["stale-attention-response", ["response_after_supersession", "record_stale_response"]],
+  ]);
+  for (const [id, [completionState, effect]] of expected) {
+    const fixture = corpus.fixtures.find((candidate) => candidate.id === id);
+    if (!fixture) throw new Error(`missing ${id}`);
+    if (
+      fixture.mode !== "native"
+      || fixture.given.completionState !== completionState
+      || fixture.expected.runStatus !== "succeeded"
+      || fixture.expected.statusAction !== "preserve"
+      || fixture.expected.reasonCode !== "attention_duplicate_suppressed"
+      || fixture.expected.decisionCount !== 0
+      || fixture.expected.maxWakeCount !== 0
+      || fixture.expected.maxNotificationCount !== 0
+      || !fixture.expected.requiredEffects.includes(effect)
+    ) {
+      throw new Error(`${id} does not pin the zero-decision ${effect} outcome`);
+    }
+  }
+  return "duplicate and stale targets are zero-decision audit outcomes";
+});
+
 check("completion-gating human judgment is explicit", () => {
   const fixture = corpus.fixtures.find((candidate) => candidate.id === "human-authority-required");
   if (!fixture) throw new Error("missing human-authority-required fixture");

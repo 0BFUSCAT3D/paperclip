@@ -27,6 +27,10 @@ consumer.
 Phase 6 adds a default-off Paperclip adapter at the public control-plane/session
 boundary, durable PRP replay and result finalization, and a kill switch that
 keeps the legacy adapter path as the default.
+Its audit-only attention path also terminates through the public port/finalizer
+call graph: duplicate and stale requests commit exact interaction receipts with
+no status decision, wake, notification, or issue status/version change, and a
+committed coordinator makes replay a no-op.
 
 ## Phase 0–5 quick start
 

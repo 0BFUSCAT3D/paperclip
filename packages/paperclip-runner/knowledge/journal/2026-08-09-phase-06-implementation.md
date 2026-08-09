@@ -4,7 +4,7 @@ title: Phase 6 feature-flagged Paperclip adapter implementation
 description: Implementation decisions and evidence for the default-off native runner seam, durable replay/finalization, and legacy kill switch.
 tags: [native-runner, phase-6, implementation, paperclip, security, replay]
 status: stable
-generated: { by: openai/gpt-5.6, at: 2026-08-09T03:01:00Z }
+generated: { by: openai/gpt-5.6, at: 2026-08-09T07:42:08Z }
 entry_kind: phase
 phase: "6"
 ---
@@ -73,6 +73,11 @@ existing server authority and keep legacy execution as the default.
     native runs retain native recovery after flag-off; fresh unresolved runs
     select legacy. Never rewrite the agent profile or persist a second rollback
     control.
+21. Treat duplicate and stale attention as terminal audit-only finalization.
+    The public port persists the result, the finalizer binds the exact durable
+    interaction target and commits a null-decision coordinator, and replay
+    short-circuits without another assessment or interaction mutation. Missing
+    and cross-company targets remain named fail-closed recovery.
 
 # Evidence
 
@@ -80,7 +85,7 @@ existing server authority and keep legacy execution as the default.
 - [Phase 6 reference](../../docs/phase-06-thin-paperclip-adapter.md)
 - [Runnable tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
 - Package conformance and recovery: four files, seven tests passed.
-- Phase 6 acceptance-matrix entry points: thirteen files, forty-five tests passed
+- Phase 6 acceptance-matrix entry points: thirteen files, forty-six tests passed
   with zero skips, including the database-backed selected-task canary, six
   atomic-liveness failpoints, migration, sequencing, bounded recovery, and
   legacy compatibility.
@@ -88,7 +93,8 @@ existing server authority and keep legacy execution as the default.
   applied the complete migration; the actual flag-off heartbeat executed the
   legacy adapter/finalizer and created zero native rows.
 - Section 18.13 source corpus: 52 fixture-specific database executions passed
-  through named production consumers. Consumer returns and persisted rows
+  through named production consumers. The duplicate/stale rows enter through
+  the real finalizer owner rather than the persisted router directly. Consumer returns and persisted rows
   supplied all eleven assertions: run status, status/preserve action, reason,
   required/forbidden effects, live path, claim preservation, native-record
   behavior, decision count, maximum wake count, and maximum notification
@@ -99,8 +105,8 @@ existing server authority and keep legacy execution as the default.
   recovery, run, workspace-operation, contract, decision, or governance state.
   Unknown effects fail before any decision, ledger, status-version, or
   coordinator mutation.
-- Negative entrypoint proofs remove cancellation auditing and the persisted
-  attention ingress, change the global flag input, remove reconciliation/
+- Negative entrypoint proofs remove cancellation auditing and the finalizer-
+  owned attention ingress, change the global flag input, remove reconciliation/
   workspace execution, and delete the original pending-effect target. Every
   mapped fixture fails even though its pure resolver still returns the expected
   policy label.
@@ -111,6 +117,16 @@ existing server authority and keep legacy execution as the default.
   turn, or legacy call. The provider boundary remains scripted, not live Codex.
 - Runner, shared, server, and database typechecks passed; migration safety
   passed.
+- The remediation-7 rerun passed the 13-file/46-test zero-skip matrix, all 19
+  runner-spec checks, runner docs validation, relevant TypeScript checks, and
+  `git diff --check`. A final call-graph review confirmed the public port owns
+  result persistence, the finalizer alone commits the zero-decision outcome,
+  the internal router binds the exact same-company interaction, and committed
+  replay short-circuits without another assessment or target mutation.
+- The design's authoritative 93-file allowlist was mechanically compared with
+  the Phase 6 branch diff and had no missing or extra path, including the README,
+  spec checker, canonical helper, runtime-mode test, and database-backed port
+  test paths.
 
 # Failures
 

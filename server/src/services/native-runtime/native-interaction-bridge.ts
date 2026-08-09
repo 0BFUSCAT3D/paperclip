@@ -66,7 +66,10 @@ export async function applyNativeAttentionStatusDecision(input: {
       if (effect.kind === "link_canonical_request") {
         const boundIds = [input.canonicalRequestId, input.targetInteractionId]
           .filter((id): id is string => typeof id === "string");
-        const interactions = await tx.select({ id: issueThreadInteractions.id })
+        const interactions = await tx.select({
+          id: issueThreadInteractions.id,
+          summary: issueThreadInteractions.summary,
+        })
           .from(issueThreadInteractions).where(and(
             eq(issueThreadInteractions.companyId, input.companyId),
             eq(issueThreadInteractions.issueId, input.issueId),
@@ -81,25 +84,34 @@ export async function applyNativeAttentionStatusDecision(input: {
         if (!canonical || !duplicate || canonical.id === duplicate.id) {
           throw new NativeInteractionBridgeError("native_attention_canonical_pair_missing", "Canonical and duplicate requests are required");
         }
-        await tx.update(issueThreadInteractions).set({
-          summary: `Canonical native attention request: ${canonical.id}`,
-          updatedAt: new Date(),
-        }).where(eq(issueThreadInteractions.id, duplicate.id));
+        const summary = `Canonical native attention request: ${canonical.id}`;
+        if (duplicate.summary !== summary) {
+          await tx.update(issueThreadInteractions).set({
+            summary,
+            updatedAt: new Date(),
+          }).where(eq(issueThreadInteractions.id, duplicate.id));
+        }
         targets.push({ effectKind: effect.kind, targetType: "issue_thread_interaction", targetId: duplicate.id });
         continue;
       }
       if (effect.kind === "record_stale_response") {
-        const interaction = await tx.select({ id: issueThreadInteractions.id })
+        const interaction = await tx.select({
+          id: issueThreadInteractions.id,
+          summary: issueThreadInteractions.summary,
+        })
           .from(issueThreadInteractions).where(and(
             eq(issueThreadInteractions.companyId, input.companyId),
             eq(issueThreadInteractions.issueId, input.issueId),
             ...(input.targetInteractionId ? [eq(issueThreadInteractions.id, input.targetInteractionId)] : []),
           )).limit(1).then((rows) => rows[0] ?? null);
         if (!interaction) throw new NativeInteractionBridgeError("native_stale_response_missing", "Stale response is not durable");
-        await tx.update(issueThreadInteractions).set({
-          summary: "Response retained for audit after native supersession.",
-          updatedAt: new Date(),
-        }).where(eq(issueThreadInteractions.id, interaction.id));
+        const summary = "Response retained for audit after native supersession.";
+        if (interaction.summary !== summary) {
+          await tx.update(issueThreadInteractions).set({
+            summary,
+            updatedAt: new Date(),
+          }).where(eq(issueThreadInteractions.id, interaction.id));
+        }
         targets.push({ effectKind: effect.kind, targetType: "issue_thread_interaction", targetId: interaction.id });
         continue;
       }
@@ -402,9 +414,11 @@ function candidateFromPersistedRequest(request: Record<string, unknown>): Native
 export type PersistedNativeAttentionReceipt = {
   requestId: string;
   route: NativeAttentionCandidate["route"];
+  assessmentId: string;
   decisionId: string | null;
   reasonCode: string | null;
   resolvedTargetAgentId: string | null;
+  materializedTargets: NativeAttentionMaterializedTarget[];
   replayed: boolean;
 };
 
@@ -504,9 +518,11 @@ export async function routePersistedNativeResultAttention(input: {
         receipts.push({
           requestId,
           route: candidate.route,
+          assessmentId: existingAssessment.id,
           decisionId: existingDecision.id,
           reasonCode: existingDecision.reasonCode,
           resolvedTargetAgentId: nonEmptyText(delegation?.agentId),
+          materializedTargets: [],
           replayed: true,
         });
         continue;
@@ -554,10 +570,12 @@ export async function routePersistedNativeResultAttention(input: {
     receipts.push({
       requestId,
       route: candidate.route,
+      assessmentId: assessment.id,
       decisionId: routed.decisionId,
       reasonCode: routed.decision.reasonCode,
       resolvedTargetAgentId: routed.resolvedTargetAgentId,
-      replayed: false,
+      materializedTargets: routed.targets,
+      replayed: existingAssessment !== null,
     });
   }
 

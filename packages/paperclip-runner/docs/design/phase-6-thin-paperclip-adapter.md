@@ -886,11 +886,22 @@ contract identity from database bindings. A same-company eligible delegate is
 materialized by `issueService`; a human-authority request is materialized as a
 typed issue-thread interaction; an explicit cross-company target is rejected
 into an immutable decision, recovery action, failed native finalization, and
-activity receipt. The corpus mutates the accepted result row and calls the
-persisted-result ingress. The database integration test starts one layer
-earlier at `PaperclipControlPlanePort.completeRun` and then calls the same
-production finalizer. `routeNativeAttention` remains an internal policy-to-
-owner helper and is no longer itself accepted as the operational proof.
+activity receipt. The corpus mutates the accepted result row and calls
+`finalizeNativeRun`, which owns the persisted-result ingress. The database
+integration test starts one layer earlier at
+`PaperclipControlPlanePort.completeRun` and then calls the same production
+finalizer. `routePersistedNativeResultAttention` and `routeNativeAttention`
+remain internal helpers and are no longer accepted as the operational proof.
+
+Audit-only duplicate and stale requests are a terminal success even though
+they intentionally create no status decision. The finalizer accepts that shape
+only when every request has an `attention_duplicate_suppressed` receipt bound
+to the exact durable interaction target. It commits the coordinator with a null
+decision, projects the successful heartbeat, and preserves issue status and
+version. A committed zero-decision coordinator is replayable only while those
+durable receipts remain present; replay does not update the named interaction a
+second time. Missing or cross-company interaction bindings fail closed into
+named finalization recovery.
 
 MIG-08 now represents the actual instance-global transition. The production
 heartbeat selector reads the persisted mode first: an already-selected native
@@ -916,6 +927,111 @@ v1 structured-output surface still emits the compact `kind`/`summary` form;
 the canonical PRP result can carry richer target metadata, which the server
 validates as untrusted routing hints. Richer provider authoring UX and
 additional resolver kinds remain deferred.
+
+### Remediation 7 authoritative exact-file reconciliation (2026-08-09)
+
+The provisional list and seam amendments above remain the decision history.
+For final diff auditing, their authoritative union is the following exact
+93-file allowlist. It matches the Phase 6 branch diff from the parent of the
+authorization commit through this remediation, including the package README,
+the Section 18.13 checker, package/runtime tests, `canonical.ts`, and
+`runtime-mode.test.ts`. No file outside this list is authorized as Phase 6 work.
+
+```text
+packages/adapter-utils/package.json
+packages/adapter-utils/src/types.ts
+packages/db/src/migrations/0211_famous_guardsmen.sql
+packages/db/src/migrations/meta/0211_snapshot.json
+packages/db/src/migrations/meta/_journal.json
+packages/db/src/schema/completion_contracts.ts
+packages/db/src/schema/heartbeat_run_events.ts
+packages/db/src/schema/heartbeat_runs.ts
+packages/db/src/schema/index.ts
+packages/db/src/schema/issues.ts
+packages/db/src/schema/native_run_finalizations.ts
+packages/db/src/schema/native_run_results.ts
+packages/db/src/schema/status_decision_effects.ts
+packages/db/src/schema/status_decisions.ts
+packages/db/src/schema/work_assessments.ts
+packages/paperclip-runner/README.md
+packages/paperclip-runner/docs/architecture.md
+packages/paperclip-runner/docs/design/phase-6-thin-paperclip-adapter.md
+packages/paperclip-runner/docs/index.md
+packages/paperclip-runner/docs/phase-06-thin-paperclip-adapter.md
+packages/paperclip-runner/docs/tutorials/phase-06-thin-paperclip-adapter.md
+packages/paperclip-runner/knowledge/evidence/2026-08-09-phase-06-verification.md
+packages/paperclip-runner/knowledge/evidence/index.md
+packages/paperclip-runner/knowledge/journal/2026-08-09-phase-06-design.md
+packages/paperclip-runner/knowledge/journal/2026-08-09-phase-06-implementation.md
+packages/paperclip-runner/knowledge/journal/index.md
+packages/paperclip-runner/knowledge/log.md
+packages/paperclip-runner/package.json
+packages/paperclip-runner/spec/fixtures/status-authority-phase5.json
+packages/paperclip-runner/spec/paperclip-native-runner-implementation-plan.md
+packages/paperclip-runner/spec/paperclip-native-runner-spike-spec.md
+packages/paperclip-runner/src/backends/codex-native-backend.ts
+packages/paperclip-runner/src/backends/harness-driver-backend.test.ts
+packages/paperclip-runner/src/backends/harness-driver-backend.ts
+packages/paperclip-runner/src/cli/phase6-paperclip.ts
+packages/paperclip-runner/src/conformance/control-plane-port.test.ts
+packages/paperclip-runner/src/conformance/control-plane-port.ts
+packages/paperclip-runner/src/contracts/control-plane-port.ts
+packages/paperclip-runner/src/contracts/native-execution.test.ts
+packages/paperclip-runner/src/contracts/native-execution.ts
+packages/paperclip-runner/src/contracts/native-session-backend.ts
+packages/paperclip-runner/src/index.ts
+packages/paperclip-runner/src/mock-core/mock-control-plane-adapter.ts
+packages/paperclip-runner/src/native-session-runtime.test.ts
+packages/paperclip-runner/src/native-session-runtime.ts
+packages/shared/src/feature-catalog.ts
+packages/shared/src/index.ts
+packages/shared/src/types/index.ts
+packages/shared/src/types/instance.ts
+packages/shared/src/types/native-finalization.ts
+packages/shared/src/validators/index.ts
+packages/shared/src/validators/instance.ts
+packages/shared/src/validators/native-finalization.ts
+scripts/check-runner-phase5-spec.mjs
+server/package.json
+server/src/__tests__/heartbeat-native-runner-cancellation.test.ts
+server/src/__tests__/heartbeat-native-runner-selection.test.ts
+server/src/__tests__/heartbeat-run-event-sequencing.test.ts
+server/src/__tests__/legacy-finalization-regression.test.ts
+server/src/__tests__/native-finalization-migration.test.ts
+server/src/__tests__/native-finalization-recovery.test.ts
+server/src/__tests__/native-interaction-bridge.test.ts
+server/src/__tests__/native-run-finalizer.test.ts
+server/src/__tests__/native-runner-input-boundary.test.ts
+server/src/__tests__/native-runner-phase6.integration.test.ts
+server/src/__tests__/native-session-resumption.test.ts
+server/src/__tests__/native-status-arbiter-corpus.test.ts
+server/src/services/heartbeat-run-events.ts
+server/src/services/heartbeat.ts
+server/src/services/instance-settings.ts
+server/src/services/issues.ts
+server/src/services/native-runtime/canonical.ts
+server/src/services/native-runtime/completion-contracts.ts
+server/src/services/native-runtime/evidence-classifier.test.ts
+server/src/services/native-runtime/evidence-classifier.ts
+server/src/services/native-runtime/index.ts
+server/src/services/native-runtime/native-execution-input.ts
+server/src/services/native-runtime/native-finalization-reconciler.ts
+server/src/services/native-runtime/native-interaction-bridge.ts
+server/src/services/native-runtime/native-result-ingestion.ts
+server/src/services/native-runtime/native-run-finalizer.ts
+server/src/services/native-runtime/native-session-executor.test.ts
+server/src/services/native-runtime/native-session-executor.ts
+server/src/services/native-runtime/native-workspace-finalizer.ts
+server/src/services/native-runtime/paperclip-control-plane-port.test.ts
+server/src/services/native-runtime/paperclip-control-plane-port.ts
+server/src/services/native-runtime/runtime-mode.test.ts
+server/src/services/native-runtime/runtime-mode.ts
+server/src/services/native-runtime/status-arbiter.test.ts
+server/src/services/native-runtime/status-arbiter.ts
+server/src/services/native-runtime/status-decision-committer.ts
+server/src/services/native-runtime/work-assessments.ts
+server/src/services/recovery/service.ts
+```
 
 ## Commands the implementation must make runnable
 

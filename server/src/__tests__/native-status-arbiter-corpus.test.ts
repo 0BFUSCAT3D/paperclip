@@ -27,7 +27,6 @@ import {
   applyNativeAttentionStatusDecision,
   materializeNativeInteractionResponses,
   rejectUnsupportedNativeRuntimeRequest,
-  routePersistedNativeResultAttention,
   resolveNativeAttentionStatus,
 } from "../services/native-runtime/native-interaction-bridge.js";
 import {
@@ -55,6 +54,7 @@ import {
 import {
   projectNativeTerminalRunStatus,
   recordNativeFinalizationFailure,
+  finalizeNativeRun,
   resolveNativeFinalizerStatus,
 } from "../services/native-runtime/native-run-finalizer.js";
 import {
@@ -706,7 +706,13 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           },
         },
       }).where(eq(nativeRunResults.id, seeded.resultId!));
-      const [receipt] = await routePersistedNativeResultAttention({ db, runId: seeded.runId });
+      const finalized = await finalizeNativeRun({
+        db,
+        runId: seeded.runId,
+        workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true,
+      });
+      const [receipt] = "attentionReceipts" in finalized ? finalized.attentionReceipts : [];
       if (!receipt) throw new Error(`${fixture.id}: persisted attention route missing`);
       const persistedDecision = receipt.decisionId
         ? await db.select().from(statusDecisions).where(eq(statusDecisions.id, receipt.decisionId))
@@ -728,14 +734,43 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       liveEntrypointCommitted = true;
       for (const effect of routedDecision.effects) materializedEffects.add(effect.kind);
       consumerExecutions.push({
-        consumer: "native-attention-entrypoint",
+        consumer: "native-attention-finalizer",
         observed: {
+          phase: finalized.phase,
           decisionId: receipt.decisionId,
           resolvedTargetAgentId: receipt.resolvedTargetAgentId,
           reasonCode: receipt.reasonCode,
+          materializedTargets: receipt.materializedTargets,
           persistedResultId: seeded.resultId,
         },
       });
+      if (receipt.decisionId === null) {
+        const beforeReplay = liveAttentionInteractionId
+          ? await db.select({
+              summary: issueThreadInteractions.summary,
+              updatedAt: issueThreadInteractions.updatedAt,
+            }).from(issueThreadInteractions).where(eq(issueThreadInteractions.id, liveAttentionInteractionId))
+              .then((rows) => rows[0] ?? null)
+          : null;
+        const assessmentCount = await db.select().from(workAssessments)
+          .where(eq(workAssessments.runId, seeded.runId)).then((rows) => rows.length);
+        const replayed = await finalizeNativeRun({
+          db,
+          runId: seeded.runId,
+          workspaceFinalizeStatus: "succeeded",
+          projectRunStatus: true,
+        });
+        expect(replayed, `${fixture.id}:audit replay coordinator`).toMatchObject({ phase: "committed", decisionId: null });
+        if (liveAttentionInteractionId) {
+          await expect(db.select({
+            summary: issueThreadInteractions.summary,
+            updatedAt: issueThreadInteractions.updatedAt,
+          }).from(issueThreadInteractions).where(eq(issueThreadInteractions.id, liveAttentionInteractionId))
+            .then((rows) => rows[0] ?? null)).resolves.toEqual(beforeReplay);
+        }
+        await expect(db.select().from(workAssessments)
+          .where(eq(workAssessments.runId, seeded.runId)).then((rows) => rows.length)).resolves.toBe(assessmentCount);
+      }
       if (attentionFacts.route === "agent" && completionState !== "cross_company_target") {
         expect(receipt.resolvedTargetAgentId, `${fixture.id}:eligible delegate`).toBe(delegateAgentId);
       }
@@ -1694,9 +1729,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     if (
       attentionFacts
       && ["attention_response", "attention_candidate", "interaction", "monitor"].includes(String(fixture.given.trigger))
-      && !consumerExecutions.some((execution) => execution.consumer === "native-attention-entrypoint")
+      && !consumerExecutions.some((execution) => execution.consumer === "native-attention-finalizer")
     ) {
-      throw new Error(`${fixture.id}: live attention proof missing`);
+      throw new Error(`${fixture.id}: live attention finalizer proof missing`);
     }
     if (
       ["REC-04", "REC-06", "REC-07", "REC-08"].some((row) => (fixture.covers.reconciliationRows ?? []).includes(row))
@@ -1832,7 +1867,13 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     }).reasonCode).toBe("attention_routed_to_agent");
     await expect(executeFixture(byId("human-request-routed-to-agent"), {
       disableLiveEntrypoint: "attention",
-    })).rejects.toThrow("live attention proof missing");
+    })).rejects.toThrow("live attention finalizer proof missing");
+    await expect(executeFixture(byId("duplicate-and-fresh-key-question"), {
+      disableLiveEntrypoint: "attention",
+    })).rejects.toThrow("live attention finalizer proof missing");
+    await expect(executeFixture(byId("stale-attention-response"), {
+      disableLiveEntrypoint: "attention",
+    })).rejects.toThrow("live attention finalizer proof missing");
 
     expect(resolveNativeReconciliationStatus({
       facts: { workspaceOperationPending: true },

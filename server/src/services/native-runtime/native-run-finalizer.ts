@@ -42,6 +42,18 @@ function authoritativeStatus(value: string): NativeAuthoritativeIssueStatus {
   return value as NativeAuthoritativeIssueStatus;
 }
 
+function isCommittedAuditOnlyRouting(value: unknown) {
+  const receipts = record(value).nativeAttentionRouting;
+  return Array.isArray(receipts) && receipts.length > 0 && receipts.every((candidate) => {
+    const receipt = record(candidate);
+    const targets = receipt.materializedTargets;
+    return receipt.decisionId === null
+      && receipt.reasonCode === "attention_duplicate_suppressed"
+      && Array.isArray(targets)
+      && targets.length > 0;
+  });
+}
+
 /** Server-owned terminal conversion used by live finalization and read models. */
 export function projectNativeTerminalRunStatus(
   terminalState: "succeeded" | "failed" | "cancelled" | "active",
@@ -101,7 +113,20 @@ async function claimCoordinator(input: { db: Db; runId: string }) {
       .where(eq(nativeRunFinalizations.runId, input.runId)).for("update").limit(1)
       .then((rows) => rows[0] ?? null);
     if (!coordinator?.resultId) throw new Error("native_finalization_missing");
-    if (coordinator.phase === "committed" && coordinator.decisionId) {
+    if (coordinator.phase === "committed") {
+      if (!coordinator.decisionId) {
+        const run = await tx.select({ resultJson: heartbeatRuns.resultJson })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, coordinator.runId),
+            eq(heartbeatRuns.companyId, coordinator.companyId),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!run || !isCommittedAuditOnlyRouting(run.resultJson)) {
+          throw new Error("native_finalization_committed_outcome_missing");
+        }
+      }
       return { coordinator, leaseOwner: null };
     }
     if (coordinator.phase === "terminal_failure") throw new Error("native_finalization_terminal_failure");
@@ -385,12 +410,37 @@ export async function finalizeNativeRun(input: {
                 eq(statusDecisions.issueId, authoritativeIssue.id),
               )).limit(1).then((rows) => rows[0] ?? null)
           : null;
-        if (!latestCoordinator || !latestIssue || !latestDecision) {
+        const auditOnly = attentionReceipts.length > 0
+          && attentionReceipts.every((receipt) =>
+            receipt.decisionId === null
+            && receipt.reasonCode === "attention_duplicate_suppressed"
+            && receipt.materializedTargets.length > 0
+          );
+        if (!latestCoordinator || !latestIssue || (!latestDecision && !auditOnly)) {
           throw new Error("native_attention_routing_incomplete");
         }
+        const committedCoordinator = auditOnly
+          ? await input.db.update(nativeRunFinalizations).set({
+              phase: "committed",
+              assessmentId: attentionReceipts.at(-1)?.assessmentId ?? latestCoordinator.assessmentId,
+              decisionId: null,
+              leaseOwner: null,
+              leaseExpiresAt: null,
+              failureCode: null,
+              failureDetail: null,
+              nextAttemptAt: null,
+              updatedAt: new Date(),
+            }).where(and(
+              eq(nativeRunFinalizations.runId, input.runId),
+              eq(nativeRunFinalizations.companyId, run.companyId),
+              eq(nativeRunFinalizations.issueId, authoritativeIssue.id),
+              eq(nativeRunFinalizations.leaseOwner, claim.leaseOwner!),
+            )).returning().then((rows) => rows[0] ?? null)
+          : latestCoordinator;
+        if (!committedCoordinator) throw new Error("native_attention_audit_commit_failed");
         const now = new Date();
-        const attentionFailed = latestCoordinator.phase === "retryable_failure"
-          || latestCoordinator.phase === "terminal_failure";
+        const attentionFailed = committedCoordinator.phase === "retryable_failure"
+          || committedCoordinator.phase === "terminal_failure";
         const currentRun = await input.db.select({ resultJson: heartbeatRuns.resultJson })
           .from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id))
           .limit(1).then((rows) => rows[0] ?? null);
@@ -401,14 +451,14 @@ export async function finalizeNativeRun(input: {
               : terminalState === "succeeded" ? "succeeded" : terminalState === "cancelled" ? "cancelled" : "failed",
             finishedAt: now,
           } : {}),
-          nativePhase: latestCoordinator.phase,
+          nativePhase: committedCoordinator.phase,
           nativePhaseUpdatedAt: now,
           resultJson: {
             ...record(currentRun?.resultJson),
-            finalizationPhase: latestCoordinator.phase,
-            assessmentId: latestCoordinator.assessmentId,
-            decisionId: latestCoordinator.decisionId,
-            authoritativeDecision: latestDecision.toStatus,
+            finalizationPhase: committedCoordinator.phase,
+            assessmentId: committedCoordinator.assessmentId,
+            decisionId: committedCoordinator.decisionId,
+            authoritativeDecision: latestDecision?.toStatus ?? null,
             issueStatusBefore: authoritativeIssue.status,
             issueStatusAfter: latestIssue.status,
             statusVersionBefore: Number(authoritativeIssue.statusVersion),
@@ -418,7 +468,7 @@ export async function finalizeNativeRun(input: {
           },
           updatedAt: now,
         }).where(eq(heartbeatRuns.id, run.id));
-        return { ...latestCoordinator, attentionReceipts };
+        return { ...committedCoordinator, attentionReceipts };
       } catch (error) {
         if (error instanceof NativeStatusRaceError && attempt < 2) {
           supersedesAssessmentId = assessmentRow.id;

@@ -4,7 +4,7 @@ title: Phase 6 thin Paperclip adapter verification
 description: Targeted package, database-port, finalization, security-boundary, feature-selection, and legacy fallback evidence.
 tags: [native-runner, phase-6, verification, paperclip, replay, finalization]
 status: stable
-generated: { by: openai/gpt-5.6, at: 2026-08-09T05:52:00Z }
+generated: { by: openai/gpt-5.6, at: 2026-08-09T07:42:08Z }
 ---
 
 # Scope
@@ -39,7 +39,7 @@ existing accepted result event, and appended only the missing terminal fact.
 
 # Real Paperclip adapter and public-session task
 
-The complete acceptance gate below passed 45 tests in thirteen files against
+The complete acceptance gate below passed 46 tests in thirteen files against
 embedded PostgreSQL with zero skipped tests. Database-backed tests start their
 own database instead of skipping when a developer `DATABASE_URL` is absent.
 The same package conformance suite passed unchanged against
@@ -75,6 +75,11 @@ The focused corpus also proved:
   authority creates an issue-thread interaction, and cross-company targeting
   persists a rejection decision, recovery action, failed finalization, and
   audit receipt;
+- valid duplicate and stale targets, including a mixed list, enter through
+  `PaperclipControlPlanePort.completeRun -> finalizeNativeRun`, commit a
+  replay-stable zero-decision coordinator, project a successful run, preserve
+  issue status/version, create no wake or notification, and record the exact
+  durable interaction target; missing and cross-company bindings fail closed;
 - incomplete/review/yield/cancelled results receive a durable review,
   continuation, or recovery path;
 - only a task-wide blocker with a named owner and action selects `blocked`;
@@ -87,7 +92,7 @@ The focused corpus also proved:
   bindings, recovery, status,
   decisions, and effects roll back together before retry ownership is recorded.
 
-The acceptance-matrix entry points passed as one 13-file, 45-test gate:
+The acceptance-matrix entry points passed as one 13-file, 46-test gate:
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \
@@ -111,9 +116,11 @@ bounded retry exhaustion, actual flag-off legacy execution, and executable
 Section 18.13 fixture-to-consumer traceability. All 52 fixtures and 70 rows are
 classified as either live operational proofs or explicit pure policy/read-model
 checks. Cancellation persists its decision or audit-only receipt through
-`cancelNativeSession`; attention enters from the accepted result through the
-persisted-result router, then resolves a same-company eligible target through
-the issue service; REC-04/06/07/08 enter the reconciler, with REC-04
+`cancelNativeSession`; attention enters from the accepted result through
+`finalizeNativeRun`, which owns the persisted-result router, then resolves a
+same-company eligible target through the issue service. The mapped duplicate
+and stale fixtures require that finalizer receipt and fail sabotage that leaves
+only the pure resolver/internal router. REC-04/06/07/08 enter the reconciler, with REC-04
 recording an observed workspace operation and REC-06/07/08 writing a newly
 classified append-only assessment before superseding the prior decision; and
 MIG-08 is enforced by the production heartbeat selector using the global flag:
@@ -124,7 +131,8 @@ All eleven expected fields remain derived from entrypoint returns and durable
 rows. Every required native effect is joined to its owning target state, each
 decision replay retains one identity and one delivery attempt, and pending
 replay verifies the original company/issue/decision target before acknowledging
-it. The negative suite removes each live action, changes the real global-flag
+it. Zero-decision audit replay retains the coordinator and named interaction
+without another mutation. The negative suite removes each live action, changes the real global-flag
 input, and deletes a replay target;
 the mapped fixtures fail while the direct policy resolver still returns the
 expected label. An unknown effect rolls the entire transaction back. No
@@ -132,6 +140,33 @@ test-owned scenario policy supplies an observation. The selected-task
 and recovery canaries remain scripted only at the provider boundary, while the
 production Paperclip persistence/finalization paths and the flag-off legacy
 adapter/finalizer path execute for real.
+
+# Remediation 7 rerun and call-graph self-review
+
+The final rerun on 2026-08-09 produced:
+
+- thirteen server files, 46 tests passed, zero skipped;
+- Section 18.13 checker: 19 checks passed, zero failed;
+- runner documentation validation: 58 links and the 25-concept/four-index OKF
+  bundle passed;
+- server TypeScript and runner TypeScript/protocol typechecks passed;
+- the design's authoritative 93-file allowlist matched the Phase 6 diff exactly;
+- `git diff --check` passed.
+
+The final owner review traced the successful audit-only path as
+`PaperclipControlPlanePort.completeRun -> native_run_results ->
+finalizeNativeRun -> routePersistedNativeResultAttention ->
+recordNativeAttentionAssessment -> routeNativeAttention ->
+applyNativeAttentionStatusDecision -> native_run_finalizations/heartbeat_runs`.
+The public port owns immutable result validation and persistence; the finalizer
+owns coordinator lease/terminal projection; the internal router derives all
+identity from persisted bindings; and the audit materializer requires the exact
+same-company issue interaction. The finalizer accepts a null decision only when
+every receipt is `attention_duplicate_suppressed` and names a durable target.
+Committed replay validates those receipts before short-circuiting, so it cannot
+create another assessment or mutate the interaction timestamp. Missing or
+cross-company targets throw before the coordinator commits and enter named
+retryable recovery with the issue status/version unchanged.
 
 # Compile and migration checks
 

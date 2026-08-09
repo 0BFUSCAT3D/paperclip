@@ -60,7 +60,7 @@ pnpm --filter @paperclipai/server exec vitest run \
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. Forty-five targeted tests check company binding, duplicate/gap replay,
+port. Forty-six targeted tests check company binding, duplicate/gap replay,
 checkpoint recovery, immutable result ingestion, durable-evidence authority,
 workspace-gated finalization, atomic liveness rollback, status-version CAS,
 migration repair, legacy byte equivalence, typed interaction materialization,
@@ -83,6 +83,14 @@ Each native effect must have a delivered, company-bound target or concrete
 target-state mutation, and pending replay may only acknowledge its original
 decision-scoped target. Sabotage tests remove each live action and the replay
 target and require failure even while the pure resolver label remains correct.
+
+Duplicate and stale audit-only cases start at
+`PaperclipControlPlanePort.completeRun`, continue through `finalizeNativeRun`,
+and commit the coordinator with no status decision. The run succeeds, the issue
+status/version remains unchanged, and the receipt names the exact mutated
+interaction. Replaying the finalizer does not create an assessment or update
+the interaction again. A mixed duplicate/stale list has the same behavior;
+missing and cross-company interaction bindings fail closed.
 
 All eleven expected fields and all 70 matrix-row joins are still checked, and
 an unknown-effect case proves the status transaction fails closed without
