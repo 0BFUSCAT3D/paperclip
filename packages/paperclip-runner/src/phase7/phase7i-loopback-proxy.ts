@@ -1,52 +1,14 @@
-import { request as proxyRequest, createServer, type IncomingHttpHeaders } from "node:http";
+import { request as proxyRequest, createServer } from "node:http";
+
+import {
+  resolvePhase7iProxyConfig,
+  selectedPhase7iProxyHeaders,
+} from "./phase7i-proxy-config.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
-const FORWARDED_HEADERS = new Set([
-  "accept",
-  "accept-encoding",
-  "content-length",
-  "content-type",
-  "cookie",
-  "host",
-  "origin",
-  "sec-fetch-dest",
-  "sec-fetch-mode",
-  "sec-fetch-site",
-  "tailscale-user-login",
-  "tailscale-user-name",
-  "user-agent",
-  "x-forwarded-for",
-]);
-
-function selectedHeaders(
-  headers: IncomingHttpHeaders,
-  publicHost: string,
-): Record<string, string | string[]> {
-  const selected: Record<string, string | string[]> = {};
-  for (const [name, value] of Object.entries(headers)) {
-    if (!FORWARDED_HEADERS.has(name) || value === undefined) continue;
-    selected[name] = value;
-  }
-  selected.host = publicHost;
-  selected["x-forwarded-proto"] = "https";
-  selected["x-forwarded-host"] = publicHost;
-  selected["x-phase7i-proxy"] = "v1";
-  return selected;
-}
 
 function main(): void {
-  const socketPath = process.env.PHASE7I_SOCKET_PATH?.trim();
-  const port = Number(process.env.PHASE7I_PROXY_PORT);
-  const publicOrigin = new URL(process.env.PHASE7I_PUBLIC_ORIGIN ?? "");
-  if (
-    !socketPath
-    || !Number.isInteger(port)
-    || port < 1
-    || port > 65_535
-    || publicOrigin.protocol !== "https:"
-  ) {
-    throw new Error("PHASE7I_SOCKET_PATH, PHASE7I_PUBLIC_ORIGIN, and a valid PHASE7I_PROXY_PORT are required");
-  }
+  const { socketPath, port, bindHost, publicOrigin } = resolvePhase7iProxyConfig(process.env);
 
   const server = createServer((req, res) => {
     const declaredLength = Number(req.headers["content-length"]);
@@ -60,7 +22,7 @@ function main(): void {
       socketPath,
       method: req.method,
       path: req.url,
-      headers: selectedHeaders(req.headers, publicOrigin.host),
+      headers: selectedPhase7iProxyHeaders(req.headers, publicOrigin, req.socket.remoteAddress),
       timeout: 35_000,
     }, (upstreamResponse) => {
       res.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
@@ -81,7 +43,7 @@ function main(): void {
   server.requestTimeout = 35_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 5_000;
-  server.listen(port, "127.0.0.1");
+  server.listen(port, bindHost);
 
   const stop = (): void => {
     server.close(() => process.exit(0));

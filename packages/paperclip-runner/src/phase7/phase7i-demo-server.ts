@@ -22,7 +22,8 @@ const SESSION_LIFETIME_MS = 30 * 60_000;
 const MAX_SESSION_EVENTS = 1_024;
 const MAX_SERIALIZED_STATE_BYTES = 1024 * 1024;
 const TURN_DEADLINE_MS = 30_000;
-const CAPABILITY_COOKIE = "__Host-paperclip_phase7i";
+const SECURE_CAPABILITY_COOKIE = "__Host-paperclip_phase7i";
+const TAILNET_HTTP_CAPABILITY_COOKIE = "paperclip_phase7i";
 
 const FORBIDDEN_ENV_NAME = /^(?:PAPERCLIP_|GITHUB_|AWS_|GOOGLE_|AZURE_)|(?:API_KEY|TOKEN|SECRET|PASSWORD|DATABASE_URL|CODEX_HOME)$/i;
 
@@ -53,6 +54,7 @@ type RuntimeOptions = {
   publicOrigin: string;
   basePath: string;
   commitSha: string;
+  allowInsecureHttp?: boolean;
   packageRoot?: string;
   now?: () => number;
   log?: (record: Record<string, unknown>) => void;
@@ -104,8 +106,28 @@ function parseCookies(req: IncomingMessage): Map<string, string> {
   return result;
 }
 
-function capabilityCookie(value: string, maxAgeSeconds = 1_800): string {
-  return `${CAPABILITY_COOKIE}=${value}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`;
+function capabilityCookie(
+  name: string,
+  value: string,
+  secure: boolean,
+  maxAgeSeconds = 1_800,
+): string {
+  const secureAttribute = secure ? "; Secure" : "";
+  return `${name}=${value}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly${secureAttribute}; SameSite=Strict`;
+}
+
+export function phase7iCapabilityCookieForOrigin(
+  publicOrigin: URL,
+  value: string,
+  maxAgeSeconds = 1_800,
+): string {
+  const secure = publicOrigin.protocol === "https:";
+  return capabilityCookie(
+    secure ? SECURE_CAPABILITY_COOKIE : TAILNET_HTTP_CAPABILITY_COOKIE,
+    value,
+    secure,
+    maxAgeSeconds,
+  );
 }
 
 function applySecurityHeaders(res: ServerResponse): void {
@@ -218,6 +240,8 @@ export class Phase7iDemoRuntime {
   readonly basePath: string;
   readonly commitSha: string;
 
+  private readonly secureTransport: boolean;
+  private readonly capabilityCookieName: string;
   private readonly packageRoot: string;
   private readonly staticRoot: string;
   private readonly now: () => number;
@@ -230,9 +254,16 @@ export class Phase7iDemoRuntime {
 
   constructor(options: RuntimeOptions) {
     this.publicOrigin = new URL(options.publicOrigin);
-    if (this.publicOrigin.protocol !== "https:") {
-      throw new Error("PHASE7I_PUBLIC_ORIGIN must use HTTPS");
+    this.secureTransport = this.publicOrigin.protocol === "https:";
+    if (
+      !this.secureTransport
+      && !(this.publicOrigin.protocol === "http:" && options.allowInsecureHttp === true)
+    ) {
+      throw new Error("PHASE7I_PUBLIC_ORIGIN must use HTTPS unless tailnet HTTP is explicitly enabled");
     }
+    this.capabilityCookieName = this.secureTransport
+      ? SECURE_CAPABILITY_COOKIE
+      : TAILNET_HTTP_CAPABILITY_COOKIE;
     this.basePath = normalizeBasePath(options.basePath);
     this.commitSha = options.commitSha.trim() || "unknown";
     this.packageRoot = options.packageRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -328,8 +359,9 @@ export class Phase7iDemoRuntime {
     if (header(req, "x-phase7i-proxy") !== "v1") {
       throw new RequestFailure(403, "trusted_proxy_required", "Request did not arrive through the trusted proxy.");
     }
-    if (header(req, "x-forwarded-proto").split(",")[0]?.trim().toLowerCase() !== "https") {
-      throw new RequestFailure(403, "https_required", "HTTPS is required.");
+    const forwardedProtocol = header(req, "x-forwarded-proto").split(",")[0]?.trim().toLowerCase();
+    if (forwardedProtocol !== this.publicOrigin.protocol.slice(0, -1)) {
+      throw new RequestFailure(403, "transport_denied", "Forwarded transport is not allowed.");
     }
     const forwardedHost = header(req, "x-forwarded-host").split(",")[0]?.trim().toLowerCase();
     if (forwardedHost !== this.publicOrigin.host.toLowerCase()) {
@@ -361,7 +393,7 @@ export class Phase7iDemoRuntime {
   private requireSession(req: IncomingMessage, id: string): SessionRecord {
     const record = this.sessions.get(id);
     if (!record) throw new RequestFailure(404, "session_not_found", "Session was not found.");
-    const capability = parseCookies(req).get(CAPABILITY_COOKIE) ?? "";
+    const capability = parseCookies(req).get(this.capabilityCookieName) ?? "";
     const capabilityHash = sha256(capability);
     const identityHash = shortHash(requestIdentity(req));
     if (
@@ -408,7 +440,10 @@ export class Phase7iDemoRuntime {
       chat,
     };
     this.sessions.set(record.id, record);
-    res.setHeader("Set-Cookie", capabilityCookie(capability));
+    res.setHeader(
+      "Set-Cookie",
+      phase7iCapabilityCookieForOrigin(this.publicOrigin, capability),
+    );
     sendJson(res, 201, { sessionId: record.id, artifact, nextPrompt: chat.nextPrompt() });
   }
 
@@ -479,14 +514,20 @@ export class Phase7iDemoRuntime {
       chat,
     };
     this.sessions.set(replacement.id, replacement);
-    res.setHeader("Set-Cookie", capabilityCookie(capability));
+    res.setHeader(
+      "Set-Cookie",
+      phase7iCapabilityCookieForOrigin(this.publicOrigin, capability),
+    );
     sendJson(res, 200, { sessionId: replacement.id, artifact, nextPrompt: chat.nextPrompt() });
   }
 
   private async deleteSession(res: ServerResponse, record: SessionRecord): Promise<void> {
     this.sessions.delete(record.id);
     await record.chat.close();
-    res.setHeader("Set-Cookie", capabilityCookie("deleted", 0));
+    res.setHeader(
+      "Set-Cookie",
+      phase7iCapabilityCookieForOrigin(this.publicOrigin, "deleted", 0),
+    );
     sendJson(res, 200, { closed: true });
   }
 
@@ -612,6 +653,7 @@ async function main(): Promise<void> {
     publicOrigin,
     basePath: process.env.PHASE7I_BASE_PATH ?? "",
     commitSha: process.env.PHASE7I_COMMIT_SHA ?? "unknown",
+    allowInsecureHttp: process.env.PHASE7I_ALLOW_INSECURE_HTTP === "1",
   });
   await runtime.initialize();
   const server = runtime.createServer();

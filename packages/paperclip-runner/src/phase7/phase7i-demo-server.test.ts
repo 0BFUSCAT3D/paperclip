@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertPhase7iEnvironmentSafe,
   forbiddenPhase7iEnvironmentNames,
+  phase7iCapabilityCookieForOrigin,
   Phase7iDemoRuntime,
 } from "./phase7i-demo-server.js";
 
@@ -33,6 +34,34 @@ describe("Phase 7I deployment boundary", () => {
       retention: "memory-only",
       activeSessions: 0,
     });
+    await runtime.shutdown();
+  });
+
+  it("requires an explicit opt-in for tailnet HTTP and uses an HTTP-compatible capability cookie", async () => {
+    expect(() => new Phase7iDemoRuntime({
+      publicOrigin: "http://phase7i.example.ts.net:4197",
+      basePath: "/phase7i",
+      commitSha: "deadbeef",
+      packageRoot,
+      log: () => undefined,
+    })).toThrow(/explicitly enabled/);
+
+    const publicOrigin = "http://phase7i.example.ts.net:4197";
+    const runtime = new Phase7iDemoRuntime({
+      publicOrigin,
+      basePath: "/phase7i",
+      commitSha: "deadbeef",
+      allowInsecureHttp: true,
+      packageRoot,
+      log: () => undefined,
+    });
+    await runtime.initialize();
+    expect(runtime.health()).toMatchObject({ ready: true, commitSha: "deadbeef" });
+    const setCookie = phase7iCapabilityCookieForOrigin(new URL(publicOrigin), "capability");
+    expect(setCookie).toContain("paperclip_phase7i=capability");
+    expect(setCookie).not.toContain("__Host-");
+    expect(setCookie).not.toMatch(/; Secure(?:;|$)/);
+    expect(setCookie).toContain("SameSite=Strict");
     await runtime.shutdown();
   });
 
