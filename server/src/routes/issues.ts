@@ -2788,10 +2788,11 @@ export function issueRoutes(
   async function assertCrossIssueInfluenceWithinRunCap(
     req: Request,
     res: Response,
-    issue: { id: string; identifier?: string | null; companyId: string },
+    issue: { id: string; identifier?: string | null; companyId: string; originKind?: string | null },
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
+    if (await isActiveSelectedAgentChatActor(req, issue)) return true;
     if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
 
     // The counter transaction locks and validates the persisted run before it
@@ -4917,31 +4918,41 @@ export function issueRoutes(
       return false;
     }
 
-    const actorAgentId = req.actor.agentId;
-    if (!actorAgentId) {
+    if (!req.actor.agentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
-    const run = await heartbeat.getRun(runId);
-    const context =
-      run?.contextSnapshot && typeof run.contextSnapshot === "object"
-        ? (run.contextSnapshot as Record<string, unknown>)
-        : null;
-    const selectedAgentRun =
-      run?.status === "running" &&
-      run.agentId === actorAgentId &&
-      context?.selectedAgentChat === true &&
-      context?.issueId === issue.id &&
-      context?.targetAgentId === actorAgentId;
-    if (selectedAgentRun) return true;
+    if (await isActiveSelectedAgentChatActor(req, issue)) return true;
 
     res.status(403).json({
       error: "Only the active selected-agent chat target can comment on Conference Room issues",
       code: "board_chat_selected_agent_run_required",
     });
     return false;
+  }
+
+  async function isActiveSelectedAgentChatActor(
+    req: Request,
+    issue: { id: string; originKind?: string | null },
+  ) {
+    if (issue.originKind !== BOARD_CHAT_ORIGIN_KIND || req.actor.type !== "agent") return false;
+    const actorAgentId = req.actor.agentId;
+    const runId = req.actor.runId?.trim();
+    if (!actorAgentId || !runId) return false;
+    const run = await heartbeat.getRun(runId);
+    const context =
+      run?.contextSnapshot && typeof run.contextSnapshot === "object"
+        ? (run.contextSnapshot as Record<string, unknown>)
+        : null;
+    return (
+      run?.status === "running" &&
+      run.agentId === actorAgentId &&
+      context?.selectedAgentChat === true &&
+      context?.issueId === issue.id &&
+      context?.targetAgentId === actorAgentId
+    );
   }
 
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {

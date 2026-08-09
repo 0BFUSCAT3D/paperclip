@@ -4054,6 +4054,7 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const targetAgentId =
       typeof req.query.targetAgentId === "string" && req.query.targetAgentId.trim().length > 0
         ? req.query.targetAgentId.trim()
@@ -4118,6 +4119,7 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const targetAgentId =
       typeof req.query.targetAgentId === "string" && req.query.targetAgentId.trim().length > 0
         ? req.query.targetAgentId.trim()
