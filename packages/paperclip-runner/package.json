@@ -55,6 +55,8 @@
     "generate:phase7-inventory": "node scripts/generate-phase7-inventory.mjs",
     "check:phase7-inventory": "node scripts/check-phase7-inventory.mjs",
     "test:phase7-inventory": "node scripts/check-phase7-inventory.test.mjs",
+    "test:phase7-evals": "vitest run src/conformance/phase7-eval-suite.test.ts",
+    "report:phase7-evals": "pnpm run build:typescript && node scripts/run-phase7-eval-suite.mjs",
     "check:phase0-parity": "vitest run src/tracer/phase0-runner.test.ts && cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core runs_the_mock_core_path_with_stable_output && node -e \"process.stdout.write('Rust and TypeScript Phase 0 tracer output matches the shared golden fixture.\\n')\"",
     "check:phase1-parity": "vitest run src/reducer/session-reducer.test.ts && cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core phase1_fixture_parity && node -e \"process.stdout.write('Rust and TypeScript Phase 1 reducer summaries match the shared golden fixtures.\\n')\"",
     "docs:validate": "node scripts/validate-doc-links.mjs && node scripts/validate-okf.mjs",
