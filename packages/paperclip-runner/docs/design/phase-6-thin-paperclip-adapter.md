@@ -1,6 +1,6 @@
 # Phase 6 Thin Paperclip Adapter Boundary
 
-Status: design approved; remediation 4 implemented; CTO conformance re-review pending
+Status: design approved; remediation 8 documentation reconciliation complete; final CTO gate pending
 Date: 2026-08-09
 Decision scope: the first feature-flagged Paperclip native run, including the
 normative native finalizer and server-owned Section 18 status arbitration
@@ -932,7 +932,7 @@ additional resolver kinds remain deferred.
 
 The provisional list and seam amendments above remain the decision history.
 For final diff auditing, their authoritative union is the following exact
-93-file allowlist. It matches the Phase 6 branch diff from the parent of the
+89-file allowlist. It matches the Phase 6 branch diff from the parent of the
 authorization commit through this remediation, including the package README,
 the Section 18.13 checker, package/runtime tests, `canonical.ts`, and
 `runtime-mode.test.ts`. No file outside this list is authorized as Phase 6 work.
@@ -954,21 +954,17 @@ packages/db/src/schema/status_decision_effects.ts
 packages/db/src/schema/status_decisions.ts
 packages/db/src/schema/work_assessments.ts
 packages/paperclip-runner/README.md
-packages/paperclip-runner/docs/architecture.md
 packages/paperclip-runner/docs/design/phase-6-thin-paperclip-adapter.md
 packages/paperclip-runner/docs/index.md
 packages/paperclip-runner/docs/phase-06-thin-paperclip-adapter.md
 packages/paperclip-runner/docs/tutorials/phase-06-thin-paperclip-adapter.md
 packages/paperclip-runner/knowledge/evidence/2026-08-09-phase-06-verification.md
 packages/paperclip-runner/knowledge/evidence/index.md
-packages/paperclip-runner/knowledge/journal/2026-08-09-phase-06-design.md
 packages/paperclip-runner/knowledge/journal/2026-08-09-phase-06-implementation.md
 packages/paperclip-runner/knowledge/journal/index.md
 packages/paperclip-runner/knowledge/log.md
 packages/paperclip-runner/package.json
 packages/paperclip-runner/spec/fixtures/status-authority-phase5.json
-packages/paperclip-runner/spec/paperclip-native-runner-implementation-plan.md
-packages/paperclip-runner/spec/paperclip-native-runner-spike-spec.md
 packages/paperclip-runner/src/backends/codex-native-backend.ts
 packages/paperclip-runner/src/backends/harness-driver-backend.test.ts
 packages/paperclip-runner/src/backends/harness-driver-backend.ts

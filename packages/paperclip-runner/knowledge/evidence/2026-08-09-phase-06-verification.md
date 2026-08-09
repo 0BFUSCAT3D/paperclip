@@ -13,9 +13,10 @@ This record verifies the default-off Phase 6 tracer at the approved
 `ControlPlanePort`/`NativeSessionBackend` boundary. No browser surface changed,
 so Phase 6 has command/database evidence rather than screenshots.
 
-The counts below are the PAP-16880 remediation rerun. “Internal canary” means
-the selected-task database test through the public package session contract;
-it does not mean that a new live Codex provider task was dispatched.
+The counts below are from the remediation-7 final rerun on 2026-08-09.
+“Internal canary” means the selected-task database test through the public
+package session contract; it does not mean that a new live Codex provider task
+was dispatched.
 
 # Package contract and mock tracer
 
@@ -150,8 +151,34 @@ The final rerun on 2026-08-09 produced:
 - runner documentation validation: 58 links and the 25-concept/four-index OKF
   bundle passed;
 - server TypeScript and runner TypeScript/protocol typechecks passed;
-- the design's authoritative 93-file allowlist matched the Phase 6 diff exactly;
+- the design's authoritative 89-file allowlist matched the Phase 6 diff exactly;
 - `git diff --check` passed.
+
+The exact-file claim is mechanically fail-closed. This comparison extracts the
+authoritative fenced block, asserts its count, and then compares it with the
+committed Phase 6 diff. Any missing or extra path makes `diff` return non-zero:
+
+```sh
+PHASE6_SCRATCH="${PAPERCLIP_RUN_SCRATCH_DIR:-$(mktemp -d)}"
+PHASE6_ALLOWLIST="$PHASE6_SCRATCH/phase6-allowlist.txt"
+PHASE6_ACTUAL="$PHASE6_SCRATCH/phase6-actual.txt"
+
+awk '
+  /^### Remediation 7 authoritative exact-file reconciliation / { section = 1; next }
+  section && /^```text$/ { block = 1; next }
+  block && /^```$/ { exit }
+  block { print }
+' packages/paperclip-runner/docs/design/phase-6-thin-paperclip-adapter.md \
+  | LC_ALL=C sort > "$PHASE6_ALLOWLIST"
+git diff --name-only 3a38c8f931..HEAD \
+  | LC_ALL=C sort > "$PHASE6_ACTUAL"
+test "$(wc -l < "$PHASE6_ALLOWLIST")" -eq 89
+test "$(wc -l < "$PHASE6_ACTUAL")" -eq 89
+diff -u "$PHASE6_ALLOWLIST" "$PHASE6_ACTUAL"
+```
+
+Result: exit 0 with no diff output; 89 documented paths, 89 committed paths,
+zero missing, and zero extra.
 
 The final owner review traced the successful audit-only path as
 `PaperclipControlPlanePort.completeRun -> native_run_results ->
@@ -167,6 +194,14 @@ Committed replay validates those receipts before short-circuiting, so it cannot
 create another assessment or mutate the interaction timestamp. Missing or
 cross-company targets throw before the coordinator commits and enter named
 retryable recovery with the issue status/version unchanged.
+
+# Remediation 8 documentation self-review
+
+The final documentation review confirmed that the exact allowlist is the same
+89-path set as `git diff --name-only 3a38c8f931..HEAD`, the status header records
+the remediation-8/final-gate state, this evidence identifies the remediation-7
+final rerun, and the tutorial expects four package files and seven tests. The
+reconciliation changes documentation only and does not alter runtime behavior.
 
 # Compile and migration checks
 

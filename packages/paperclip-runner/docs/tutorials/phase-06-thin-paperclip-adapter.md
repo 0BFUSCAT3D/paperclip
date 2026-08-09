@@ -36,9 +36,10 @@ pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- \
   --target mock --scenario happy-path
 ```
 
-Expected: six targeted tests pass and the trace reports `resolvedMode` as
-`native`, three replay-stable events, a successful workspace barrier, and one
-mock server-owned `done` decision. This tracer does not connect to Paperclip.
+Expected: four targeted files and seven tests pass, and the trace reports
+`resolvedMode` as `native`, three replay-stable events, a successful workspace
+barrier, and one mock server-owned `done` decision. This tracer does not connect
+to Paperclip.
 
 ## 2. Prove the database-backed Paperclip port
 

@@ -123,8 +123,9 @@ existing server authority and keep legacy execution as the default.
   result persistence, the finalizer alone commits the zero-decision outcome,
   the internal router binds the exact same-company interaction, and committed
   replay short-circuits without another assessment or target mutation.
-- The design's authoritative 93-file allowlist was mechanically compared with
-  the Phase 6 branch diff and had no missing or extra path, including the README,
+- The remediation-8 documentation reconciliation corrected the design's
+  authoritative allowlist to 89 files and mechanically compared it with the
+  Phase 6 branch diff with no missing or extra path, including the README,
   spec checker, canonical helper, runtime-mode test, and database-backed port
   test paths.
 
