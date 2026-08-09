@@ -23,8 +23,13 @@ export async function cancelNativeSession(runId: string, reason: string): Promis
   if (!active) return false;
   if (active.cancelRequested) return true;
   active.cancelRequested = true;
-  if (active.session.cancel) await active.session.cancel({ reason });
-  else if (active.session.interrupt) await active.session.interrupt({ reason });
+  try {
+    if (active.session.cancel) await active.session.cancel({ reason });
+    else if (active.session.interrupt) await active.session.interrupt({ reason });
+  } catch (error) {
+    active.cancelRequested = false;
+    throw error;
+  }
   return true;
 }
 

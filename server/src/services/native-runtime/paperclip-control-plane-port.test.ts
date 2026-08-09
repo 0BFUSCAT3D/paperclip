@@ -43,6 +43,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   const taskIssueId = "00000000-0000-4000-8000-000000000008";
   const taskContractId = "00000000-0000-4000-8000-000000000009";
   const taskRunId = "00000000-0000-4000-8000-000000000010";
+  const taskSessionId = "00000000-0000-4000-8000-000000000018";
   const taskWorkProductId = "00000000-0000-4000-8000-000000000017";
   const workspaceFailureIssueId = "00000000-0000-4000-8000-000000000011";
   const workspaceFailureContractId = "00000000-0000-4000-8000-000000000012";
@@ -135,6 +136,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       runtimeMode: "native",
       runtimeModeResolverVersion: "phase6-v1",
       runtimeModeReason: "eligible_opt_in",
+      nativeSessionId: taskSessionId,
       completionContractId: taskContractId,
       completionContractSha256: "phase6-task-contract",
       contextSnapshot: { issueId: taskIssueId },
@@ -297,7 +299,7 @@ describe("PaperclipControlPlanePort conformance", () => {
 
   it("completes one selected Paperclip task through the public package session contract", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
-    const sessionId = "session-phase6-paperclip-task";
+    const sessionId = taskSessionId;
     const evidenceRef = `work_product:${taskWorkProductId}`;
     const taskResult = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
     taskResult.completionClaim.criteria[0]!.evidenceRefs = [evidenceRef];
@@ -558,12 +560,14 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, workspaceFailureRunId))).resolves.toHaveLength(1);
   });
 
-  it("LIVE-01..04 rolls back status, decision, and liveness rows at every materialization failpoint", async () => {
+  it("LIVE-01..06 rolls back status, decision, and liveness rows at every materialization failpoint", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const cases: Array<{
       suffix: number;
-      failpoint: "interaction_materialization" | "continuation_materialization" | "blocker_materialization" | "status_projection";
+      failpoint: "governance_materialization" | "interaction_materialization" | "continuation_materialization" | "blocker_materialization" | "recovery_materialization" | "status_projection";
       result: PrpStructuredRunResult;
+      terminalState?: "succeeded" | "failed" | "cancelled";
+      executionState?: Record<string, unknown>;
     }> = [
       {
         suffix: 20,
@@ -593,6 +597,18 @@ describe("PaperclipControlPlanePort conformance", () => {
         failpoint: "status_projection",
         result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" },
       },
+      {
+        suffix: 25,
+        failpoint: "recovery_materialization",
+        terminalState: "cancelled",
+        result: structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT),
+      },
+      {
+        suffix: 26,
+        failpoint: "governance_materialization",
+        executionState: { status: "pending", stage: "approval" },
+        result: structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT),
+      },
     ];
     for (const entry of cases) {
       const value = String(entry.suffix).padStart(12, "0");
@@ -606,6 +622,7 @@ describe("PaperclipControlPlanePort conformance", () => {
         status: "in_progress",
         assigneeAgentId: identity.agentId,
         workMode: "standard",
+        executionState: entry.executionState,
       });
       await db.insert(completionContracts).values({
         id: contractId,
@@ -634,6 +651,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       });
       const terminal: PrpTerminalState = {
         ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
+        runTerminalState: entry.terminalState ?? "succeeded",
         reportedWorkDisposition: entry.result.reportedWorkDisposition,
       };
       const port = new PaperclipControlPlanePort(db, {

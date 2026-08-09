@@ -57,7 +57,7 @@ pnpm --filter @paperclipai/server exec vitest run \
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. Twenty-five targeted tests check company binding, duplicate/gap replay,
+port. Twenty-eight targeted tests check company binding, duplicate/gap replay,
 checkpoint recovery, immutable result ingestion, durable-evidence authority,
 workspace-gated finalization, atomic liveness rollback, status-version CAS,
 migration repair, legacy byte equivalence, and audit output. All database tests

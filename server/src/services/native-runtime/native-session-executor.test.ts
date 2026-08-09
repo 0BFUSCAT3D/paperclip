@@ -96,4 +96,23 @@ describe("native session cancellation", () => {
     await running;
     await expect(cancelNativeSession(execution.binding.runId, "late cancel")).resolves.toBe(false);
   });
+
+  it("allows cancellation to be retried when the session dispatch fails", async () => {
+    state.cancel.mockRejectedValueOnce(new Error("transport unavailable"));
+    const running = executePaperclipNativeSession({
+      db: leaseDb(),
+      execution,
+      runnerInstanceId: "runner",
+    });
+    await vi.waitFor(() => expect(state.release).toBeTypeOf("function"));
+
+    await expect(cancelNativeSession(execution.binding.runId, "budget hard stop"))
+      .rejects.toThrow("transport unavailable");
+    await expect(cancelNativeSession(execution.binding.runId, "retry budget stop"))
+      .resolves.toBe(true);
+    expect(state.cancel).toHaveBeenNthCalledWith(2, { reason: "retry budget stop" });
+
+    state.release?.();
+    await running;
+  });
 });

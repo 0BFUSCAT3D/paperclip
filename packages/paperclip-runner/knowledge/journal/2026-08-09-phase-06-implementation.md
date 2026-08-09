@@ -47,8 +47,8 @@ existing server authority and keep legacy execution as the default.
 - [Phase 6 reference](../../docs/phase-06-thin-paperclip-adapter.md)
 - [Runnable tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
 - Package conformance and recovery: four files, six tests passed.
-- Phase 6 acceptance-matrix entry points: ten files, twenty-five tests passed
-  with zero skips, including the database-backed selected-task canary, four
+- Phase 6 acceptance-matrix entry points: ten files, twenty-eight tests passed
+  with zero skips, including the database-backed selected-task canary, six
   atomic-liveness failpoints, migration, sequencing, bounded recovery, and
   legacy compatibility.
 - Focused database rehearsal: five files, eleven tests passed with zero skips;

@@ -39,7 +39,7 @@ existing accepted result event, and appended only the missing terminal fact.
 
 # Real Paperclip adapter and public-session task
 
-The complete acceptance gate below passed 25 tests in ten files against
+The complete acceptance gate below passed 28 tests in ten files against
 embedded PostgreSQL with zero skipped tests. Database-backed tests start their
 own database instead of skipping when a developer `DATABASE_URL` is absent.
 The same package conformance suite passed unchanged against
@@ -68,10 +68,11 @@ The focused corpus also proved:
 - a failed workspace barrier preserves the accepted semantic result, leaves the
   issue status unchanged, and records a leased `retryable_failure` plus recovery
   owner/action;
-- four injected failures prove interactions, wakes, blocker bindings, status,
+- six injected failures prove governance binding, interactions, wakes, blocker
+  bindings, recovery, status,
   decisions, and effects roll back together before retry ownership is recorded.
 
-The acceptance-matrix entry points also passed as one 10-file, 25-test gate:
+The acceptance-matrix entry points also passed as one 10-file, 28-test gate:
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \

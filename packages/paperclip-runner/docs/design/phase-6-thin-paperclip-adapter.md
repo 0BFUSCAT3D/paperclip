@@ -703,14 +703,18 @@ from the provisional list above. They are added without expanding authority:
 ```text
 packages/paperclip-runner/src/native-session-runtime.ts
 packages/paperclip-runner/src/native-session-runtime.test.ts
+packages/paperclip-runner/spec/fixtures/status-authority-phase5.json
 server/src/services/native-runtime/native-session-executor.ts
 server/src/services/native-runtime/native-session-executor.test.ts
+server/src/services/native-runtime/evidence-classifier.test.ts
 server/src/services/native-runtime/paperclip-control-plane-port.test.ts
 server/src/services/native-runtime/status-arbiter.test.ts
 packages/paperclip-runner/docs/design/phase-6-thin-paperclip-adapter.md
 ```
 
-The package runtime files own persisted provider-session recovery. The server
+The package runtime files own persisted provider-session recovery. The corpus
+edit moves two existing coverage labels between fixtures without changing any
+fixture input or expected outcome, eliminating an unjoinable fixture. The server
 executor files own only the run-scoped cancellation handle and coordinator
 lease around that package runtime. The colocated port and arbiter tests exercise
 the same approved database and pure-policy seams exposed through the named
