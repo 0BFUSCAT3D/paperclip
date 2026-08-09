@@ -1,8 +1,10 @@
 import type { Db } from "@paperclipai/db";
 import type { NativeInteractionResponseEnvelope } from "@paperclipai/paperclip-runner";
-import { and, eq, inArray } from "drizzle-orm";
-import { heartbeatRuns, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import { agents, heartbeatRuns, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
+import { getAgentWorkEligibility } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
@@ -319,7 +321,131 @@ export type NativeAttentionFacts = {
   summary: string;
   budgetExhausted?: boolean;
   governanceGate?: NativeGovernanceGate | null;
+  resolvedTargetAgentId?: string | null;
 };
+
+export type NativeAttentionCandidate = {
+  route: NativeAttentionFacts["route"];
+  summary: string;
+  responseState?: NativeAttentionFacts["responseState"];
+  targetAgentId?: string | null;
+  budgetExhausted?: boolean;
+  governanceGate?: NativeGovernanceGate | null;
+  targetInteractionId?: string;
+  canonicalRequestId?: string;
+};
+
+/**
+ * Canonical production ingress for native attention. It resolves the run and
+ * issue binding, derives company scope, chooses an eligible in-company
+ * delegate, and commits (or explicitly audit-materializes) the resulting
+ * authority decision.
+ */
+export async function routeNativeAttention(input: {
+  db: Db;
+  runId: string;
+  candidate: NativeAttentionCandidate;
+}) {
+  const binding = await input.db.select({
+    companyId: heartbeatRuns.companyId,
+    agentId: heartbeatRuns.agentId,
+    runtimeMode: heartbeatRuns.runtimeMode,
+    issueId: nativeRunFinalizations.issueId,
+    assessmentId: nativeRunFinalizations.assessmentId,
+    issueStatus: issues.status,
+    issueStatusVersion: issues.statusVersion,
+    issueDecisionId: issues.lastStatusDecisionId,
+  }).from(heartbeatRuns)
+    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+    .innerJoin(issues, and(
+      eq(issues.id, nativeRunFinalizations.issueId),
+      eq(issues.companyId, heartbeatRuns.companyId),
+    ))
+    .where(eq(heartbeatRuns.id, input.runId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!binding || binding.runtimeMode !== "native") {
+    throw new NativeInteractionBridgeError("native_attention_binding_mismatch", "Native attention run binding not found");
+  }
+
+  const companyAgents = await input.db.select({
+    id: agents.id,
+    companyId: agents.companyId,
+    name: agents.name,
+    status: agents.status,
+    reportsTo: agents.reportsTo,
+  }).from(agents).where(eq(agents.companyId, binding.companyId)).orderBy(asc(agents.createdAt), asc(agents.id));
+  const targetSuggestion = input.candidate.targetAgentId
+    ? await input.db.select({ id: agents.id, companyId: agents.companyId })
+        .from(agents).where(eq(agents.id, input.candidate.targetAgentId)).limit(1)
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const companyScopeValid = !input.candidate.targetAgentId
+    || targetSuggestion?.companyId === binding.companyId;
+  let resolvedTargetAgentId: string | null = null;
+  if (companyScopeValid && input.candidate.route === "agent") {
+    const eligible = companyAgents.filter((candidate) =>
+      candidate.id !== binding.agentId
+      && getAgentWorkEligibility({ agent: candidate, agents: companyAgents }).invokable
+    );
+    const requested = eligible.find((candidate) => candidate.id === input.candidate.targetAgentId);
+    resolvedTargetAgentId = requested?.id ?? eligible[0]?.id ?? null;
+  }
+
+  const facts: NativeAttentionFacts = {
+    companyScopeValid,
+    responseState: input.candidate.responseState ?? "none",
+    route: input.candidate.route === "agent" && !resolvedTargetAgentId
+      ? "recovery"
+      : input.candidate.route,
+    summary: input.candidate.summary,
+    budgetExhausted: input.candidate.budgetExhausted,
+    governanceGate: input.candidate.governanceGate,
+    resolvedTargetAgentId,
+  };
+  const decision = resolveNativeAttentionStatus({
+    facts,
+    priorIssueStatus: binding.issueStatus as NativeAuthoritativeIssueStatus,
+    agentId: binding.agentId,
+  });
+  const auditOnly = !companyScopeValid
+    || decision.reasonCode === "attention_duplicate_suppressed";
+  if (auditOnly) {
+    const targets = await applyNativeAttentionStatusDecision({
+      db: input.db,
+      companyId: binding.companyId,
+      issueId: binding.issueId,
+      runId: input.runId,
+      decision,
+      targetInteractionId: input.candidate.targetInteractionId,
+      canonicalRequestId: input.candidate.canonicalRequestId,
+    });
+    return { decision, decisionId: null, targets, resolvedTargetAgentId };
+  }
+  if (!binding.assessmentId) {
+    throw new NativeInteractionBridgeError(
+      "native_attention_assessment_missing",
+      "Native attention requires the server-owned work assessment for this result",
+    );
+  }
+  const committed = await commitNativeStatusDecision({
+    db: input.db,
+    companyId: binding.companyId,
+    issueId: binding.issueId,
+    runId: input.runId,
+    assessmentId: binding.assessmentId,
+    priorStatus: binding.issueStatus,
+    priorStatusVersion: Number(binding.issueStatusVersion),
+    priorDecisionId: binding.issueDecisionId,
+    decision,
+  });
+  return {
+    decision,
+    decisionId: committed.decision.id,
+    targets: [],
+    resolvedTargetAgentId,
+  };
+}
 
 /** Server-owned attention resolution from canonical routing facts. */
 export function resolveNativeAttentionStatus(input: {
@@ -395,11 +521,19 @@ export function resolveNativeAttentionStatus(input: {
     return continuation("attention_resolved_from_context");
   }
   if (input.facts.route === "agent") {
+    if (!input.facts.resolvedTargetAgentId) {
+      return preserve("attention_budget_exhausted", [{
+        kind: "record_finalization_error",
+        cause: "attention_no_valid_route",
+        nextAction: "Assign a same-company eligible delegate.",
+        agentId: input.agentId,
+      }]);
+    }
     const decision = continuation("attention_routed_to_agent");
     return {
       ...decision,
       effects: [
-        { kind: "create_delegated_issue", agentId: input.agentId, summary: input.facts.summary },
+        { kind: "create_delegated_issue", agentId: input.facts.resolvedTargetAgentId, summary: input.facts.summary },
         ...decision.effects,
       ],
     };

@@ -45,6 +45,13 @@ export function resolveNativeRuntimeMode(input: {
 }): NativeRuntimeResolution {
   const nativeRunner = record(record(input.runtimeConfig).nativeRunner);
   const mode = nativeRunner.mode;
+  if (nativeRunner.disabledByNativeKillSwitch === true) {
+    return {
+      kind: "legacy",
+      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
+      reason: "native_kill_switch_persisted",
+    };
+  }
   if (!input.enabled) {
     const compatibility = resolveNativeCompatibilityStatus({
       facts: { shadowApplicationDisabled: true },

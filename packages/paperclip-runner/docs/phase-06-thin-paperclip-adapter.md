@@ -112,11 +112,23 @@ persisted target, replay is required to retain the same decision with one
 delivery attempt, and an unknown-effect test proves the transaction leaves no
 decision, ledger, issue-version, or coordinator mutation.
 
-The production call graph invokes the fact consumers from heartbeat
-finalization, interaction-response projection, normalized session
-cancellation, finalization reconciliation, and runtime compatibility/migration
-selection. The corpus uses those same exported entry points and fails its row
-when their returned semantics or materialized target state changes.
+Operational rows use the production call graph, not resolver calls as a proxy.
+Cancellation is committed and audited by the normalized session cancellation
+entrypoint. Attention resolves an eligible same-company target and delegates
+through the issue service. Reconciliation selects the persisted
+status/evidence/policy branches and executes workspace recovery through the
+workspace operation recorder. The rollout kill switch is stored in the owning
+agent profile and consumed by subsequent runtime selection. Pending replay
+only acknowledges its original decision-scoped target after verifying that the
+target still exists.
+
+Direct calls to the finalizer, attention, cancellation, reconciliation,
+compatibility, and migration resolvers are explicitly pure policy/read-model
+tests. They do not satisfy an operational fixture without a live-entrypoint
+receipt and concrete target state. Sabotage cases remove cancellation,
+attention, reconciliation, rollout enforcement, and a pending replay target;
+each mapped fixture fails while its pure resolver continues to return the
+expected label.
 
 Result-less same-run recovery is also proven through the production heartbeat
 seam: a persisted envelope/checkpoint is leased by `reapOrphanedRuns`, enters

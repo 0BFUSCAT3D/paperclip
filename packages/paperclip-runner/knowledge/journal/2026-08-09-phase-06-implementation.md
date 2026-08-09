@@ -57,6 +57,16 @@ existing server authority and keep legacy execution as the default.
 15. Prove at-most-once materialization by replaying each corpus decision and
     requiring one decision identity, one delivery attempt, and the persisted
     target state.
+16. Treat direct resolver calls as pure policy/read-model evidence only.
+    Operational corpus rows must enter through cancellation, attention,
+    reconciliation, or runtime selection and retain that entrypoint receipt.
+17. Resume workspace finalization through the workspace operation recorder and
+    observe its actual result; never insert a pre-succeeded recovery marker.
+18. Resolve attention delegates from eligible same-company agents and create
+    delegated work through the issue service. Persist authorized status and
+    rollout changes through their owning issue and agent services.
+19. Keep pending replay acknowledgement-only, scoped to its original decision,
+    and fail when the owning transaction's target no longer exists.
 
 # Evidence
 
@@ -64,7 +74,7 @@ existing server authority and keep legacy execution as the default.
 - [Phase 6 reference](../../docs/phase-06-thin-paperclip-adapter.md)
 - [Runnable tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
 - Package conformance and recovery: four files, seven tests passed.
-- Phase 6 acceptance-matrix entry points: thirteen files, forty-two tests passed
+- Phase 6 acceptance-matrix entry points: thirteen files, forty-three tests passed
   with zero skips, including the database-backed selected-task canary, six
   atomic-liveness failpoints, migration, sequencing, bounded recovery, and
   legacy compatibility.
@@ -83,6 +93,10 @@ existing server authority and keep legacy execution as the default.
   recovery, run, workspace-operation, contract, decision, or governance state.
   Unknown effects fail before any decision, ledger, status-version, or
   coordinator mutation.
+- Negative entrypoint proofs remove cancellation auditing, attention routing,
+  reconciliation/workspace execution, rollout selector enforcement, and the
+  original pending-effect target. Every mapped fixture fails even though its
+  pure resolver still returns the expected policy label.
 - The production heartbeat reaper resumed one persisted result-less run through
   the original execution/finalization path with the flag disabled. It recovered
   an already-active scripted provider turn and produced exactly one result,

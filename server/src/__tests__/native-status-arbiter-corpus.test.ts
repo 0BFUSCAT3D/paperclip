@@ -27,6 +27,7 @@ import {
   applyNativeAttentionStatusDecision,
   materializeNativeInteractionResponses,
   rejectUnsupportedNativeRuntimeRequest,
+  routeNativeAttention,
   resolveNativeAttentionStatus,
 } from "../services/native-runtime/native-interaction-bridge.js";
 import {
@@ -108,6 +109,8 @@ type FixtureObservation = PolicyObservation & {
   consumerExecutions: ConsumerExecution[];
   consumerEvidenceByRow: Map<string, string>;
 };
+
+type DisabledLiveEntrypoint = "attention" | "cancellation" | "reconciliation" | "rollout";
 
 const corpusPath = fileURLToPath(new URL(
   "../../../packages/paperclip-runner/spec/fixtures/status-authority-phase5.json",
@@ -239,6 +242,10 @@ const supersedingDecisionStates = new Set([
   "board_cancelled_before_cas", "new_policy_requires_review", "authorized_writer_incremented_version",
 ]);
 
+const liveReconciliationStates = new Set([
+  "board_cancelled_before_cas", "new_evidence_satisfies_contract", "new_policy_requires_review",
+]);
+
 function initialRunStatus(fixture: Fixture) {
   const terminalState = fixture.given.runTerminalState;
   if (["succeeded", "failed", "cancelled", "active"].includes(String(terminalState))) {
@@ -362,18 +369,39 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID();
   const agentId = randomUUID();
+  const delegateAgentId = randomUUID();
+  const outsideCompanyId = randomUUID();
+  const outsideAgentId = randomUUID();
 
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-status-corpus-");
     db = createDb(temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Status corpus", issuePrefix: "PSC" });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Status corpus agent",
-      adapterType: "codex_local",
-      status: "running",
-    });
+    await db.insert(companies).values({ id: outsideCompanyId, name: "Outside corpus", issuePrefix: "OUT" });
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "Status corpus agent",
+        adapterType: "codex_local",
+        status: "running",
+      },
+      {
+        id: delegateAgentId,
+        companyId,
+        name: "Eligible status corpus delegate",
+        adapterType: "codex_local",
+        status: "idle",
+        capabilities: "Provide production status-authority expertise",
+      },
+      {
+        id: outsideAgentId,
+        companyId: outsideCompanyId,
+        name: "Outside-company agent",
+        adapterType: "codex_local",
+        status: "idle",
+      },
+    ]);
   }, 30_000);
 
   afterAll(async () => temporary?.cleanup());
@@ -385,6 +413,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     const resultId = randomUUID();
     const assessmentId = randomUUID();
     const workProductId = randomUUID();
+    const assessmentCreatedAt = new Date();
     const priorStatus = String(fixture.given.priorIssueStatus ?? "in_progress");
     const completionState = String(fixture.given.completionState ?? "");
     const nativeRecords = fixture.mode === "native" && !noNativeRecordStates.has(completionState);
@@ -415,6 +444,8 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       runtimeMode: "native",
       runtimeModeResolvedAt: new Date(),
       contextSnapshot: { issueId, fixtureId: fixture.id },
+      completionContractId: contractId,
+      completionContractSha256: `contract:${fixture.id}`,
     });
     await db.insert(completionContracts).values({
       id: contractId,
@@ -441,6 +472,30 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       schemaStatus: "accepted",
       resultJson: {
         fixtureId: fixture.id,
+        result: {
+          reportedWorkDisposition: fixtureDisposition(fixture),
+          summary: fixture.id,
+          completionClaim: {
+            contractRevision: "corpus-v1",
+            objectiveSatisfied: true,
+            criteria: [{
+              criterionId: "objective",
+              status: "satisfied",
+              evidenceRefs: [`work_product:${workProductId}`],
+            }],
+            remainingWork: [],
+          },
+          verification: [{
+            commandOrCheck: "fixture",
+            status: "passed",
+            artifactRef: `work_product:${workProductId}`,
+          }],
+        },
+        terminal: {
+          runTerminalState: fixture.given.runTerminalState === "failed"
+            ? "failed"
+            : fixture.given.runTerminalState === "cancelled" ? "cancelled" : "succeeded",
+        },
         ...(fixture.given.reportedWorkDisposition === null && fixture.given.nativeFinalization !== "invalid"
           ? {}
           : { completionClaim: { fixtureId: fixture.id, preserved: true } }),
@@ -455,7 +510,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       provider: "paperclip",
       title: `${fixture.id} evidence`,
       status: "ready_for_review",
-      reviewState: "approved",
+      reviewState: completionState === "new_evidence_satisfies_contract" ? "none" : "approved",
+      createdAt: new Date(assessmentCreatedAt.getTime() - 1_000),
+      updatedAt: new Date(assessmentCreatedAt.getTime() - 1_000),
     });
     await db.insert(workAssessments).values({
       id: assessmentId,
@@ -466,11 +523,15 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       resultId,
       triggerKind: "native_result",
       triggerActorCompanyId: companyId,
-      priorIssueStatus: priorStatus,
+      priorIssueStatus: completionState === "board_cancelled_before_cas" ? "in_progress" : priorStatus,
       priorStatusVersion: 0,
-      policyVersion: "phase6-v2",
-      assessmentJson: { fixtureId: fixture.id },
+      policyVersion: completionState === "new_policy_requires_review" ? "phase6-v1" : "phase6-v2",
+      assessmentJson: {
+        fixtureId: fixture.id,
+        ...(completionState === "new_evidence_satisfies_contract" ? { allCriteriaSatisfied: false } : {}),
+      },
       inputDigest: `assessment:${fixture.id}`,
+      createdAt: assessmentCreatedAt,
     });
     await db.insert(nativeRunFinalizations).values({
       runId,
@@ -483,7 +544,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     return { issueId, runId, workProductId, nativeRecords, assessmentId, contractId, resultId };
   }
 
-  async function executeFixture(fixture: Fixture): Promise<FixtureObservation> {
+  async function executeFixture(
+    fixture: Fixture,
+    options: { disableLiveEntrypoint?: DisabledLiveEntrypoint } = {},
+  ): Promise<FixtureObservation> {
     const completionState = String(fixture.given.completionState ?? "");
     const seeded = await seedFixture(fixture);
     const consumerExecutions: ConsumerExecution[] = [];
@@ -536,22 +600,134 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
 
     let semanticConsumer: string | null = null;
     let consumerDecision: NativeStatusDecision | null = null;
+    let liveEntrypointCommitted = false;
+    let liveAttentionInteractionId: string | null = null;
+    const attentionFacts = attentionFactsFor(completionState, fixture.id, governanceGate);
+    if (
+      seeded.nativeRecords
+      && options.disableLiveEntrypoint !== "attention"
+      && attentionFacts
+      && ["attention_response", "attention_candidate", "interaction", "monitor"].includes(String(fixture.given.trigger))
+    ) {
+      let canonicalRequestId: string | undefined;
+      if (attentionFacts.route === "duplicate") {
+        canonicalRequestId = randomUUID();
+        liveAttentionInteractionId = randomUUID();
+        await db.insert(issueThreadInteractions).values([
+          {
+            id: canonicalRequestId,
+            companyId,
+            issueId: seeded.issueId,
+            kind: "request_confirmation",
+            status: "pending",
+            idempotencyKey: `canonical:${fixture.id}`,
+            payload: { version: 1, prompt: `Canonical ${fixture.id}` },
+          },
+          {
+            id: liveAttentionInteractionId,
+            companyId,
+            issueId: seeded.issueId,
+            kind: "request_confirmation",
+            status: "expired",
+            resolvedAt: new Date(),
+            idempotencyKey: `duplicate:${fixture.id}`,
+            payload: { version: 1, prompt: `Duplicate ${fixture.id}` },
+            result: { version: 1, outcome: "superseded_by_newer_request", supersededByInteractionId: canonicalRequestId },
+          },
+        ]);
+      } else if (attentionFacts.responseState === "stale") {
+        liveAttentionInteractionId = randomUUID();
+        await db.insert(issueThreadInteractions).values({
+          id: liveAttentionInteractionId,
+          companyId,
+          issueId: seeded.issueId,
+          kind: "request_confirmation",
+          status: "expired",
+          resolvedAt: new Date(),
+          payload: { version: 1, prompt: `Stale ${fixture.id}` },
+          result: { version: 1, outcome: "superseded_by_comment", commentId: randomUUID() },
+        });
+      } else if (attentionFacts.responseState === "expired") {
+        liveAttentionInteractionId = randomUUID();
+        await db.insert(issueThreadInteractions).values({
+          id: liveAttentionInteractionId,
+          companyId,
+          issueId: seeded.issueId,
+          kind: "ask_user_questions",
+          status: "pending",
+          payload: { version: 1, questions: [] },
+        });
+      }
+      const routed = await routeNativeAttention({
+        db,
+        runId: seeded.runId,
+        candidate: {
+          route: attentionFacts.route,
+          summary: attentionFacts.summary,
+          responseState: attentionFacts.responseState,
+          budgetExhausted: attentionFacts.budgetExhausted,
+          governanceGate: attentionFacts.governanceGate,
+          targetAgentId: completionState === "cross_company_target" ? outsideAgentId : null,
+          targetInteractionId: liveAttentionInteractionId ?? undefined,
+          canonicalRequestId,
+        },
+      });
+      semanticConsumer = "native-attention-resolver";
+      consumerDecision = pushDecisionConsumer(semanticConsumer, routed.decision);
+      liveEntrypointCommitted = true;
+      for (const target of routed.targets) materializedEffects.add(target.effectKind);
+      consumerExecutions.push({
+        consumer: "native-attention-entrypoint",
+        observed: {
+          decisionId: routed.decisionId,
+          resolvedTargetAgentId: routed.resolvedTargetAgentId,
+          targetCount: routed.targets.length,
+        },
+      });
+      if (attentionFacts.route === "agent" && completionState !== "cross_company_target") {
+        expect(routed.resolvedTargetAgentId, `${fixture.id}:eligible delegate`).toBe(delegateAgentId);
+      }
+    }
     if (["turn_scope", "run_scope", "issue_scope_authorized", "replacement_turn_accepted"].includes(completionState)) {
       semanticConsumer = "native-cancellation-authority";
       const scope = completionState === "run_scope" ? "run" : completionState === "issue_scope_authorized" ? "issue" : "turn";
-      consumerDecision = pushDecisionConsumer(semanticConsumer, resolveNativeCancellationStatus({
-        scope,
-        priorIssueStatus,
-        agentId,
-        replacementAccepted: completionState === "replacement_turn_accepted",
-      }));
+      if (options.disableLiveEntrypoint === "cancellation") {
+        consumerDecision = pushDecisionConsumer(semanticConsumer, resolveNativeCancellationStatus({
+          scope,
+          priorIssueStatus,
+          agentId,
+          replacementAccepted: completionState === "replacement_turn_accepted",
+        }));
+      } else {
+        const cancellation = await cancelNativeSession(seeded.runId, `fixture:${fixture.id}`, {
+          db,
+          scope,
+          replacementAccepted: completionState === "replacement_turn_accepted",
+        });
+        if (typeof cancellation === "boolean" || !cancellation.decision || !cancellation.auditId) {
+          throw new Error(`${fixture.id}: live cancellation did not persist an authoritative outcome`);
+        }
+        consumerDecision = pushDecisionConsumer(semanticConsumer, cancellation.decision);
+        liveEntrypointCommitted = true;
+        for (const effect of cancellation.decision.effects) materializedEffects.add(effect.kind);
+        consumerExecutions.push({
+          consumer: "native-session-cancellation",
+          observed: {
+            dispatched: cancellation.dispatched,
+            scope,
+            reasonCode: cancellation.decision.reasonCode,
+            decisionId: cancellation.decisionId,
+            auditId: cancellation.auditId,
+          },
+        });
+      }
     } else {
       const reconciliationFacts = reconciliationFactsFor(completionState);
-      const attentionFacts = attentionFactsFor(completionState, fixture.id, governanceGate);
       const compatibilityFacts = compatibilityFactsFor(completionState);
       const migrationFacts = migrationFactsFor(completionState);
       if (
         reconciliationFacts
+        && !liveReconciliationStates.has(completionState)
         && (
           supersedingDecisionStates.has(completionState)
           || (fixture.covers.reconciliationRows ?? []).length > 0
@@ -564,10 +740,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           priorIssueStatus,
           agentId,
         }));
-      } else if (attentionFacts && ["attention_response", "attention_candidate", "interaction", "monitor"].includes(String(fixture.given.trigger))) {
+      } else if (!consumerDecision && attentionFacts && ["attention_response", "attention_candidate", "interaction", "monitor"].includes(String(fixture.given.trigger))) {
         semanticConsumer = "native-attention-resolver";
         consumerDecision = pushDecisionConsumer(semanticConsumer, resolveNativeAttentionStatus({
-          facts: attentionFacts,
+          facts: options.disableLiveEntrypoint === "attention" && attentionFacts.route === "agent"
+            ? { ...attentionFacts, resolvedTargetAgentId: delegateAgentId }
+            : attentionFacts,
           priorIssueStatus,
           agentId,
         }));
@@ -598,7 +776,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       if (attentionFacts && (fixture.covers.attentionRows ?? []).length > 0 && semanticConsumer !== "native-attention-resolver") {
         pushDecisionConsumer("native-attention-resolver", resolveNativeAttentionStatus({ facts: attentionFacts, priorIssueStatus, agentId }));
       }
-      if (reconciliationFacts && (fixture.covers.reconciliationRows ?? []).length > 0 && semanticConsumer !== "native-reconciliation-consumer") {
+      if (
+        reconciliationFacts
+        && !liveReconciliationStates.has(completionState)
+        && (fixture.covers.reconciliationRows ?? []).length > 0
+        && semanticConsumer !== "native-reconciliation-consumer"
+      ) {
         pushDecisionConsumer("native-reconciliation-consumer", resolveNativeReconciliationStatus({ facts: reconciliationFacts, priorIssueStatus, agentId }));
       }
       if (compatibilityFacts && (fixture.covers.compatibilityRows ?? []).some((row) => ["COMP-02", "COMP-05", "COMP-06", "COMP-07", "COMP-08"].includes(row)) && semanticConsumer !== "native-compatibility-status") {
@@ -607,6 +790,69 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       if (migrationFacts && (fixture.covers.migrationRows ?? []).some((row) => ["MIG-04", "MIG-05", "MIG-06", "MIG-07", "MIG-08"].includes(row)) && semanticConsumer !== "native-migration-status") {
         pushDecisionConsumer("native-migration-status", resolveNativeMigrationStatus({ facts: migrationFacts, priorIssueStatus, agentId }));
       }
+    }
+
+    if (
+      seeded.nativeRecords
+      && options.disableLiveEntrypoint !== "reconciliation"
+      && liveReconciliationStates.has(completionState)
+    ) {
+      const [priorDecision] = await db.insert(statusDecisions).values({
+        companyId,
+        issueId: seeded.issueId,
+        assessmentId: seeded.assessmentId,
+        decisionVersion: 1,
+        policyVersion: completionState === "new_policy_requires_review" ? "phase6-v1" : "phase6-v2",
+        fromStatus: completionState === "board_cancelled_before_cas" ? "in_progress" : priorIssueStatus,
+        toStatus: completionState === "board_cancelled_before_cas" ? "in_progress" : priorIssueStatus,
+        reasonCode: "prior_fixture_decision",
+        decisionJson: { superseded: true },
+        decisionDigest: `prior-decision:${fixture.id}`,
+        applicationState: "applied",
+        appliedAt: new Date(),
+      }).returning({ id: statusDecisions.id });
+      await db.update(issues).set({
+        statusVersion: 1,
+        lastStatusDecisionId: priorDecision!.id,
+      }).where(eq(issues.id, seeded.issueId));
+      await db.update(nativeRunFinalizations).set({
+        phase: "committed",
+        decisionId: priorDecision!.id,
+      }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+      if (completionState === "new_evidence_satisfies_contract") {
+        await db.update(issueWorkProducts).set({
+          reviewState: "approved",
+          updatedAt: new Date(Date.now() + 1_000),
+        }).where(eq(issueWorkProducts.id, seeded.workProductId));
+      }
+      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]);
+      if (!reconciled?.reconciliationDecision || !reconciled.decisionId) {
+        throw new Error(`${fixture.id}: live reconciliation did not commit an authoritative decision`);
+      }
+      semanticConsumer = "native-reconciliation-consumer";
+      consumerDecision = pushDecisionConsumer(semanticConsumer, reconciled.reconciliationDecision);
+      liveEntrypointCommitted = true;
+      consumerExecutions.push({
+        consumer: "native-reconciliation-entrypoint",
+        observed: {
+          action: reconciled.reconciliationAction,
+          decisionId: reconciled.decisionId,
+        },
+      });
+    }
+    if (
+      seeded.nativeRecords
+      && options.disableLiveEntrypoint === "reconciliation"
+      && liveReconciliationStates.has(completionState)
+    ) {
+      const facts = reconciliationFactsFor(completionState);
+      if (!facts) throw new Error(`${fixture.id}: missing reconciliation facts`);
+      semanticConsumer = "native-reconciliation-consumer";
+      consumerDecision = pushDecisionConsumer(semanticConsumer, resolveNativeReconciliationStatus({
+        facts,
+        priorIssueStatus,
+        agentId,
+      }));
     }
 
     let assessment: NativeEvidenceAssessment | null = null;
@@ -679,7 +925,11 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }
     }
 
-    if (seeded.nativeRecords && consumerDecision?.effects.some((effect) => effect.kind === "resume_workspace_operation")) {
+    if (
+      seeded.nativeRecords
+      && options.disableLiveEntrypoint !== "reconciliation"
+      && consumerDecision?.effects.some((effect) => effect.kind === "resume_workspace_operation")
+    ) {
       await db.insert(workspaceOperations).values({
         companyId,
         heartbeatRunId: seeded.runId,
@@ -687,11 +937,25 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         phase: "workspace_finalize",
         status: "failed",
         exitCode: 1,
+        cwd: process.cwd(),
         finishedAt: new Date(),
       });
+      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]);
+      if (!reconciled || reconciled.reconciliationAction !== "resume_workspace_operation") {
+        throw new Error(`${fixture.id}: live workspace reconciliation did not execute (${JSON.stringify(reconciled)})`);
+      }
+      liveEntrypointCommitted = true;
+      materializedEffects.add("resume_workspace_operation");
+      consumerExecutions.push({
+        consumer: "native-reconciliation-entrypoint",
+        observed: {
+          action: reconciled.reconciliationAction,
+          workspaceOperationId: reconciled.workspaceOperationId,
+          workspaceFinalizeStatus: reconciled.workspaceFinalizeStatus,
+        },
+      });
     }
-    let liveAttentionInteractionId: string | null = null;
-    if (seeded.nativeRecords && consumerDecision?.effects.some((effect) => effect.kind === "link_canonical_request")) {
+    if (!liveEntrypointCommitted && seeded.nativeRecords && consumerDecision?.effects.some((effect) => effect.kind === "link_canonical_request")) {
       const canonicalInteractionId = randomUUID();
       liveAttentionInteractionId = randomUUID();
       await db.insert(issueThreadInteractions).values([
@@ -721,7 +985,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         },
       ]);
     }
-    if (seeded.nativeRecords && consumerDecision?.effects.some((effect) => effect.kind === "record_stale_response")) {
+    if (!liveEntrypointCommitted && seeded.nativeRecords && consumerDecision?.effects.some((effect) => effect.kind === "record_stale_response")) {
       liveAttentionInteractionId = randomUUID();
       await db.insert(issueThreadInteractions).values({
         id: liveAttentionInteractionId,
@@ -734,7 +998,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         result: { version: 1, outcome: "superseded_by_comment", commentId: randomUUID() },
       });
     }
-    if (seeded.nativeRecords && consumerDecision?.effects.some((effect) => effect.kind === "record_expiry")) {
+    if (!liveEntrypointCommitted && seeded.nativeRecords && consumerDecision?.effects.some((effect) => effect.kind === "record_expiry")) {
       await db.insert(issueThreadInteractions).values({
         companyId,
         issueId: seeded.issueId,
@@ -797,6 +1061,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     if (
       seeded.nativeRecords
       && zeroDecisionStates.has(completionState)
+      && !liveEntrypointCommitted
       && consumerDecision
       && consumerDecision.effects.some((effect) => [
         "link_canonical_request",
@@ -842,6 +1107,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       && consumerDecision.reasonCode !== null
       && completionState !== "replacement_turn_accepted"
       && !zeroDecisionStates.has(completionState)
+      && !liveEntrypointCommitted
     ) {
       let priorStatusVersion = 0;
       let priorDecisionId: string | null = null;
@@ -925,6 +1191,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }
     }
 
+    if (options.disableLiveEntrypoint === "rollout" && completionState === "kill_switch_during_active_native_run") {
+      await db.update(agents).set({
+        runtimeConfig: { nativeRunner: { mode: "native", backend: "codex_app_server", protocolVersion: 1 } },
+      }).where(eq(agents.id, agentId));
+    }
+
     if (seeded.nativeRecords && (rolledBack || completionState === "safe_partial_parse")) {
       const failure = await recordNativeFinalizationFailure({
         db,
@@ -978,28 +1250,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       });
     }
 
-    if (["turn_scope", "run_scope", "issue_scope_authorized", "replacement_turn_accepted"].includes(completionState)) {
-      const cancellation = await cancelNativeSession(seeded.runId, `fixture:${fixture.id}`, {
-        db,
-        scope: completionState === "run_scope" ? "run" : completionState === "issue_scope_authorized" ? "issue" : "turn",
-        replacementAccepted: completionState === "replacement_turn_accepted",
-      });
-      if (completionState === "replacement_turn_accepted" && cancellation.decision?.effects.some((effect) => effect.kind === "accept_replacement_turn")) {
-        materializedEffects.add("accept_replacement_turn");
-      }
-      consumerExecutions.push({
-        consumer: "native-session-cancellation",
-        observed: {
-          dispatched: cancellation.dispatched,
-          scope: completionState,
-          reasonCode: cancellation.decision?.reasonCode ?? null,
-        },
-      });
-    }
-
-    const boardTarget = completionState === "issue_scope_authorized"
-      ? "cancelled"
-      : completionState === "explicit_resume_capability"
+    const boardTarget = completionState === "explicit_resume_capability"
         ? "in_progress"
         : completionState === "authorized_status_write"
           ? "in_review"
@@ -1127,6 +1378,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         const target = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
           .where(eq(agentWakeupRequests.id, effectRow.targetId!)).then((rows) => rows[0] ?? null);
         expect(target, `${fixture.id}:${effectRow.effectKind}:wake-target`).not.toBeNull();
+      } else if (effectRow.targetType === "agent") {
+        const target = await db.select({ id: agents.id }).from(agents)
+          .where(eq(agents.id, effectRow.targetId!)).then((rows) => rows[0] ?? null);
+        expect(target, `${fixture.id}:${effectRow.effectKind}:agent-target`).not.toBeNull();
       } else if (effectRow.targetType === "delegated_issue" || effectRow.targetType === "issue" || effectRow.targetType === "issue_checkout" || effectRow.targetType === "issue_unblock_descriptor") {
         const target = await db.select({ id: issues.id }).from(issues)
           .where(eq(issues.id, effectRow.targetId!)).then((rows) => rows[0] ?? null);
@@ -1182,7 +1437,19 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     if (persistedEffects.includes("record_mode_native")) expect(persistedRun?.runtimeMode, `${fixture.id}:mode target`).toBe("native");
     if (persistedEffects.includes("record_policy_version")) expect(persistedRunnerProfile.nativeStatusPolicyVersion, `${fixture.id}:policy target`).toBe("phase6-v2");
     if (persistedEffects.includes("finish_as_native")) expect(persistedRunResult.nativeKillSwitchDisposition, `${fixture.id}:finish-native target`).toBe("finish_as_native");
-    if (persistedEffects.includes("stop_new_native_dispatch")) expect(persistedRunnerProfile.nativeDispatchAfterRun, `${fixture.id}:kill-switch target`).toBe("legacy");
+    if (persistedEffects.includes("stop_new_native_dispatch")) {
+      const runtimeConfig = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents)
+        .where(eq(agents.id, agentId)).then((rows) => rows[0]?.runtimeConfig ?? {});
+      expect((runtimeConfig as { nativeRunner?: { mode?: string } }).nativeRunner?.mode, `${fixture.id}:kill-switch target`).toBe("legacy");
+      expect(resolveNativeRuntimeMode({
+        enabled: true,
+        runtimeConfig,
+        agent: { id: agentId, status: "running", adapterType: "codex_local" },
+        issue: { id: seeded.issueId, workMode: "standard" },
+        target: { kind: "local" },
+        workspaceId: "fixture-workspace",
+      })).toEqual(expect.objectContaining({ kind: "legacy", reason: "native_kill_switch_persisted" }));
+    }
     if (materializedEffects.has("link_canonical_request")) {
       expect(interactionRows.some((row) => row.summary?.startsWith("Canonical native attention request:")), `${fixture.id}:canonical link target`).toBe(true);
     }
@@ -1319,6 +1586,27 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       },
     });
     if (consumerExecutions.length < 2) throw new Error(`${fixture.id} did not execute a concern consumer`);
+    if (
+      ["turn_scope", "run_scope", "issue_scope_authorized", "replacement_turn_accepted"].includes(completionState)
+      && !consumerExecutions.some((execution) =>
+        execution.consumer === "native-session-cancellation" && typeof execution.observed.auditId === "string"
+      )
+    ) {
+      throw new Error(`${fixture.id}: live cancellation proof missing`);
+    }
+    if (
+      attentionFacts
+      && ["attention_response", "attention_candidate", "interaction", "monitor"].includes(String(fixture.given.trigger))
+      && !consumerExecutions.some((execution) => execution.consumer === "native-attention-entrypoint")
+    ) {
+      throw new Error(`${fixture.id}: live attention proof missing`);
+    }
+    if (
+      ["REC-04", "REC-06", "REC-07", "REC-08"].some((row) => (fixture.covers.reconciliationRows ?? []).includes(row))
+      && !consumerExecutions.some((execution) => execution.consumer === "native-reconciliation-entrypoint")
+    ) {
+      throw new Error(`${fixture.id}: live reconciliation proof missing`);
+    }
 
     return {
       fixtureId: fixture.id,
@@ -1417,6 +1705,109 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       }
     }
   }, 60_000);
+
+  it("fails mapped fixtures when live entrypoints or owning actions are removed despite matching policy labels", async () => {
+    const byId = (id: string) => {
+      const fixture = corpus.fixtures.find((candidate) => candidate.id === id);
+      if (!fixture) throw new Error(`fixture missing: ${id}`);
+      return fixture;
+    };
+
+    expect(resolveNativeCancellationStatus({
+      scope: "turn",
+      priorIssueStatus: "in_progress",
+      agentId,
+    }).reasonCode).toBe("cancellation_turn_only");
+    await expect(executeFixture(byId("turn-only-cancellation"), {
+      disableLiveEntrypoint: "cancellation",
+    })).rejects.toThrow("live cancellation proof missing");
+
+    expect(resolveNativeAttentionStatus({
+      facts: {
+        companyScopeValid: true,
+        responseState: "none",
+        route: "agent",
+        summary: "delegate",
+        resolvedTargetAgentId: delegateAgentId,
+      },
+      priorIssueStatus: "in_progress",
+      agentId,
+    }).reasonCode).toBe("attention_routed_to_agent");
+    await expect(executeFixture(byId("human-request-routed-to-agent"), {
+      disableLiveEntrypoint: "attention",
+    })).rejects.toThrow("live attention proof missing");
+
+    expect(resolveNativeReconciliationStatus({
+      facts: { workspaceOperationPending: true },
+      priorIssueStatus: "in_progress",
+      agentId,
+    }).effects.map((effect) => effect.kind)).toContain("resume_workspace_operation");
+    await expect(executeFixture(byId("crash-before-workspace-finalization"), {
+      disableLiveEntrypoint: "reconciliation",
+    })).rejects.toThrow("native_workspace_operation_not_executed");
+
+    expect(resolveNativeMigrationStatus({
+      facts: { killSwitchActiveForNewRuns: true },
+      priorIssueStatus: "in_progress",
+      agentId,
+    }).effects.map((effect) => effect.kind)).toContain("stop_new_native_dispatch");
+    await expect(executeFixture(byId("migration-kill-switch-rollback"), {
+      disableLiveEntrypoint: "rollout",
+    })).rejects.toThrow("kill-switch target");
+
+    const pendingFixture = byId("crash-after-decision-commit");
+    const seeded = await seedFixture(pendingFixture);
+    const [decision] = await db.insert(statusDecisions).values({
+      companyId,
+      issueId: seeded.issueId,
+      assessmentId: seeded.assessmentId,
+      decisionVersion: 1,
+      policyVersion: "phase6-v2",
+      fromStatus: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "live_continuation_registered",
+      decisionJson: { fixtureId: pendingFixture.id },
+      decisionDigest: `pending-negative:${seeded.issueId}`,
+      applicationState: "applied",
+      appliedAt: new Date(),
+    }).returning({ id: statusDecisions.id });
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_status_changed",
+      payload: { issueId: seeded.issueId, nativeDecisionId: decision!.id },
+      requestedByActorType: "system",
+      requestedByActorId: "native-status-committer",
+      idempotencyKey: `pending-negative:${seeded.issueId}`,
+    }).returning({ id: agentWakeupRequests.id });
+    await db.insert(statusDecisionEffects).values({
+      companyId,
+      issueId: seeded.issueId,
+      decisionId: decision!.id,
+      ordinal: 1,
+      effectKind: "enqueue_continuation",
+      targetType: "agent_wakeup_request",
+      targetId: wake!.id,
+      idempotencyKey: `pending-negative:${seeded.issueId}`,
+      payload: { fixtureId: pendingFixture.id },
+      deliveryState: "pending",
+      attemptCount: 0,
+    });
+    await db.update(nativeRunFinalizations).set({
+      phase: "committed",
+      decisionId: decision!.id,
+    }).where(eq(nativeRunFinalizations.runId, seeded.runId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id));
+    expect(resolveNativeReconciliationStatus({
+      facts: { undeliveredEffectCount: 1 },
+      priorIssueStatus: "in_progress",
+      agentId,
+    }).effects.map((effect) => effect.kind)).toContain("dispatch_pending_effect");
+    await expect(reconcileNativeFinalizations(db, [seeded.runId]))
+      .rejects.toThrow("native_pending_effect_target_missing:enqueue_continuation");
+  }, 30_000);
 
   it("fails the transaction closed for an unknown status effect", async () => {
     const fixture = corpus.fixtures.find((candidate) => candidate.mode === "native");

@@ -13,7 +13,7 @@ This record verifies the default-off Phase 6 tracer at the approved
 `ControlPlanePort`/`NativeSessionBackend` boundary. No browser surface changed,
 so Phase 6 has command/database evidence rather than screenshots.
 
-The counts below are the PAP-16878 remediation rerun. “Internal canary” means
+The counts below are the PAP-16879 remediation rerun. “Internal canary” means
 the selected-task database test through the public package session contract;
 it does not mean that a new live Codex provider task was dispatched.
 
@@ -39,7 +39,7 @@ existing accepted result event, and appended only the missing terminal fact.
 
 # Real Paperclip adapter and public-session task
 
-The complete acceptance gate below passed 42 tests in thirteen files against
+The complete acceptance gate below passed 43 tests in thirteen files against
 embedded PostgreSQL with zero skipped tests. Database-backed tests start their
 own database instead of skipping when a developer `DATABASE_URL` is absent.
 The same package conformance suite passed unchanged against
@@ -82,7 +82,7 @@ The focused corpus also proved:
   bindings, recovery, status,
   decisions, and effects roll back together before retry ownership is recorded.
 
-The acceptance-matrix entry points passed as one 13-file, 42-test gate:
+The acceptance-matrix entry points passed as one 13-file, 43-test gate:
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \
@@ -103,20 +103,24 @@ pnpm --filter @paperclipai/server exec vitest run \
 
 This gate proves concurrent event allocation, duplicate-only migration repair,
 bounded retry exhaustion, actual flag-off legacy execution, and executable
-Section 18.13 fixture-to-consumer traceability. Each of the 52 fixtures creates
-its own database shape and executes named production consumers. Their return
-values and persisted rows supply all eleven expected fields: run status,
-status/preserve action, reason, required and forbidden effects, live-path kind,
-claim preservation, native-record behavior, decision count, maximum wake
-count, and maximum notification count. Each of the 70 matrix rows has an
-explicit responsible finalizer, terminal projection, attention, cancellation,
-committer, reconciliation, compatibility, or migration consumer; the row fails
-if that consumer was not executed or its returned semantics differ. A mutation
-test changes every expected field for every fixture and proves comparison
-failure. Every required native effect is joined to its actual target state,
-each decision replay retains one identity and one delivery attempt, and an
-unknown effect rolls the entire transaction back. No test-owned scenario
-policy supplies an observation. The selected-task
+Section 18.13 fixture-to-consumer traceability. All 52 fixtures and 70 rows are
+classified as either live operational proofs or explicit pure policy/read-model
+checks. Cancellation persists its decision or audit-only receipt through
+`cancelNativeSession`; attention resolves a same-company eligible target and
+uses the issue service; REC-04/06/07/08 enter the reconciler, with REC-04
+recording an observed workspace operation and REC-06/07/08 writing a newly
+classified append-only assessment before superseding the prior decision; and
+MIG-08 is enforced by the next runtime selection from the agent-owned
+kill-switch profile.
+
+All eleven expected fields remain derived from entrypoint returns and durable
+rows. Every required native effect is joined to its owning target state, each
+decision replay retains one identity and one delivery attempt, and pending
+replay verifies the original company/issue/decision target before acknowledging
+it. The negative suite removes each live action and deletes a replay target;
+the mapped fixtures fail while the direct policy resolver still returns the
+expected label. An unknown effect rolls the entire transaction back. No
+test-owned scenario policy supplies an observation. The selected-task
 and recovery canaries remain scripted only at the provider boundary, while the
 production Paperclip persistence/finalization paths and the flag-off legacy
 adapter/finalizer path execute for real.

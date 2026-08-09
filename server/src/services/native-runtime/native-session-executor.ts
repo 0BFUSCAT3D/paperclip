@@ -15,6 +15,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { persistActivity, publishActivity } from "../activity-log.js";
+import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
@@ -48,58 +50,146 @@ export function cancelNativeSession(
   runId: string,
   reason: string,
   options: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean },
-): Promise<{ dispatched: boolean; decision: NativeStatusDecision | null }>;
+): Promise<{ dispatched: boolean; decision: NativeStatusDecision | null; decisionId: string | null; auditId: string | null }>;
 export async function cancelNativeSession(
   runId: string,
   reason: string,
   options?: { db: Db; scope?: "turn" | "run" | "issue"; replacementAccepted?: boolean },
-): Promise<boolean | { dispatched: boolean; decision: NativeStatusDecision | null }> {
+): Promise<boolean | { dispatched: boolean; decision: NativeStatusDecision | null; decisionId: string | null; auditId: string | null }> {
   let decision: NativeStatusDecision | null = null;
+  let decisionContext: {
+    companyId: string;
+    issueId: string;
+    assessmentId: string | null;
+    priorStatus: string;
+    priorStatusVersion: number;
+    priorDecisionId: string | null;
+    agentId: string;
+  } | null = null;
   if (options) {
     const run = await options.db.select({
       agentId: heartbeatRuns.agentId,
       companyId: heartbeatRuns.companyId,
       contextSnapshot: heartbeatRuns.contextSnapshot,
+      runtimeMode: heartbeatRuns.runtimeMode,
     }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1).then((rows) => rows[0] ?? null);
     const context = record(run?.contextSnapshot);
     const issueId = typeof context.issueId === "string"
       ? context.issueId
       : typeof context.taskId === "string" ? context.taskId : null;
     const issue = run && issueId
-      ? await options.db.select({ status: issues.status }).from(issues).where(and(
+      ? await options.db.select({
+          status: issues.status,
+          statusVersion: issues.statusVersion,
+          lastStatusDecisionId: issues.lastStatusDecisionId,
+        }).from(issues).where(and(
           eq(issues.id, issueId),
           eq(issues.companyId, run.companyId),
         )).limit(1).then((rows) => rows[0] ?? null)
       : null;
-    if (run && issue) {
+    if (run && issue && issueId && run.runtimeMode === "native") {
       decision = resolveNativeCancellationStatus({
         scope: options.scope ?? "run",
         priorIssueStatus: issue.status as NativeAuthoritativeIssueStatus,
         agentId: run.agentId,
         replacementAccepted: options.replacementAccepted,
       });
-      if (options.replacementAccepted && decision.effects.some((effect) => effect.kind === "accept_replacement_turn")) {
-        await options.db.update(heartbeatRuns).set({
-          status: "running",
-          continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
-          nextAction: "Accept a replacement native turn on the existing run.",
-          updatedAt: new Date(),
-        }).where(eq(heartbeatRuns.id, runId));
-      }
+      const coordinator = await options.db.select({
+        assessmentId: nativeRunFinalizations.assessmentId,
+      }).from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.runId, runId),
+        eq(nativeRunFinalizations.companyId, run.companyId),
+        eq(nativeRunFinalizations.issueId, issueId),
+      )).limit(1).then((rows) => rows[0] ?? null);
+      decisionContext = {
+        companyId: run.companyId,
+        issueId,
+        assessmentId: coordinator?.assessmentId ?? null,
+        priorStatus: issue.status,
+        priorStatusVersion: Number(issue.statusVersion),
+        priorDecisionId: issue.lastStatusDecisionId,
+        agentId: run.agentId,
+      };
     }
   }
   const active = activeNativeSessions.get(runId);
-  if (!active) return options ? { dispatched: false, decision } : false;
-  if (active.cancelRequested) return options ? { dispatched: true, decision } : true;
-  active.cancelRequested = true;
-  try {
-    if (active.session.cancel) await active.session.cancel({ reason });
-    else if (active.session.interrupt) await active.session.interrupt({ reason });
-  } catch (error) {
-    active.cancelRequested = false;
-    throw error;
+  let dispatched = false;
+  if (active) {
+    dispatched = true;
+    if (!active.cancelRequested) {
+      active.cancelRequested = true;
+      try {
+        if (active.session.cancel) await active.session.cancel({ reason });
+        else if (active.session.interrupt) await active.session.interrupt({ reason });
+      } catch (error) {
+        active.cancelRequested = false;
+        throw error;
+      }
+    }
   }
-  return options ? { dispatched: true, decision } : true;
+  if (!options) return dispatched;
+
+  let decisionId: string | null = null;
+  let auditId: string | null = null;
+  if (decision && decisionContext) {
+    if (decisionContext.assessmentId && decision.reasonCode !== null) {
+      const committed = await commitNativeStatusDecision({
+        db: options.db,
+        companyId: decisionContext.companyId,
+        issueId: decisionContext.issueId,
+        runId,
+        assessmentId: decisionContext.assessmentId,
+        priorStatus: decisionContext.priorStatus,
+        priorStatusVersion: decisionContext.priorStatusVersion,
+        priorDecisionId: decisionContext.priorDecisionId,
+        decision,
+      });
+      decisionId = committed.decision.id;
+    } else if (options.replacementAccepted && decision.effects.some((effect) => effect.kind === "accept_replacement_turn")) {
+      await options.db.update(heartbeatRuns).set({
+        status: "running",
+        continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
+        nextAction: "Accept a replacement native turn on the existing run.",
+        updatedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, runId));
+    }
+    const currentRun = await options.db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1).then((rows) => rows[0] ?? null);
+    await options.db.update(heartbeatRuns).set({
+      resultJson: {
+        ...record(currentRun?.resultJson),
+        nativeCancellation: {
+          scope: options.scope ?? "run",
+          reasonCode: decision.reasonCode,
+          effects: decision.effects.map((effect) => effect.kind),
+          dispatched,
+          decisionId,
+        },
+      },
+      updatedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, runId));
+    const activity = await persistActivity(options.db, {
+      companyId: decisionContext.companyId,
+      actorType: "system",
+      actorId: "native-session-cancellation",
+      action: decisionId ? "issue.status_decision_recorded" : "native.cancellation_audited",
+      entityType: "heartbeat_run",
+      entityId: runId,
+      agentId: decisionContext.agentId,
+      runId,
+      issueId: decisionContext.issueId,
+      details: {
+        scope: options.scope ?? "run",
+        reasonCode: decision.reasonCode,
+        effects: decision.effects.map((effect) => effect.kind),
+        dispatched,
+        decisionId,
+      },
+    });
+    auditId = activity.activity?.id ?? null;
+    publishActivity(activity.publication);
+  }
+  return { dispatched, decision, decisionId, auditId };
 }
 
 /** Authenticated cancellation scope projected through the shared arbiter. */

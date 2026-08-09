@@ -18737,7 +18737,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const running = runningProcesses.get(run.id);
     try {
-      await cancelNativeSession(run.id, reason, { db, scope: "run" });
+      const nativeCancellation = await cancelNativeSession(run.id, reason, { db, scope: "run" });
+      if (run.runtimeMode === "native" && (!nativeCancellation.decision || !nativeCancellation.auditId)) {
+        throw new Error("native_cancellation_outcome_not_audited");
+      }
       if (running) {
         await terminateHeartbeatRunProcess({
           pid: running.child.pid ?? run.processPid,
@@ -18755,11 +18758,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const finishedAt = new Date();
+    const persistedCancellationResult = run.runtimeMode === "native"
+      ? await getRun(run.id).then((current) => parseObject(current?.resultJson))
+      : {};
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt,
       error: reason,
       errorCode,
-      ...(resultJson ? { resultJson } : {}),
+      ...(resultJson || Object.keys(persistedCancellationResult).length > 0
+        ? { resultJson: { ...persistedCancellationResult, ...(resultJson ?? {}) } }
+        : {}),
     });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {

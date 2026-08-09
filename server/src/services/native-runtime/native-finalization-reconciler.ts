@@ -2,15 +2,26 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  completionContracts,
   heartbeatRuns,
+  issueWorkProducts,
   issues,
   nativeRunFinalizations,
+  nativeRunResults,
   statusDecisionEffects,
+  statusDecisions,
+  workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
-import { dispatchPendingNativeStatusEffects } from "./status-decision-committer.js";
+import {
+  commitNativeStatusDecision,
+  dispatchPendingNativeStatusEffects,
+} from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { classifyNativeEvidence } from "./evidence-classifier.js";
+import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
@@ -30,6 +41,12 @@ export type NativeReconciliationFacts = {
   policyVersionChanged?: boolean;
   statusVersionAdvanced?: boolean;
 };
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
 
 /** Append-only recovery/reconciliation re-arbitration from durable facts. */
 export function resolveNativeReconciliationStatus(input: {
@@ -288,6 +305,9 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
     agentId: heartbeatRuns.agentId,
     issueId: nativeRunFinalizations.issueId,
     issueStatus: issues.status,
+    issueStatusVersion: issues.statusVersion,
+    issueDecisionId: issues.lastStatusDecisionId,
+    assessmentId: nativeRunFinalizations.assessmentId,
     decisionId: nativeRunFinalizations.decisionId,
   })
     .from(heartbeatRuns)
@@ -340,6 +360,145 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       results.push({ runId: row.runId, phase: "committed", deliveredEffectIds });
       continue;
     }
+    if (row.assessmentId) {
+      const assessment = await db.select({
+        id: workAssessments.id,
+        contractId: workAssessments.contractId,
+        resultId: workAssessments.resultId,
+        policyVersion: workAssessments.policyVersion,
+        priorIssueStatus: workAssessments.priorIssueStatus,
+        priorStatusVersion: workAssessments.priorStatusVersion,
+        assessmentJson: workAssessments.assessmentJson,
+        createdAt: workAssessments.createdAt,
+      }).from(workAssessments).where(and(
+        eq(workAssessments.id, row.assessmentId),
+        eq(workAssessments.companyId, row.companyId),
+        eq(workAssessments.issueId, row.issueId),
+      )).limit(1).then((entries) => entries[0] ?? null);
+      const changedEvidence = assessment
+        ? await db.select({ id: issueWorkProducts.id }).from(issueWorkProducts).where(and(
+            eq(issueWorkProducts.companyId, row.companyId),
+            eq(issueWorkProducts.issueId, row.issueId),
+            or(
+              gt(issueWorkProducts.createdAt, assessment.createdAt),
+              gt(issueWorkProducts.updatedAt, assessment.createdAt),
+            ),
+          )).limit(1).then((entries) => entries[0] ?? null)
+        : null;
+      const policyVersionChanged = assessment?.policyVersion !== NATIVE_STATUS_ARBITER_POLICY_VERSION;
+      const currentDecision = row.decisionId
+        ? await db.select({
+            assessmentId: statusDecisions.assessmentId,
+            decisionVersion: statusDecisions.decisionVersion,
+            toStatus: statusDecisions.toStatus,
+            decisionJson: statusDecisions.decisionJson,
+          }).from(statusDecisions).where(and(
+            eq(statusDecisions.id, row.decisionId),
+            eq(statusDecisions.companyId, row.companyId),
+            eq(statusDecisions.issueId, row.issueId),
+          )).limit(1).then((entries) => entries[0] ?? null)
+        : null;
+      const currentDecisionJson = record(currentDecision?.decisionJson);
+      const expectedProjectedVersion = currentDecision
+        ? Number(currentDecision.decisionVersion) - (currentDecisionJson.statusAction === "preserve" ? 1 : 0)
+        : null;
+      const issueMatchesCurrentDecision = !!assessment
+        && !!currentDecision
+        && row.issueDecisionId === row.decisionId
+        && currentDecision.assessmentId === assessment.id
+        && currentDecision.toStatus === row.issueStatus
+        && expectedProjectedVersion === Number(row.issueStatusVersion);
+      const authoritativeStatusChanged = !!assessment && !issueMatchesCurrentDecision && (
+        assessment.priorIssueStatus !== row.issueStatus
+        || Number(assessment.priorStatusVersion) !== Number(row.issueStatusVersion)
+      );
+      let reassessment = null;
+      let resultRow = null;
+      let contractRow = null;
+      if (assessment && (policyVersionChanged || authoritativeStatusChanged || changedEvidence)) {
+        [resultRow, contractRow] = await Promise.all([
+          db.select().from(nativeRunResults).where(and(
+            eq(nativeRunResults.id, assessment.resultId),
+            eq(nativeRunResults.companyId, row.companyId),
+            eq(nativeRunResults.issueId, row.issueId),
+            eq(nativeRunResults.runId, row.runId),
+          )).limit(1).then((entries) => entries[0] ?? null),
+          db.select().from(completionContracts).where(and(
+            eq(completionContracts.id, assessment.contractId),
+            eq(completionContracts.companyId, row.companyId),
+            eq(completionContracts.issueId, row.issueId),
+          )).limit(1).then((entries) => entries[0] ?? null),
+        ]);
+        if (!resultRow || !contractRow) throw new Error("native_reconciliation_evidence_binding_missing");
+        reassessment = await classifyNativeEvidence({
+          db,
+          companyId: row.companyId,
+          issueId: row.issueId,
+          runId: row.runId,
+          contract: record(contractRow.contractJson),
+          result: record(record(resultRow.resultJson).result),
+        });
+      }
+      const previousAssessment = record(assessment?.assessmentJson);
+      const newEvidenceSatisfiesContract = !!changedEvidence
+        && previousAssessment.allCriteriaSatisfied !== true
+        && reassessment?.allCriteriaSatisfied === true
+        && reassessment.verificationPassed === true;
+      const facts: NativeReconciliationFacts = policyVersionChanged
+        ? { policyVersionChanged: true }
+        : newEvidenceSatisfiesContract
+          ? { newEvidenceSatisfiesContract: true }
+          : authoritativeStatusChanged
+            ? { authoritativeStatusChanged: true }
+            : {};
+      if (Object.keys(facts).length > 0) {
+        if (!assessment || !reassessment || !resultRow || !contractRow) {
+          throw new Error("native_reconciliation_reassessment_missing");
+        }
+        const reassessmentRow = await recordNativeWorkAssessment({
+          db,
+          companyId: row.companyId,
+          issueId: row.issueId,
+          runId: row.runId,
+          turnId: resultRow.turnId,
+          contractId: contractRow.id,
+          contractCanonicalSha256: contractRow.canonicalSha256,
+          resultId: resultRow.id,
+          resultCanonicalSha256: resultRow.canonicalSha256,
+          priorIssueStatus: row.issueStatus,
+          priorStatusVersion: Number(row.issueStatusVersion),
+          priorDecisionId: row.issueDecisionId,
+          policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+          assessment: reassessment,
+          supersedesAssessmentId: assessment.id,
+        });
+        const decision = resolveNativeReconciliationStatus({
+          facts,
+          priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,
+          agentId: row.agentId,
+        });
+        const committed = await commitNativeStatusDecision({
+          db,
+          companyId: row.companyId,
+          issueId: row.issueId,
+          runId: row.runId,
+          assessmentId: reassessmentRow.id,
+          priorStatus: row.issueStatus,
+          priorStatusVersion: Number(row.issueStatusVersion),
+          priorDecisionId: row.issueDecisionId,
+          decision,
+          allowSupersedingCommittedDecision: true,
+        });
+        results.push({
+          runId: row.runId,
+          phase: "committed",
+          reconciliationAction: decision.reasonCode,
+          decisionId: committed.decision.id,
+          reconciliationDecision: decision,
+        });
+        continue;
+      }
+    }
     const barrier = await db.select({ status: workspaceOperations.status })
       .from(workspaceOperations)
       .where(and(
@@ -349,7 +508,48 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       .orderBy(desc(workspaceOperations.createdAt))
       .limit(1)
       .then((entries) => entries[0] ?? null);
-    if (!barrier || !["succeeded", "failed"].includes(barrier.status)) continue;
+    if (!barrier || barrier.status !== "succeeded") {
+      const recoveryDecision = resolveNativeReconciliationStatus({
+        facts: { workspaceOperationPending: true },
+        priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,
+        agentId: row.agentId,
+      });
+      if (!recoveryDecision.effects.some((effect) => effect.kind === "resume_workspace_operation")) {
+        throw new Error("native_reconciliation_workspace_resume_policy_missing");
+      }
+      const operation = await resumeNativeWorkspaceFinalization({ db, runId: row.runId });
+      const workspaceFinalizeStatus = operation.status === "succeeded" ? "succeeded" : "failed";
+      try {
+        const finalized = await finalizeNativeRun({
+          db,
+          runId: row.runId,
+          workspaceFinalizeStatus,
+          projectRunStatus: true,
+        });
+        results.push({
+          ...finalized,
+          reconciliationAction: "resume_workspace_operation" as const,
+          workspaceOperationId: operation.id,
+          workspaceFinalizeStatus,
+          reconciliationDecision: recoveryDecision,
+        });
+      } catch (error) {
+        const failure = await recordNativeFinalizationFailure({
+          db,
+          runId: row.runId,
+          error,
+          projectRunStatus: true,
+        });
+        results.push({
+          ...failure,
+          reconciliationAction: "resume_workspace_operation" as const,
+          workspaceOperationId: operation.id,
+          workspaceFinalizeStatus,
+          reconciliationDecision: recoveryDecision,
+        });
+      }
+      continue;
+    }
     const replayDecision = resolveNativeReconciliationStatus({
       facts: { canonicalReplay: true },
       priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,

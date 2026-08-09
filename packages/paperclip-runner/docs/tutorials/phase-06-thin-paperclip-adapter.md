@@ -60,7 +60,7 @@ pnpm --filter @paperclipai/server exec vitest run \
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. Forty-two targeted tests check company binding, duplicate/gap replay,
+port. Forty-three targeted tests check company binding, duplicate/gap replay,
 checkpoint recovery, immutable result ingestion, durable-evidence authority,
 workspace-gated finalization, atomic liveness rollback, status-version CAS,
 migration repair, legacy byte equivalence, typed interaction materialization,
@@ -68,19 +68,20 @@ same-run pre-result resumption, lease races, and audit output. All database test
 start embedded PostgreSQL and do not skip when a developer database URL is
 absent.
 
-The corpus cases dispatch fixture-specific database shapes to named production
-consumers and derive all eleven expected fields from their returns and
-persisted rows: run status, status/preserve action, reason, required and
-forbidden effects, live-path kind, claim preservation, native-record behavior,
-decision count, maximum wake count, and maximum notification count. Every one
-of the 70 matrix rows requires evidence from its responsible finalizer,
-terminal projection, attention, cancellation, committer, reconciliation,
-compatibility, or migration consumer; a missing call or changed return fails
-the row. Each native effect must also have a delivered, company-bound target
-row or concrete target-state mutation, and replay must retain one decision and
-one delivery attempt. A separate unknown-effect case proves the status
-transaction fails closed without partial rows. The recovery case uses a
-scripted provider only at the backend
+The corpus cases dispatch fixture-specific database shapes through live
+cancellation, attention, reconciliation, and rollout entrypoints whenever an
+operational effect is claimed. Workspace recovery records the actual operation
+result, delegation uses an eligible same-company agent and the issue service,
+and a persisted kill switch changes the next runtime selection. Pure resolver
+and read-model calls remain useful policy tests but cannot satisfy these rows.
+Each native effect must have a delivered, company-bound target or concrete
+target-state mutation, and pending replay may only acknowledge its original
+decision-scoped target. Sabotage tests remove each live action and the replay
+target and require failure even while the pure resolver label remains correct.
+
+All eleven expected fields and all 70 matrix-row joins are still checked, and
+an unknown-effect case proves the status transaction fails closed without
+partial rows. The recovery case uses a scripted provider only at the backend
 boundary while the real heartbeat reaper, lease claim, original run execution,
 persistence port, finalizer, and terminal projection execute.
 

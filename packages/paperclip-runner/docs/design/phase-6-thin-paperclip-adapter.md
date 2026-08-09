@@ -823,6 +823,46 @@ changing its facts or decision, suppressing its target mutation, duplicating a
 delivery, or restoring a synthetic `issue_checkout` fallback fails the focused
 database gate.
 
+### Remediation 5 live-entrypoint proof amendment (2026-08-09)
+
+The remediation stays within the approved server authority seams and adds one
+owning workspace service:
+
+```text
+server/src/services/heartbeat.ts
+server/src/services/native-runtime/native-session-executor.ts
+server/src/services/native-runtime/native-interaction-bridge.ts
+server/src/services/native-runtime/native-finalization-reconciler.ts
+server/src/services/native-runtime/native-workspace-finalizer.ts
+server/src/services/native-runtime/status-decision-committer.ts
+server/src/services/native-runtime/runtime-mode.ts
+server/src/__tests__/native-status-arbiter-corpus.test.ts
+```
+
+Policy resolvers remain pure and may be tested directly, but their return value
+is not operational proof. Cancellation fixtures enter through
+`cancelNativeSession`, which commits the decision or an explicit audit-only
+replacement-turn outcome. Attention fixtures enter through
+`routeNativeAttention`, which resolves a same-company eligible delegate and
+uses the company-scoped issue service. REC-04/06/07/08 fixtures enter through
+`reconcileNativeFinalizations`; REC-04 invokes the workspace operation recorder
+and observes the actual finalizer result. REC-06/07/08 reclassify the persisted
+result and contract into a new append-only assessment before an explicitly
+authorized superseding commit; REC-07 cannot be selected by an unrelated work
+product. MIG-08 persists the kill switch in the agent-owned runtime profile,
+and `resolveNativeRuntimeMode` enforces that state for subsequent dispatches.
+
+`resolveNativeFinalizerStatus`, `resolveNativeAttentionStatus`,
+`resolveNativeCancellationStatus`, `resolveNativeReconciliationStatus`, the
+compatibility/migration resolvers, and their read models are policy evidence
+only when called directly. A fixture claiming an operational effect must also
+contain the named live-entrypoint receipt and the owning service's durable
+target. Pending-effect replay remains acknowledgement-only and is restricted
+to the original company, issue, decision, and still-existing target. Negative
+tests deliberately remove each live entrypoint/action and the replay target;
+the mapped fixture fails even though the corresponding pure resolver still
+returns its expected label.
+
 ## Commands the implementation must make runnable
 
 These commands are the acceptance contract for the implementation issue. They
