@@ -6686,12 +6686,15 @@ tutorial, screenshots, OKF evidence, reviews, and QA. The board conditionally
 authorized that transition on 2026-08-08, so no additional planning approval is
 required after those gates pass. Phase 5 generalizes the accepted browser proof
 into a stable TypeScript SDK, reusable component contracts, and a second minimal
-consumer application. Phase 6 remains the first Paperclip control-plane
-integration phase.
+consumer application. The board accepted Phase 5 on 2026-08-09 and authorized
+Phase 6 to start. Phase 6 is the first Paperclip control-plane integration phase
+and must remain a thin, feature-flagged adapter over the package contracts proven
+by the standalone mock-core path. It must not move runner responsibilities into
+the core or change the default legacy adapter path.
 
 ## 30. Dependency sequencing
 
-The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md). Phase 4 is complete and accepted, and Phase 4b execution is authorized. The current order is parallel Phase 4b lowest-layer protocol/server and UX decision work, then browser implementation, Security and CTO reviews, QA and live-service evidence, the Phase 4b human checkpoint, and only then the conditionally authorized Phase 5 issue graph. Do not create Phase 5 tasks before the complete Phase 4b checkpoint passes.
+The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md). Phases 0–5 are complete and accepted. The board authorized Phase 6 on 2026-08-09. The current order is Phase 6 integration design, thin feature-flagged adapter implementation, mandatory Security and CTO reviews, QA of native and legacy paths, and the Phase 6 human checkpoint. Phase 7 remains gated until that complete checkpoint passes.
 
 ---
 

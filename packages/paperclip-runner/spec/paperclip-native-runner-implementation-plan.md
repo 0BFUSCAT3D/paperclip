@@ -411,6 +411,11 @@ conditionally authorized, but its issue graph remains uncreated until the Phase
 
 **Precondition:** explicit board acceptance of Phases 0–5 and CTO approval of the integration design. No production integration issue starts before this gate.
 
+**Gate status (2026-08-09):** the board accepted Phase 5 and authorized Phase 6
+to start. Create the Phase 6 issue graph now, but keep implementation blocked on
+the integration design and keep QA blocked on implementation plus the mandatory
+Security and CTO reviews.
+
 **Deliverables:**
 
 - Paperclip implementation of `ControlPlanePort`/`NativeSessionBackend` in a narrow integration package or service boundary;
