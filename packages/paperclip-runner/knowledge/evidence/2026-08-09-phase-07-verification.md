@@ -38,10 +38,10 @@ Results were captured on 2026-08-09 between 13:37Z and 13:39Z.
 | Semantic tools + authorization/redaction | `exec vitest run src/tools/phase7-semantic-tools.test.ts` | 1 file, 9 tests pass |
 | 106-case conformance | `test:phase7-evals` | 1 file, 1 test (drives all 106 cases) pass |
 | Fake-agent matrix + bounded Codex sample + parity report | `report:phase7-evals` | `Phase 7 eval conformance passed: 106 cases across 16 groups.` |
-| Scenario runtime + explorer components + routes | `test:phase7` | 3 files, 45 tests pass |
-| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | 19 Playwright tests pass (6.8s) |
+| Scenario runtime + explorer components + routes | `test:phase7` | 3 files, 49 tests pass |
+| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | 25 Playwright tests pass (6.8s) |
 | Screenshot acceptance set | `record:phase7` | 24 deterministic images (12 routes × 2 viewports) |
-| Doc links + OKF bundle | `docs:validate` | `Documentation link validation passed (62 files).` and `OKF v0.2 validation passed (26 concepts, 5 indexes).` |
+| Doc links + OKF bundle | `docs:validate` | `Documentation link validation passed (73 files).` and `OKF v0.2 validation passed (28 concepts, 5 indexes).` |
 
 # Conformance shape
 
