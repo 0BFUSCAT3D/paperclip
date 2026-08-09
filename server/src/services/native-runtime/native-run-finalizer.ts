@@ -4,6 +4,7 @@ import {
   approvals,
   heartbeatRuns,
   issueApprovals,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
@@ -17,6 +18,41 @@ function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+async function hasPendingNativeGovernance(input: {
+  db: Db;
+  companyId: string;
+  issueId: string;
+  executionState: Record<string, unknown> | null;
+}) {
+  // Issue-thread interactions and execution-policy stages are independent
+  // governance authorities from formal approvals. Native completion must
+  // mediate all three before it may project an authoritative terminal status.
+  if (record(input.executionState).status === "pending") return true;
+  const [pendingInteraction, pendingApproval] = await Promise.all([
+    input.db.select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(and(
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.status, "pending"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+    input.db.select({ id: approvals.id })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(and(
+        eq(issueApprovals.companyId, input.companyId),
+        eq(issueApprovals.issueId, input.issueId),
+        eq(approvals.companyId, input.companyId),
+        inArray(approvals.status, ["pending", "revision_requested"]),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+  ]);
+  return Boolean(pendingInteraction || pendingApproval);
 }
 
 export async function finalizeNativeRun(input: {
@@ -81,17 +117,12 @@ export async function finalizeNativeRun(input: {
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
-      approvalGateSatisfied: !await input.db.select({ id: approvals.id })
-        .from(issueApprovals)
-        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
-        .where(and(
-          eq(issueApprovals.companyId, run.companyId),
-          eq(issueApprovals.issueId, authoritativeIssue.id),
-          eq(approvals.companyId, run.companyId),
-          inArray(approvals.status, ["pending", "revision_requested"]),
-        ))
-        .limit(1)
-        .then((rows) => rows.length > 0),
+      approvalGateSatisfied: !await hasPendingNativeGovernance({
+        db: input.db,
+        companyId: run.companyId,
+        issueId: authoritativeIssue.id,
+        executionState: authoritativeIssue.executionState,
+      }),
       agentId: run.agentId,
     });
     const assessmentRow = await recordNativeWorkAssessment({

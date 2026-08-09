@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueThreadInteractions,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
@@ -46,6 +47,9 @@ describeDatabase("PaperclipControlPlanePort conformance", () => {
   const workspaceFailureIssueId = "00000000-0000-4000-8000-000000000011";
   const workspaceFailureContractId = "00000000-0000-4000-8000-000000000012";
   const workspaceFailureRunId = "00000000-0000-4000-8000-000000000013";
+  const governanceIssueId = "00000000-0000-4000-8000-000000000014";
+  const governanceContractId = "00000000-0000-4000-8000-000000000015";
+  const governanceRunId = "00000000-0000-4000-8000-000000000016";
 
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-port-");
@@ -157,6 +161,45 @@ describeDatabase("PaperclipControlPlanePort conformance", () => {
       completionContractSha256: "phase6-workspace-failure-contract",
       contextSnapshot: { issueId: workspaceFailureIssueId },
     });
+    await db.insert(issues).values({
+      id: governanceIssueId,
+      companyId: identity.companyId,
+      title: "Respect pending governance",
+      status: "in_review",
+      workMode: "standard",
+    });
+    await db.insert(completionContracts).values({
+      id: governanceContractId,
+      companyId: identity.companyId,
+      issueId: governanceIssueId,
+      revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1",
+      policyVersion: "phase6-v1",
+      risk: "standard",
+      completionAuthority: "server_arbiter",
+      incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { objective: "Respect pending governance" },
+      canonicalSha256: "phase6-governance-contract",
+      createdByActorType: "system",
+      createdByActorId: "test",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: governanceRunId,
+      companyId: identity.companyId,
+      agentId: identity.agentId,
+      status: "running",
+      runtimeMode: "native",
+      completionContractId: governanceContractId,
+      completionContractSha256: "phase6-governance-contract",
+      contextSnapshot: { issueId: governanceIssueId },
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId: identity.companyId,
+      issueId: governanceIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Approve completion?" },
+    });
   }, 30_000);
 
   afterAll(async () => {
@@ -167,6 +210,7 @@ describeDatabase("PaperclipControlPlanePort conformance", () => {
       await db.delete(workAssessments);
       await db.delete(nativeRunFinalizations);
       await db.delete(nativeRunResults);
+      await db.delete(issueThreadInteractions);
       await db.delete(heartbeatRunEvents);
       await db.delete(heartbeatRuns);
       await db.delete(completionContracts);
@@ -306,6 +350,37 @@ describeDatabase("PaperclipControlPlanePort conformance", () => {
       controlPlaneSourceInstanceId: "control-phase6-conformance",
     });
     await expect(port.openRun(CONTROL_PLANE_CONFORMANCE_OPEN)).rejects.toThrow("binding_mismatch");
+  });
+
+  it("does not let native completion bypass a pending issue interaction", async () => {
+    const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
+    const port = new PaperclipControlPlanePort(db, {
+      companyId: identity.companyId,
+      issueId: governanceIssueId,
+      runId: governanceRunId,
+      agentId: identity.agentId,
+      completionContractId: governanceContractId,
+      completionContractSha256: "phase6-governance-contract",
+      sourceInstanceId: "runner-phase6-governance",
+      controlPlaneSourceInstanceId: "control-phase6-governance",
+    });
+    await port.openRun({
+      identity: { ...identity, runId: governanceRunId, issueId: governanceIssueId },
+      backendKind: "mock",
+      sourceInstanceId: "runner-phase6-governance",
+    });
+    await port.completeRun({
+      result: CONTROL_PLANE_CONFORMANCE_RESULT,
+      terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      callerResultId: "phase6-governance-result",
+    });
+    await finalizeNativeRun({ db, runId: governanceRunId, workspaceFinalizeStatus: "succeeded" });
+    await expect(db.select().from(issues).where(eq(issues.id, governanceIssueId))).resolves.toEqual([
+      expect.objectContaining({ status: "in_progress" }),
+    ]);
+    await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, governanceIssueId))).resolves.toEqual([
+      expect.objectContaining({ toStatus: "in_progress", reasonCode: "approval_gate_pending" }),
+    ]);
   });
 
   it("preserves the result and issue status when workspace finalization fails", async () => {
