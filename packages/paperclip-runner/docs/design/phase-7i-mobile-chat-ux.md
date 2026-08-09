@@ -389,6 +389,84 @@ made from §1–§11 is recorded here rather than left for a reviewer to discove
    floating mid-document. Pinning is proven by a browser test that scrolls the
    transcript and asserts the composer is still on screen.
 
+## 11b. Acceptance review rulings (PAP-16920, UXDesigner, 2026-08-09)
+
+Review method: all ten §11 captures inspected at full resolution, plus a live
+pass against `demo:phase7` at 1440×900 and 390×844 (scripted composer driven
+interactively, streaming route inspected in-DOM). Shots 1–4 are **accepted**.
+Shot 5 is **rejected pending revisions 12–14 below**; only shot 5 needs
+re-capture.
+
+Rulings on §11a: revisions 1, 2, 4, 5, 6, 7, 8, and 9 are **accepted** as
+recorded. Notes where the ruling needed evidence beyond the text:
+
+- **1 (composer usable in scripted mode) — accepted.** Verified live: a
+  free-text prompt drives the next recorded turn; the status chip, mode
+  segment, and the persistent composer note carry the attribution. The
+  exhausted state is genuinely designed: with zero scripted turns left, a
+  send runs a real `get_task_context` against the mock core and the reply
+  says the script is finished and how to replay — no silent drop, no faked
+  answer (Forgiveness; visibility of system status).
+- **3 (`stage=streaming` route) — the route and wait-target approach are
+  accepted**; hand-staged captures were a race and a deterministic stage is
+  the right fix. The *current staging depth* fails §7 and the shot-5 matrix
+  row — see revisions 12–13.
+- **7 (`turn=3`) — accepted.** The mock core wakes on interaction
+  *resolution*, not request; a board-owned resolution producing the real
+  `wake.scheduled` row demonstrates the phase's point without fabricating a
+  wake. Shot 4's evidence confirms the reconciliation row renders in the
+  turn diff, badged Control plane.
+
+Reviewer-recorded revisions (10–11 accepted as built, 12–14 are the fixes
+shot 5 is gated on):
+
+10. **Mobile keeps three segments: Scenarios · Chat · Activity.** §1 said
+    "exactly two", which was written for the session surface and forgot that
+    mobile has no other path to the picker; with two segments a phone user
+    could never switch scenarios. The 7F segmented-control precedent (7F
+    revision 4) already includes the picker segment. §1 is amended; the
+    Activity count chip behaviour is unchanged. Accepted as built.
+11. **Chat-home activity rail renders a purpose hint, not the 7F corpus
+    summary.** §7 asked for the corpus summary in the rail; the intro card
+    already carries the corpus stats, so repeating them one column away is
+    redundancy, not information (Occam). The hint card instead sets the
+    rail's mental model — what will appear there once a session starts — so
+    the panel is neither dead nor duplicate. §7 is amended. Accepted as
+    built.
+12. **Fix required — staged streaming must hold the activity stream too.**
+    At `stage=streaming` the transcript is held mid-turn and the chat shows
+    "Turn 2 · running", but the activity rail renders the held turn fully
+    settled: calls the transcript has not shown yet, the state diff, and a
+    **parity verdict** — under a header promising evidence appears "as the
+    conversation happens". A surface whose whole premise is honest evidence
+    must not show a verdict for a turn it says is still running (§4 source
+    of truth; §7 streaming row: "the pending turn's activity group shows a
+    live-updating header"). Fix: scope the `ActivityStream` to the same
+    reveal ceiling the transcript uses (`chat-surface.tsx` holds the
+    transcript at `holdAt` but passes the full artifact to the rail); the
+    held turn's group renders the running header and only the evidence
+    revealed so far — no diff, no parity, no counts that include unrevealed
+    calls.
+13. **Fix required — the staged hold must leave a model card visibly
+    mid-reveal.** The §11 shot-5 row's first expected item is "streaming
+    model card"; the current hold point (`firstSequence + 2`) lands on tool
+    entries for `ap-mcp-gate-01`, so the only caret on screen is the
+    pending-turn strip's. Choose the hold so a model-output entry is
+    partially revealed (caret + partial text on a `--pcr-card` message
+    card), or stage against a turn whose early entries include model
+    output.
+14. **Fix required — disabled session controls need visible reasons.**
+    During a running turn, Reset/Replay disable with the reason only in
+    `title` — invisible in evidence, unreachable on touch, unannounced by
+    screen readers (§7 says "disable with reasons"; same rule that banned
+    tooltip-only redaction disclosure in 7F revision 11). Fix: one muted
+    line adjacent to the controls (e.g. "Controls return when the turn
+    settles."), wired via `aria-describedby`; keep the `title` if you like,
+    it just can't be the only channel.
+
+Re-acceptance: re-run `record:phase7i` and hand back only the two
+`chat-streaming` captures for review; shots 1–4 stand.
+
 ## 12. Out of scope / rejected
 
 - All 7F §10 rejections stand (no Tailwind/Radix, no dark mode, no markdown
