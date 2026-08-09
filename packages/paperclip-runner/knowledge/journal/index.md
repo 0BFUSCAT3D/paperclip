@@ -13,3 +13,4 @@
 * [Phase 4b live console browser tracer](2026-08-08-phase-04b-live-console.md) - Reducer-only browser surfaces, adapted components with no new runtime dependencies, interrupt races, reconnect, replay, and the layout and stream failures found on the way.
 * [Phase 5 UX gate — reusable console and SDK component plan](2026-08-08-phase-05-ux-plan.md) - Frozen consumer-facing component contracts, five extension points, pcr- token rules, and the mini-consumer tracer flow for the SDK extraction.
 * [Phase 5 browser SDK and second consumer](2026-08-08-phase-05-sdk.md) - Versioned browser/React exports, the public reference console and mini consumer, exact reducer authority, and fake/real driver evidence.
+* [Phase 6 thin Paperclip adapter design](2026-08-09-phase-06-design.md) - Proposed public-port seam, feature flag, kill switch, company/auth/governance boundary, durable replay, conformance matrix, and tutorial contract.

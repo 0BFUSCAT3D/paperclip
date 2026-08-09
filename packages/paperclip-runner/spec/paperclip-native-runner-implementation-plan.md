@@ -416,6 +416,13 @@ to start. Create the Phase 6 issue graph now, but keep implementation blocked on
 the integration design and keep QA blocked on implementation plus the mandatory
 Security and CTO reviews.
 
+**Design gate record:** the proposed narrow port, feature flag, runtime mode,
+kill switch, company/auth/governance boundary, persistence/replay mapping,
+implementation sequence, exact file allowlist, test matrix, and tutorial
+commands are in
+[`docs/design/phase-6-thin-paperclip-adapter.md`](../docs/design/phase-6-thin-paperclip-adapter.md).
+No Phase 6 implementation code starts until the CTO gate accepts that record.
+
 **Deliverables:**
 
 - Paperclip implementation of `ControlPlanePort`/`NativeSessionBackend` in a narrow integration package or service boundary;

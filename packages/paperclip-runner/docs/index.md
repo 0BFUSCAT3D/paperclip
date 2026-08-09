@@ -13,6 +13,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4b: run the protocol demo server](tutorials/phase-04b-protocol-server.md) — exercise the server-only Codex boundary, canonical replay, typed controls, and reconnect with `curl`.
 - [Phase 4b: run the live Codex protocol console](tutorials/phase-04b-live-console.md) — chat with a live session in the browser, steer it, stop it three ways, answer its requests, change its goal, break its connection, and replay the record.
 - [Phase 5: run the SDK console and mini consumer](tutorials/phase-05-sdk-console.md) — exercise the versioned public browser/React surface in two independent consumers against fake and real drivers.
+- [Phase 6: thin Paperclip adapter tutorial outline](tutorials/phase-06-thin-paperclip-adapter.md) — planned mock/real conformance, one local native task, replay/finalization inspection, kill switch, and legacy fallback proof. Design only until CTO approval.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -31,7 +32,9 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4b component decision record (shadcn/ui, AI Elements)](design/phase-4b-component-decisions.md)
 - [Phase 5 component and SDK surface plan](design/phase-5-component-plan.md)
 - [Phase 5 SDK extraction decision record](design/phase-5-component-decisions.md)
+- [Phase 6 thin Paperclip adapter boundary](design/phase-6-thin-paperclip-adapter.md)
 - [Package README](../README.md)
 
-Phase 5 is implemented under this standalone package boundary. Production
+Phase 5 is implemented under this standalone package boundary. Phase 6 has a
+design-only, default-off integration proposal awaiting CTO approval. Production
 Paperclip UI integration remains deferred.

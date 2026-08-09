@@ -32,3 +32,11 @@
   exports; added a public-API-only reference console and mini consumer; proved
   the five approved extension points, keyboard/accessibility contracts,
   reconnect and replay parity, package boundaries, and safe real-Codex use.
+
+## 2026-08-09
+
+* **Phase 6 integration design**: Specified the default-off thin Paperclip
+  adapter seam, public port reconciliation, persisted runtime selection and
+  kill switch, native event deduplication/replay, company/auth/governance threat
+  boundary, shadow-only status contract, exact file allowlist, conformance test
+  matrix, and mock/native/legacy tutorial commands before production code.
