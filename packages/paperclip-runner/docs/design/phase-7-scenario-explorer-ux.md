@@ -491,3 +491,52 @@ of the contract.
    selects zero scenarios on a cold load. The recorded route filters on
    `not_run`, which is the honest cold-load state and still demonstrates
    chips, live counts, disabled zero-count values, and Clear filters.
+
+The following revisions were recorded at the 7F UX gate (PAP-16905,
+2026-08-09) after reviewing all 24 captures and a live keyboard/responsive
+session at both viewports.
+
+8. **Shot 8's continuation evidence is split across surfaces.** In
+   `ix-checkbox-01` the continuation appears as the Context tab's
+   control-plane exposure entry (`route_wake` — "Interaction continuations
+   are routed by the control plane, not requested again") plus the parked-note
+   system entry — not as transcript entries. No fixture in the corpus scripts
+   the continuation-consuming side: only the ten §9 cases have bespoke
+   fake-agent plans, `ix-checkbox-result-01` falls back to a generic script
+   that re-raises `request_human_input` (contradicting its own premise), and
+   `inspect_operation_result` is catalogued but never invoked corpus-wide.
+   Accepted for 7F because the request side and routing authority are fully
+   evidenced; the continuation-side fixture upgrade is a filed follow-up, not
+   a silent gap.
+
+9. **Forbidden-operations lists are empty corpus-wide.** All 106 cases record
+   empty `forbiddenSemantics`, so §9 rows 10–11's "never invoked ✓" rows
+   cannot render from real fixture data. Restraint is proven by state-diff
+   absence plus the intentional-gap rationale, and the Parity tab says so
+   explicitly ("This case records no forbidden operations; restraint is
+   proven by the absence of state writes in the diff"). The populated-list
+   path (`never invoked ✓` / violating transcript reference) exists in
+   `inspector-panels.tsx` and is unit-tested; the explanatory empty state is
+   accepted as the §9 rendering.
+
+10. **Keyboard deltas, accepted as interim with a filed follow-up.** The
+    picker listbox uses selection-follows-focus (arrows select immediately —
+    a valid listbox pattern the map did not anticipate); type-ahead and
+    Enter-moves-focus-to-run-header are not implemented; `F6` region cycling
+    is replaced by a "Skip to run view" skip link plus landmark navigation;
+    denial entries do not announce assertively (only a fail verdict does).
+    §7's `inspector-tab-<name>` testids are absent (the frozen SDK `Tabs`
+    exposes roles, not testids) — tests target tabs by accessible name.
+    An unknown case ID in the route falls back silently to the home view
+    rather than a named error card.
+
+11. **Redaction chips render the rule name inline**, not in a tooltip:
+    `••• redacted <rule>`. Inline beats hover-only disclosure (works on
+    touch, visible in captures); recorded as the new §5 contract.
+
+12. **Evidence captures expand disclosures.** The recorder opens every
+    `main`/`aside` disclosure before capturing so argument payloads, decision
+    records, and final-state JSON are visible in the §9 images. The live
+    defaults are collapsed exactly as §4.3 specifies (verified in the gate's
+    live session); the expanded captures are a deliberate evidence choice,
+    not the default density.
