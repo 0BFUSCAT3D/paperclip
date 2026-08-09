@@ -425,7 +425,8 @@ No Phase 6 implementation code starts until the CTO gate accepts that record.
 
 **Deliverables:**
 
-- Paperclip implementation of `ControlPlanePort`/`NativeSessionBackend` in a narrow integration package or service boundary;
+- a package-owned `NativeSessionBackend`, a server-bound Paperclip
+  `ControlPlanePort`, and a narrow core seam that only composes them;
 - feature-flagged runtime selection;
 - mapping to existing workspace preparation/finalization, cancellation, budgets, approvals, audit, and issue status authority;
 - native event persistence/replay adapter using the proven schema;

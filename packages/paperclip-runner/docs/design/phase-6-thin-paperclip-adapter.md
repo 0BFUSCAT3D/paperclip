@@ -13,6 +13,13 @@ Paperclip will integrate the native runner through two public package ports:
 - `ControlPlanePort` accepts validated PRP events and terminal results from the
   package and exposes durable acknowledgement and replay cursors.
 
+The two ports are complementary, not two core implementations. The runner
+package supplies the `NativeSessionBackend` implementation; Paperclip supplies
+the server-bound `ControlPlanePort` implementation. The core adapter only
+composes those public contracts and translates the final result into existing
+Paperclip types. It does not implement a native backend or contain runner
+behavior.
+
 The dependency direction is one way:
 
 ```text

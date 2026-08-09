@@ -206,6 +206,7 @@ buildable, testable, and runnable against the mock adapter.
 The proposed Phase 6 seam is recorded in
 [Phase 6 Thin Paperclip Adapter Boundary](design/phase-6-thin-paperclip-adapter.md).
 It keeps one dependency direction, branches only after Paperclip workspace and
-environment realization, uses a server-bound implementation of the public
-ports, and returns to the existing Paperclip finalization path. The proposal is
+environment realization, composes a package-owned `NativeSessionBackend` with
+a server-bound `ControlPlanePort`, and returns to the existing Paperclip
+finalization path. The core seam contains no runner behavior. The proposal is
 design-only until the CTO gate accepts it.
