@@ -16,22 +16,20 @@ const FORWARDED_HEADERS = new Set([
   "tailscale-user-name",
   "user-agent",
   "x-forwarded-for",
-  "x-forwarded-host",
-  "x-forwarded-proto",
 ]);
 
-function selectedHeaders(headers: IncomingHttpHeaders): Record<string, string | string[]> {
+function selectedHeaders(
+  headers: IncomingHttpHeaders,
+  publicHost: string,
+): Record<string, string | string[]> {
   const selected: Record<string, string | string[]> = {};
   for (const [name, value] of Object.entries(headers)) {
     if (!FORWARDED_HEADERS.has(name) || value === undefined) continue;
     selected[name] = value;
   }
-  selected["x-forwarded-proto"] = Array.isArray(headers["x-forwarded-proto"])
-    ? headers["x-forwarded-proto"][0] ?? "https"
-    : headers["x-forwarded-proto"] ?? "https";
-  selected["x-forwarded-host"] = Array.isArray(headers["x-forwarded-host"])
-    ? headers["x-forwarded-host"][0] ?? String(headers.host ?? "")
-    : headers["x-forwarded-host"] ?? String(headers.host ?? "");
+  selected.host = publicHost;
+  selected["x-forwarded-proto"] = "https";
+  selected["x-forwarded-host"] = publicHost;
   selected["x-phase7i-proxy"] = "v1";
   return selected;
 }
@@ -39,8 +37,15 @@ function selectedHeaders(headers: IncomingHttpHeaders): Record<string, string | 
 function main(): void {
   const socketPath = process.env.PHASE7I_SOCKET_PATH?.trim();
   const port = Number(process.env.PHASE7I_PROXY_PORT);
-  if (!socketPath || !Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("PHASE7I_SOCKET_PATH and a valid PHASE7I_PROXY_PORT are required");
+  const publicOrigin = new URL(process.env.PHASE7I_PUBLIC_ORIGIN ?? "");
+  if (
+    !socketPath
+    || !Number.isInteger(port)
+    || port < 1
+    || port > 65_535
+    || publicOrigin.protocol !== "https:"
+  ) {
+    throw new Error("PHASE7I_SOCKET_PATH, PHASE7I_PUBLIC_ORIGIN, and a valid PHASE7I_PROXY_PORT are required");
   }
 
   const server = createServer((req, res) => {
@@ -55,7 +60,7 @@ function main(): void {
       socketPath,
       method: req.method,
       path: req.url,
-      headers: selectedHeaders(req.headers),
+      headers: selectedHeaders(req.headers, publicOrigin.host),
       timeout: 35_000,
     }, (upstreamResponse) => {
       res.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);

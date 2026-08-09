@@ -69,6 +69,7 @@ fi
 env -i \
   PATH=/usr/local/bin:/usr/bin:/bin \
   NODE_ENV=production \
+  PHASE7I_PUBLIC_ORIGIN="$PHASE7I_PUBLIC_ORIGIN" \
   PHASE7I_PROXY_PORT="$PHASE7I_PROXY_PORT" \
   PHASE7I_SOCKET_PATH="$socket_path" \
 node \
