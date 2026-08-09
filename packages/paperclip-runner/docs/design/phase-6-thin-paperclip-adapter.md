@@ -2,7 +2,8 @@
 
 Status: proposed for CTO approval
 Date: 2026-08-09
-Decision scope: the first feature-flagged Paperclip tracer only
+Decision scope: the first feature-flagged Paperclip native run, including the
+normative native finalizer and server-owned Section 18 status arbitration
 
 ## Decision
 
@@ -37,8 +38,11 @@ public input types, persist protocol records, and convert one terminal native
 result into the existing `AdapterExecutionResult`. It must not contain driver,
 provider, reducer, outbox, reconnect, or process-supervision logic.
 
-This decision deliberately limits Phase 6 to a tracer. It does not enable
-native execution by default, migrate legacy runs, or add browser UI.
+This remains a narrow, default-off tracer: it does not enable native execution
+by default, migrate legacy runs, or add browser UI. “Thin” limits where runner
+behavior lives; it does not remove the normative completion contract. Phase 6
+is complete only when the additive native finalizer applies the complete
+Section 18 arbitration contract required by the spike exit criteria and NR-006.
 
 ## Why the current sketches need one package-local reconciliation
 
@@ -88,23 +92,106 @@ immediately before `adapter.execute(...)` today:
 
 ```ts
 const mode = resolveNativeRuntimeMode({ settings, agent, run, issue, target });
-await persistResolvedMode(run.id, mode);
+await persistResolvedNativeRunEnvelope({ run, issue, mode, contract, target });
 
 const adapterResult = mode.kind === "native"
-  ? await paperclipNativeRuntimeAdapter.execute(existingExecutionContext)
-  : await adapter.execute(existingExecutionContext);
+  ? await nativeSessionRuntime.execute(
+      buildNativeExecutionInput({ run, issue, mode, contract, target, session }),
+    )
+  : await adapter.execute(existingLegacyExecutionContext);
 ```
 
-Everything before the branch remains Paperclip-owned preparation. Everything
-after it remains Paperclip-owned finalization: workspace-finalize barrier,
-usage/cost accounting, terminal run write, issue liveness evaluation, session
-state, agent state, audit/live events, environment lease release, runtime
-service release, and scratch cleanup.
+Everything before the branch remains Paperclip-owned preparation. Shared
+cleanup after either branch still owns usage/cost accounting, session and agent
+state, audit/live events, environment lease release, runtime service release,
+and scratch cleanup. Native mode replaces only the legacy terminal heuristic:
+after the existing `workspace_finalize` barrier, `NativeRunFinalizer` preserves
+the typed result, classifies evidence, builds an immutable assessment, calls
+the pure `StatusArbiter`, and commits the run/issue/liveness effects atomically.
+Legacy mode retains the current finalizer byte-for-byte.
 
-The native adapter returns through `AdapterExecutionResult` with an additive
-`nativeFinalization` discriminator. Existing adapters omit that field. Native
-run terminal state is taken only from that validated discriminator; exit code
-is retained as a diagnostic and is never a native fallback heuristic.
+The native adapter returns through `AdapterExecutionResult` with an additive,
+strictly validated `nativeFinalization` discriminator. Existing adapters omit
+that field. Native run terminal state is taken only from the persisted run
+profile plus that typed discriminator; exit code and model-authored fields in
+`resultJson` are diagnostics and are never native fallback heuristics.
+
+## Durable native run envelope and recovery boundary
+
+Phase 6 uses first-class columns and the Section 18 tables, not keys hidden in
+`context_snapshot` or `result_json`.
+
+`heartbeat_runs` gains these exact fields:
+
+```text
+runtime_mode                 text not null default 'legacy'
+runtime_mode_resolver_version text null
+runtime_mode_reason          text null
+runtime_mode_resolved_at     timestamptz null
+runner_profile_json          jsonb null        -- redacted resolved snapshot
+runner_instance_id           uuid null
+native_session_id            uuid null
+driver_kind                  text null
+driver_version               text null
+completion_contract_id       uuid null references completion_contracts
+completion_contract_sha256   text null
+next_event_seq               bigint not null default 1
+native_phase                 text null
+native_phase_updated_at      timestamptz null
+```
+
+The selection transaction locks the run row and writes `runtime_mode`, the
+resolver version/reason/timestamp, redacted profile, realized target identity,
+and the immutable completion-contract reference before any native provider, runner,
+or harness invocation. `runtime_mode='native'` without a valid contract/profile
+is a fail-closed native setup/finalization error; it never means legacy.
+
+Terminal claims are stored in the normative append-only
+`native_run_results` table (`company_id`, `issue_id`, `run_id`, `turn_id`,
+`completion_contract_id`, caller IDs, `server_fingerprint`, `schema_status`,
+`rejection_code`, the safe original `result_json`, and `canonical_sha256`). One
+row-locked `native_run_finalizations` coordinator per run records `phase`,
+`attempt`, lease, `result_id`, `assessment_id`, `decision_id`, and redacted
+failure/retry fields. Receipt of a terminal result is acknowledged only after
+the result row and coordinator `result_id` commit.
+
+The rest of the finalization storage uses the exact Section 18.7 field sets:
+
+| Durable record | Exact fields added/used |
+|---|---|
+| `completion_contracts` | `id`, `company_id`, `issue_id`, `revision`, `schema_version`, `policy_version`, `risk`, `completion_authority`, `incomplete_criteria_policy`, `contract_json`, `canonical_sha256`, `created_by_actor_type`, `created_by_actor_id`, `created_at`, `supersedes_contract_id` |
+| `native_run_results` | `id`, `company_id`, `issue_id`, `run_id`, `turn_id`, `completion_contract_id`, `caller_result_id`, `caller_dedupe_key`, `server_fingerprint`, `schema_status`, `rejection_code`, `result_json`, `canonical_sha256`, `created_at` |
+| `native_run_finalizations` | `run_id`, `company_id`, `issue_id`, `phase`, `attempt`, `lease_owner`, `lease_expires_at`, `result_id`, `assessment_id`, `decision_id`, `failure_code`, `failure_detail`, `next_attempt_at`, `created_at`, `updated_at` |
+| `work_assessments` | `id`, `company_id`, `issue_id`, `run_id`, `turn_id`, `contract_id`, `result_id`, `trigger_kind`, `trigger_ref`, `trigger_capability`, `trigger_actor_company_id`, `prior_issue_status`, `prior_status_version`, `prior_decision_id`, `policy_version`, `assessment_json`, `input_digest`, `supersedes_assessment_id`, `created_at` |
+| `status_decisions` | `id`, `company_id`, `issue_id`, `assessment_id`, `decision_version`, `policy_version`, `from_status`, `to_status`, `reason_code`, `decision_json`, `decision_digest`, `application_state`, `supersedes_decision_id`, `applied_at`, `created_at` |
+| `status_decision_effects` | `id`, `company_id`, `issue_id`, `decision_id`, `ordinal`, `effect_kind`, `target_type`, `target_id`, `idempotency_key`, `payload`, `delivery_state`, `attempt_count`, `next_attempt_at`, `last_error`, `delivered_at`, `created_at`, `updated_at` |
+| `issues` | new `status_version bigint not null default 0` and `last_status_decision_id uuid null`; existing status/liveness/lock fields remain projections |
+
+Their unique keys, company foreign keys, immutable/supersession rules, and
+effect-ledger semantics are unchanged from Section 18.7. `heartbeat_runs` also
+gets only a compact result/finalization read projection in `result_json`; that
+JSON is never the source of truth.
+
+Byte equivalence means equality after the Section 18.8 canonical serializer:
+UTF-8 JSON, recursively sorted object keys, protocol-order arrays, UTC RFC 3339
+timestamps with millisecond precision, lowercase UUIDs, absent optionals
+omitted, and bounded numeric serialization. Prose is preserved byte-for-byte
+after schema normalization with no locale/Unicode compatibility folding. The
+hashed material includes the complete validated envelope and server-bound
+run/session/turn/contract identity, but excludes transport-only delivery
+metadata. The server stores SHA-256 of those bytes. Reusing a source
+event ID, source sequence, caller result ID, or caller dedupe key with another
+hash is a replay conflict with no acknowledgement or effects. Equivalent
+retries, including fresh caller keys with the same server fingerprint, return
+the already committed canonical row and cursor.
+
+Recovery never re-runs the resolver. Startup and periodic reconciliation read
+`heartbeat_runs.runtime_mode`; for native rows they follow
+`native_run_finalizations.result_id` to `native_run_results` and resume the
+first missing durable phase. This remains true when the instance flag or agent
+profile has since been disabled, the server restarted, or the runner process
+disconnected. A disabled flag affects only runs whose mode has not yet been
+resolved (`runtime_mode_resolved_at is null`).
 
 ## Feature flag, selection, and kill switch
 
@@ -160,12 +247,82 @@ The real `ControlPlanePort` is constructed inside the server with a bound
 authoritative rows. Every method compares incoming identity fields with that
 binding and rejects generically before persistence on any mismatch.
 
-The runner or harness never receives:
+The native branch does not spread or pass the legacy `context`, `runtimeConfig`,
+`AdapterInvocationMeta`, or `process.env`. `buildNativeExecutionInput` is the
+only constructor and returns this closed, strict schema (`unknown` keys are
+rejected at the server/package boundary):
 
-- `PAPERCLIP_API_KEY`, a board session, or a board API key;
+```ts
+interface NativeExecutionInputV1 {
+  schema: "paperclip.native-execution-input.v1";
+  binding: {
+    companyId: string;
+    runId: string;
+    issueId: string;
+    agentId: string;
+    executionWorkspaceId: string;
+  };
+  task: {
+    identifier: string;
+    title: string;
+    description: string | null;
+    workMode: "standard";
+  };
+  workspace: {
+    cwd: string;
+    repoUrl: string | null;
+    repoRef: string | null;
+    branchName: string | null;
+  };
+  session: {
+    normalizedSessionId: string | null;
+    driverKind: "codex_app_server";
+    protocolVersion: 1;
+  };
+  completionContract: {
+    id: string;
+    sha256: string;
+    schemaVersion: string;
+    contract: StrictCompletionContractInput;
+  };
+  interactionResponses: NativeInteractionResponseEnvelope[];
+  credentialBindings: NativeCredentialBindingRef[];
+}
+```
+
+`credentialBindings` contains only opaque binding IDs, service/destination
+policy, expiry, and non-secret display metadata. A broker or trusted launch
+boundary may resolve a binding outside the model process; neither gateway
+tokens nor secret values are fields in this input. Likewise, interaction
+responses are the typed, destination-bound response envelopes from the native
+interaction bridge, not a wake payload.
+
+The package then builds a still smaller `NativeModelEnvelopeV1` from only
+`task`, the safe workspace location, the completion schema, and applicable
+typed interaction responses. Binding IDs, credential binding refs, runner
+profile, and driver/session control data stay outside model-visible content.
+There is no escape hatch such as `extra`, `metadata`, arbitrary `context`, or
+arbitrary `env` in either schema.
+
+The runner, package driver, and model/harness never receive:
+
+- the local agent JWT, `PAPERCLIP_API_KEY`, a board session, or a board API key;
+- managed MCP gateway credentials, runner-lease/bootstrap credentials, or
+  credential-broker secret material;
+- `PAPERCLIP_WAKE_PAYLOAD_JSON`, rendered Paperclip wake text, Paperclip skill
+  instructions, the Paperclip API manual, or run-scoped skill material;
+- raw `process.env`, agent/project/routine env maps, `runtimeConfig.env`, or the
+  legacy adapter's generic execution context;
 - authority to choose a company, issue, agent, policy, approval, or status;
 - database access or a public issue-mutation endpoint;
 - resolved secret values in events, snapshots, diagnostics, or digests.
+
+The native constructor never reads the already-built legacy wake/context
+object, and the native branch occurs before local-agent JWT construction,
+managed-MCP gateway materialization, and legacy adapter invocation. Tests seed
+unique canaries into every forbidden source, recursively
+inspect the backend launch input and captured model request, and assert that no
+key, value, serialized canary, or object reference crosses the native boundary.
 
 The server-side port is an in-process capability for the first tracer. A future
 runner WebSocket must authenticate a one-time runner lease and bind to the same
@@ -179,6 +336,7 @@ Threats and required responses:
 | Same source ID or sequence with different bytes | `native_event_replay_conflict`; fail native run closed |
 | Caller supplies status, approval, or policy outcome | Preserve as untrusted payload at most; never apply |
 | Event/result contains a known credential | Redact before diagnostics and reject persistence of the unsafe payload |
+| Legacy context or raw env reaches native constructor | Validation/test failure before provider invocation |
 | Native port or event store is unavailable | Do not acknowledge; runner keeps its durable outbox; fail/recover without legacy fallback |
 | Flag is disabled after a run started | Finish/cancel the persisted native mode; never splice legacy execution into it |
 
@@ -187,7 +345,9 @@ Threats and required responses:
 PRP events and `reportedWorkDisposition` are reports, not organizational
 commands. The Phase 6 tracer does not add a runner-accessible issue status API.
 
-- Existing issue routes/services remain the only issue-status mutation path.
+- Existing board/user issue routes remain authorized organizational command
+  paths. For native finalization, `StatusDecisionCommitter` is the only
+  server-internal status writer and it applies only a `StatusArbiter` decision.
 - Existing execution-policy participants remain the only execution-decision
   authority.
 - Existing approval and interaction services remain the only materialization
@@ -198,18 +358,28 @@ commands. The Phase 6 tracer does not add a runner-accessible issue status API.
 - Existing activity logging records flag changes, runtime selection, run
   terminal state, cancellation, and any later governed mutation.
 
-The native result is persisted with `nativeFinalization` and its reported
-disposition. In the first tracer, status application is **shadow-only**: the
-result can be inspected and compared, but it cannot close, block, review, or
-cancel an issue. Existing liveness/recovery handling observes the unchanged
-issue state. Broader rollout requires the separately specified immutable
-completion contract, work assessment, status arbiter, atomic liveness effects,
-and reconciliation gates in the normative spike specification. The tracer must
-not implement a smaller model-authoritative shortcut.
+The native result and reported disposition are preserved as claims. The
+additive native finalizer then applies the complete normative Section 18 flow:
+immutable `CompletionContractService` revision, authenticated
+`NativeResultIngestor`, exactly-once workspace finalization,
+`EvidenceClassifier`, immutable `WorkAssessmentService` snapshot, pure
+versioned `StatusArbiter`, serialized `StatusDecisionCommitter`, durable effect
+ledger, and `NativeFinalizationReconciler`.
 
-This is the safest thin boundary: Phase 6 proves execution, durability, and
-Paperclip lifecycle integration without smuggling the much larger status-
-authority migration into an adapter.
+Shadow computation remains mandatory at MIG-04/MIG-05, but it is a rollout
+stage, not the Phase 6 scope or exit state. Phase 6 evidence must proceed through
+MIG-06 for one allowlisted internal company/agent and prove an applied decision.
+Rollout can then be disabled again; already-selected native rows still reconcile
+as native. If the complete corpus or application gate cannot pass, Phase 6 stays
+blocked rather than shipping a contradictory shadow-only substitute.
+
+The arbiter may choose `done`, `in_review`, `blocked`, continued `in_progress`,
+or preserve-on-finalization-failure. Non-terminal decisions atomically create
+the named reviewer/approval/interaction/delegated-review/monitor, blocker owner
+and action, continuation, or recovery action required by Section 18. A reported
+`done` never directly closes an issue. Board/user status races increment
+`issues.status_version`; the losing native finalizer reloads and appends a
+superseding assessment instead of overwriting organizational authority.
 
 ## Existing lifecycle mapping
 
@@ -223,9 +393,9 @@ authority migration into an adapter.
 | Event commit/ACK/replay | Bound `ControlPlanePort` implementation | Thin server adapter |
 | Cancellation | Existing cancel route invokes a registered native cancel handle, then existing terminal cleanup | Heartbeat + package session |
 | Workspace finalization | Existing `workspace_finalize` barrier after native execute returns | Heartbeat/workspace services |
-| Run terminal state | Validated `nativeFinalization.runTerminalState` | Thin adapter + heartbeat |
-| Issue status | No native mutation in tracer; existing authority remains | Existing issue/governance services |
-| Approvals/interactions | Existing services only; unsupported native requests fail closed | Existing governance services |
+| Run terminal state | Validated discriminator after workspace finalization, coordinated with native finalization | Thin adapter + native finalizer |
+| Issue status | Section 18 assessment, arbitration, CAS, and atomic liveness effects | Native finalizer + existing issue/governance services |
+| Approvals/interactions | Typed native bridge materializes through existing services; unsupported/forged requests fail closed and cannot self-approve | Native interaction bridge + existing governance services |
 | Usage/cost/session state | Converted to existing `AdapterExecutionResult` fields | Existing heartbeat finalizer |
 | Audit/live events | Existing activity and heartbeat event publication | Existing services |
 | Lease/runtime/scratch release | Existing `finally` path | Existing heartbeat/environment services |
@@ -253,26 +423,49 @@ source_payload_sha256
 protocol_schema_version
 ```
 
-Required partial unique indexes:
+Required unique indexes (the source identities are partial):
 
 ```text
-(company_id, run_id, source_event_id) where source_event_id is not null
-(company_id, run_id, source_instance_id, source_seq)
+(run_id, seq)
+(run_id, source_event_id) where source_event_id is not null
+(run_id, source_instance_id, source_seq)
   where source_instance_id is not null and source_seq is not null
 ```
 
-Append behavior is transactional:
+Every writer uses one server-owned `appendHeartbeatRunEvent` transaction.
+`nextRunEventSeq(max(seq)+1)` is removed. The transaction:
 
-1. validate the PRP schema and bound identity;
-2. canonicalize and hash the complete event payload;
-3. insert with its server timeline sequence and native source identity;
-4. on conflict, load the canonical row and accept only a byte-equivalent hash;
-5. compute the highest contiguous committed source sequence;
-6. acknowledge only after commit.
+1. validates the event and bound company/run/agent identity;
+2. locks the owning `heartbeat_runs` row `FOR UPDATE`;
+3. checks source-event/source-sequence deduplication before allocating a
+   canonical sequence;
+4. canonicalizes and hashes the complete event payload;
+5. inserts with `seq = heartbeat_runs.next_event_seq`, then increments
+   `next_event_seq` in the same transaction;
+6. on a dedup conflict, loads the canonical row and accepts only an equivalent
+   hash without consuming a sequence;
+7. computes the highest contiguous committed native source sequence; and
+8. publishes/acknowledges only after commit.
+
+The same allocator is mandatory for lifecycle, stdout/stderr, cancellation,
+workspace, adapter, recovery, and native PRP events. Publication happens from
+the committed row/outbox, never between allocation and commit. Concurrent
+cancel/lifecycle/native appends therefore serialize on the per-run row and the
+database unique `(run_id, seq)` constraint is the final guard.
+
+The expand migration changes event `seq` and run `next_event_seq` to `bigint`.
+For each existing run it first preserves the earliest row for every existing
+sequence; if historical duplicates exist, it deterministically moves only the
+later duplicates (ordered by `created_at, id`) to fresh values above that run's
+old maximum and records duplicate counts in migration verification output. It
+then sets `next_event_seq = max(seq) + 1` (or `1` for an empty run), installs
+the unique constraint, and only then deploys the shared writer. Legacy event
+payloads/source-null behavior are unchanged; no synthetic native source fields
+or finalization history are backfilled.
 
 Replay reads the same rows by the bound run/source instance, ordered by
 `source_seq`, after an exclusive cursor. A gap is reported and never hidden by
-server timeline sequence. Legacy rows have null native-source fields and are
+canonical server sequence. Legacy rows have null native-source fields and are
 unaffected. Existing `/api/heartbeat-runs/:runId/events` remains the operator
 read path; no new public mutation route is required.
 
@@ -322,6 +515,12 @@ Required shared cases:
 - terminal before result and event after terminal;
 - cancellation before turn, during turn, and after terminal;
 - connection loss before and after commit acknowledgement.
+- concurrent lifecycle, cancellation, native, and log appends with one
+  gap-free canonical server sequence and stable replay after restart;
+- terminal-result replay before/after acknowledgement with one canonical
+  `native_run_results` row and one finalization coordinator;
+- process loss and flag disablement after result persistence, proving recovery
+  uses only the persisted native run envelope.
 
 ## Test matrix
 
@@ -341,14 +540,24 @@ Required shared cases:
 | P6-12 | Duplicate replay | yes | yes | One semantic event, stable cursor |
 | P6-13 | Conflicting replay | yes | yes | Native fails closed; no legacy fallback |
 | P6-14 | Cross-company/run/agent forgery | — | yes | Generic denial, zero rows, no disclosure |
-| P6-15 | Credential redaction | yes | yes | No key in model context, event, log, or digest |
-| P6-16 | Reported `done` | yes | yes | Stored as claim; issue status not changed |
-| P6-17 | Approval/status payload forgery | yes | yes | No approval/decision/status mutation |
-| P6-18 | Unsupported runtime request | yes | yes | Declined; no auto-approval |
-| P6-19 | Missing/invalid native finalization | yes | yes | Native run fails with stable code |
-| P6-20 | Cost/usage/session projection | yes | yes | Existing field meanings unchanged |
-| P6-21 | Activity and live events | — | yes | Selection/terminal/cancel audited once |
-| P6-22 | Full legacy targeted regression | — | yes | Byte-equivalent result/events for fixture |
+| P6-15 | Typed input/credential isolation | yes | yes | JWT, API key, MCP credentials, wake/skills, raw env/context canaries absent from package and model |
+| P6-16 | Durable mode/result recovery | yes | yes | Restart/flag-off/process-loss resumes persisted native result and coordinator |
+| P6-17 | Canonical allocator concurrency | yes | yes | Lifecycle/cancel/native/log writers produce unique `(run_id, seq)` and stable replay |
+| P6-18 | Migration/backfill | — | yes | Legacy duplicate repair, `next_event_seq`, bigint, uniqueness, and null native fields proven |
+| P6-19 | Terminal result idempotency/conflict | yes | yes | One canonical result/finalization; changed bytes fail closed |
+| P6-20 | Reported `done` with satisfied contract | yes | yes | Claim stored; server assessment/arbiter/committer applies authoritative `done` once |
+| P6-21 | Incomplete/rejected evidence | yes | yes | Arbiter preserves or creates a valid blocker/review/continuation path; never trusts prose |
+| P6-22 | Governance/status forgery | yes | yes | Caller status/policy/approval fields rejected; zero authoritative effects |
+| P6-23 | Native interaction bridge | yes | yes | Durable materialization/typed response, no invalid issue status or credential exposure |
+| P6-24 | Board/cancel/dependency race | yes | yes | `status_version` CAS and superseding assessment; no reopen/duplicate effect |
+| P6-25 | Missing/invalid native finalization | yes | yes | Native run fails with named recovery; no legacy heuristic |
+| P6-26 | Workspace finalization ordering | yes | yes | Workspace success precedes assessment; failure prevents `done` and preserves claim |
+| P6-27 | Non-terminal liveness effects | yes | yes | Reviewer/blocker/continuation/recovery entity commits atomically with status |
+| P6-28 | Kill switch during arbitration | yes | yes | Existing native coordinator finishes/reconciles; new run selects legacy |
+| P6-29 | Cost/usage/session projection | yes | yes | Existing field meanings unchanged |
+| P6-30 | Activity/live/effect ledger | — | yes | Selection/result/decision/effects/cancel audited and published once |
+| P6-31 | Section 18.13 corpus | yes | yes | Every SD/TC/ATT/LIVE/REC/COMP/MIG fixture emits a joinable consumer result |
+| P6-32 | Full legacy targeted regression | — | yes | Byte-equivalent result/events/UI-read snapshot; zero native history rows |
 
 ## Exact implementation sequence
 
@@ -356,21 +565,38 @@ Required shared cases:
    shared mock conformance suite. No core files change in this step.
 2. Add the package-local `HarnessDriver` to `NativeSessionBackend` adapter and a
    deterministic fake-backend executor. Keep provider/process logic packaged.
-3. Add nullable native-source columns and partial unique indexes to
-   `heartbeat_run_events`; generate the migration and prove legacy reads.
-4. Implement the server-bound `PaperclipControlPlanePort` with constructor
-   binding, transaction-safe append/ACK, replay, and terminal idempotency.
-5. Add the default-off instance flag, parse the per-agent profile, and test the
-   pure resolver/kill-switch precedence.
-6. Add `nativeFinalization` to `AdapterExecutionResult` and the thin native
-   executor/converter service.
-7. Add the one heartbeat branch, persisted mode, native cancel registry, and
-   existing-finalizer mapping. Do not rearrange preparation or cleanup.
-8. Run mock/real conformance, governance/security, workspace/finalization,
-   budget/cancellation, and legacy regression tests.
-9. Add the package-local tracer/tutorial/evidence and run one safe local Codex
-   task only after deterministic tests pass.
-10. Stop for Security and CTO implementation review before QA or wider opt-in.
+3. Expand storage: add first-class run-mode/contract/sequence fields, native
+   result/finalization/assessment/decision/effect tables, `issues.status_version`,
+   and nullable native event-source columns. Run production-shaped migration
+   and legacy snapshot tests before enabling any writer.
+4. Replace every heartbeat event writer with the shared per-run transactional
+   allocator, backfill `next_event_seq`, add unique `(run_id, seq)`, and prove
+   concurrent lifecycle/cancel/native/log appends.
+5. Implement the server-bound `PaperclipControlPlanePort` with constructor
+   binding, canonical-byte deduplication, commit-before-ACK replay, and terminal
+   result idempotency.
+6. Add the default-off instance flag, parse the per-agent profile, materialize
+   immutable completion contracts, and persist the resolved native run envelope
+   before invocation. Test resolver/kill-switch precedence and restart recovery.
+7. Add strict `NativeExecutionInputV1`/`NativeModelEnvelopeV1` validators and
+   the explicit constructor. Prove forbidden legacy context and credential
+   canaries cannot reach package, driver, model, event, result, log, or digest.
+8. Add `nativeFinalization` to `AdapterExecutionResult`, the package executor,
+   native cancel registry, and the single heartbeat branch. Keep legacy JWT,
+   MCP, prompt/context, and adapter invocation construction entirely on the
+   legacy branch.
+9. Implement the Section 18 services: result ingestion, workspace-first native
+   finalization, evidence classification, assessment, pure arbiter, serialized
+   decision/effect commit, interaction bridge, and reconciler. Version every
+   existing issue-status writer before enabling native application.
+10. Execute MIG-01 through MIG-05 with the unchanged Section 18.13 fixture
+    corpus. Resolve every unexplained shadow divergence; do not waive cases.
+11. Enable MIG-06 only for one isolated company/agent, run mock and database
+    conformance, governance/status, workspace, budget/cancel, disconnect,
+    terminal replay, and legacy regression proofs, then disable new dispatch.
+12. Add the package-local tracer/tutorial/evidence and run one safe local Codex
+    task only after deterministic tests pass. Stop for mandatory Security and
+    CTO implementation review before QA or wider opt-in.
 
 ## Exact files that may change
 
@@ -402,33 +628,72 @@ packages/paperclip-runner/knowledge/evidence/index.md
 packages/paperclip-runner/knowledge/log.md
 ```
 
-### Minimal Paperclip adapter seam
+### Paperclip storage, adapter, finalizer, and read seam
 
 ```text
 server/package.json
 packages/adapter-utils/src/types.ts
 packages/shared/src/types/instance.ts
+packages/shared/src/types/native-finalization.ts                         (new)
 packages/shared/src/validators/instance.ts
+packages/shared/src/validators/native-finalization.ts                    (new)
+packages/shared/src/constants.ts
 packages/shared/src/feature-catalog.ts
+packages/db/src/schema/heartbeat_runs.ts
 packages/db/src/schema/heartbeat_run_events.ts
-packages/db/src/schema/index.ts                  (only if a new export is required)
+packages/db/src/schema/issues.ts
+packages/db/src/schema/completion_contracts.ts                           (new)
+packages/db/src/schema/native_run_results.ts                             (new)
+packages/db/src/schema/native_run_finalizations.ts                       (new)
+packages/db/src/schema/work_assessments.ts                               (new)
+packages/db/src/schema/status_decisions.ts                               (new)
+packages/db/src/schema/status_decision_effects.ts                        (new)
+packages/db/src/schema/index.ts
 packages/db/src/migrations/<generated>.sql
-packages/db/src/migrations/meta/*                (generated only)
+packages/db/src/migrations/meta/*                                        (generated only)
 server/src/services/instance-settings.ts
-server/src/services/native-runtime/runtime-mode.ts                    (new)
-server/src/services/native-runtime/paperclip-control-plane-port.ts     (new)
-server/src/services/native-runtime/paperclip-native-runtime-adapter.ts (new)
-server/src/services/native-runtime/index.ts                            (new)
+server/src/services/heartbeat-run-events.ts                              (new)
+server/src/services/native-runtime/runtime-mode.ts                       (new)
+server/src/services/native-runtime/native-execution-input.ts             (new)
+server/src/services/native-runtime/paperclip-control-plane-port.ts        (new)
+server/src/services/native-runtime/native-session-runtime.ts              (new)
+server/src/services/native-runtime/completion-contracts.ts                (new)
+server/src/services/native-runtime/native-result-ingestion.ts             (new)
+server/src/services/native-runtime/native-run-finalizer.ts                 (new)
+server/src/services/native-runtime/evidence-classifier.ts                 (new)
+server/src/services/native-runtime/work-assessments.ts                     (new)
+server/src/services/native-runtime/status-arbiter.ts                       (new)
+server/src/services/native-runtime/status-decision-committer.ts            (new)
+server/src/services/native-runtime/native-interaction-bridge.ts            (new)
+server/src/services/native-runtime/native-finalization-reconciler.ts       (new)
+server/src/services/native-runtime/index.ts                                (new)
+server/src/services/issue-thread-interactions.ts
+server/src/services/issues.ts
 server/src/services/heartbeat.ts
-server/src/__tests__/native-runner-phase6.integration.test.ts          (new)
-server/src/__tests__/heartbeat-native-runner-selection.test.ts         (new)
-server/src/__tests__/heartbeat-native-runner-cancellation.test.ts      (new)
+server/src/routes/issues.ts
+server/src/routes/agents.ts
+server/src/routes/openapi.ts
+server/src/__tests__/native-runner-phase6.integration.test.ts             (new)
+server/src/__tests__/heartbeat-native-runner-selection.test.ts            (new)
+server/src/__tests__/heartbeat-native-runner-cancellation.test.ts         (new)
+server/src/__tests__/heartbeat-run-event-sequencing.test.ts               (new)
+server/src/__tests__/native-runner-input-boundary.test.ts                  (new)
+server/src/__tests__/native-run-finalizer.test.ts                          (new)
+server/src/__tests__/native-status-arbiter-corpus.test.ts                  (new)
+server/src/__tests__/native-finalization-recovery.test.ts                  (new)
+server/src/__tests__/native-finalization-migration.test.ts                 (new)
+server/src/__tests__/legacy-finalization-regression.test.ts                (new)
 ```
 
-No other file is pre-approved. In particular, Phase 6 must not change a
-concrete legacy adapter, issue status route, approval route, UI file, workspace
-service, budget service, or activity-log implementation merely to make the
-tracer pass. A discovered need outside this list returns to CTO review.
+No other file is pre-approved. The migration owns the universal
+`status_version` increment (a database trigger on an actual status change), so
+Phase 6 does not scatter versioning edits across unrelated writers. The native
+committer calls transaction-aware existing issue, blocker, review, interaction,
+recovery, wake, activity, and live-event entry points; if one of those files
+must change to expose such an entry point, implementation pauses for an
+allowlist amendment and CTO review. In particular, Phase 6 must not change a
+concrete legacy adapter, approval authority, browser UI, workspace policy,
+budget policy, or activity semantics merely to make the tracer pass.
 
 ## Commands the implementation must make runnable
 
@@ -438,6 +703,8 @@ do not exist yet in this design-only task.
 Deterministic package/mock proof:
 
 ```sh
+pnpm check:runner-phase5-spec
+
 pnpm --filter @paperclipai/paperclip-runner exec vitest run \
   src/conformance/control-plane-port.test.ts \
   src/backends/harness-driver-backend.test.ts
@@ -467,7 +734,22 @@ Targeted real integration proof:
 pnpm --filter @paperclipai/server exec vitest run \
   src/__tests__/native-runner-phase6.integration.test.ts \
   src/__tests__/heartbeat-native-runner-selection.test.ts \
-  src/__tests__/heartbeat-native-runner-cancellation.test.ts
+  src/__tests__/heartbeat-native-runner-cancellation.test.ts \
+  src/__tests__/heartbeat-run-event-sequencing.test.ts \
+  src/__tests__/native-runner-input-boundary.test.ts \
+  src/__tests__/native-run-finalizer.test.ts \
+  src/__tests__/native-status-arbiter-corpus.test.ts \
+  src/__tests__/native-finalization-recovery.test.ts \
+  src/__tests__/native-finalization-migration.test.ts \
+  src/__tests__/legacy-finalization-regression.test.ts
+
+pnpm --filter @paperclipai/server exec vitest run \
+  src/__tests__/heartbeat-run-event-sequencing.test.ts \
+  -t "serializes concurrent lifecycle cancel native and log writers"
+
+pnpm --filter @paperclipai/server exec vitest run \
+  src/__tests__/native-status-arbiter-corpus.test.ts \
+  -t "emits one result for every Section 18.13 fixture and consumer"
 ```
 
 Legacy fallback proof after disabling the flag:
@@ -482,10 +764,14 @@ pnpm --filter @paperclipai/server exec vitest run \
 ```
 
 The tracer must print a stable JSON summary containing `resolvedMode`,
-`runStatus`, `reportedWorkDisposition`, `issueStatusBefore`,
-`issueStatusAfter`, `nativeEventCount`, `highestContiguousSourceSeq`,
-`workspaceFinalizeStatus`, and `legacyAdapterInvocationCount`. It must never
-print a bearer token, secret value, raw environment, or private host path.
+`runtimeModeResolverVersion`, `runStatus`, `reportedWorkDisposition`,
+`nativeResultId`, `nativeResultSha256`, `finalizationPhase`, `assessmentId`,
+`decisionId`, `authoritativeDecision`, `issueStatusBefore`, `issueStatusAfter`,
+`statusVersionBefore`, `statusVersionAfter`, `nativeEventCount`,
+`highestContiguousSourceSeq`, `nextEventSeq`, `workspaceFinalizeStatus`, and
+`legacyAdapterInvocationCount`. It must never print a bearer token, credential
+binding value, wake payload, skill instruction, raw environment, or private
+host path.
 
 ## Tutorial outline
 
@@ -496,22 +782,53 @@ The implementation fills in the package-local
 2. mock conformance first;
 3. flag and one-agent opt-in;
 4. one safe local native task;
-5. event replay and finalization inspection;
-6. cancellation and workspace-finalization checks;
-7. kill-switch disablement;
-8. a new legacy task proving fallback;
-9. cleanup and expected stable summaries.
+5. canonical event replay, persisted mode/result, and coordinator inspection;
+6. Section 18 assessment/decision/effect and `status_version` inspection;
+7. cancellation, concurrent append, disconnect recovery, and workspace-first
+   finalization checks;
+8. explicit credential-boundary canary proof;
+9. kill-switch disablement while persisted native recovery still succeeds;
+10. a new legacy task proving fallback and zero native rows;
+11. cleanup and expected stable summaries.
 
 No production credentials or destructive cleanup command belongs in the
 tutorial.
 
+## Evidence plan
+
+`knowledge/evidence/2026-08-09-phase-06-verification.md` is the human-readable
+index and records git revision, migration revision, exact commands/exit codes,
+flag/profile scope, and links to these redacted machine artifacts:
+
+- one Section 18.13 result per `{corpusRevision, gitRevision, fixtureId,
+  consumer}` with observed digests and semantic row/effect counts;
+- migration before/after counts, repaired duplicate event IDs, per-run
+  `next_event_seq`, and unique-constraint verification on production-shaped
+  legacy data;
+- concurrent-writer attempt order plus final canonical event order and the
+  byte-equivalent replay snapshot after a simulated restart;
+- typed-input canary inventory and negative package/model/event/result/log/
+  digest observations (names of forbidden categories, never secret values);
+- terminal replay/recovery snapshots before ACK, after ACK, after disconnect,
+  with the flag disabled, and after reconciliation;
+- one safe real Codex trace showing workspace finalize, preserved claim,
+  assessment, applied server decision/effects, and zero legacy invocation;
+- one new post-kill-switch legacy trace with byte-equivalent legacy projection
+  and zero native contract/result/finalization/decision rows.
+
+The evidence index must call out any expected shadow divergence by fixture ID.
+An unexplained divergence, missing consumer result, duplicate semantic effect,
+credential-canary hit, or unjoinable aggregate “suite passed” result blocks the
+implementation handoff.
+
 ## Browser UI decision
 
-No browser UI changes are required for the Phase 6 tracer. Existing run and
-issue APIs plus the package tracer provide inspectable evidence. The flag is
-server/API-only and default off. Any later request to expose native mode,
-reported disposition, replay cursors, or status-arbitration state in the board
-UI requires a separate UX review task before implementation.
+No browser component changes are required for the Phase 6 tracer. The Section
+18 company-authorized read models/routes for completion contracts, native
+finalization, assessments/decisions, and compact run/issue summaries plus the
+package tracer provide inspectable evidence. The flag is server/API-only and
+default off. Rendering those read models in the board UI remains bound to the
+separately approved Section 18.12 operator UX gate.
 
 ## Approval questions
 
@@ -520,9 +837,10 @@ The CTO can approve or reject this record by deciding these five points:
 1. Is the one-way package dependency and single heartbeat branch narrow enough?
 2. Is the default-off instance flag plus per-agent opt-in an acceptable first
    rollout and kill-switch contract?
-3. Is extending `heartbeat_run_events` preferable to a second event store for
-   the tracer?
-4. Is shadow-only issue-status handling the correct Phase 6 limit, with full
-   native arbitration remaining separately gated?
+3. Is extending `heartbeat_run_events` with the shared per-run allocator and
+   unique canonical sequence preferable to a second event store?
+4. Does the restored Section 18 native finalizer/arbitration scope, including
+   the MIG-04/MIG-05 shadow stages and MIG-06 internal application proof,
+   satisfy the normative Phase 6 gate?
 5. Are the allowed files, conformance matrix, and exact tracer/fallback commands
    sufficient to begin implementation?

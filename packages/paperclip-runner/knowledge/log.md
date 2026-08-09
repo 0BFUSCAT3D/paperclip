@@ -36,7 +36,8 @@
 ## 2026-08-09
 
 * **Phase 6 integration design**: Specified the default-off thin Paperclip
-  adapter seam, public port reconciliation, persisted runtime selection and
-  kill switch, native event deduplication/replay, company/auth/governance threat
-  boundary, shadow-only status contract, exact file allowlist, conformance test
-  matrix, and mock/native/legacy tutorial commands before production code.
+  adapter seam, public port reconciliation, first-class persisted mode/result
+  recovery, canonical per-run event allocation, typed credential-free native
+  input, complete Section 18 finalization/arbitration, kill switch, exact file
+  allowlist, conformance matrix, and mock/native/legacy tutorial commands before
+  production code.

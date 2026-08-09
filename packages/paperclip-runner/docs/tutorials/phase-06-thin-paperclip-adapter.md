@@ -11,8 +11,11 @@ runner package still owns session and protocol behavior.
 ## What the runnable proof will establish
 
 The proof will run the same contract against the mock core and a real local
-Paperclip service. It will store and replay native events. It will then turn the
-flag off and prove that a new task uses the old adapter path.
+Paperclip service. It will store and replay native events through one canonical
+sequence allocator, preserve the typed terminal result, and apply the complete
+Section 18 server-owned finalization/arbitration flow. It will then turn the
+flag off, prove persisted native recovery still completes as native, and prove
+that a new task uses the old adapter path.
 
 ## Planned prerequisites
 
@@ -33,6 +36,8 @@ pnpm --filter @paperclipai/paperclip-runner exec vitest run \
   src/conformance/control-plane-port.test.ts \
   src/backends/harness-driver-backend.test.ts
 
+pnpm check:runner-phase5-spec
+
 pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- \
   --target mock --scenario happy-path
 ```
@@ -46,11 +51,19 @@ sequence, replay parity, and no Paperclip server import.
 pnpm --filter @paperclipai/server exec vitest run \
   src/__tests__/native-runner-phase6.integration.test.ts \
   src/__tests__/heartbeat-native-runner-selection.test.ts \
-  src/__tests__/heartbeat-native-runner-cancellation.test.ts
+  src/__tests__/heartbeat-native-runner-cancellation.test.ts \
+  src/__tests__/heartbeat-run-event-sequencing.test.ts \
+  src/__tests__/native-runner-input-boundary.test.ts \
+  src/__tests__/native-run-finalizer.test.ts \
+  src/__tests__/native-status-arbiter-corpus.test.ts \
+  src/__tests__/native-finalization-recovery.test.ts \
+  src/__tests__/native-finalization-migration.test.ts \
+  src/__tests__/legacy-finalization-regression.test.ts
 ```
 
 Expected: company/auth denials, workspace/finalization ordering, cancellation,
-budget, audit, event replay, status non-authority, and legacy regression pass.
+budget, audit, canonical event sequencing, terminal replay, typed input
+isolation, Section 18 arbitration, and legacy regression pass.
 
 ### 3. Enable one isolated agent
 
@@ -76,11 +89,17 @@ nativeEventCount>0
 highestContiguousSourceSeq=nativeEventCount
 workspaceFinalizeStatus=succeeded
 legacyAdapterInvocationCount=0
-issueStatusAfter=issueStatusBefore
+reportedWorkDisposition=done
+authoritativeDecision=done
+issueStatusBefore=in_progress
+issueStatusAfter=done
+statusVersionAfter=statusVersionBefore+1
 ```
 
-The last equality proves that the runner report did not seize issue-status
-authority.
+The separate claim and decision fields prove that the runner report did not
+seize issue-status authority; the server-owned arbiter applied the transition
+only after the completion contract, evidence, workspace barrier, and legal
+liveness effects passed.
 
 ### 5. Inspect persistence, replay, and finalization
 
@@ -93,17 +112,35 @@ curl -fsS \
   | jq '[.[] | select(.sourceEventId != null)] | {count: length, events: map({sourceSeq, sourceEventId, eventType})}'
 ```
 
-Repeat the read with an `after` cursor. Expected: no duplicate semantic event,
-stable IDs, increasing source sequence, and a persisted workspace-finalize
-barrier before clean run success.
+Repeat the read with an `after` cursor and inspect the run finalization and
+issue status-decision read models. Expected: no duplicate semantic event,
+stable IDs, unique canonical `seq`, increasing source sequence, a persisted
+`native_run_results` digest, a committed coordinator/decision, and a workspace-
+finalize barrier before assessment or clean run success.
 
 ### 6. Prove cancellation
 
 Run the deterministic cancellation scenario through the focused server test.
-Expected: one native cancel effect, one terminal run outcome, unchanged issue
-status, and the normal environment/runtime/scratch cleanup path.
+Expected: one native cancel effect, one terminal run outcome, only the
+server-authorized cancellation/resume scope from Section 18, and the normal
+environment/runtime/scratch cleanup path. The focused concurrency case also
+appends lifecycle, cancellation, native, and log events at once and proves one
+unique replay-stable `(run_id, seq)` order.
 
-### 7. Disable the kill switch and prove fallback
+### 7. Prove credential and recovery boundaries
+
+Run the typed-input boundary test with unique canaries in the local agent JWT,
+Paperclip API key, managed MCP gateway credentials, wake payload, skill
+instructions, raw env, and legacy context. Expected: no canary key/value in the
+package launch input, model request, event, terminal result, log, or digest.
+
+Then persist a native terminal result, simulate process/server disconnect, and
+disable the flag before reconciliation. Expected: recovery reads the persisted
+`heartbeat_runs.runtime_mode`, `native_run_finalizations.result_id`, and
+`native_run_results` row and completes without re-running selection or invoking
+the legacy adapter.
+
+### 8. Disable the kill switch and prove fallback
 
 Set `experimental.enableNativeRunner=false` through the existing board-
 authorized settings API, then run a fresh task:
@@ -125,7 +162,7 @@ nativeEventCount=0
 legacyAdapterInvocationCount=1
 ```
 
-### 8. Record evidence and clean up
+### 9. Record evidence and clean up
 
 The implementation record will save only redacted summaries and test results
 under `knowledge/evidence/`. It will restore the test agent profile and leave
@@ -134,6 +171,8 @@ the global flag off. It will not delete a shared database or workspace.
 ## Stop conditions
 
 Stop and fail the proof if mode changes during a run, a native failure invokes
-the legacy adapter, a credential appears in output, a workspace-finalization
-failure reports success, a PRP claim changes issue status, or replay changes a
-canonical event.
+the legacy adapter, a forbidden legacy-context field or credential reaches the
+package/model, a workspace-finalization failure reports success, a PRP claim
+bypasses the arbiter, a non-terminal status lacks its atomic liveness path, a
+concurrent writer duplicates canonical `seq`, or replay changes canonical
+event/result/effect bytes.
