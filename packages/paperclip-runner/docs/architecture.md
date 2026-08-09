@@ -196,6 +196,38 @@ lease expiry, storage pressure, drain, and revoke. The browser recovery page
 calls that peer through guarded package-local Vite middleware and renders only
 safe trace fields.
 
+## Phase 7 capability-model boundary
+
+```text
+Paperclip skill + 7 references        Paperclip Evals corpus (106 cases)
+            |                                      |
+            +-------------------+------------------+
+                                v
+                generated capability contract (258 rows, 41 MCP aliases)
+                                |
+        +-----------------------+-----------------------+
+        v                       v                       v
+ semantic tool catalog   authorization engine    eval conformance suite
+        \                       |                       /
+         \                      v                      /
+          +-----> in-process mock ControlPlanePort <--+
+                                |
+                                v
+                   read-only browser scenario explorer
+```
+
+Phase 7 is a package-local model of a native Paperclip run. It classifies every
+capability as control-plane-owned, always-agent-tool, or optional-agent-tool,
+exposes the always/optional set as a transport-neutral semantic tool catalog,
+gates optional tools behind grants, and proves 106 eval-derived cases against an
+in-process mock `ControlPlanePort`. The mock adapter is the only coupling point,
+so a real adapter can replace it later without touching the catalog,
+authorization rules, or conformance suite. Phase 7 contacts no Paperclip
+service, database, ACPX session, or provider credential; the
+[forbidden-imports checker](#forbidden-dependencies) keeps it that way. Real
+integration is Phase 8 (ACPX) and requires separate approval; see
+[the future binding boundary](phase-07-future-binding-boundary.md).
+
 ## Future integration rule
 
 The [implementation plan](../spec/paperclip-native-runner-implementation-plan.md)

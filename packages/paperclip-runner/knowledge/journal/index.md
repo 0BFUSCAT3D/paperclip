@@ -16,3 +16,4 @@
 * [Phase 6 thin Paperclip adapter design](2026-08-09-phase-06-design.md) - Proposed public-port seam, feature flag, kill switch, company/auth/governance boundary, durable replay, conformance matrix, and tutorial contract.
 * [Phase 6 feature-flagged Paperclip adapter implementation](2026-08-09-phase-06-implementation.md) - Persisted selection, production port, public-session task, canonical event allocation, server-owned finalization, cancellation, and kill-switch evidence.
 * [Phase 6 thin Paperclip adapter implementation](2026-08-09-phase-06-implementation.md) - Default-off native selection, package-owned sessions, canonical persistence/replay, server-owned finalization, recovery, and compatibility evidence.
+* [Phase 7 reference docs, tutorial, evidence, and OKF](2026-08-09-phase-07.md) - Documentation decisions, observed verification facts across every focused command, the parity-report OKF gap, and the deferred Phase 8 binding boundary.

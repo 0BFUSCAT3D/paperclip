@@ -14,6 +14,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4b: run the live Codex protocol console](tutorials/phase-04b-live-console.md) — chat with a live session in the browser, steer it, stop it three ways, answer its requests, change its goal, break its connection, and replay the record.
 - [Phase 5: run the SDK console and mini consumer](tutorials/phase-05-sdk-console.md) — exercise the versioned public browser/React surface in two independent consumers against fake and real drivers.
 - [Phase 6: run the thin Paperclip adapter](tutorials/phase-06-thin-paperclip-adapter.md) — prove mock/real conformance, run one feature-flagged local task, inspect replay/finalization, disable the kill switch, and verify legacy fallback.
+- [Phase 7: explore the capability contract and scenario explorer](tutorials/phase-07-scenario-explorer.md) — prove the 106-case conformance suite, open the read-only browser explorer over the mock control plane, and run the focused verification set, all from a clean checkout with no Paperclip service or external eval repository.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -27,6 +28,16 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4b live console](phase-04b-live-console.md)
 - [Phase 5 browser SDK and reference console](phase-05-sdk.md)
 - [Phase 6 thin Paperclip adapter](phase-06-thin-paperclip-adapter.md)
+- [Phase 7 capability contract (generated)](phase-07-capability-contract.md)
+- [Phase 7 capability disposition](phase-07-capability-disposition.md)
+- [Phase 7 mock ControlPlanePort](phase-07-mock-control-plane-port.md)
+- [Phase 7 semantic tool catalog](phase-07-semantic-tools.md)
+- [Phase 7 authorization and exposure](phase-07-authorization-and-exposure.md)
+- [Phase 7 eval-derived conformance](phase-07-eval-conformance.md)
+- [Phase 7 browser scenario explorer](phase-07-scenario-explorer.md)
+- [Phase 7 future binding boundary (Phase 8 / ACPX)](phase-07-future-binding-boundary.md)
+- [Phase 7 verification commands](phase-07-verification-commands.md)
+- [Phase 7 scenario explorer UX interaction map](design/phase-7-scenario-explorer-ux.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)

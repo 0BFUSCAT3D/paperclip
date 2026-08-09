@@ -14,4 +14,5 @@
 * [Phase 5 browser SDK verification](2026-08-08-phase-05-verification.md) - Targeted and package-acceptance evidence for the versioned SDK, both public consumers, fake/real drivers, accessibility, reconnect, replay, and screenshots.
 * [Phase 6 thin Paperclip adapter verification](2026-08-09-phase-06-verification.md) - Mock and database-backed conformance, authoritative completion, restart recovery, migration repair, atomic liveness, internal canary, and deterministic post-kill-switch legacy evidence.
 * [Phase 7F browser scenario explorer verification](2026-08-09-phase-07f-explorer-verification.md) - Scenario index, run artifacts, exposure, authorization, state diff, parity, route determinism, accessibility, and the 24-image screenshot acceptance set.
+* [Phase 7 documentation, tutorial, and evidence manifest](2026-08-09-phase-07-verification.md) - Command→result matrix for every focused Phase 7 verification, artifact links, and the security, UX, and QA gate issues.
 * [Phase 7 evidence](phase-07/) - Screenshot acceptance captures and the eval conformance parity report.
