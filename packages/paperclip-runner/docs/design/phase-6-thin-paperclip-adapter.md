@@ -843,14 +843,16 @@ Policy resolvers remain pure and may be tested directly, but their return value
 is not operational proof. Cancellation fixtures enter through
 `cancelNativeSession`, which commits the decision or an explicit audit-only
 replacement-turn outcome. Attention fixtures enter through
-`routeNativeAttention`, which resolves a same-company eligible delegate and
-uses the company-scoped issue service. REC-04/06/07/08 fixtures enter through
+the persisted accepted-result ingress, which calls `routeNativeAttention`
+internally, resolves a same-company eligible delegate, and uses the
+company-scoped issue service. REC-04/06/07/08 fixtures enter through
 `reconcileNativeFinalizations`; REC-04 invokes the workspace operation recorder
 and observes the actual finalizer result. REC-06/07/08 reclassify the persisted
 result and contract into a new append-only assessment before an explicitly
 authorized superseding commit; REC-07 cannot be selected by an unrelated work
-product. MIG-08 persists the kill switch in the agent-owned runtime profile,
-and `resolveNativeRuntimeMode` enforces that state for subsequent dispatches.
+product. MIG-08 uses the instance-global flag through the production heartbeat selector:
+persisted native mode wins for an active run and a fresh unresolved run selects
+legacy while the agent profile remains unchanged.
 
 `resolveNativeFinalizerStatus`, `resolveNativeAttentionStatus`,
 `resolveNativeCancellationStatus`, `resolveNativeReconciliationStatus`, the
@@ -862,6 +864,58 @@ to the original company, issue, decision, and still-existing target. Negative
 tests deliberately remove each live entrypoint/action and the replay target;
 the mapped fixture fails even though the corresponding pure resolver still
 returns its expected label.
+
+### Remediation 6 persisted-attention and global-kill-switch amendment (2026-08-09)
+
+Accepted native attention now enters through the runtime finalization call
+graph, not through a corpus-owned call to `routeNativeAttention`:
+
+```text
+PaperclipControlPlanePort.completeRun
+  -> native_run_results (accepted immutable package result)
+  -> finalizeNativeRun
+  -> routePersistedNativeResultAttention
+  -> recordNativeAttentionAssessment
+  -> routeNativeAttention
+  -> StatusDecisionCommitter
+  -> issueService / issueThreadInteractionService / recovery + activity owners
+```
+
+The persisted-result ingress derives company, issue, run, agent, result, and
+contract identity from database bindings. A same-company eligible delegate is
+materialized by `issueService`; a human-authority request is materialized as a
+typed issue-thread interaction; an explicit cross-company target is rejected
+into an immutable decision, recovery action, failed native finalization, and
+activity receipt. The corpus mutates the accepted result row and calls the
+persisted-result ingress. The database integration test starts one layer
+earlier at `PaperclipControlPlanePort.completeRun` and then calls the same
+production finalizer. `routeNativeAttention` remains an internal policy-to-
+owner helper and is no longer itself accepted as the operational proof.
+
+MIG-08 now represents the actual instance-global transition. The production
+heartbeat selector reads the persisted mode first: an already-selected native
+run remains native and can finish or reconcile from its coordinator after
+`experimental.enableNativeRunner` turns off. An unresolved fresh run for the
+same still-opted-in agent resolves to legacy with
+`instance_flag_disabled`. The agent's `runtimeConfig.nativeRunner` profile is
+not rewritten, and no `disabledByNativeKillSwitch` or other second rollback
+control is persisted. Re-enabling the instance flag therefore restores normal
+fresh-run selection without an operator profile repair.
+
+Sabotage changes the production inputs rather than the policy labels: removing
+the persisted-result ingress breaks the attention fixtures, and changing the
+global flag input from off to on breaks MIG-08 while
+`resolveNativeAttentionStatus` and `resolveNativeMigrationStatus` continue to
+return their pure labels. The full recovery test observes both durable
+outcomes: the original native rows reach committed terminal state and the
+fresh run persists legacy mode with zero native result/finalization rows.
+
+This amendment does not add an attention UI, a public native-attention route,
+external-system execution, credential delegation, or auto-approval. The Codex
+v1 structured-output surface still emits the compact `kind`/`summary` form;
+the canonical PRP result can carry richer target metadata, which the server
+validates as untrusted routing hints. Richer provider authoring UX and
+additional resolver kinds remain deferred.
 
 ## Commands the implementation must make runnable
 

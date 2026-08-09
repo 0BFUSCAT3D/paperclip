@@ -38,9 +38,15 @@ import {
   dispatchNativeSessionResumptions,
 } from "../services/native-runtime/native-finalization-reconciler.js";
 
-const legacyAdapterExecute = vi.hoisted(() => vi.fn(async () => {
-  throw new Error("legacy adapter must not execute while resuming a persisted native run");
-}));
+const legacyAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
+  exitCode: 0,
+  signal: null,
+  timedOut: false,
+  summary: "Fresh flag-off run completed through legacy.",
+  resultJson: { summary: "fresh legacy after persisted native recovery" },
+  provider: "test",
+  model: "legacy-test",
+})));
 
 vi.mock("../adapters/index.js", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js");
@@ -234,6 +240,7 @@ describe("P6-25 persisted reaper-to-finalization recovery", () => {
   const projectWorkspaceId = randomUUID();
   const executionWorkspaceId = randomUUID();
   const issueId = randomUUID();
+  const freshIssueId = randomUUID();
   const runId = randomUUID();
   const contractId = randomUUID();
   const workProductId = randomUUID();
@@ -471,7 +478,7 @@ describe("P6-25 persisted reaper-to-finalization recovery", () => {
     }
   });
 
-  it("runs the production reaper, original heartbeat, recovered active turn, and finalizer exactly once", async () => {
+  it("finishes the persisted native run after flag-off and selects legacy only for a fresh run", async () => {
     legacyAdapterExecute.mockClear();
     const backendFactory = vi.fn(() => backend);
     const heartbeat = heartbeatService(db, {
@@ -537,5 +544,45 @@ describe("P6-25 persisted reaper-to-finalization recovery", () => {
     await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).resolves.toHaveLength(1);
     await expect(db.select().from(workAssessments).where(eq(workAssessments.runId, runId))).resolves.toHaveLength(1);
     await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId))).resolves.toHaveLength(1);
+
+    await db.insert(issues).values({
+      id: freshIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      issueNumber: 2,
+      identifier: "NRR-2",
+      title: "Start only after the native kill switch is off",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      workMode: "standard",
+    });
+    const fresh = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: freshIssueId },
+      contextSnapshot: { issueId: freshIssueId, taskId: freshIssueId, skipIssueComment: true },
+    });
+    expect(fresh).not.toBeNull();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(legacyAdapterExecute).toHaveBeenCalledOnce();
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fresh!.id))).resolves.toEqual([
+      expect.objectContaining({
+        agentId,
+        runtimeMode: "legacy",
+        runtimeModeReason: "instance_flag_disabled",
+        status: "succeeded",
+      }),
+    ]);
+    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fresh!.id))).resolves.toHaveLength(0);
+    await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fresh!.id))).resolves.toHaveLength(0);
+    await expect(db.select({ runtimeConfig: agents.runtimeConfig }).from(agents).where(eq(agents.id, agentId))).resolves.toEqual([
+      expect.objectContaining({
+        runtimeConfig: expect.objectContaining({
+          nativeRunner: { mode: "native", backend: "codex_app_server", protocolVersion: 1 },
+        }),
+      }),
+    ]);
   }, 30_000);
 });

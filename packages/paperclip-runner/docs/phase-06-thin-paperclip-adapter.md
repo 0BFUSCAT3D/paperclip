@@ -114,21 +114,29 @@ decision, ledger, issue-version, or coordinator mutation.
 
 Operational rows use the production call graph, not resolver calls as a proxy.
 Cancellation is committed and audited by the normalized session cancellation
-entrypoint. Attention resolves an eligible same-company target and delegates
-through the issue service. Reconciliation selects the persisted
+entrypoint. Accepted attention starts at the immutable package-result row:
+`finalizeNativeRun` calls `routePersistedNativeResultAttention`, records a
+request-specific assessment, and then delegates an eligible same-company
+target through `issueService`, creates a human issue-thread interaction, or
+persists a cross-company rejection decision/recovery/audit trail.
+`routeNativeAttention` is an internal helper, not the operational test ingress.
+Reconciliation selects the persisted
 status/evidence/policy branches and executes workspace recovery through the
-workspace operation recorder. The rollout kill switch is stored in the owning
-agent profile and consumed by subsequent runtime selection. Pending replay
+workspace operation recorder. The rollout kill switch is only the global
+`experimental.enableNativeRunner` flag. Persisted native runs keep their mode
+and finish/reconcile natively after flag-off; fresh unresolved runs for the
+same agent persist legacy mode with `instance_flag_disabled`. The opted-in
+agent profile remains unchanged, so re-enabling the flag does not require a
+profile reset. Pending replay
 only acknowledges its original decision-scoped target after verifying that the
 target still exists.
 
-Direct calls to the finalizer, attention, cancellation, reconciliation,
-compatibility, and migration resolvers are explicitly pure policy/read-model
-tests. They do not satisfy an operational fixture without a live-entrypoint
-receipt and concrete target state. Sabotage cases remove cancellation,
-attention, reconciliation, rollout enforcement, and a pending replay target;
-each mapped fixture fails while its pure resolver continues to return the
-expected label.
+Direct resolver calls are explicitly pure policy/read-model tests. They do not
+satisfy an operational fixture without a runtime-reachable entrypoint receipt
+and concrete durable target. Sabotage removes the persisted accepted-attention
+input, changes the real global-flag input, removes cancellation/reconciliation
+actions, and deletes a pending replay target; mapped fixtures fail while their
+pure resolver labels remain unchanged.
 
 Result-less same-run recovery is also proven through the production heartbeat
 seam: a persisted envelope/checkpoint is leased by `reapOrphanedRuns`, enters
@@ -145,6 +153,13 @@ Codex canary remains an operator-run rollout check because it requires changing
 the instance flag and one agent profile. The package `trace:phase6` command is a
 mock contract tracer; real Paperclip proof is the database-backed server matrix
 and the explicitly gated procedure in the tutorial.
+
+Deferred boundaries are unchanged: there is no attention UI or public
+attention API, no external-system action execution, no credential delegation,
+and no auto-approval. The Codex v1 structured-output schema authors compact
+`kind`/`summary` attention requests; richer canonical PRP target metadata is
+accepted and company-validated at the server boundary but does not yet have
+provider authoring UX.
 
 See the [runnable tutorial](tutorials/phase-06-thin-paperclip-adapter.md), the
 [verification record](../knowledge/evidence/2026-08-09-phase-06-verification.md),

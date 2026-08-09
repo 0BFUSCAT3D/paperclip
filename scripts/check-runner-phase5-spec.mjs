@@ -262,9 +262,11 @@ check("native and legacy expectations remain intentionally distinct", () => {
 check("rollback fixture forbids active-run mode conversion", () => {
   const rollback = corpus.fixtures.find((fixture) => fixture.covers.migrationRows.includes("MIG-08"));
   if (!rollback) throw new Error("missing MIG-08 fixture");
-  if (!rollback.expected.requiredEffects.includes("stop_new_native_dispatch") ||
-      !rollback.expected.forbiddenEffects.includes("convert_active_run_to_legacy")) {
-    throw new Error("MIG-08 does not prove dispatch stop plus immutable active-run mode");
+  if (!rollback.expected.requiredEffects.includes("fresh_flag_off_run_selects_legacy") ||
+      !rollback.expected.requiredEffects.includes("finish_as_native") ||
+      !rollback.expected.forbiddenEffects.includes("convert_active_run_to_legacy") ||
+      !rollback.expected.forbiddenEffects.includes("persist_agent_kill_switch")) {
+    throw new Error("MIG-08 does not prove global flag-off selection plus immutable active-run mode");
   }
   return rollback.id;
 });

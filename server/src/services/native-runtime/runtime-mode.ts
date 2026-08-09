@@ -45,13 +45,6 @@ export function resolveNativeRuntimeMode(input: {
 }): NativeRuntimeResolution {
   const nativeRunner = record(record(input.runtimeConfig).nativeRunner);
   const mode = nativeRunner.mode;
-  if (nativeRunner.disabledByNativeKillSwitch === true) {
-    return {
-      kind: "legacy",
-      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-      reason: "native_kill_switch_persisted",
-    };
-  }
   if (!input.enabled) {
     const compatibility = resolveNativeCompatibilityStatus({
       facts: { shadowApplicationDisabled: true },
@@ -99,6 +92,49 @@ export function resolveNativeRuntimeMode(input: {
     profile: { mode: "native", backend: "codex_app_server", protocolVersion: 1 },
     authorityDecision: rollout,
   };
+}
+
+/**
+ * Production heartbeat selection seam. A resolved run keeps its persisted
+ * mode across configuration changes; only a fresh unresolved run consults the
+ * current global flag and agent profile.
+ */
+export function resolveHeartbeatNativeRuntimeMode(input: {
+  persisted: {
+    runtimeMode: string | null;
+    runtimeModeReason: string | null;
+    runtimeModeResolvedAt: Date | null;
+  };
+  enabled: boolean;
+  runtimeConfig: unknown;
+  agent: { id?: string; status: string; adapterType: string | null };
+  issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
+  target: { kind?: string } | null | undefined;
+  workspaceId: string | null;
+}): NativeRuntimeResolution {
+  if (input.persisted.runtimeModeResolvedAt) {
+    if (input.persisted.runtimeMode === "native") {
+      return {
+        kind: "native",
+        resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
+        reason: "eligible_opt_in",
+        profile: { mode: "native", backend: "codex_app_server", protocolVersion: 1 },
+        authorityDecision: resolveNativeMigrationStatus({
+          facts: input.enabled
+            ? { applicationEnabled: true }
+            : { killSwitchActiveForNewRuns: true },
+          priorIssueStatus: "in_progress",
+          agentId: input.agent.id ?? "00000000-0000-4000-8000-000000000000",
+        }),
+      };
+    }
+    return {
+      kind: "legacy",
+      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
+      reason: input.persisted.runtimeModeReason ?? "persisted_legacy_selection",
+    };
+  }
+  return resolveNativeRuntimeMode(input);
 }
 
 /** Production read-model facts used by compatibility and mixed-ledger views. */
@@ -267,7 +303,6 @@ export function resolveNativeMigrationStatus(input: {
           agentId: input.agentId,
         },
         { kind: "finish_as_native" },
-        { kind: "stop_new_native_dispatch" },
       ],
     };
   }

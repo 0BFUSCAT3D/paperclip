@@ -10,6 +10,7 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  statusDecisions,
 } from "@paperclipai/db";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import {
@@ -26,6 +27,7 @@ import {
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { nativeSha256 } from "./canonical.js";
+import { routePersistedNativeResultAttention } from "./native-interaction-bridge.js";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -359,6 +361,82 @@ export async function finalizeNativeRun(input: {
       eq(nativeRunFinalizations.runId, input.runId),
       eq(nativeRunFinalizations.leaseOwner, claim.leaseOwner!),
     ));
+    if (assessment.attentionRequests.length > 0) {
+      try {
+        const attentionReceipts = await routePersistedNativeResultAttention({
+          db: input.db,
+          runId: input.runId,
+        });
+        const [latestCoordinator, latestIssue] = await Promise.all([
+          input.db.select().from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, input.runId))
+            .limit(1).then((rows) => rows[0] ?? null),
+          input.db.select({ status: issues.status, statusVersion: issues.statusVersion })
+            .from(issues).where(and(
+              eq(issues.id, authoritativeIssue.id),
+              eq(issues.companyId, run.companyId),
+            )).limit(1).then((rows) => rows[0] ?? null),
+        ]);
+        const latestDecision = latestCoordinator?.decisionId
+          ? await input.db.select({ toStatus: statusDecisions.toStatus })
+              .from(statusDecisions).where(and(
+                eq(statusDecisions.id, latestCoordinator.decisionId),
+                eq(statusDecisions.companyId, run.companyId),
+                eq(statusDecisions.issueId, authoritativeIssue.id),
+              )).limit(1).then((rows) => rows[0] ?? null)
+          : null;
+        if (!latestCoordinator || !latestIssue || !latestDecision) {
+          throw new Error("native_attention_routing_incomplete");
+        }
+        const now = new Date();
+        const attentionFailed = latestCoordinator.phase === "retryable_failure"
+          || latestCoordinator.phase === "terminal_failure";
+        const currentRun = await input.db.select({ resultJson: heartbeatRuns.resultJson })
+          .from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id))
+          .limit(1).then((rows) => rows[0] ?? null);
+        await input.db.update(heartbeatRuns).set({
+          ...(input.projectRunStatus || attentionFailed ? {
+            status: attentionFailed
+              ? "failed"
+              : terminalState === "succeeded" ? "succeeded" : terminalState === "cancelled" ? "cancelled" : "failed",
+            finishedAt: now,
+          } : {}),
+          nativePhase: latestCoordinator.phase,
+          nativePhaseUpdatedAt: now,
+          resultJson: {
+            ...record(currentRun?.resultJson),
+            finalizationPhase: latestCoordinator.phase,
+            assessmentId: latestCoordinator.assessmentId,
+            decisionId: latestCoordinator.decisionId,
+            authoritativeDecision: latestDecision.toStatus,
+            issueStatusBefore: authoritativeIssue.status,
+            issueStatusAfter: latestIssue.status,
+            statusVersionBefore: Number(authoritativeIssue.statusVersion),
+            statusVersionAfter: Number(latestIssue.statusVersion),
+            workspaceFinalizeStatus: input.workspaceFinalizeStatus,
+            nativeAttentionRouting: attentionReceipts,
+          },
+          updatedAt: now,
+        }).where(eq(heartbeatRuns.id, run.id));
+        return { ...latestCoordinator, attentionReceipts };
+      } catch (error) {
+        if (error instanceof NativeStatusRaceError && attempt < 2) {
+          supersedesAssessmentId = assessmentRow.id;
+          continue;
+        }
+        return recordRetryableFailure({
+          db: input.db,
+          run,
+          coordinator,
+          failureCode: error instanceof NativeStatusRaceError ? "status_cas_exhausted" : "side_effect_planning_failed",
+          message: error instanceof Error ? error.message : String(error),
+          nextAction: error instanceof NativeStatusRaceError
+            ? "Reassess native attention against the latest authoritative issue status version."
+            : "Retry native attention routing from the persisted accepted package result.",
+          projectRunStatus: input.projectRunStatus,
+        });
+      }
+    }
     try {
       const committed = await commitNativeStatusDecision({
         db: input.db,

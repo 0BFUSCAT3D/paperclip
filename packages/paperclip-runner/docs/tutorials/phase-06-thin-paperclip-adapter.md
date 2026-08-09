@@ -60,7 +60,7 @@ pnpm --filter @paperclipai/server exec vitest run \
 ```
 
 This runs the unchanged package conformance suite against the real Paperclip
-port. Forty-three targeted tests check company binding, duplicate/gap replay,
+port. Forty-five targeted tests check company binding, duplicate/gap replay,
 checkpoint recovery, immutable result ingestion, durable-evidence authority,
 workspace-gated finalization, atomic liveness rollback, status-version CAS,
 migration repair, legacy byte equivalence, typed interaction materialization,
@@ -69,11 +69,16 @@ start embedded PostgreSQL and do not skip when a developer database URL is
 absent.
 
 The corpus cases dispatch fixture-specific database shapes through live
-cancellation, attention, reconciliation, and rollout entrypoints whenever an
-operational effect is claimed. Workspace recovery records the actual operation
-result, delegation uses an eligible same-company agent and the issue service,
-and a persisted kill switch changes the next runtime selection. Pure resolver
-and read-model calls remain useful policy tests but cannot satisfy these rows.
+cancellation, persisted-result attention, reconciliation, and heartbeat
+selection entrypoints whenever an operational effect is claimed. Workspace
+recovery records the actual operation result. Accepted attention is read back
+from `native_run_results`, records a request-specific assessment, delegates an
+eligible same-company agent through the issue service, routes human authority
+through an issue-thread interaction, and rejects a cross-company target with a
+durable decision/recovery/audit trail. The kill-switch case uses the global
+instance flag: an active persisted native run remains native while a fresh run
+for the same unchanged agent profile selects legacy. Pure resolver and
+read-model calls remain useful policy tests but cannot satisfy these rows.
 Each native effect must have a delivered, company-bound target or concrete
 target-state mutation, and pending replay may only acknowledge its original
 decision-scoped target. Sabotage tests remove each live action and the replay
@@ -212,7 +217,9 @@ curl -fsS \
 
 Expected: the new run reports `legacy` and `instance_flag_disabled`; an already
 selected native run still reconciles from its persisted native coordinator and
-never falls through to the legacy adapter.
+never falls through to the legacy adapter. The agent's `nativeRunner` profile
+must still say `mode=native`; flag-off must not persist a second per-agent
+disable bit.
 
 Restore the saved profile after the proof:
 
@@ -231,4 +238,12 @@ jq -n \
 
 Stop if a native failure invokes legacy, credentials appear in model input or
 stored PRP bytes, a workspace-finalization failure reports success, replay
-changes bytes, or a model-reported disposition bypasses the server arbiter.
+changes bytes, a model-reported disposition bypasses the server arbiter, or
+flag-off rewrites the agent profile.
+
+This procedure does not exercise an attention UI or public attention endpoint;
+neither exists in Phase 6. The Codex v1 result tool authors compact
+`kind`/`summary` attention requests. Rich target metadata is a canonical PRP
+input accepted and company-validated by the server, but provider authoring UX,
+external-system action execution, credential delegation, and auto-approval are
+deferred.

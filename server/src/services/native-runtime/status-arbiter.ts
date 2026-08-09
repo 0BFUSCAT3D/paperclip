@@ -45,7 +45,6 @@ export type NativeStatusEffect =
   | { kind: "record_mode_native" }
   | { kind: "record_policy_version" }
   | { kind: "finish_as_native" }
-  | { kind: "stop_new_native_dispatch" }
   | { kind: "resume_workspace_operation" }
   | { kind: "record_expiry" }
   | { kind: "record_stale_response" }

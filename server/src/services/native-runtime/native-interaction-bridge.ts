@@ -1,10 +1,21 @@
 import type { Db } from "@paperclipai/db";
 import type { NativeInteractionResponseEnvelope } from "@paperclipai/paperclip-runner";
 import { and, asc, eq, inArray } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
+import {
+  agents,
+  heartbeatRuns,
+  issues,
+  issueThreadInteractions,
+  nativeRunFinalizations,
+  nativeRunResults,
+  statusDecisions,
+  workAssessments,
+} from "@paperclipai/db";
 import { getAgentWorkEligibility } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
+import { nativeSha256 } from "./canonical.js";
+import { recordNativeAttentionAssessment } from "./work-assessments.js";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
@@ -28,7 +39,7 @@ function record(value: unknown): Record<string, unknown> {
 
 export type NativeAttentionMaterializedTarget = {
   effectKind: string;
-  targetType: "issue_thread_interaction" | "native_run_finalization";
+  targetType: string;
   targetId: string;
 };
 
@@ -329,21 +340,255 @@ export type NativeAttentionCandidate = {
   summary: string;
   responseState?: NativeAttentionFacts["responseState"];
   targetAgentId?: string | null;
+  targetCompanyId?: string | null;
   budgetExhausted?: boolean;
   governanceGate?: NativeGovernanceGate | null;
   targetInteractionId?: string;
   canonicalRequestId?: string;
 };
 
+function nonEmptyText(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function candidateFromPersistedRequest(request: Record<string, unknown>): NativeAttentionCandidate {
+  const summary = nonEmptyText(request.summary);
+  if (!summary) {
+    throw new NativeInteractionBridgeError(
+      "native_attention_request_invalid",
+      "Persisted native attention requires a summary",
+    );
+  }
+  const target = record(request.target);
+  const capability = nonEmptyText(request.requestedCapability) ?? nonEmptyText(request.kind);
+  const ownerClass = nonEmptyText(target.ownerClass);
+  const requiredAuthority = nonEmptyText(request.requiredAuthority);
+  const responseState = nonEmptyText(request.responseState);
+  const governanceGate = record(request.governanceGate);
+  let route: NativeAttentionCandidate["route"];
+  if (capability === "context_lookup") route = "context";
+  else if (capability === "retry") route = "retry";
+  else if (capability === "duplicate") route = "duplicate";
+  else if (capability === "alternate_track" || ownerClass === "current_agent") route = "alternate_track";
+  else if (capability === "domain_expertise" || ownerClass === "agent") route = "agent";
+  else if (
+    ["review", "credential_grant", "governed_approval", "subjective_decision", "external_action"].includes(capability ?? "")
+    || ["board_user", "external_system"].includes(ownerClass ?? "")
+    || ["board", "external"].includes(requiredAuthority ?? "")
+  ) route = "human";
+  else {
+    throw new NativeInteractionBridgeError(
+      "native_attention_request_invalid",
+      `Persisted native attention capability ${capability ?? "unknown"} has no authorized route`,
+    );
+  }
+  return {
+    route,
+    summary,
+    responseState: ["none", "resolved", "stale", "expired"].includes(responseState ?? "")
+      ? responseState as NativeAttentionFacts["responseState"]
+      : undefined,
+    targetAgentId: nonEmptyText(target.agentId),
+    targetCompanyId: nonEmptyText(target.companyId),
+    budgetExhausted: request.budgetExhausted === true,
+    governanceGate: governanceGate.kind === "interaction" && nonEmptyText(governanceGate.id)
+      ? { kind: "interaction", id: nonEmptyText(governanceGate.id)! }
+      : null,
+    targetInteractionId: nonEmptyText(request.targetInteractionId) ?? undefined,
+    canonicalRequestId: nonEmptyText(request.canonicalRequestId) ?? undefined,
+  };
+}
+
+export type PersistedNativeAttentionReceipt = {
+  requestId: string;
+  route: NativeAttentionCandidate["route"];
+  decisionId: string | null;
+  reasonCode: string | null;
+  resolvedTargetAgentId: string | null;
+  replayed: boolean;
+};
+
 /**
- * Canonical production ingress for native attention. It resolves the run and
- * issue binding, derives company scope, chooses an eligible in-company
- * delegate, and commits (or explicitly audit-materializes) the resulting
+ * Runtime-reachable ingress for accepted attention facts. It starts from the
+ * immutable package result row, derives an authorized route, appends one
+ * assessment/decision lineage per request, and lets the existing issue and
+ * interaction owners materialize the effect.
+ */
+export async function routePersistedNativeResultAttention(input: {
+  db: Db;
+  runId: string;
+}): Promise<PersistedNativeAttentionReceipt[]> {
+  const binding = await input.db.select({
+    companyId: heartbeatRuns.companyId,
+    runtimeMode: heartbeatRuns.runtimeMode,
+    resultId: nativeRunFinalizations.resultId,
+    issueId: nativeRunFinalizations.issueId,
+  }).from(heartbeatRuns)
+    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+    .where(eq(heartbeatRuns.id, input.runId))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!binding || binding.runtimeMode !== "native" || !binding.resultId) {
+    throw new NativeInteractionBridgeError(
+      "native_attention_binding_mismatch",
+      "Accepted native result binding not found",
+    );
+  }
+  const resultRow = await input.db.select().from(nativeRunResults).where(and(
+    eq(nativeRunResults.id, binding.resultId),
+    eq(nativeRunResults.companyId, binding.companyId),
+    eq(nativeRunResults.issueId, binding.issueId),
+    eq(nativeRunResults.runId, input.runId),
+    eq(nativeRunResults.schemaStatus, "accepted"),
+  )).limit(1).then((rows) => rows[0] ?? null);
+  if (!resultRow) {
+    throw new NativeInteractionBridgeError(
+      "native_attention_result_missing",
+      "Accepted native result row not found",
+    );
+  }
+  const result = record(record(resultRow.resultJson).result);
+  const requests = Array.isArray(result.attentionRequests)
+    ? result.attentionRequests.map(record)
+    : [];
+  const receipts: PersistedNativeAttentionReceipt[] = [];
+
+  for (const [index, request] of requests.entries()) {
+    const candidate = candidateFromPersistedRequest(request);
+    const requestId = nonEmptyText(request.id) ?? nativeSha256({
+      runId: input.runId,
+      resultId: resultRow.id,
+      index,
+      request,
+    });
+    const existingAssessment = await input.db.select({ id: workAssessments.id })
+      .from(workAssessments).where(and(
+        eq(workAssessments.companyId, binding.companyId),
+        eq(workAssessments.issueId, binding.issueId),
+        eq(workAssessments.runId, input.runId),
+        eq(workAssessments.triggerKind, "native_attention"),
+        eq(workAssessments.triggerRef, requestId),
+      )).limit(1).then((rows) => rows[0] ?? null);
+    if (existingAssessment) {
+      const existingDecision = await input.db.select({
+        id: statusDecisions.id,
+        reasonCode: statusDecisions.reasonCode,
+        decisionJson: statusDecisions.decisionJson,
+      }).from(statusDecisions).where(and(
+        eq(statusDecisions.companyId, binding.companyId),
+        eq(statusDecisions.assessmentId, existingAssessment.id),
+      )).limit(1).then((rows) => rows[0] ?? null);
+      if (existingDecision) {
+        const decisionJson = record(existingDecision.decisionJson);
+        const effects = Array.isArray(decisionJson.effects) ? decisionJson.effects.map(record) : [];
+        const delegation = effects.find((effect) => effect.kind === "create_delegated_issue");
+        const finalizationError = effects.find((effect) => effect.kind === "record_finalization_error");
+        await input.db.update(nativeRunFinalizations).set({
+          phase: finalizationError ? "retryable_failure" : "committed",
+          assessmentId: existingAssessment.id,
+          decisionId: existingDecision.id,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          failureCode: nonEmptyText(finalizationError?.cause),
+          failureDetail: finalizationError ? {
+            originalFailureCode: finalizationError.cause,
+            nextAction: finalizationError.nextAction,
+          } : null,
+          nextAttemptAt: finalizationError ? new Date(Date.now() + 30_000) : null,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(nativeRunFinalizations.runId, input.runId),
+          eq(nativeRunFinalizations.companyId, binding.companyId),
+          eq(nativeRunFinalizations.issueId, binding.issueId),
+        ));
+        receipts.push({
+          requestId,
+          route: candidate.route,
+          decisionId: existingDecision.id,
+          reasonCode: existingDecision.reasonCode,
+          resolvedTargetAgentId: nonEmptyText(delegation?.agentId),
+          replayed: true,
+        });
+        continue;
+      }
+    }
+
+    const issue = await input.db.select({
+      status: issues.status,
+      statusVersion: issues.statusVersion,
+      lastStatusDecisionId: issues.lastStatusDecisionId,
+    }).from(issues).where(and(
+      eq(issues.id, binding.issueId),
+      eq(issues.companyId, binding.companyId),
+    )).limit(1).then((rows) => rows[0] ?? null);
+    if (!issue) throw new NativeInteractionBridgeError("native_attention_binding_mismatch", "Issue binding not found");
+    const coordinator = await input.db.select({
+      phase: nativeRunFinalizations.phase,
+      assessmentId: nativeRunFinalizations.assessmentId,
+    }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, input.runId))
+      .limit(1).then((rows) => rows[0] ?? null);
+    if (!coordinator) throw new NativeInteractionBridgeError("native_attention_binding_mismatch", "Coordinator binding not found");
+    const assessment = await recordNativeAttentionAssessment({
+      db: input.db,
+      companyId: binding.companyId,
+      issueId: binding.issueId,
+      runId: input.runId,
+      turnId: resultRow.turnId,
+      contractId: resultRow.completionContractId,
+      resultId: resultRow.id,
+      requestId,
+      request,
+      routingFacts: candidate as unknown as Record<string, unknown>,
+      priorIssueStatus: issue.status,
+      priorStatusVersion: Number(issue.statusVersion),
+      priorDecisionId: issue.lastStatusDecisionId,
+      supersedesAssessmentId: coordinator.assessmentId,
+    });
+    const routed = await routeNativeAttention({
+      db: input.db,
+      runId: input.runId,
+      assessmentId: assessment.id,
+      allowSupersedingCommittedDecision: coordinator.phase === "committed",
+      candidate,
+    });
+    receipts.push({
+      requestId,
+      route: candidate.route,
+      decisionId: routed.decisionId,
+      reasonCode: routed.decision.reasonCode,
+      resolvedTargetAgentId: routed.resolvedTargetAgentId,
+      replayed: false,
+    });
+  }
+
+  if (receipts.length > 0) {
+    await input.db.transaction(async (tx) => {
+      const run = await tx.select({ resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, binding.companyId),
+        )).for("update").limit(1).then((rows) => rows[0] ?? null);
+      if (!run) throw new NativeInteractionBridgeError("native_attention_binding_mismatch", "Heartbeat run missing");
+      await tx.update(heartbeatRuns).set({
+        resultJson: { ...record(run.resultJson), nativeAttentionRouting: receipts },
+        updatedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, input.runId));
+    });
+  }
+  return receipts;
+}
+
+/**
+ * Internal owner-routing step for native attention. The persisted-result
+ * ingress above supplies the server-owned assessment and untrusted candidate;
+ * this step resolves company scope and commits or audit-materializes the
  * authority decision.
  */
 export async function routeNativeAttention(input: {
   db: Db;
   runId: string;
+  assessmentId?: string;
+  allowSupersedingCommittedDecision?: boolean;
   candidate: NativeAttentionCandidate;
 }) {
   const binding = await input.db.select({
@@ -380,8 +625,13 @@ export async function routeNativeAttention(input: {
         .from(agents).where(eq(agents.id, input.candidate.targetAgentId)).limit(1)
         .then((rows) => rows[0] ?? null)
     : null;
-  const companyScopeValid = !input.candidate.targetAgentId
-    || targetSuggestion?.companyId === binding.companyId;
+  const companyScopeValid = (
+    !input.candidate.targetCompanyId
+    || input.candidate.targetCompanyId === binding.companyId
+  ) && (
+    !input.candidate.targetAgentId
+    || targetSuggestion?.companyId === binding.companyId
+  );
   let resolvedTargetAgentId: string | null = null;
   if (companyScopeValid && input.candidate.route === "agent") {
     const eligible = companyAgents.filter((candidate) =>
@@ -408,8 +658,7 @@ export async function routeNativeAttention(input: {
     priorIssueStatus: binding.issueStatus as NativeAuthoritativeIssueStatus,
     agentId: binding.agentId,
   });
-  const auditOnly = !companyScopeValid
-    || decision.reasonCode === "attention_duplicate_suppressed";
+  const auditOnly = decision.reasonCode === "attention_duplicate_suppressed";
   if (auditOnly) {
     const targets = await applyNativeAttentionStatusDecision({
       db: input.db,
@@ -422,7 +671,8 @@ export async function routeNativeAttention(input: {
     });
     return { decision, decisionId: null, targets, resolvedTargetAgentId };
   }
-  if (!binding.assessmentId) {
+  const assessmentId = input.assessmentId ?? binding.assessmentId;
+  if (!assessmentId) {
     throw new NativeInteractionBridgeError(
       "native_attention_assessment_missing",
       "Native attention requires the server-owned work assessment for this result",
@@ -433,11 +683,12 @@ export async function routeNativeAttention(input: {
     companyId: binding.companyId,
     issueId: binding.issueId,
     runId: input.runId,
-    assessmentId: binding.assessmentId,
+    assessmentId,
     priorStatus: binding.issueStatus,
     priorStatusVersion: Number(binding.issueStatusVersion),
     priorDecisionId: binding.issueDecisionId,
     decision,
+    allowSupersedingCommittedDecision: input.allowSupersedingCommittedDecision,
   });
   return {
     decision,

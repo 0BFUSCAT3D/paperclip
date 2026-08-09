@@ -27,7 +27,7 @@ import {
   applyNativeAttentionStatusDecision,
   materializeNativeInteractionResponses,
   rejectUnsupportedNativeRuntimeRequest,
-  routeNativeAttention,
+  routePersistedNativeResultAttention,
   resolveNativeAttentionStatus,
 } from "../services/native-runtime/native-interaction-bridge.js";
 import {
@@ -38,6 +38,7 @@ import {
 import {
   inspectNativeCompatibilityState,
   inspectNativeMigrationState,
+  resolveHeartbeatNativeRuntimeMode,
   resolveNativeCompatibilityStatus,
   resolveNativeMigrationStatus,
   resolveNativeRuntimeMode,
@@ -188,7 +189,7 @@ const matrixRowConsumers: Record<string, string> = {
   "MIG-05": "native-migration-status",
   "MIG-06": "native-migration-status",
   "MIG-07": "native-migration-status",
-  "MIG-08": "native-migration-status",
+  "MIG-08": "heartbeat-runtime-selection",
   "MIG-09": "native-migration-read-model",
 };
 
@@ -221,7 +222,7 @@ const completeEvidenceStates = new Set([
 ]);
 
 const zeroDecisionStates = new Set([
-  "safe_partial_parse", "equivalent_attention_family", "cross_company_target",
+  "safe_partial_parse", "equivalent_attention_family",
   "response_after_supersession", "reused_id_changed_material", "decision_committed_delivery_pending",
 ]);
 
@@ -232,7 +233,7 @@ const nativeStatusEffectKinds = new Set<NativeStatusEffect["kind"]>([
   "append_superseding_assessment", "dispatch_pending_effect", "increment_status_version",
   "schedule_reconciliation", "record_shadow_decision", "render_four_layers",
   "materialize_contract", "record_mode_labeled_divergence", "record_mode_native",
-  "record_policy_version", "finish_as_native", "stop_new_native_dispatch",
+  "record_policy_version", "finish_as_native",
   "resume_workspace_operation", "record_expiry", "record_stale_response",
   "link_canonical_request", "record_recovery", "release_checkout",
 ]);
@@ -552,6 +553,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     const seeded = await seedFixture(fixture);
     const consumerExecutions: ConsumerExecution[] = [];
     const materializedEffects = new Set<string>();
+    const operationalEffects = new Set<string>();
     const priorIssueStatus = String(fixture.given.priorIssueStatus ?? "in_progress") as Parameters<typeof arbitrateNativeStatus>[0]["priorIssueStatus"];
     const mode = resolveNativeRuntimeMode({
       enabled: fixture.mode === "native",
@@ -658,34 +660,84 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           payload: { version: 1, questions: [] },
         });
       }
-      const routed = await routeNativeAttention({
-        db,
-        runId: seeded.runId,
-        candidate: {
-          route: attentionFacts.route,
-          summary: attentionFacts.summary,
-          responseState: attentionFacts.responseState,
-          budgetExhausted: attentionFacts.budgetExhausted,
-          governanceGate: attentionFacts.governanceGate,
-          targetAgentId: completionState === "cross_company_target" ? outsideAgentId : null,
-          targetInteractionId: liveAttentionInteractionId ?? undefined,
-          canonicalRequestId,
+      const target = attentionFacts.route === "agent"
+        ? {
+            ownerClass: "agent",
+            agentId: completionState === "cross_company_target" ? outsideAgentId : delegateAgentId,
+            companyId: completionState === "cross_company_target" ? outsideCompanyId : companyId,
+          }
+        : attentionFacts.route === "human"
+          ? { ownerClass: "board_user", companyId }
+          : { ownerClass: "current_agent", companyId };
+      const requestedCapability = attentionFacts.route === "context"
+        ? "context_lookup"
+        : attentionFacts.route === "retry"
+          ? "retry"
+          : attentionFacts.route === "duplicate"
+            ? "duplicate"
+            : attentionFacts.route === "alternate_track"
+              ? "alternate_track"
+            : attentionFacts.route === "human"
+              ? "subjective_decision"
+              : "domain_expertise";
+      const resultRow = await db.select({ resultJson: nativeRunResults.resultJson })
+        .from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!))
+        .then((rows) => rows[0] ?? null);
+      if (!resultRow) throw new Error(`${fixture.id}: persisted result missing`);
+      const resultEnvelope = resultRow.resultJson as Record<string, unknown>;
+      const persistedResult = resultEnvelope.result as Record<string, unknown>;
+      await db.update(nativeRunResults).set({
+        resultJson: {
+          ...resultEnvelope,
+          result: {
+            ...persistedResult,
+            attentionRequests: [{
+              id: `attention:${fixture.id}`,
+              requestedCapability,
+              requiredAuthority: attentionFacts.route === "human" ? "board" : "agent",
+              target,
+              summary: attentionFacts.summary,
+              responseState: attentionFacts.responseState,
+              budgetExhausted: attentionFacts.budgetExhausted === true,
+              governanceGate: attentionFacts.governanceGate,
+              targetInteractionId: liveAttentionInteractionId,
+              canonicalRequestId,
+            }],
+          },
         },
-      });
+      }).where(eq(nativeRunResults.id, seeded.resultId!));
+      const [receipt] = await routePersistedNativeResultAttention({ db, runId: seeded.runId });
+      if (!receipt) throw new Error(`${fixture.id}: persisted attention route missing`);
+      const persistedDecision = receipt.decisionId
+        ? await db.select().from(statusDecisions).where(eq(statusDecisions.id, receipt.decisionId))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const persistedDecisionJson = persistedDecision?.decisionJson as Record<string, unknown> | undefined;
+      const routedDecision = persistedDecision
+        ? {
+            policyVersion: persistedDecision.policyVersion,
+            statusAction: persistedDecisionJson?.statusAction,
+            toStatus: persistedDecision.toStatus,
+            reasonCode: persistedDecision.reasonCode,
+            unblockDescriptor: persistedDecisionJson?.unblockDescriptor ?? null,
+            effects: persistedDecisionJson?.effects,
+          } as NativeStatusDecision
+        : resolveNativeAttentionStatus({ facts: attentionFacts, priorIssueStatus, agentId });
       semanticConsumer = "native-attention-resolver";
-      consumerDecision = pushDecisionConsumer(semanticConsumer, routed.decision);
+      consumerDecision = pushDecisionConsumer(semanticConsumer, routedDecision);
       liveEntrypointCommitted = true;
-      for (const target of routed.targets) materializedEffects.add(target.effectKind);
+      for (const effect of routedDecision.effects) materializedEffects.add(effect.kind);
       consumerExecutions.push({
         consumer: "native-attention-entrypoint",
         observed: {
-          decisionId: routed.decisionId,
-          resolvedTargetAgentId: routed.resolvedTargetAgentId,
-          targetCount: routed.targets.length,
+          decisionId: receipt.decisionId,
+          resolvedTargetAgentId: receipt.resolvedTargetAgentId,
+          reasonCode: receipt.reasonCode,
+          persistedResultId: seeded.resultId,
         },
       });
       if (attentionFacts.route === "agent" && completionState !== "cross_company_target") {
-        expect(routed.resolvedTargetAgentId, `${fixture.id}:eligible delegate`).toBe(delegateAgentId);
+        expect(receipt.resolvedTargetAgentId, `${fixture.id}:eligible delegate`).toBe(delegateAgentId);
       }
     }
     if (["turn_scope", "run_scope", "issue_scope_authorized", "replacement_turn_accepted"].includes(completionState)) {
@@ -749,6 +801,56 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           priorIssueStatus,
           agentId,
         }));
+      } else if (
+        completionState === "kill_switch_during_active_native_run"
+        && (fixture.covers.migrationRows ?? []).includes("MIG-08")
+      ) {
+        const runtimeConfig = {
+          nativeRunner: { mode: "native", backend: "codex_app_server", protocolVersion: 1 },
+        };
+        const enabled = options.disableLiveEntrypoint === "rollout";
+        const activeResolution = resolveHeartbeatNativeRuntimeMode({
+          persisted: {
+            runtimeMode: "native",
+            runtimeModeReason: "eligible_opt_in",
+            runtimeModeResolvedAt: new Date(),
+          },
+          enabled,
+          runtimeConfig,
+          agent: { id: agentId, status: "running", adapterType: "codex_local" },
+          issue: { id: seeded.issueId, workMode: "standard" },
+          target: { kind: "local" },
+          workspaceId: "fixture-workspace",
+        });
+        const freshResolution = resolveHeartbeatNativeRuntimeMode({
+          persisted: { runtimeMode: null, runtimeModeReason: null, runtimeModeResolvedAt: null },
+          enabled,
+          runtimeConfig,
+          agent: { id: agentId, status: "running", adapterType: "codex_local" },
+          issue: { id: seeded.issueId, workMode: "standard" },
+          target: { kind: "local" },
+          workspaceId: "fixture-workspace",
+        });
+        if (
+          activeResolution.kind !== "native"
+          || freshResolution.kind !== "legacy"
+          || freshResolution.reason !== "instance_flag_disabled"
+          || runtimeConfig.nativeRunner.mode !== "native"
+        ) {
+          throw new Error(`${fixture.id}: global kill-switch transition missing`);
+        }
+        semanticConsumer = "native-migration-status";
+        consumerDecision = pushDecisionConsumer(semanticConsumer, activeResolution.authorityDecision);
+        operationalEffects.add("fresh_flag_off_run_selects_legacy");
+        consumerExecutions.push({
+          consumer: "heartbeat-runtime-selection",
+          observed: {
+            activeMode: activeResolution.kind,
+            freshMode: freshResolution.kind,
+            freshReason: freshResolution.reason,
+            profileMode: runtimeConfig.nativeRunner.mode,
+          },
+        });
       } else if (migrationFacts && (fixture.covers.migrationRows ?? []).length > 0 && (fixture.covers.decisionRows ?? []).length === 0) {
         semanticConsumer = "native-migration-status";
         consumerDecision = pushDecisionConsumer(
@@ -1437,19 +1539,6 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     if (persistedEffects.includes("record_mode_native")) expect(persistedRun?.runtimeMode, `${fixture.id}:mode target`).toBe("native");
     if (persistedEffects.includes("record_policy_version")) expect(persistedRunnerProfile.nativeStatusPolicyVersion, `${fixture.id}:policy target`).toBe("phase6-v2");
     if (persistedEffects.includes("finish_as_native")) expect(persistedRunResult.nativeKillSwitchDisposition, `${fixture.id}:finish-native target`).toBe("finish_as_native");
-    if (persistedEffects.includes("stop_new_native_dispatch")) {
-      const runtimeConfig = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents)
-        .where(eq(agents.id, agentId)).then((rows) => rows[0]?.runtimeConfig ?? {});
-      expect((runtimeConfig as { nativeRunner?: { mode?: string } }).nativeRunner?.mode, `${fixture.id}:kill-switch target`).toBe("legacy");
-      expect(resolveNativeRuntimeMode({
-        enabled: true,
-        runtimeConfig,
-        agent: { id: agentId, status: "running", adapterType: "codex_local" },
-        issue: { id: seeded.issueId, workMode: "standard" },
-        target: { kind: "local" },
-        workspaceId: "fixture-workspace",
-      })).toEqual(expect.objectContaining({ kind: "legacy", reason: "native_kill_switch_persisted" }));
-    }
     if (materializedEffects.has("link_canonical_request")) {
       expect(interactionRows.some((row) => row.summary?.startsWith("Canonical native attention request:")), `${fixture.id}:canonical link target`).toBe(true);
     }
@@ -1482,6 +1571,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     let effects = [...new Set([
       ...persistedEffects,
       ...(consumerDecision?.effects.map((effect) => effect.kind) ?? []),
+      ...operationalEffects,
     ])];
     if (rolledBack) effects = ["record_finalization_error"];
     if (!consumerDecision) {
@@ -1572,6 +1662,13 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       } else if (consumer === "status-decision-committer") {
         const expectedApplicationState = rolledBack ? "rolled_back" : "applied";
         if (execution.observed.applicationState !== expectedApplicationState) continue;
+      } else if (consumer === "heartbeat-runtime-selection") {
+        if (
+          execution.observed.activeMode !== "native"
+          || execution.observed.freshMode !== "legacy"
+          || execution.observed.freshReason !== "instance_flag_disabled"
+          || execution.observed.profileMode !== "native"
+        ) continue;
       }
       consumerEvidenceByRow.set(matrixRow, consumer);
     }
@@ -1750,10 +1847,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       facts: { killSwitchActiveForNewRuns: true },
       priorIssueStatus: "in_progress",
       agentId,
-    }).effects.map((effect) => effect.kind)).toContain("stop_new_native_dispatch");
+    }).effects.map((effect) => effect.kind)).toContain("finish_as_native");
     await expect(executeFixture(byId("migration-kill-switch-rollback"), {
       disableLiveEntrypoint: "rollout",
-    })).rejects.toThrow("kill-switch target");
+    })).rejects.toThrow("global kill-switch transition missing");
 
     const pendingFixture = byId("crash-after-decision-commit");
     const seeded = await seedFixture(pendingFixture);

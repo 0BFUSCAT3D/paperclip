@@ -13,7 +13,7 @@ This record verifies the default-off Phase 6 tracer at the approved
 `ControlPlanePort`/`NativeSessionBackend` boundary. No browser surface changed,
 so Phase 6 has command/database evidence rather than screenshots.
 
-The counts below are the PAP-16879 remediation rerun. “Internal canary” means
+The counts below are the PAP-16880 remediation rerun. “Internal canary” means
 the selected-task database test through the public package session contract;
 it does not mean that a new live Codex provider task was dispatched.
 
@@ -39,7 +39,7 @@ existing accepted result event, and appended only the missing terminal fact.
 
 # Real Paperclip adapter and public-session task
 
-The complete acceptance gate below passed 43 tests in thirteen files against
+The complete acceptance gate below passed 45 tests in thirteen files against
 embedded PostgreSQL with zero skipped tests. Database-backed tests start their
 own database instead of skipping when a developer `DATABASE_URL` is absent.
 The same package conformance suite passed unchanged against
@@ -70,6 +70,11 @@ The focused corpus also proved:
 - resolved confirmations and question answers enter the persisted native input
   only through the authorized issue-interaction service; governed, unresolved,
   unsupported, or self-approved paths fail closed without credentials;
+- accepted package-result attention enters through `finalizeNativeRun` and the
+  persisted-result router: same-company delegation uses `issueService`, human
+  authority creates an issue-thread interaction, and cross-company targeting
+  persists a rejection decision, recovery action, failed finalization, and
+  audit receipt;
 - incomplete/review/yield/cancelled results receive a durable review,
   continuation, or recovery path;
 - only a task-wide blocker with a named owner and action selects `blocked`;
@@ -82,7 +87,7 @@ The focused corpus also proved:
   bindings, recovery, status,
   decisions, and effects roll back together before retry ownership is recorded.
 
-The acceptance-matrix entry points passed as one 13-file, 43-test gate:
+The acceptance-matrix entry points passed as one 13-file, 45-test gate:
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \
@@ -106,18 +111,21 @@ bounded retry exhaustion, actual flag-off legacy execution, and executable
 Section 18.13 fixture-to-consumer traceability. All 52 fixtures and 70 rows are
 classified as either live operational proofs or explicit pure policy/read-model
 checks. Cancellation persists its decision or audit-only receipt through
-`cancelNativeSession`; attention resolves a same-company eligible target and
-uses the issue service; REC-04/06/07/08 enter the reconciler, with REC-04
+`cancelNativeSession`; attention enters from the accepted result through the
+persisted-result router, then resolves a same-company eligible target through
+the issue service; REC-04/06/07/08 enter the reconciler, with REC-04
 recording an observed workspace operation and REC-06/07/08 writing a newly
 classified append-only assessment before superseding the prior decision; and
-MIG-08 is enforced by the next runtime selection from the agent-owned
-kill-switch profile.
+MIG-08 is enforced by the production heartbeat selector using the global flag:
+the persisted active run remains native, a fresh unresolved run selects legacy,
+and the agent profile remains unchanged.
 
 All eleven expected fields remain derived from entrypoint returns and durable
 rows. Every required native effect is joined to its owning target state, each
 decision replay retains one identity and one delivery attempt, and pending
 replay verifies the original company/issue/decision target before acknowledging
-it. The negative suite removes each live action and deletes a replay target;
+it. The negative suite removes each live action, changes the real global-flag
+input, and deletes a replay target;
 the mapped fixtures fail while the direct policy resolver still returns the
 expected label. An unknown effect rolls the entire transaction back. No
 test-owned scenario policy supplies an observation. The selected-task
@@ -176,7 +184,14 @@ Explicit cancellation, agent pause, and budget hard-stop share
 before existing process/resource cleanup. The default and kill-switch paths
 execute the pre-existing adapter branch; no same-run native-to-legacy fallback
 exists. Recovery queries persisted native mode/coordinator state rather than
-the current flag.
+the current flag. The kill switch does not mutate `agents.runtime_config` or
+persist a per-agent disable bit.
+
+No attention UI or public attention endpoint is claimed. The Codex v1 result
+tool authors compact `kind`/`summary` requests; richer canonical PRP target
+metadata is server-validated but does not yet have provider authoring UX.
+External-system execution, credential delegation, and auto-approval remain
+deferred.
 
 ```sh
 pnpm --filter @paperclipai/server exec vitest run \

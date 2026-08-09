@@ -62,11 +62,17 @@ existing server authority and keep legacy execution as the default.
     reconciliation, or runtime selection and retain that entrypoint receipt.
 17. Resume workspace finalization through the workspace operation recorder and
     observe its actual result; never insert a pre-succeeded recovery marker.
-18. Resolve attention delegates from eligible same-company agents and create
-    delegated work through the issue service. Persist authorized status and
-    rollout changes through their owning issue and agent services.
+18. Begin accepted attention routing at the immutable package-result boundary.
+    The finalizer records a request-specific assessment, resolves delegates
+    from eligible same-company agents, creates delegated work through the issue
+    service, routes human authority through the interaction service, and
+    records cross-company rejection through decision/recovery/audit owners.
 19. Keep pending replay acknowledgement-only, scoped to its original decision,
     and fail when the owning transaction's target no longer exists.
+20. Treat `experimental.enableNativeRunner` as the only kill switch. Persisted
+    native runs retain native recovery after flag-off; fresh unresolved runs
+    select legacy. Never rewrite the agent profile or persist a second rollback
+    control.
 
 # Evidence
 
@@ -74,7 +80,7 @@ existing server authority and keep legacy execution as the default.
 - [Phase 6 reference](../../docs/phase-06-thin-paperclip-adapter.md)
 - [Runnable tutorial](../../docs/tutorials/phase-06-thin-paperclip-adapter.md)
 - Package conformance and recovery: four files, seven tests passed.
-- Phase 6 acceptance-matrix entry points: thirteen files, forty-three tests passed
+- Phase 6 acceptance-matrix entry points: thirteen files, forty-five tests passed
   with zero skips, including the database-backed selected-task canary, six
   atomic-liveness failpoints, migration, sequencing, bounded recovery, and
   legacy compatibility.
@@ -93,10 +99,11 @@ existing server authority and keep legacy execution as the default.
   recovery, run, workspace-operation, contract, decision, or governance state.
   Unknown effects fail before any decision, ledger, status-version, or
   coordinator mutation.
-- Negative entrypoint proofs remove cancellation auditing, attention routing,
-  reconciliation/workspace execution, rollout selector enforcement, and the
-  original pending-effect target. Every mapped fixture fails even though its
-  pure resolver still returns the expected policy label.
+- Negative entrypoint proofs remove cancellation auditing and the persisted
+  attention ingress, change the global flag input, remove reconciliation/
+  workspace execution, and delete the original pending-effect target. Every
+  mapped fixture fails even though its pure resolver still returns the expected
+  policy label.
 - The production heartbeat reaper resumed one persisted result-less run through
   the original execution/finalization path with the flag disabled. It recovered
   an already-active scripted provider turn and produced exactly one result,
@@ -125,6 +132,10 @@ existing server authority and keep legacy execution as the default.
 - Resolved confirmations and question answers are materialized only through the
   existing authorized Paperclip interaction service; governed and unsupported
   requests cannot auto-approve.
+- Phase 6 adds no attention UI or public attention endpoint. The Codex v1 tool
+  authors compact `kind`/`summary` requests; richer canonical PRP target hints
+  are server-validated but do not yet have provider authoring UX. External
+  execution, credential delegation, and auto-approval remain deferred.
 - Live operator proof depends on a board-authorized local instance and an
   already authenticated Codex installation; deterministic CI uses the same
   public session contract with a scripted backend.

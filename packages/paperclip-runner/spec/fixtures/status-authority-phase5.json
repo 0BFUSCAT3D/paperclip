@@ -261,8 +261,8 @@
       "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": ["ATT-09"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["excessive_human_request"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "cross_company_target", "trigger": "attention_candidate" },
-      "expected": { "runStatus": "failed", "statusAction": "preserve", "reasonCode": "result_schema_rejected", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["create_interaction", "notify_owner", "enqueue_continuation"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
-      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 0, "maxDomainEffectsPerKey": 1 }
+      "expected": { "runStatus": "failed", "statusAction": "preserve", "reasonCode": "result_schema_rejected", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["create_interaction", "notify_owner", "enqueue_continuation"], "livePathKind": "recovery", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
     {
       "id": "stale-attention-response",
@@ -459,7 +459,7 @@
       "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": ["MIG-08"] },
       "tags": ["rollback", "native_legacy_distinction", "reconciliation"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "yielded", "nativeFinalization": "present", "completionState": "kill_switch_during_active_native_run", "trigger": "runner_finalizer" },
-      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "live_continuation_registered", "requiredEffects": ["enqueue_continuation", "finish_as_native", "stop_new_native_dispatch"], "forbiddenEffects": ["convert_active_run_to_legacy", "drop_coordinator"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "live_continuation_registered", "requiredEffects": ["enqueue_continuation", "finish_as_native", "fresh_flag_off_run_selects_legacy"], "forbiddenEffects": ["convert_active_run_to_legacy", "persist_agent_kill_switch", "drop_coordinator"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
       "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
     {

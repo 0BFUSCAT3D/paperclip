@@ -92,7 +92,7 @@ import {
   finalizeNativeRun,
   materializeNativeInteractionResponses,
   reconcileNativeFinalizations,
-  resolveNativeRuntimeMode,
+  resolveHeartbeatNativeRuntimeMode,
 } from "./native-runtime/index.js";
 import {
   parseNativeExecutionInput,
@@ -15310,27 +15310,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const adapter = getServerAdapter(agent.adapterType);
       // Runtime selection is immutable once persisted. In particular, turning the instance flag
       // off prevents new native runs without changing the recovery path for an already-native run.
-      const nativeRuntimeResolution = run.runtimeModeResolvedAt
-        ? run.runtimeMode === "native"
-          ? {
-              kind: "native" as const,
-              resolverVersion: "phase6-v1" as const,
-              reason: "eligible_opt_in" as const,
-              profile: { mode: "native" as const, backend: "codex_app_server" as const, protocolVersion: 1 as const },
-            }
-          : {
-              kind: "legacy" as const,
-              resolverVersion: "phase6-v1" as const,
-              reason: run.runtimeModeReason ?? "persisted_legacy_selection",
-            }
-        : resolveNativeRuntimeMode({
-            enabled: resolvedInstanceSettings.experimental.enableNativeRunner === true,
-            runtimeConfig: agent.runtimeConfig,
-            agent: { id: agent.id, status: runningAgent.status, adapterType: agent.adapterType },
-            issue: issueRef,
-            target: executionTarget,
-            workspaceId: persistedExecutionWorkspace?.id ?? null,
-          });
+      const nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({
+        persisted: run,
+        enabled: resolvedInstanceSettings.experimental.enableNativeRunner === true,
+        runtimeConfig: agent.runtimeConfig,
+        agent: { id: agent.id, status: runningAgent.status, adapterType: agent.adapterType },
+        issue: issueRef,
+        target: executionTarget,
+        workspaceId: persistedExecutionWorkspace?.id ?? null,
+      });
       let nativeExecution: ReturnType<typeof buildNativeExecutionInput> | null = null;
       let nativeRunnerInstanceId: string | null = null;
       if (nativeRuntimeResolution.kind === "native") {

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { NativeRuntimeEligibilityError, resolveNativeRuntimeMode } from "./runtime-mode.js";
+import {
+  NativeRuntimeEligibilityError,
+  resolveHeartbeatNativeRuntimeMode,
+  resolveNativeRuntimeMode,
+} from "./runtime-mode.js";
 
 const eligible = {
   enabled: true,
@@ -24,6 +28,27 @@ describe("resolveNativeRuntimeMode", () => {
       kind: "native",
       reason: "eligible_opt_in",
     }));
+  });
+
+  it("keeps a persisted active run native while the global flag makes a fresh run legacy", () => {
+    const disabled = { ...eligible, enabled: false };
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...disabled,
+      persisted: {
+        runtimeMode: "native",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(),
+      },
+    })).toEqual(expect.objectContaining({
+      kind: "native",
+      reason: "eligible_opt_in",
+      authorityDecision: expect.objectContaining({ reasonCode: "live_continuation_registered" }),
+    }));
+    expect(resolveHeartbeatNativeRuntimeMode({
+      ...disabled,
+      persisted: { runtimeMode: null, runtimeModeReason: null, runtimeModeResolvedAt: null },
+    })).toEqual(expect.objectContaining({ kind: "legacy", reason: "instance_flag_disabled" }));
+    expect(disabled.runtimeConfig.nativeRunner.mode).toBe("native");
   });
 
   it("rejects an explicit native profile outside the approved boundary", () => {

@@ -26,7 +26,6 @@ import { nativeSha256 } from "./canonical.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
-import { agentService } from "../agents.js";
 import { buildIssueBlockersResolvedWakeIdempotencyKey } from "../issue-dependency-wakeups.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 
@@ -880,40 +879,6 @@ async function materializeDecisionEffect(input: {
     await input.tx.update(heartbeatRuns).set({ runtimeMode: "native", updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, input.runId));
     return { effectKind: effect.kind, targetType: "heartbeat_run", targetId, payload: { runtimeMode: "native" } };
-  }
-  if (effect.kind === "stop_new_native_dispatch") {
-    const run = await input.tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.id, input.runId),
-      eq(heartbeatRuns.companyId, input.companyId),
-    )).limit(1).then((rows) => rows[0] ?? null);
-    if (!run) throw new Error("native_kill_switch_run_missing");
-    const agent = await agentService(input.tx).getById(run.agentId);
-    if (!agent || agent.companyId !== input.companyId) throw new Error("native_kill_switch_agent_missing");
-    const runtimeConfig = record(agent.runtimeConfig);
-    const nativeRunner = record(runtimeConfig.nativeRunner);
-    const updated = await agentService(input.tx).update(run.agentId, {
-      runtimeConfig: {
-        ...runtimeConfig,
-        nativeRunner: {
-          ...nativeRunner,
-          mode: "legacy",
-          disabledByNativeKillSwitch: true,
-        },
-      },
-    }, {
-      recordRevision: {
-        source: "native_kill_switch",
-        createdByAgentId: null,
-        createdByUserId: null,
-      },
-    });
-    if (!updated) throw new Error("native_kill_switch_not_persisted");
-    return {
-      effectKind: effect.kind,
-      targetType: "agent",
-      targetId: updated.id,
-      payload: { nextDispatchMode: "legacy", runtimeConfigOwner: updated.id },
-    };
   }
   if (effect.kind === "resume_workspace_operation") {
     const resumed = input.preMaterializedEffects?.get(effect.kind);
