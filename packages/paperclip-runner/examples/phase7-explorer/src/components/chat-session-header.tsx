@@ -51,6 +51,8 @@ export function SessionHeader({
   // Controls that would corrupt a running turn are disabled with the reason
   // named, never silently inert.
   const busyReason = busy ? "A turn is running — wait for it to settle." : undefined;
+  const runningControlsReasonId = "running-controls-reason";
+  const codexUnavailableReasonId = "codex-unavailable-reason";
 
   return (
     <header ref={headerRef} className="pcr7-session-header" data-testid="session-header" tabIndex={-1}>
@@ -96,6 +98,8 @@ export function SessionHeader({
             type="button"
             role="radio"
             aria-checked={mode === "scripted"}
+            aria-describedby={busy ? runningControlsReasonId : undefined}
+            disabled={busy}
             data-testid="chat-mode-scripted"
             onClick={() => onModeChange("scripted")}
           >
@@ -105,7 +109,10 @@ export function SessionHeader({
             type="button"
             role="radio"
             aria-checked={mode === "codex"}
-            disabled={!codexAvailable}
+            aria-describedby={
+              busy ? runningControlsReasonId : !codexAvailable ? codexUnavailableReasonId : undefined
+            }
+            disabled={busy || !codexAvailable}
             data-testid="chat-mode-codex"
             title={
               codexAvailable
@@ -118,7 +125,11 @@ export function SessionHeader({
           </button>
         </div>
         {codexAvailable ? null : (
-          <p className="pcr7-muted" data-testid="chat-codex-unavailable">
+          <p
+            id={codexUnavailableReasonId}
+            className="pcr7-muted"
+            data-testid="chat-codex-unavailable"
+          >
             Codex mode needs the local provider relay — provider relay not running, see tutorial §4.
             Scripted mode drives the same mock control plane offline, and no provider credential
             ever reaches this page.
@@ -130,6 +141,7 @@ export function SessionHeader({
           variant="ghost"
           onClick={onReset}
           disabled={busy}
+          aria-describedby={busy ? runningControlsReasonId : undefined}
           title={busyReason}
           data-testid="reset-session"
         >
@@ -139,6 +151,7 @@ export function SessionHeader({
           type="button"
           onClick={onReplay}
           disabled={busy || (artifact?.remainingScriptedTurns ?? 0) === 0}
+          aria-describedby={busy ? runningControlsReasonId : undefined}
           title={
             busyReason ??
             ((artifact?.remainingScriptedTurns ?? 0) === 0
@@ -149,6 +162,15 @@ export function SessionHeader({
         >
           Replay scripted session
         </Button>
+        {busy ? (
+          <p
+            id={runningControlsReasonId}
+            className="pcr7-muted"
+            data-testid="running-controls-reason"
+          >
+            Controls return when the turn settles.
+          </p>
+        ) : null}
       </div>
     </header>
   );

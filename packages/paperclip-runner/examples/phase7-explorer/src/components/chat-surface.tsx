@@ -40,6 +40,9 @@ export type OpenPhase7ChatSession = (
   options?: Phase7ChatSessionOptions,
 ) => Promise<Phase7ChatSessionClient>;
 
+const openLocalSession: OpenPhase7ChatSession = (entry, options) =>
+  Phase7ChatSession.open(entry, options);
+
 export interface ChatSurfaceProps {
   entry: Phase7ScenarioIndexEntry;
   /** `replay=fake` plays the whole script on load for screenshot routes. */
@@ -51,6 +54,8 @@ export interface ChatSurfaceProps {
   onOpenTurn: (turn: number) => void;
   onOpenParity: () => void;
   onArtifactChange: (artifact: Phase7ChatSessionArtifact | null) => void;
+  /** Mirrors the transcript reveal boundary to the activity stream. */
+  onRevealSequenceChange: (sequence: number) => void;
   /**
    * Mirrors the settle state to the shell. The chat column is hidden on the
    * mobile Activity segment, so a wait target that only lives here would be
@@ -72,9 +77,10 @@ export function ChatSurface({
   onOpenTurn,
   onOpenParity,
   onArtifactChange,
+  onRevealSequenceChange,
   onStateChange,
   onCancelScenarioSwitch,
-  openSession = (nextEntry, options) => Phase7ChatSession.open(nextEntry, options),
+  openSession = openLocalSession,
   headerRef,
 }: ChatSurfaceProps) {
   const [artifact, setArtifact] = React.useState<Phase7ChatSessionArtifact | null>(null);
@@ -138,11 +144,17 @@ export function ChatSurface({
 
   const target = artifact?.timeline.at(-1)?.sequence ?? 0;
   const lastTurn = artifact?.turns.at(-1) ?? null;
+  const heldModelSequence =
+    lastTurn === null
+      ? undefined
+      : artifact?.timeline.find(
+          (entry) => entry.turn === lastTurn.turn && entry.kind === "agent_message",
+        )?.sequence;
   const holdAt =
     lastTurn === null
       ? 0
       : Math.max(
-          Math.min(lastTurn.firstSequence + 2, lastTurn.lastSequence - 1),
+          Math.min(heldModelSequence ?? lastTurn.firstSequence, lastTurn.lastSequence - 1),
           lastTurn.firstSequence,
         );
   const ceiling = stageStreaming && lastTurn !== null && lastTurn.turn > 0 ? holdAt : target;
@@ -177,6 +189,10 @@ export function ChatSurface({
   React.useEffect(() => {
     onStateChange(chatState);
   }, [chatState, onStateChange]);
+
+  React.useEffect(() => {
+    onRevealSequenceChange(revealed);
+  }, [onRevealSequenceChange, revealed]);
 
   const send = React.useCallback(
     async (prompt: string) => {

@@ -48,7 +48,13 @@ export function ScenarioTranscript({
  * so a semantic call, a denial, and a control-plane strip look the same
  * wherever they are read.
  */
-export function TimelineEntryBody({ entry }: { entry: Phase7TimelineEntry }) {
+export function TimelineEntryBody({
+  entry,
+  streaming = false,
+}: {
+  entry: Phase7TimelineEntry;
+  streaming?: boolean;
+}) {
   switch (entry.kind) {
     case "user_message":
       return (
@@ -57,15 +63,26 @@ export function TimelineEntryBody({ entry }: { entry: Phase7TimelineEntry }) {
         </div>
       );
 
-    case "agent_message":
+    case "agent_message": {
+      const text = streaming
+        ? entry.text.slice(0, Math.max(1, Math.ceil(entry.text.length / 2)))
+        : entry.text;
       return (
-        <div className="pcr7-agent-message">
+        <div
+          className="pcr7-agent-message"
+          data-state={streaming ? "streaming" : "settled"}
+          data-testid={streaming ? "streaming-model-card" : undefined}
+        >
           <span className="pcr7-gutter" aria-hidden="true">
             ▸
           </span>
-          <p>{entry.text}</p>
+          <p>
+            {text}
+            {streaming ? <span className="pcr-stream-cursor" aria-hidden="true" /> : null}
+          </p>
         </div>
       );
+    }
 
     case "semantic_call":
       return (

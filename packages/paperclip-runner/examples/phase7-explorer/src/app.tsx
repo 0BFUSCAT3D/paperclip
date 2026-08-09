@@ -108,6 +108,7 @@ export function ExplorerApp({
   const [highlight, setHighlight] = React.useState<number | null>(null);
   const [runFocusRequest, setRunFocusRequest] = React.useState(0);
   const [chatArtifact, setChatArtifact] = React.useState<Phase7ChatSessionArtifact | null>(null);
+  const [chatRevealedSequence, setChatRevealedSequence] = React.useState(0);
   const [chatState, setChatState] = React.useState<Phase7ChatState>("seeding");
   const [stripFocusRequest, setStripFocusRequest] = React.useState({ turn: 0, nonce: 0 });
   const shellRef = React.useRef<HTMLDivElement>(null);
@@ -387,6 +388,7 @@ export function ExplorerApp({
               onOpenTurn={openTurn}
               onOpenParity={() => openTurn(chatArtifact?.turns.at(-1)?.turn ?? 0)}
               onArtifactChange={setChatArtifact}
+              onRevealSequenceChange={setChatRevealedSequence}
               onStateChange={setChatState}
               onCancelScenarioSwitch={(entryId) => navigate({ ...route, caseId: entryId })}
               openSession={openSession}
@@ -455,6 +457,7 @@ export function ExplorerApp({
             ) : (
               <ActivityStream
                 artifact={chatArtifact}
+                revealedSequence={chatRevealedSequence}
                 filter={route.activityFilter}
                 onFilterChange={(filter: Phase7ActivityFilter) =>
                   navigate({ ...route, activityFilter: filter })

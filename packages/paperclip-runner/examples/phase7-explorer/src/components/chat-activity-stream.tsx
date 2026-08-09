@@ -56,6 +56,7 @@ const SECTION_FILTER: Record<SectionName, Phase7ActivityFilter> = {
 
 export function ActivityStream({
   artifact,
+  revealedSequence = Number.MAX_SAFE_INTEGER,
   filter,
   onFilterChange,
   openTurn,
@@ -64,6 +65,8 @@ export function ActivityStream({
   showBackToChat,
 }: {
   artifact: Phase7ChatSessionArtifact;
+  /** The same inclusive timeline ceiling used by the conversation. */
+  revealedSequence?: number;
   filter: Phase7ActivityFilter;
   onFilterChange: (filter: Phase7ActivityFilter) => void;
   openTurn: number | null;
@@ -89,20 +92,28 @@ export function ActivityStream({
         ))}
       </div>
 
-      {artifact.turns.map((turn) => (
-        <ActivityTurnGroup
-          key={turn.turn}
-          turn={turn}
-          entries={artifact.timeline.filter((entry) => entry.turn === turn.turn)}
-          filter={filter}
-          open={openTurn === null ? turn.turn === newest : openTurn === turn.turn}
-          onToggle={() => onOpenTurn(turn.turn)}
-          onBackToChat={onBackToChat}
-          showBackToChat={showBackToChat}
-        />
-      ))}
+      {artifact.turns.map((turn) => {
+        const running = turn.lastSequence > revealedSequence;
+        return (
+          <ActivityTurnGroup
+            key={turn.turn}
+            turn={turn}
+            entries={artifact.timeline.filter(
+              (entry) => entry.turn === turn.turn && entry.sequence <= revealedSequence,
+            )}
+            running={running}
+            filter={filter}
+            open={openTurn === null ? turn.turn === newest : openTurn === turn.turn}
+            onToggle={() => onOpenTurn(turn.turn)}
+            onBackToChat={onBackToChat}
+            showBackToChat={showBackToChat}
+          />
+        );
+      })}
 
-      <SessionGroup artifact={artifact} filter={filter} />
+      {artifact.turns.some((turn) => turn.lastSequence > revealedSequence) ? null : (
+        <SessionGroup artifact={artifact} filter={filter} />
+      )}
     </div>
   );
 }
@@ -110,6 +121,7 @@ export function ActivityStream({
 export function ActivityTurnGroup({
   turn,
   entries,
+  running,
   filter,
   open,
   onToggle,
@@ -118,6 +130,7 @@ export function ActivityTurnGroup({
 }: {
   turn: Phase7ChatTurn;
   entries: readonly Phase7TimelineEntry[];
+  running: boolean;
   filter: Phase7ActivityFilter;
   open: boolean;
   onToggle: () => void;
@@ -128,6 +141,29 @@ export function ActivityTurnGroup({
     (entry) => entry.kind === "semantic_call" || entry.kind === "semantic_result",
   );
   const controlPlane = entries.filter((entry) => entry.kind === "control_plane_action");
+  const authorizationSequences = new Set(
+    entries.flatMap((entry) =>
+      entry.kind === "semantic_call" || entry.kind === "semantic_result"
+        ? [entry.authorizationSequence]
+        : [],
+    ),
+  );
+  const authorizationRecords = running
+    ? turn.authorizationRecords.filter((record) => authorizationSequences.has(record.sequence))
+    : turn.authorizationRecords;
+  const visibleCounts = running
+    ? {
+        calls: entries.filter((entry) => entry.kind === "semantic_call").length,
+        denied: entries.filter(
+          (entry) =>
+            entry.kind === "semantic_result" &&
+            (entry.outcome === "denied" || entry.outcome === "absent"),
+        ).length,
+        controlPlane: controlPlane.length,
+        changedDomains: 0,
+      }
+    : turn.counts;
+  const visibleTurn = running ? { ...turn, counts: visibleCounts } : turn;
   const visible = (section: SectionName): boolean =>
     filter === "all" || SECTION_FILTER[section] === filter;
 
@@ -147,8 +183,12 @@ export function ActivityTurnGroup({
           data-testid={`activity-turn-header-${turn.turn}`}
           onClick={onToggle}
         >
-          <span>{turn.turn === 0 ? "Session seed" : `Turn ${turn.turn}`}</span>
-          <span className="pcr7-muted">{summaryText(turn)}</span>
+          <span>
+            {turn.turn === 0 ? "Session seed" : `Turn ${turn.turn}${running ? " · running" : ""}`}
+          </span>
+          <span className="pcr7-muted">
+            {running ? runningSummary(visibleCounts) : summaryText(visibleTurn)}
+          </span>
         </button>
       </h3>
       {open ? (
@@ -185,13 +225,13 @@ export function ActivityTurnGroup({
             </Section>
           ) : null}
 
-          {visible("authorization") && turn.authorizationRecords.length > 0 ? (
+          {visible("authorization") && authorizationRecords.length > 0 ? (
             <Section
               name="authorization"
               turn={turn.turn}
-              title={`Authorization (${turn.authorizationRecords.length})`}
+              title={`Authorization (${authorizationRecords.length})`}
             >
-              <AuthorizationPanel records={turn.authorizationRecords} />
+              <AuthorizationPanel records={authorizationRecords} />
             </Section>
           ) : null}
 
@@ -211,13 +251,13 @@ export function ActivityTurnGroup({
             </Section>
           ) : null}
 
-          {visible("diff") ? (
+          {visible("diff") && !running ? (
             <Section name="diff" turn={turn.turn} title="State diff">
               <TurnDiff turn={turn} />
             </Section>
           ) : null}
 
-          {visible("parity") ? (
+          {visible("parity") && !running ? (
             <Section name="parity" turn={turn.turn} title="Parity">
               <span className="pcr7-visually-hidden" data-testid={`activity-parity-${turn.turn}`}>
                 Turn {turn.turn} parity {turn.parity.verdict.replace("_", " ")}
@@ -240,6 +280,11 @@ export function ActivityTurnGroup({
       ) : null}
     </section>
   );
+}
+
+function runningSummary(counts: Phase7ChatTurn["counts"]): string {
+  const tools = counts.calls === 1 ? "tool" : "tools";
+  return `${counts.calls} ${tools}, ${counts.denied} denied, ${counts.controlPlane} control plane`;
 }
 
 function Section({

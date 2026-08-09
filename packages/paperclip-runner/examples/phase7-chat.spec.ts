@@ -161,9 +161,36 @@ test.describe("determinism and evidence", () => {
     await open(page, "#/chat/ap-mcp-gate-01?replay=fake&stage=streaming", "streaming");
     await expect(page.locator('[data-slot="composer"]')).toHaveAttribute("data-state", "active-turn");
     await expect(page.locator('[data-testid^="turn-pending-"]')).toBeVisible();
+    const modelCard = page.locator('[data-testid="streaming-model-card"]');
+    await expect(modelCard).toBeVisible();
+    await expect(modelCard.locator(".pcr-stream-cursor")).toBeVisible();
+
+    const activity = page.locator('[data-testid="activity-turn-2"]');
+    await expect(activity.locator('[data-testid="activity-turn-header-2"]')).toContainText(
+      "Turn 2 · running",
+    );
+    const calls = activity.locator('[data-testid="activity-section-2-calls"]');
+    await expect(calls).toContainText("request_approval");
+    await expect(calls).not.toContainText("request_review");
+    await expect(activity.locator('[data-testid="activity-section-2-authorization"]')).toContainText(
+      "Authorization (1)",
+    );
+    await expect(activity.locator('[data-testid="activity-section-2-diff"]')).toHaveCount(0);
+    await expect(activity.locator('[data-testid="activity-section-2-parity"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="activity-session"]')).toHaveCount(0);
     // Controls that would corrupt the running turn state their reason.
-    await expect(page.locator('[data-testid="reset-session"]')).toBeDisabled();
-    await expect(page.locator('[data-testid="replay-session"]')).toBeDisabled();
+    const reason = page.locator('[data-testid="running-controls-reason"]');
+    await expect(reason).toHaveText("Controls return when the turn settles.");
+    for (const testId of [
+      "chat-mode-scripted",
+      "chat-mode-codex",
+      "reset-session",
+      "replay-session",
+    ]) {
+      const control = page.locator(`[data-testid="${testId}"]`);
+      await expect(control).toBeDisabled();
+      await expect(control).toHaveAttribute("aria-describedby", "running-controls-reason");
+    }
   });
 
   test("no credential or raw secret reaches the chat page", async ({ page }) => {

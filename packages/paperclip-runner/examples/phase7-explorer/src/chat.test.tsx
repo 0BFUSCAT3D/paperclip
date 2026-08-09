@@ -53,22 +53,32 @@ function sessionFor(id: string): Phase7ChatSessionArtifact {
   return artifact;
 }
 
-function conversation(id: string, revealed = Number.MAX_SAFE_INTEGER): string {
+function conversation(
+  id: string,
+  revealed = Number.MAX_SAFE_INTEGER,
+  runningTurn: number | null = null,
+): string {
   return renderToStaticMarkup(
     <ChatConversation
       artifact={sessionFor(id)}
       revealedSequence={revealed}
-      runningTurn={null}
+      runningTurn={runningTurn}
       activeTurn={null}
       onOpenTurn={() => undefined}
     />,
   );
 }
 
-function activity(id: string, filter: Parameters<typeof ActivityStream>[0]["filter"] = "all", openTurn: number | null = null): string {
+function activity(
+  id: string,
+  filter: Parameters<typeof ActivityStream>[0]["filter"] = "all",
+  openTurn: number | null = null,
+  revealedSequence = Number.MAX_SAFE_INTEGER,
+): string {
   return renderToStaticMarkup(
     <ActivityStream
       artifact={sessionFor(id)}
+      revealedSequence={revealedSequence}
       filter={filter}
       onFilterChange={() => undefined}
       openTurn={openTurn}
@@ -122,6 +132,21 @@ describe("chat conversation", () => {
     expect(markup).not.toContain(`data-testid="chat-entry-${lastTurn.lastSequence}"`);
     // Earlier turns are untouched by the reveal of a later one.
     expect(markup).toContain('data-testid="turn-activity-strip-1"');
+  });
+
+  it("holds the staged turn on a visibly streaming model card", () => {
+    const artifact = sessionFor("ap-mcp-gate-01");
+    const lastTurn = artifact.turns.at(-1)!;
+    const model = artifact.timeline.find(
+      (entry) => entry.turn === lastTurn.turn && entry.kind === "agent_message",
+    );
+    if (model?.kind !== "agent_message") throw new Error("staged turn has no model message");
+
+    const markup = conversation("ap-mcp-gate-01", model.sequence, lastTurn.turn);
+    expect(markup).toContain('data-testid="streaming-model-card"');
+    expect(markup).toContain('data-state="streaming"');
+    expect(markup).toContain('class="pcr-stream-cursor"');
+    expect(markup).not.toContain(model.text);
   });
 });
 
@@ -202,6 +227,32 @@ describe("activity stream", () => {
     expect(markup).toContain(`data-testid="activity-turn-${newest}" data-open="true"`);
     expect(markup).toContain('data-testid="activity-turn-0" data-open="false"');
   });
+
+  it("scopes a running turn to evidence at the transcript reveal ceiling", () => {
+    const artifact = sessionFor("ap-mcp-gate-01");
+    const turn = artifact.turns.at(-1)!;
+    const model = artifact.timeline.find(
+      (entry) => entry.turn === turn.turn && entry.kind === "agent_message",
+    );
+    if (model === undefined) throw new Error("staged turn has no model message");
+
+    const markup = activity("ap-mcp-gate-01", "all", turn.turn, model.sequence);
+    expect(markup).toContain(`Turn ${turn.turn} · running`);
+    const calls = markup.match(
+      new RegExp(`data-testid="activity-section-${turn.turn}-calls"[\\s\\S]*?</section>`),
+    )?.[0];
+    expect(calls).toContain("request_approval");
+    expect(calls).not.toContain("request_review");
+    expect(markup).toContain(`data-testid="activity-section-${turn.turn}-authorization"`);
+    expect(markup).toContain("Authorization (1)");
+    const header = markup.match(
+      new RegExp(`data-testid="activity-turn-header-${turn.turn}"[\\s\\S]*?</button>`),
+    )?.[0];
+    expect(header).not.toContain("parity");
+    expect(markup).not.toContain(`data-testid="activity-section-${turn.turn}-diff"`);
+    expect(markup).not.toContain(`data-testid="activity-section-${turn.turn}-parity"`);
+    expect(markup).not.toContain('data-testid="activity-session"');
+  });
 });
 
 describe("session header", () => {
@@ -247,6 +298,34 @@ describe("session header", () => {
     );
     expect(markup).toContain("Idle · seeded");
     expect(markup).not.toContain('data-testid="session-parity-chip"');
+  });
+
+  it("shows and describes why every session control is disabled mid-turn", () => {
+    const markup = renderToStaticMarkup(
+      <SessionHeader
+        entry={entryFor("ap-mcp-gate-01")}
+        artifact={sessionFor("ap-mcp-gate-01")}
+        mode="scripted"
+        codexAvailable={false}
+        busy
+        onModeChange={() => undefined}
+        onReset={() => undefined}
+        onReplay={() => undefined}
+        onOpenParity={() => undefined}
+      />,
+    );
+    expect(markup).toContain('data-testid="running-controls-reason"');
+    expect(markup).toContain("Controls return when the turn settles.");
+    for (const testId of [
+      "chat-mode-scripted",
+      "chat-mode-codex",
+      "reset-session",
+      "replay-session",
+    ]) {
+      const control = markup.match(new RegExp(`<button[^>]*data-testid="${testId}"[^>]*>`))?.[0];
+      expect(control, testId).toContain("disabled");
+      expect(control, testId).toContain('aria-describedby="running-controls-reason"');
+    }
   });
 });
 

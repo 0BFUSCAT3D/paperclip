@@ -91,7 +91,14 @@ function TurnBlock({
             data-kind={entry.kind}
             data-testid={`chat-entry-${entry.sequence}`}
           >
-            <TimelineEntryBody entry={entry} />
+            <TimelineEntryBody
+              entry={entry}
+              streaming={
+                !settled &&
+                entry.kind === "agent_message" &&
+                entry.sequence === entries.at(-1)?.sequence
+              }
+            />
           </li>
         ))}
       </ol>
