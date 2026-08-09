@@ -1,6 +1,6 @@
 # Phase 6 Thin Paperclip Adapter Boundary
 
-Status: design approved; implementation gate pending CTO re-review
+Status: design approved; implementation remediated; CTO conformance re-review pending
 Date: 2026-08-09
 Decision scope: the first feature-flagged Paperclip native run, including the
 normative native finalizer and server-owned Section 18 status arbitration
@@ -759,17 +759,43 @@ committer, finalizer, and terminal heartbeat projection. No package contract,
 provider/session behavior, legacy adapter, approval authority, workspace
 policy, or UI surface changes.
 
-The corpus test remains in its pre-approved matrix path. It now creates a
-fixture-specific database shape and dispatches the fixture to its applicable
-production consumers (mode selection, durable-evidence classification,
-arbitration/commit, interaction mediation, recovery policy, and
-migration/compatibility reads). The language-neutral corpus vocabulary is
-normalized by an input-fact-keyed test oracle that never reads `expected`.
-Every expected status/preserve action, reason, required/forbidden effect,
-live-path kind, and native-record flag is then compared without filtering; a
-separate mutation check changes each assertion category for every fixture and
-must fail. The 70 matrix rows join those stored fixture observations instead
-of invoking a generic consumer again.
+### Remediation 3 production-policy and corpus amendment (2026-08-09)
+
+The following production files were already listed in the approved authority
+seams above. This amendment explicitly permits corpus-conformance vocabulary
+and return-shape corrections inside those seams; it grants no new authority:
+
+```text
+server/src/services/native-runtime/status-arbiter.ts
+server/src/services/native-runtime/status-decision-committer.ts
+server/src/services/native-runtime/native-run-finalizer.ts
+server/src/services/native-runtime/native-interaction-bridge.ts
+server/src/services/native-runtime/native-session-executor.ts
+server/src/services/native-runtime/native-finalization-reconciler.ts
+server/src/services/native-runtime/runtime-mode.ts
+```
+
+The arbiter remains the versioned server-owned policy boundary. The finalizer,
+attention, cancellation, reconciliation, compatibility, and migration modules
+expose trigger-specific production consumers of that policy. The committer
+continues to materialize decisions and effects atomically through existing
+issue, interaction, wake, recovery, and activity services. This amendment does
+not authorize changes to package contracts, provider/session behavior, a
+concrete legacy adapter, approval authority, workspace or budget policy, or UI.
+
+The corpus test remains in its pre-approved matrix path. It creates a
+fixture-specific database shape and dispatches the fixture to the responsible
+production consumer. All eleven expected fields are derived from consumer
+return values and persisted production rows: run status, status/preserve
+action, reason, required and forbidden effects, live-path kind, claim
+preservation, native-record behavior, decision count, maximum wake count, and
+maximum notification count. A separate mutation check changes every expected
+field for every fixture and must fail. Every one of the 70 matrix row IDs maps
+to a named finalizer, terminal projection, attention, cancellation, committer,
+reconciliation, compatibility, or migration consumer, and the row fails if
+that consumer did not execute or returned different semantics. No hand-written
+test policy table supplies observed outcomes and no row is satisfied by a
+coverage-label join to a generic observation.
 
 ## Commands the implementation must make runnable
 

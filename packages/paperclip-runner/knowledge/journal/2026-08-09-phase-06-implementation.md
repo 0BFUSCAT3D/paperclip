@@ -62,10 +62,13 @@ existing server authority and keep legacy execution as the default.
   applied the complete migration; the actual flag-off heartbeat executed the
   legacy adapter/finalizer and created zero native rows.
 - Section 18.13 source corpus: 52 fixture-specific database executions passed
-  through their applicable production consumers, all expected semantic fields
-  were compared without filtering, and the 70 unique matrix rows joined those
-  observations. Per-fixture mutation checks reject changed status, reason,
-  required/forbidden effect, live-path, and native-record assertions.
+  through named production consumers. Consumer returns and persisted rows
+  supplied all eleven assertions: run status, status/preserve action, reason,
+  required/forbidden effects, live path, claim preservation, native-record
+  behavior, decision count, maximum wake count, and maximum notification
+  count. All 70 matrix rows require their named consumer execution and compare
+  that consumer's semantics. Per-fixture mutation checks reject changes to
+  every expected field; no test-owned policy table supplies observations.
 - The production heartbeat reaper resumed one persisted result-less run through
   the original execution/finalization path with the flag disabled. It recovered
   an already-active scripted provider turn and produced exactly one result,

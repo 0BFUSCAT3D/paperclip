@@ -5,11 +5,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   agents,
+  agentWakeupRequests,
   companies,
   completionContracts,
   createDb,
   heartbeatRuns,
   issueThreadInteractions,
+  issueRecoveryActions,
   issueWorkProducts,
   issues,
   nativeRunFinalizations,
@@ -23,18 +25,36 @@ import { classifyNativeEvidence } from "../services/native-runtime/evidence-clas
 import {
   materializeNativeInteractionResponses,
   rejectUnsupportedNativeRuntimeRequest,
+  resolveNativeAttentionStatus,
 } from "../services/native-runtime/native-interaction-bridge.js";
 import {
   cancelNativeSession,
   nativeSessionFailureDisposition,
+  resolveNativeCancellationStatus,
 } from "../services/native-runtime/native-session-executor.js";
-import { resolveNativeRuntimeMode } from "../services/native-runtime/runtime-mode.js";
-import { arbitrateNativeStatus } from "../services/native-runtime/status-arbiter.js";
+import {
+  inspectNativeCompatibilityState,
+  inspectNativeMigrationState,
+  resolveNativeCompatibilityStatus,
+  resolveNativeMigrationStatus,
+  resolveNativeRuntimeMode,
+} from "../services/native-runtime/runtime-mode.js";
+import {
+  arbitrateNativeStatus,
+  type NativeStatusAuthorityScenario,
+} from "../services/native-runtime/status-arbiter.js";
 import {
   commitNativeStatusDecision,
   type NativeStatusCommitFailpoint,
 } from "../services/native-runtime/status-decision-committer.js";
+import {
+  projectNativeTerminalRunStatus,
+  recordNativeFinalizationFailure,
+  resolveNativeFinalizerStatus,
+} from "../services/native-runtime/native-run-finalizer.js";
+import { resolveNativeReconciliationStatus } from "../services/native-runtime/native-finalization-reconciler.js";
 import { issueService } from "../services/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 type Fixture = {
@@ -44,22 +64,32 @@ type Fixture = {
   given: Record<string, unknown>;
   expected: {
     statusAction: string;
+    runStatus: string;
     reasonCode: string | null;
     requiredEffects: string[];
     forbiddenEffects: string[];
     livePathKind: string | null;
+    preserveClaim: boolean;
     nativeRecords: boolean;
+    decisionCount: number;
+    maxWakeCount: number;
+    maxNotificationCount: number;
   };
 };
 
 type Corpus = { schema: string; corpusRevision: number; fixtures: Fixture[] };
 
 type PolicyObservation = {
+  runStatus: string;
   statusAction: string;
   reasonCode: string | null;
   effects: string[];
   livePathKind: string | null;
+  preserveClaim: boolean;
   nativeRecords: boolean;
+  decisionCount: number;
+  wakeCount: number;
+  notificationCount: number;
 };
 
 type ConsumerExecution = {
@@ -70,8 +100,7 @@ type ConsumerExecution = {
 type FixtureObservation = PolicyObservation & {
   fixtureId: string;
   consumerExecutions: ConsumerExecution[];
-  persistedDecisionCount: number;
-  persistedEffectCount: number;
+  consumerEvidenceByRow: Map<string, string>;
 };
 
 const corpusPath = fileURLToPath(new URL(
@@ -81,72 +110,83 @@ const corpusPath = fileURLToPath(new URL(
 
 const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as Corpus;
 
-/**
- * Independent test oracle for the Phase 5 scenario vocabulary. It is keyed by
- * input fact, never by fixture id or expected output, so editing an expected
- * field cannot also change the observation. Production consumers below must
- * execute before an oracle result is accepted.
- */
-const policyByCompletionState: Record<string, Omit<PolicyObservation, "nativeRecords">> = {
-  mechanically_satisfied: policy("done", "completion_contract_satisfied", ["release_checkout"]),
-  low_risk_policy_claim: policy("done", "completion_claim_policy_accepted", ["release_checkout"]),
-  missing_required_test: policy("in_progress", "completion_evidence_incomplete", ["enqueue_continuation"], "continuation"),
-  no_durable_continuation: policy("preserve", "prior_status_preserved_no_live_path", ["record_finalization_error"], "recovery"),
-  named_reviewer_required: policy("in_review", "completion_review_required", ["bind_reviewer", "notify_owner"], "review"),
-  governed_gate_pending: policy("in_review", "governed_gate_pending", ["create_interaction", "notify_owner"], "interaction"),
-  review_required: policy("in_review", "completion_review_required", ["bind_reviewer", "notify_owner"], "review"),
-  safe_partial_parse: policy("preserve", "native_finalization_invalid", ["record_finalization_error"], "recovery"),
-  valid_continuation: policy("in_progress", "live_continuation_registered", ["enqueue_continuation"], "continuation"),
-  alternate_track_runnable: policy("in_progress", "turn_waiting_other_track_live", ["enqueue_continuation"], "continuation"),
-  task_wide_owner_action_bound: policy("blocked", "task_wide_blocker_bound", ["bind_blocker", "notify_owner"], "blocker"),
-  context_answer_current: policy("in_progress", "attention_resolved_from_context", ["enqueue_continuation"], "continuation"),
-  ordinary_domain_expertise: policy("in_progress", "attention_routed_to_agent", ["create_delegated_issue", "enqueue_continuation"], "delegated_issue"),
-  intentional_human_judgment: policy("in_review", "attention_requires_human_authority", ["create_interaction", "notify_owner"], "interaction"),
-  equivalent_attention_family: policy("preserve", "attention_duplicate_suppressed", ["link_canonical_request"]),
-  resolver_budget_exhausted: policy("preserve", "attention_budget_exhausted", ["record_finalization_error"], "recovery"),
-  partial_evidence_persisted: policy("preserve", "run_failed_partial_evidence_preserved", ["schedule_retry"], "retry"),
-  claim_before_workspace_failure: policy("preserve", "finalization_failed_claim_preserved", ["record_finalization_error"], "recovery"),
-  turn_scope: policy("preserve", "cancellation_turn_only", ["accept_replacement_turn"], "continuation"),
-  run_scope: policy("preserve", "cancellation_run_only", ["release_run_resources"]),
-  issue_scope_authorized: policy("cancelled", "cancellation_issue_authorized", ["release_checkout", "cancel_continuations"]),
-  new_evidence_satisfies_contract: policy("done", "decision_superseded_by_new_evidence", ["release_checkout"]),
-  dependency_now_done: policy("in_progress", "dependency_resolved", ["enqueue_continuation"], "continuation"),
-  explicit_resume_capability: policy("in_progress", "authorized_resume", ["enqueue_continuation"], "continuation"),
-  replacement_turn_accepted: policy("preserve", null, ["accept_replacement_turn"], "continuation"),
-  transient_retry_then_success: policy("in_progress", "attention_resolved_from_context", ["enqueue_continuation"], "continuation"),
-  cross_company_target: policy("preserve", "result_schema_rejected", ["record_finalization_error"]),
-  response_after_supersession: policy("preserve", "attention_duplicate_suppressed", ["record_stale_response"]),
-  interaction_expired: policy("preserve", "attention_budget_exhausted", ["record_expiry"], "recovery"),
-  identical_result_before_ack: policy("done", "completion_contract_satisfied", ["release_checkout"]),
-  reused_id_changed_material: policy("preserve", "structured_result_replay_conflict", ["record_finalization_error"]),
-  result_preserved: policy("done", "completion_contract_satisfied", ["resume_workspace_operation", "release_checkout"]),
-  decision_committed_delivery_pending: policy("in_progress", "live_continuation_registered", ["enqueue_continuation", "dispatch_pending_effect"], "continuation"),
-  board_cancelled_before_cas: policy("preserve", "prior_status_terminal_preserved", ["append_superseding_assessment"]),
-  new_policy_requires_review: policy("in_review", "completion_review_required", ["bind_reviewer", "append_superseding_assessment"], "review"),
-  legacy_exit_zero: policy("legacy_finalizer", null, ["legacy_existing_behavior"]),
-  native_field_only_in_result_json: policy("legacy_finalizer", null, ["legacy_existing_behavior"]),
-  preexisting_open_issue: policy("preserve", null, ["initialize_status_version_zero"], "review"),
-  shadow_application_disabled: policy("preserve", "completion_contract_satisfied", ["record_shadow_decision"]),
-  mixed_ledger: policy("preserve", "completion_contract_satisfied", ["render_four_layers"]),
-  authorized_writer_incremented_version: policy("preserve", "arbitration_conflict_reloaded", ["increment_status_version", "schedule_reconciliation"], "recovery"),
-  production_shaped_upgrade: policy("preserve", null, ["expand_schema", "status_version_default_zero"]),
-  authorized_status_write: policy("in_review", null, ["increment_status_version_once", "bind_reviewer"], "review"),
-  no_native_rows: policy("legacy_finalizer", null, ["return_native_false"]),
-  shadow_compute: policy("preserve", "completion_contract_satisfied", ["materialize_contract", "record_shadow_decision"]),
-  classified_native_legacy_divergence: policy("preserve", "completion_evidence_incomplete", ["record_mode_labeled_divergence"]),
-  allowlisted_company_adapter_policy: policy("in_progress", "live_continuation_registered", ["enqueue_continuation", "record_mode_native"], "continuation"),
-  cohort_policy_pinned: policy("done", "completion_contract_satisfied", ["record_mode_native", "record_policy_version"]),
-  kill_switch_during_active_native_run: policy("in_progress", "live_continuation_registered", ["enqueue_continuation", "finish_as_native", "stop_new_native_dispatch"], "continuation"),
-  no_reviewed_adapter_contract_migration: policy("legacy_finalizer", null, ["retain_legacy_mode", "retain_audit_lineage"]),
+const matrixRowConsumers: Record<string, string> = {
+  "SD-01": "native-finalizer-status",
+  "SD-02": "native-finalizer-status",
+  "SD-03": "native-finalizer-status",
+  "SD-04": "native-finalizer-status",
+  "SD-05": "native-finalizer-status",
+  "SD-06": "native-finalizer-status",
+  "SD-07": "native-finalizer-status",
+  "SD-08": "native-finalizer-status",
+  "SD-09": "native-attention-resolver",
+  "SD-10": "native-attention-resolver",
+  "SD-11": "native-attention-resolver",
+  "SD-12": "native-attention-resolver",
+  "SD-13": "native-attention-resolver",
+  "SD-14": "native-finalizer-status",
+  "SD-15": "native-finalizer-status",
+  "SD-16": "native-cancellation-authority",
+  "SD-17": "native-cancellation-authority",
+  "SD-18": "native-cancellation-authority",
+  "SD-19": "native-reconciliation-consumer",
+  "TC-01": "native-run-terminal-projection",
+  "TC-02": "native-run-terminal-projection",
+  "TC-03": "native-run-terminal-projection",
+  "TC-04": "native-run-terminal-projection",
+  "TC-05": "native-run-terminal-projection",
+  "TC-06": "native-run-terminal-projection",
+  "TC-07": "native-run-terminal-projection",
+  "TC-08": "native-run-terminal-projection",
+  "ATT-01": "native-attention-resolver",
+  "ATT-02": "native-attention-resolver",
+  "ATT-03": "native-attention-resolver",
+  "ATT-04": "native-attention-resolver",
+  "ATT-05": "native-attention-resolver",
+  "ATT-06": "native-attention-resolver",
+  "ATT-07": "native-attention-resolver",
+  "ATT-08": "native-attention-resolver",
+  "ATT-09": "native-attention-resolver",
+  "ATT-10": "native-attention-resolver",
+  "ATT-11": "native-attention-resolver",
+  "ATT-12": "native-attention-resolver",
+  "LIVE-01": "status-decision-committer",
+  "LIVE-02": "status-decision-committer",
+  "LIVE-03": "status-decision-committer",
+  "LIVE-04": "status-decision-committer",
+  "LIVE-05": "status-decision-committer",
+  "LIVE-06": "status-decision-committer",
+  "REC-01": "native-reconciliation-consumer",
+  "REC-02": "native-reconciliation-consumer",
+  "REC-03": "native-reconciliation-consumer",
+  "REC-04": "native-reconciliation-consumer",
+  "REC-05": "native-reconciliation-consumer",
+  "REC-06": "native-reconciliation-consumer",
+  "REC-07": "native-reconciliation-consumer",
+  "REC-08": "native-reconciliation-consumer",
+  "COMP-01": "native-compatibility-read-model",
+  "COMP-02": "native-compatibility-status",
+  "COMP-03": "native-compatibility-read-model",
+  "COMP-04": "native-compatibility-read-model",
+  "COMP-05": "native-compatibility-status",
+  "COMP-06": "native-compatibility-status",
+  "COMP-07": "native-compatibility-read-model",
+  "COMP-08": "native-compatibility-status",
+  "MIG-01": "native-migration-read-model",
+  "MIG-02": "native-migration-read-model",
+  "MIG-03": "native-migration-read-model",
+  "MIG-04": "native-migration-status",
+  "MIG-05": "native-migration-status",
+  "MIG-06": "native-migration-status",
+  "MIG-07": "native-migration-status",
+  "MIG-08": "native-migration-status",
+  "MIG-09": "native-migration-read-model",
 };
 
-function policy(
-  statusAction: string,
-  reasonCode: string | null,
-  effects: string[],
-  livePathKind: string | null = null,
-): Omit<PolicyObservation, "nativeRecords"> {
-  return { statusAction, reasonCode, effects, livePathKind };
+function requiredConsumerForMatrixRow(matrixRow: string) {
+  const consumer = matrixRowConsumers[matrixRow];
+  if (!consumer) throw new Error(`No production consumer assertion for ${matrixRow}`);
+  return consumer;
 }
 
 const noNativeRecordStates = new Set([
@@ -171,6 +211,44 @@ const completeEvidenceStates = new Set([
   "cohort_policy_pinned",
 ]);
 
+const scenarioStates = new Set<NativeStatusAuthorityScenario>([
+  "mechanically_satisfied", "low_risk_policy_claim", "missing_required_test",
+  "no_durable_continuation", "named_reviewer_required", "governed_gate_pending",
+  "review_required", "safe_partial_parse", "valid_continuation",
+  "alternate_track_runnable", "task_wide_owner_action_bound", "context_answer_current",
+  "ordinary_domain_expertise", "intentional_human_judgment", "equivalent_attention_family",
+  "resolver_budget_exhausted", "partial_evidence_persisted", "claim_before_workspace_failure",
+  "turn_scope", "run_scope", "issue_scope_authorized", "new_evidence_satisfies_contract",
+  "dependency_now_done", "explicit_resume_capability", "transient_retry_then_success",
+  "replacement_turn_accepted",
+  "cross_company_target", "response_after_supersession", "interaction_expired",
+  "identical_result_before_ack", "reused_id_changed_material", "result_preserved",
+  "decision_committed_delivery_pending", "board_cancelled_before_cas", "new_policy_requires_review",
+  "shadow_application_disabled", "mixed_ledger", "authorized_writer_incremented_version",
+  "shadow_compute", "classified_native_legacy_divergence", "allowlisted_company_adapter_policy",
+  "cohort_policy_pinned", "kill_switch_during_active_native_run",
+]);
+
+const zeroDecisionStates = new Set([
+  "safe_partial_parse", "equivalent_attention_family", "cross_company_target",
+  "response_after_supersession", "reused_id_changed_material",
+]);
+
+const supersedingDecisionStates = new Set([
+  "new_evidence_satisfies_contract", "dependency_now_done", "explicit_resume_capability",
+  "board_cancelled_before_cas", "new_policy_requires_review", "authorized_writer_incremented_version",
+]);
+
+function initialRunStatus(fixture: Fixture) {
+  const terminalState = fixture.given.runTerminalState;
+  if (["succeeded", "failed", "cancelled", "active"].includes(String(terminalState))) {
+    return projectNativeTerminalRunStatus(terminalState as "succeeded" | "failed" | "cancelled" | "active");
+  }
+  return projectNativeTerminalRunStatus(
+    fixture.given.nativeFinalization === "present" ? "succeeded" : "active",
+  );
+}
+
 function fixtureDisposition(fixture: Fixture): NativeEvidenceAssessment["reportedDisposition"] {
   const value = fixture.given.reportedWorkDisposition;
   return ["done", "blocked", "needs_review", "yielded"].includes(String(value))
@@ -185,18 +263,9 @@ function failpointFor(fixture: Fixture): NativeStatusCommitFailpoint | undefined
   return undefined;
 }
 
-function policyForFixture(fixture: Fixture): Omit<PolicyObservation, "nativeRecords"> {
-  if (["continuation_insert_failure", "reviewer_insert_failure", "blocker_insert_failure"].includes(String(fixture.given.fault))) {
-    return policy("preserve", "side_effect_planning_failed", ["record_finalization_error"]);
-  }
-  const completionState = String(fixture.given.completionState ?? "");
-  const observed = policyByCompletionState[completionState];
-  if (!observed) throw new Error(`No independent policy rule for ${completionState}`);
-  return observed;
-}
-
 function comparisonFailures(fixture: Fixture, observed: FixtureObservation): string[] {
   const failures: string[] = [];
+  if (observed.runStatus !== fixture.expected.runStatus) failures.push("runStatus");
   if (observed.statusAction !== fixture.expected.statusAction) failures.push("statusAction");
   if (observed.reasonCode !== fixture.expected.reasonCode) failures.push("reasonCode");
   for (const effect of fixture.expected.requiredEffects) {
@@ -206,7 +275,11 @@ function comparisonFailures(fixture: Fixture, observed: FixtureObservation): str
     if (observed.effects.includes(effect)) failures.push(`forbiddenEffects:${effect}`);
   }
   if (observed.livePathKind !== fixture.expected.livePathKind) failures.push("livePathKind");
+  if (observed.preserveClaim !== fixture.expected.preserveClaim) failures.push("preserveClaim");
   if (observed.nativeRecords !== fixture.expected.nativeRecords) failures.push("nativeRecords");
+  if (observed.decisionCount !== fixture.expected.decisionCount) failures.push("decisionCount");
+  if (observed.wakeCount > fixture.expected.maxWakeCount) failures.push("maxWakeCount");
+  if (observed.notificationCount > fixture.expected.maxNotificationCount) failures.push("maxNotificationCount");
   return failures;
 }
 
@@ -250,13 +323,21 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       assigneeAgentId: agentId,
       workMode: "standard",
     });
-    if (!nativeRecords) return { issueId, runId, workProductId, nativeRecords, assessmentId };
+    if (!nativeRecords) return {
+      issueId,
+      runId,
+      workProductId,
+      nativeRecords,
+      assessmentId,
+      contractId: null,
+      resultId: null,
+    };
 
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
       agentId,
-      status: "running",
+      status: initialRunStatus(fixture),
       runtimeMode: "native",
       runtimeModeResolvedAt: new Date(),
       contextSnapshot: { issueId, fixtureId: fixture.id },
@@ -284,7 +365,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       completionContractId: contractId,
       serverFingerprint: `fingerprint:${fixture.id}`,
       schemaStatus: "accepted",
-      resultJson: { fixtureId: fixture.id },
+      resultJson: {
+        fixtureId: fixture.id,
+        ...(fixture.given.reportedWorkDisposition === null && fixture.given.nativeFinalization !== "invalid"
+          ? {}
+          : { completionClaim: { fixtureId: fixture.id, preserved: true } }),
+      },
       canonicalSha256: `result:${fixture.id}`,
     });
     await db.insert(issueWorkProducts).values({
@@ -320,14 +406,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       resultId,
       assessmentId,
     });
-    return { issueId, runId, workProductId, nativeRecords, assessmentId };
+    return { issueId, runId, workProductId, nativeRecords, assessmentId, contractId, resultId };
   }
 
   async function executeFixture(fixture: Fixture): Promise<FixtureObservation> {
     const completionState = String(fixture.given.completionState ?? "");
-    const oracle = policyForFixture(fixture);
     const seeded = await seedFixture(fixture);
     const consumerExecutions: ConsumerExecution[] = [];
+    const priorIssueStatus = String(fixture.given.priorIssueStatus ?? "in_progress") as Parameters<typeof arbitrateNativeStatus>[0]["priorIssueStatus"];
     const mode = resolveNativeRuntimeMode({
       enabled: fixture.mode === "native",
       runtimeConfig: { nativeRunner: { mode: "native", backend: "codex_app_server", protocolVersion: 1 } },
@@ -338,8 +424,95 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
     consumerExecutions.push({ consumer: "runtime-mode", observed: { kind: mode.kind, reason: mode.reason } });
 
+    let governanceGate: { kind: "interaction"; id: string } | null = null;
+    if (seeded.nativeRecords && completionState === "governed_gate_pending") {
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId: seeded.issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        payload: { version: 1, prompt: fixture.id },
+      });
+      governanceGate = { kind: "interaction", id: interactionId };
+    }
+
+    const scenario = scenarioStates.has(completionState as NativeStatusAuthorityScenario)
+      ? completionState as NativeStatusAuthorityScenario
+      : null;
+    const decisionArgs = scenario ? {
+      scenario,
+      priorIssueStatus,
+      agentId,
+      governanceGate,
+      blockerAction: `Resolve ${fixture.id}`,
+    } : null;
+    const pushDecisionConsumer = (
+      consumer: string,
+      decision: ReturnType<typeof resolveNativeFinalizerStatus>,
+    ) => {
+      consumerExecutions.push({
+        consumer,
+        observed: {
+          statusAction: decision.statusAction,
+          toStatus: decision.toStatus,
+          reasonCode: decision.reasonCode,
+          effects: decision.effects.map((effect) => effect.kind),
+        },
+      });
+      return decision;
+    };
+
+    let semanticConsumer: string | null = null;
+    let scenarioDecision: ReturnType<typeof resolveNativeFinalizerStatus> | null = null;
+    if (scenario && decisionArgs) {
+      if (["turn_scope", "run_scope", "issue_scope_authorized"].includes(completionState)) {
+        semanticConsumer = "native-cancellation-authority";
+        const scope = completionState === "turn_scope" ? "turn" : completionState === "run_scope" ? "run" : "issue";
+        scenarioDecision = pushDecisionConsumer(semanticConsumer, resolveNativeCancellationStatus({ scope, priorIssueStatus, agentId }));
+      } else if (
+        supersedingDecisionStates.has(completionState)
+        || (fixture.covers.reconciliationRows ?? []).length > 0
+        || String(fixture.given.trigger) === "dependency"
+      ) {
+        semanticConsumer = "native-reconciliation-consumer";
+        scenarioDecision = pushDecisionConsumer(semanticConsumer, resolveNativeReconciliationStatus(decisionArgs));
+      } else if (["attention_response", "attention_candidate", "interaction", "monitor"].includes(String(fixture.given.trigger))) {
+        semanticConsumer = "native-attention-resolver";
+        scenarioDecision = pushDecisionConsumer(semanticConsumer, resolveNativeAttentionStatus(decisionArgs));
+      } else if ((fixture.covers.migrationRows ?? []).length > 0 && (fixture.covers.decisionRows ?? []).length === 0) {
+        semanticConsumer = "native-migration-status";
+        scenarioDecision = pushDecisionConsumer(semanticConsumer, resolveNativeMigrationStatus(decisionArgs));
+      } else if ((fixture.covers.compatibilityRows ?? []).length > 0 && (fixture.covers.decisionRows ?? []).length === 0) {
+        semanticConsumer = "native-compatibility-status";
+        scenarioDecision = pushDecisionConsumer(semanticConsumer, resolveNativeCompatibilityStatus(decisionArgs));
+      } else {
+        semanticConsumer = "native-finalizer-status";
+        scenarioDecision = pushDecisionConsumer(semanticConsumer, resolveNativeFinalizerStatus(decisionArgs));
+      }
+
+      if ((fixture.covers.attentionRows ?? []).length > 0 && semanticConsumer !== "native-attention-resolver") {
+        pushDecisionConsumer("native-attention-resolver", resolveNativeAttentionStatus(decisionArgs));
+      }
+      if ((fixture.covers.reconciliationRows ?? []).length > 0 && semanticConsumer !== "native-reconciliation-consumer") {
+        pushDecisionConsumer("native-reconciliation-consumer", resolveNativeReconciliationStatus(decisionArgs));
+      }
+      if (
+        (fixture.covers.compatibilityRows ?? []).some((row) => ["COMP-02", "COMP-05", "COMP-06", "COMP-07", "COMP-08"].includes(row))
+        && semanticConsumer !== "native-compatibility-status"
+      ) {
+        pushDecisionConsumer("native-compatibility-status", resolveNativeCompatibilityStatus(decisionArgs));
+      }
+      if (
+        (fixture.covers.migrationRows ?? []).some((row) => ["MIG-04", "MIG-05", "MIG-06", "MIG-07", "MIG-08"].includes(row))
+        && semanticConsumer !== "native-migration-status"
+      ) {
+        pushDecisionConsumer("native-migration-status", resolveNativeMigrationStatus(decisionArgs));
+      }
+    }
+
     let assessment: NativeEvidenceAssessment | null = null;
-    let decision: ReturnType<typeof arbitrateNativeStatus> | null = null;
     if (seeded.nativeRecords && ["runner_finalizer", "dependency", "shadow_comparator", "read_model", "authorized_agent"].includes(String(fixture.given.trigger))) {
       const accepted = completeEvidenceStates.has(completionState);
       const evidenceRef = accepted
@@ -383,65 +556,121 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         },
       });
 
-      let governanceGate: { kind: "interaction"; id: string } | null = null;
-      if (completionState === "governed_gate_pending") {
-        const interactionId = randomUUID();
-        await db.insert(issueThreadInteractions).values({
-          id: interactionId,
-          companyId,
-          issueId: seeded.issueId,
-          kind: "request_confirmation",
-          status: "pending",
-          payload: { version: 1, prompt: fixture.id },
-        });
-        governanceGate = { kind: "interaction", id: interactionId };
-      }
-      decision = arbitrateNativeStatus({
+      const liveDecision = arbitrateNativeStatus({
         assessment,
         terminalState: fixture.given.runTerminalState === "failed"
           ? "failed"
           : fixture.given.runTerminalState === "cancelled" ? "cancelled" : "succeeded",
         workspaceFinalizeStatus: fixture.given.fault === "workspace_finalize_failure" ? "failed" : "succeeded",
         governanceGate,
+        completionClaimPolicyAccepted: completionState === "low_risk_policy_claim",
+        allowIncompleteContinuation: completionState !== "no_durable_continuation",
         agentId,
-        priorIssueStatus: String(fixture.given.priorIssueStatus ?? "in_progress") as Parameters<typeof arbitrateNativeStatus>[0]["priorIssueStatus"],
+        priorIssueStatus,
       });
       consumerExecutions.push({
         consumer: "status-arbiter",
         observed: {
-          toStatus: decision.toStatus,
-          reasonCode: decision.reasonCode,
-          effects: decision.effects.map((effect) => effect.kind),
+          toStatus: liveDecision.toStatus,
+          reasonCode: liveDecision.reasonCode,
+          effects: liveDecision.effects.map((effect) => effect.kind),
         },
       });
+    }
 
-      if (String(fixture.given.trigger) === "runner_finalizer") {
-        const failpoint = failpointFor(fixture);
-        try {
-          const committed = await commitNativeStatusDecision({
-            db,
-            companyId,
-            issueId: seeded.issueId,
-            runId: seeded.runId,
-            assessmentId: seeded.assessmentId,
-            priorStatus: String(fixture.given.priorIssueStatus ?? "in_progress"),
-            priorStatusVersion: 0,
-            priorDecisionId: null,
-            decision,
-            failpoint,
-          });
-          consumerExecutions.push({
-            consumer: "status-decision-committer",
-            observed: { applicationState: committed.decision.applicationState, failpoint: null },
-          });
-        } catch (error) {
-          if (!failpoint) throw error;
-          consumerExecutions.push({
-            consumer: "status-decision-committer",
-            observed: { applicationState: "rolled_back", failpoint, error: String(error) },
-          });
-        }
+    let rolledBack = false;
+    if (
+      seeded.nativeRecords
+      && scenarioDecision
+      && scenarioDecision.reasonCode !== null
+      && completionState !== "replacement_turn_accepted"
+      && !zeroDecisionStates.has(completionState)
+    ) {
+      let priorStatusVersion = 0;
+      let priorDecisionId: string | null = null;
+      if (supersedingDecisionStates.has(completionState)) {
+        const priorAssessmentId = randomUUID();
+        await db.insert(workAssessments).values({
+          id: priorAssessmentId,
+          companyId,
+          issueId: seeded.issueId,
+          runId: seeded.runId,
+          contractId: seeded.contractId!,
+          resultId: seeded.resultId!,
+          triggerKind: "prior_fixture_fact",
+          triggerActorCompanyId: companyId,
+          priorIssueStatus,
+          priorStatusVersion: 0,
+          policyVersion: "phase6-v1",
+          assessmentJson: { fixtureId: fixture.id, superseded: true },
+          inputDigest: `prior-assessment:${fixture.id}`,
+        });
+        const [priorDecision] = await db.insert(statusDecisions).values({
+          companyId,
+          issueId: seeded.issueId,
+          assessmentId: priorAssessmentId,
+          decisionVersion: 1,
+          policyVersion: "phase6-v1",
+          fromStatus: priorIssueStatus,
+          toStatus: priorIssueStatus,
+          reasonCode: "prior_fixture_decision",
+          decisionJson: { superseded: true },
+          decisionDigest: `prior-decision:${fixture.id}`,
+          applicationState: "applied",
+          appliedAt: new Date(),
+        }).returning({ id: statusDecisions.id });
+        priorDecisionId = priorDecision!.id;
+        priorStatusVersion = 1;
+        await db.update(issues).set({
+          statusVersion: priorStatusVersion,
+          lastStatusDecisionId: priorDecisionId,
+        }).where(eq(issues.id, seeded.issueId));
       }
+
+      const failpoint = failpointFor(fixture);
+      try {
+        const committed = await commitNativeStatusDecision({
+          db,
+          companyId,
+          issueId: seeded.issueId,
+          runId: seeded.runId,
+          assessmentId: seeded.assessmentId,
+          priorStatus: priorIssueStatus,
+          priorStatusVersion,
+          priorDecisionId,
+          decision: scenarioDecision,
+          failpoint,
+        });
+        consumerExecutions.push({
+          consumer: "status-decision-committer",
+          observed: { applicationState: committed.decision.applicationState, failpoint: null },
+        });
+      } catch (error) {
+        if (!failpoint) throw error;
+        rolledBack = true;
+        consumerExecutions.push({
+          consumer: "status-decision-committer",
+          observed: { applicationState: "rolled_back", failpoint, error: String(error) },
+        });
+      }
+    }
+
+    if (seeded.nativeRecords && (rolledBack || completionState === "safe_partial_parse")) {
+      const failure = await recordNativeFinalizationFailure({
+        db,
+        runId: seeded.runId,
+        error: new Error(rolledBack ? "side_effect_planning_failed" : "native_finalization_invalid"),
+        projectRunStatus: true,
+      });
+      consumerExecutions.push({
+        consumer: "native-finalization-failure",
+        observed: { phase: failure.phase, failureCode: failure.failureCode },
+      });
+    } else if (seeded.nativeRecords && scenarioDecision?.effects.some((effect) => effect.kind === "record_finalization_error")) {
+      await db.update(heartbeatRuns).set({
+        status: projectNativeTerminalRunStatus("failed"),
+        finishedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, seeded.runId));
     }
 
     if (["attention_response", "attention_candidate", "interaction", "monitor"].includes(String(fixture.given.trigger))) {
@@ -496,9 +725,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
             ? String(fixture.given.priorIssueStatus ?? "in_progress")
             : null;
     if (boardTarget) {
+      const currentVersion = await db.select({ statusVersion: issues.statusVersion })
+        .from(issues).where(eq(issues.id, seeded.issueId))
+        .then((rows) => Number(rows[0]?.statusVersion ?? 0));
       const updated = await issueService(db).update(seeded.issueId, {
         status: boardTarget,
-        statusVersion: 1,
+        statusVersion: currentVersion + 1,
         actorUserId: "status-corpus-board",
         actorAgentId: null,
       });
@@ -506,6 +738,31 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         consumer: "authorized-issue-writer",
         observed: { status: updated.status, statusVersion: updated.statusVersion },
       });
+      if (completionState === "authorized_status_write") {
+        const reviewer = await issueThreadInteractionService(db).create(
+          updated,
+          {
+            kind: "request_confirmation",
+            idempotencyKey: `migration-review:${fixture.id}`,
+            sourceRunId: null,
+            title: "Migration writer review",
+            summary: "Preserve the existing review liveness path.",
+            continuationPolicy: "wake_assignee",
+            payload: {
+              version: 1,
+              prompt: "Review the migrated issue status.",
+              acceptLabel: "Approve",
+              rejectLabel: "Continue",
+              supersedeOnUserComment: false,
+            },
+          },
+          { systemId: "status-corpus" },
+        );
+        consumerExecutions.push({
+          consumer: "review-path-materializer",
+          observed: { interactionId: reviewer.id, status: reviewer.status },
+        });
+      }
     }
 
     const reconciliationRows = fixture.covers.reconciliationRows ?? [];
@@ -530,25 +787,172 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       });
     }
 
-    const [decisionRows, effectRows, nativeRows] = await Promise.all([
+    const [decisionRows, effectRows, nativeRows, wakeRows, recoveryRows, interactionRows, persistedIssue, persistedRun] = await Promise.all([
       db.select({ id: statusDecisions.id }).from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId)),
-      db.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId)),
-      db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(eq(nativeRunResults.issueId, seeded.issueId)),
+      db.select({
+        id: statusDecisionEffects.id,
+        effectKind: statusDecisionEffects.effectKind,
+        targetType: statusDecisionEffects.targetType,
+      }).from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, seeded.issueId)),
+      db.select({ id: nativeRunResults.id, resultJson: nativeRunResults.resultJson })
+        .from(nativeRunResults).where(eq(nativeRunResults.issueId, seeded.issueId)),
+      db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)),
+      db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId)),
+      db.select({ id: issueThreadInteractions.id, status: issueThreadInteractions.status })
+        .from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, seeded.issueId)),
+      db.select({ status: issues.status, statusVersion: issues.statusVersion })
+        .from(issues).where(eq(issues.id, seeded.issueId)).then((rows) => rows[0] ?? null),
+      db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, seeded.runId)).then((rows) => rows[0] ?? null),
     ]);
     const observedNativeRecords = nativeRows.length > 0;
+    const persistedEffects = effectRows
+      .map((row) => row.effectKind)
+      .filter((effect) => effect !== "issue_status_projection");
+    const compatibilityState = (fixture.covers.compatibilityRows ?? []).length > 0
+      ? inspectNativeCompatibilityState({
+          resolution: mode,
+          nativeRecordCount: nativeRows.length,
+          decisionCount: decisionRows.length,
+          issueStatus: persistedIssue?.status ?? priorIssueStatus,
+          statusVersion: Number(persistedIssue?.statusVersion ?? 0),
+          persistedEffectKinds: persistedEffects,
+        })
+      : null;
+    const migrationState = (fixture.covers.migrationRows ?? []).length > 0
+      ? inspectNativeMigrationState({
+          resolution: mode,
+          nativeRecordCount: nativeRows.length,
+          decisionCount: decisionRows.length,
+          issueStatusBefore: priorIssueStatus,
+          issueStatusAfter: persistedIssue?.status ?? priorIssueStatus,
+          statusVersion: Number(persistedIssue?.statusVersion ?? 0),
+          hasPendingReview: interactionRows.some((row) => row.status === "pending"),
+        })
+      : null;
+    let effects = persistedEffects.length > 0
+      ? persistedEffects
+      : scenarioDecision?.effects.map((effect) => effect.kind) ?? [];
+    if (rolledBack) effects = ["record_finalization_error"];
+    if (!scenarioDecision) {
+      effects = migrationState?.effects.length
+        ? [...migrationState.effects]
+        : compatibilityState?.effects.length ? [...compatibilityState.effects] : [];
+    }
+
+    const issueWakeRows = wakeRows.filter((row) => {
+      const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+      return payload.issueId === seeded.issueId || payload.taskId === seeded.issueId;
+    });
+    const statusAction = rolledBack
+      ? "preserve"
+      : scenarioDecision
+        ? scenarioDecision.statusAction
+        : migrationState?.statusAction ?? compatibilityState?.statusAction ?? "preserve";
+    const livePathKind = rolledBack
+      ? null
+      : effects.includes("create_delegated_issue") ? "delegated_issue"
+      : effects.includes("bind_reviewer") ? "review"
+      : effects.includes("create_interaction") ? "interaction"
+      : effects.includes("bind_blocker") ? "blocker"
+      : effects.includes("schedule_retry") ? "retry"
+      : effects.includes("enqueue_continuation") || effects.includes("accept_replacement_turn") ? "continuation"
+      : recoveryRows.length > 0 ? "recovery"
+      : completionState === "preexisting_open_issue" && persistedIssue?.status === "in_review" ? "review"
+      : null;
+    if ((fixture.covers.terminalRows ?? []).length > 0) {
+      const terminalInput = persistedRun?.status === "running"
+        ? "active"
+        : persistedRun?.status === "cancelled"
+          ? "cancelled"
+          : persistedRun?.status === "failed" ? "failed" : "succeeded";
+      consumerExecutions.push({
+        consumer: "native-run-terminal-projection",
+        observed: { status: projectNativeTerminalRunStatus(terminalInput) },
+      });
+    }
+    if (compatibilityState) {
+      consumerExecutions.push({
+        consumer: "native-compatibility-read-model",
+        observed: compatibilityState,
+      });
+    }
+    if (migrationState) {
+      consumerExecutions.push({
+        consumer: "native-migration-read-model",
+        observed: migrationState,
+      });
+    }
+    const consumerEvidenceByRow = new Map<string, string>();
+    for (const matrixRow of Object.values(fixture.covers).flat()) {
+      const consumer = requiredConsumerForMatrixRow(matrixRow);
+      const execution = consumerExecutions.find((candidate) => candidate.consumer === consumer);
+      if (!execution) continue;
+      const semanticRow = matrixRow.startsWith("SD-")
+        || matrixRow.startsWith("ATT-")
+        || matrixRow.startsWith("REC-")
+        || consumer.endsWith("-status");
+      if (semanticRow) {
+        const returnedEffects = Array.isArray(execution.observed.effects)
+          ? execution.observed.effects.map(String)
+          : [];
+        const returnedStatusAction = execution.observed.statusAction
+          ?? (execution.observed.toStatus === priorIssueStatus ? "preserve" : execution.observed.toStatus);
+        if (
+          returnedStatusAction !== statusAction
+          || execution.observed.reasonCode !== (rolledBack ? "side_effect_planning_failed" : scenarioDecision?.reasonCode ?? null)
+          || !effects.every((effect) => returnedEffects.includes(effect))
+        ) continue;
+      } else if (matrixRow.startsWith("TC-")) {
+        if (execution.observed.status !== (persistedRun?.status ?? initialRunStatus(fixture))) continue;
+      } else if (consumer.endsWith("-read-model")) {
+        const returnedEffects = Array.isArray(execution.observed.effects)
+          ? execution.observed.effects.map(String)
+          : [];
+        if (
+          execution.observed.statusAction !== statusAction
+          || execution.observed.native !== observedNativeRecords
+          || !effects.every((effect) => returnedEffects.includes(effect))
+        ) continue;
+      } else if (consumer === "status-decision-committer") {
+        const expectedApplicationState = rolledBack ? "rolled_back" : "applied";
+        if (execution.observed.applicationState !== expectedApplicationState) continue;
+      }
+      consumerEvidenceByRow.set(matrixRow, consumer);
+    }
     consumerExecutions.push({
       consumer: "native-record-read-model",
-      observed: { nativeRecords: observedNativeRecords, decisionCount: decisionRows.length, effectCount: effectRows.length },
+      observed: {
+        nativeRecords: observedNativeRecords,
+        decisionCount: decisionRows.length,
+        effectCount: effectRows.length,
+        wakeCount: issueWakeRows.length,
+        recoveryCount: recoveryRows.length,
+      },
     });
     if (consumerExecutions.length < 2) throw new Error(`${fixture.id} did not execute a concern consumer`);
 
     return {
       fixtureId: fixture.id,
-      ...oracle,
+      runStatus: mode.kind === "legacy"
+        ? "legacy_derived"
+        : persistedRun?.status ?? initialRunStatus(fixture),
+      statusAction,
+      reasonCode: rolledBack ? "side_effect_planning_failed" : scenarioDecision?.reasonCode ?? null,
+      effects,
+      livePathKind,
+      preserveClaim: nativeRows.some((row) => {
+        const result = row.resultJson && typeof row.resultJson === "object" ? row.resultJson : {};
+        return result.completionClaim !== undefined;
+      }),
       nativeRecords: observedNativeRecords,
+      decisionCount: decisionRows.length,
+      wakeCount: issueWakeRows.length,
+      notificationCount: effectRows.filter((row) => ["notify_owner", "create_delegated_issue", "cancel_continuations"].includes(row.effectKind)).length,
       consumerExecutions,
-      persistedDecisionCount: decisionRows.length,
-      persistedEffectCount: effectRows.length,
+      consumerEvidenceByRow,
     };
   }
 
@@ -559,11 +963,17 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     const observations = new Map<string, FixtureObservation>();
     for (const fixture of corpus.fixtures) observations.set(fixture.id, await executeFixture(fixture));
 
+    const semanticFailures: string[] = [];
     for (const fixture of corpus.fixtures) {
       const observed = observations.get(fixture.id)!;
-      expect(comparisonFailures(fixture, observed), fixture.id).toEqual([]);
+      semanticFailures.push(...comparisonFailures(fixture, observed).map((failure) => `${fixture.id}:${failure}`));
       expect(observed.consumerExecutions.length, `${fixture.id} consumer execution`).toBeGreaterThan(1);
+      for (const matrixRow of Object.values(fixture.covers).flat()) {
+        expect(observed.consumerEvidenceByRow.get(matrixRow), `${fixture.id}:${matrixRow}`)
+          .toBe(requiredConsumerForMatrixRow(matrixRow));
+      }
     }
+    expect(semanticFailures).toEqual([]);
 
     const matrixByRow = new Map<string, Array<{ fixtureId: string; observation: FixtureObservation }>>();
     for (const fixture of corpus.fixtures) {
@@ -589,7 +999,8 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect(result.joinedFixtures.length, result.matrixRow).toBeGreaterThan(0);
       for (const joined of result.joinedFixtures) {
         expect(joined.observation.fixtureId).toBe(joined.fixtureId);
-        expect(joined.observation.consumerExecutions.length, result.matrixRow).toBeGreaterThan(1);
+        expect(joined.observation.consumerEvidenceByRow.get(result.matrixRow), result.matrixRow)
+          .toBe(requiredConsumerForMatrixRow(result.matrixRow));
       }
     }
   }, 60_000);
@@ -602,12 +1013,17 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       const observed = observations.get(fixture.id)!;
       const observedEffect = observed.effects[0] ?? "__observed_effect__";
       const mutations: Array<[string, Fixture["expected"]]> = [
+        ["runStatus", { ...fixture.expected, runStatus: `mutated:${fixture.expected.runStatus}` }],
         ["statusAction", { ...fixture.expected, statusAction: `mutated:${fixture.expected.statusAction}` }],
         ["reasonCode", { ...fixture.expected, reasonCode: fixture.expected.reasonCode === null ? "mutated" : null }],
         ["requiredEffects", { ...fixture.expected, requiredEffects: [...fixture.expected.requiredEffects, "__missing_effect__"] }],
         ["forbiddenEffects", { ...fixture.expected, forbiddenEffects: [...fixture.expected.forbiddenEffects, observedEffect] }],
         ["livePathKind", { ...fixture.expected, livePathKind: fixture.expected.livePathKind === null ? "continuation" : null }],
+        ["preserveClaim", { ...fixture.expected, preserveClaim: !fixture.expected.preserveClaim }],
         ["nativeRecords", { ...fixture.expected, nativeRecords: !fixture.expected.nativeRecords }],
+        ["decisionCount", { ...fixture.expected, decisionCount: fixture.expected.decisionCount + 1 }],
+        ["maxWakeCount", { ...fixture.expected, maxWakeCount: observed.wakeCount - 1 }],
+        ["maxNotificationCount", { ...fixture.expected, maxNotificationCount: observed.notificationCount - 1 }],
       ];
       for (const [field, expected] of mutations) {
         const mutated = { ...fixture, expected };

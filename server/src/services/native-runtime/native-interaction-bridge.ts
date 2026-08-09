@@ -1,6 +1,12 @@
 import type { Db } from "@paperclipai/db";
 import type { NativeInteractionResponseEnvelope } from "@paperclipai/paperclip-runner";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import {
+  arbitrateNativeStatusScenario,
+  type NativeAuthoritativeIssueStatus,
+  type NativeGovernanceGate,
+  type NativeStatusAuthorityScenario,
+} from "./status-arbiter.js";
 
 export class NativeInteractionBridgeError extends Error {
   constructor(readonly code: string, message: string) {
@@ -131,4 +137,25 @@ export function rejectUnsupportedNativeRuntimeRequest(requestKind: string) {
     credentialsInjected: false as const,
     selfApproval: false as const,
   };
+}
+
+const ATTENTION_STATUS_SCENARIOS = new Set<NativeStatusAuthorityScenario>([
+  "alternate_track_runnable", "context_answer_current", "ordinary_domain_expertise",
+  "intentional_human_judgment", "equivalent_attention_family", "resolver_budget_exhausted",
+  "transient_retry_then_success", "cross_company_target", "response_after_supersession",
+  "interaction_expired", "governed_gate_pending",
+]);
+
+/** Server-owned attention resolution; candidates never author status/effects. */
+export function resolveNativeAttentionStatus(input: {
+  scenario: NativeStatusAuthorityScenario;
+  priorIssueStatus: NativeAuthoritativeIssueStatus;
+  agentId: string;
+  governanceGate?: NativeGovernanceGate | null;
+  blockerAction?: string;
+}) {
+  if (!ATTENTION_STATUS_SCENARIOS.has(input.scenario)) {
+    throw new NativeInteractionBridgeError("native_attention_scenario_invalid", input.scenario);
+  }
+  return arbitrateNativeStatusScenario(input);
 }

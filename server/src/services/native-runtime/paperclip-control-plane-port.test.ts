@@ -295,7 +295,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect.objectContaining({ phase: "committed" }),
     ]);
     await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, identity.issueId))).resolves.toEqual([
-      expect.objectContaining({ toStatus: "in_progress", reasonCode: "native_completion_incomplete", applicationState: "applied" }),
+      expect.objectContaining({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete", applicationState: "applied" }),
     ]);
     await expect(db.select().from(activityLog).where(eq(activityLog.entityId, identity.issueId))).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]),
@@ -452,7 +452,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect.objectContaining({ status: "in_review" }),
     ]);
     await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, governanceIssueId))).resolves.toEqual([
-      expect.objectContaining({ toStatus: "in_review", reasonCode: "governance_gate_pending" }),
+      expect.objectContaining({ toStatus: "in_review", reasonCode: "governed_gate_pending" }),
     ]);
   });
 
@@ -524,7 +524,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect.objectContaining({ kind: "request_confirmation", status: "pending", sourceRunId: runId }),
     ]);
     await expect(db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, issueId))).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ effectKind: "create_review_interaction", targetType: "issue_thread_interaction" })]),
+      expect.arrayContaining([expect.objectContaining({ effectKind: "bind_reviewer", targetType: "issue_thread_interaction" })]),
     );
   });
 

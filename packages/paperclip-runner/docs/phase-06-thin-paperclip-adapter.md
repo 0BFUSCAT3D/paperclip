@@ -93,12 +93,18 @@ native canary: it executes one selected task through the public package session
 contract and applies one server-owned decision. Its post-kill-switch legacy
 case has zero native history rows.
 
-The Section 18.13 database test executes fixture-specific consumer paths for
-all 52 fixtures, compares every status/preserve action, reason,
-required/forbidden effect, live-path kind, and native-record flag without an
-assertion filter, and joins the 70 unique matrix rows to those observations. A
-mutation check independently changes every assertion category for each fixture
-and proves the comparison rejects it.
+The Section 18.13 database test executes fixture-specific production consumers
+for all 52 fixtures. It derives and checks all eleven expected fields from
+consumer return values and persisted production rows: run status,
+status/preserve action, reason, required and forbidden effects, live-path kind,
+claim preservation, native-record behavior, decision count, maximum wake
+count, and maximum notification count. Each of the 70 unique matrix rows names
+the responsible finalizer, terminal projection, attention, cancellation,
+committer, reconciliation, compatibility, or migration consumer and fails if
+that consumer did not execute or returned different semantics. A per-fixture
+mutation check independently changes every expected field and proves the
+comparison rejects it; there is no test-owned policy table supplying observed
+semantics.
 
 Result-less same-run recovery is also proven through the production heartbeat
 seam: a persisted envelope/checkpoint is leased by `reapOrphanedRuns`, enters

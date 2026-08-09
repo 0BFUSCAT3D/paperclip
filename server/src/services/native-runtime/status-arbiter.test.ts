@@ -38,13 +38,23 @@ function arbitrate(overrides: Partial<Parameters<typeof arbitrateNativeStatus>[0
 describe("native status authority", () => {
   it("marks done only from successful finalization and complete durable evidence", () => {
     expect(arbitrate()).toEqual(expect.objectContaining({
+      statusAction: "done",
       toStatus: "done",
       reasonCode: "completion_contract_satisfied",
       effects: [{ kind: "release_checkout" }],
     }));
+    expect(arbitrate({ completionClaimPolicyAccepted: true })).toEqual(expect.objectContaining({
+      statusAction: "done",
+      reasonCode: "completion_claim_policy_accepted",
+    }));
     expect(arbitrate({
       assessment: assessment({ verificationPassed: false, missingRequirements: ["test"] }),
-    }).toStatus).toBe("in_progress");
+    })).toEqual(expect.objectContaining({
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "completion_evidence_incomplete",
+      effects: [expect.objectContaining({ kind: "enqueue_continuation" })],
+    }));
   });
 
   it("creates explicit liveness paths for review, continuation, cancellation, and governance", () => {
@@ -52,7 +62,10 @@ describe("native status authority", () => {
       assessment: assessment({ reportedDisposition: "needs_review" }),
     })).toEqual(expect.objectContaining({
       toStatus: "in_review",
-      effects: [expect.objectContaining({ kind: "create_review_interaction" })],
+      effects: [
+        expect.objectContaining({ kind: "bind_reviewer" }),
+        expect.objectContaining({ kind: "notify_owner" }),
+      ],
     }));
     expect(arbitrate({
       assessment: assessment({
@@ -65,12 +78,15 @@ describe("native status authority", () => {
     }));
     expect(arbitrate({ terminalState: "cancelled" })).toEqual(expect.objectContaining({
       toStatus: "in_progress",
-      effects: [expect.objectContaining({ kind: "record_recovery", cause: "native_run_cancelled" })],
+      effects: [expect.objectContaining({ kind: "release_run_resources" })],
     }));
     expect(arbitrate({ governanceGate: { kind: "interaction", id: "interaction" } })).toEqual(expect.objectContaining({
       toStatus: "in_review",
-      reasonCode: "governance_gate_pending",
-      effects: [{ kind: "bind_governance", gate: { kind: "interaction", id: "interaction" } }],
+      reasonCode: "governed_gate_pending",
+      effects: [
+        { kind: "create_interaction", gate: { kind: "interaction", id: "interaction" } },
+        { kind: "notify_owner", agentId: "agent", reason: "governed_gate_pending" },
+      ],
     }));
   });
 
@@ -83,7 +99,10 @@ describe("native status authority", () => {
     })).toEqual(expect.objectContaining({
       toStatus: "blocked",
       unblockDescriptor: { owner: "board", action: "Approve access" },
-      effects: [{ kind: "bind_blocker", owner: "board", action: "Approve access" }],
+      effects: [
+        { kind: "bind_blocker", owner: "board", action: "Approve access" },
+        { kind: "notify_owner", agentId: "agent", reason: "task_wide_blocker_bound" },
+      ],
     }));
   });
 

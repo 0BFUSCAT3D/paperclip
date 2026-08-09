@@ -4,7 +4,7 @@ title: Phase 6 thin Paperclip adapter verification
 description: Targeted package, database-port, finalization, security-boundary, feature-selection, and legacy fallback evidence.
 tags: [native-runner, phase-6, verification, paperclip, replay, finalization]
 status: stable
-generated: { by: openai/gpt-5.6, at: 2026-08-09T03:01:00Z }
+generated: { by: openai/gpt-5.6, at: 2026-08-09T05:20:00Z }
 ---
 
 # Scope
@@ -13,7 +13,7 @@ This record verifies the default-off Phase 6 tracer at the approved
 `ControlPlanePort`/`NativeSessionBackend` boundary. No browser surface changed,
 so Phase 6 has command/database evidence rather than screenshots.
 
-The counts below are the PAP-16875 remediation rerun. “Internal canary” means
+The counts below are the PAP-16877 remediation rerun. “Internal canary” means
 the selected-task database test through the public package session contract;
 it does not mean that a new live Codex provider task was dispatched.
 
@@ -104,14 +104,19 @@ pnpm --filter @paperclipai/server exec vitest run \
 This gate proves concurrent event allocation, duplicate-only migration repair,
 bounded retry exhaustion, actual flag-off legacy execution, and executable
 Section 18.13 fixture-to-consumer traceability. Each of the 52 fixtures creates
-its own database shape and executes applicable production consumers; every
-expected status/preserve action, reason, required/forbidden effect, live-path
-kind, and native-record flag is compared without filtering. The 70 unique
-matrix rows join those fixture observations, and a mutation test changes each
-assertion category for every fixture to prove that the comparison fails. The
-selected-task and recovery canaries remain scripted only at the provider
-boundary, while the production Paperclip persistence/finalization paths and the
-flag-off legacy adapter/finalizer path execute for real.
+its own database shape and executes named production consumers. Their return
+values and persisted rows supply all eleven expected fields: run status,
+status/preserve action, reason, required and forbidden effects, live-path kind,
+claim preservation, native-record behavior, decision count, maximum wake
+count, and maximum notification count. Each of the 70 matrix rows has an
+explicit responsible finalizer, terminal projection, attention, cancellation,
+committer, reconciliation, compatibility, or migration consumer; the row fails
+if that consumer was not executed or its returned semantics differ. A mutation
+test changes every expected field for every fixture and proves comparison
+failure. No test-owned policy table supplies an observation. The selected-task
+and recovery canaries remain scripted only at the provider boundary, while the
+production Paperclip persistence/finalization paths and the flag-off legacy
+adapter/finalizer path execute for real.
 
 # Compile and migration checks
 

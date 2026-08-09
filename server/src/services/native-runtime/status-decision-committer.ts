@@ -91,7 +91,7 @@ async function enqueueWake(input: {
 async function validateGovernanceGate(tx: Db, input: {
   companyId: string;
   issueId: string;
-  gate: Extract<NativeStatusEffect, { kind: "bind_governance" }>["gate"];
+  gate: NonNullable<Extract<NativeStatusEffect, { kind: "create_interaction" }>["gate"]>;
   executionState: unknown;
 }) {
   if (input.gate.kind === "execution_stage") {
@@ -135,17 +135,46 @@ async function materializeDecisionEffect(input: {
   failpoint?: NativeStatusCommitFailpoint;
 }): Promise<MaterializedEffect> {
   const { effect } = input;
-  if (effect.kind === "bind_governance") {
+  if (effect.kind === "create_interaction") {
     failAt("governance_materialization", input.failpoint);
-    const targetId = await validateGovernanceGate(input.tx, {
-      companyId: input.companyId,
-      issueId: input.issue.id,
-      gate: effect.gate,
-      executionState: input.issue.executionState,
-    });
-    return { effectKind: effect.kind, targetType: effect.gate.kind, targetId, payload: { gate: effect.gate } };
+    if (effect.gate) {
+      const targetId = await validateGovernanceGate(input.tx, {
+        companyId: input.companyId,
+        issueId: input.issue.id,
+        gate: effect.gate,
+        executionState: input.issue.executionState,
+      });
+      return { effectKind: effect.kind, targetType: effect.gate.kind, targetId, payload: { gate: effect.gate } };
+    }
+    const interaction = await issueThreadInteractionService(input.tx).create(
+      input.issue,
+      {
+        kind: "ask_user_questions",
+        idempotencyKey: `native-attention:${input.decisionId}`,
+        sourceRunId: input.runId,
+        title: "Native attention request",
+        summary: "The native runner requires a board response.",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "response",
+            prompt: effect.prompt ?? "Provide the required response.",
+            selectionMode: "single",
+            options: [{ id: "continue", label: "Continue" }],
+          }],
+        },
+      },
+      { systemId: "native-status-committer", runId: input.runId },
+    );
+    return {
+      effectKind: effect.kind,
+      targetType: "issue_thread_interaction",
+      targetId: interaction.id,
+      payload: { interactionId: interaction.id, interactionKind: interaction.kind },
+    };
   }
-  if (effect.kind === "create_review_interaction") {
+  if (effect.kind === "bind_reviewer") {
     failAt("interaction_materialization", input.failpoint);
     const reviewInput: Extract<CreateIssueThreadInteraction, { kind: "request_confirmation" }> = {
       kind: "request_confirmation",
@@ -174,6 +203,45 @@ async function materializeDecisionEffect(input: {
       targetType: "issue_thread_interaction",
       targetId: interaction.id,
       payload: { interactionId: interaction.id, interactionKind: interaction.kind },
+    };
+  }
+  if (effect.kind === "notify_owner") {
+    const wakeId = await enqueueWake({
+      tx: input.tx,
+      companyId: input.companyId,
+      issueId: input.issue.id,
+      agentId: effect.agentId,
+      reason: "issue_status_changed",
+      idempotencyKey: `native-status:${input.decisionId}:notify-owner`,
+      payload: { nativeDecisionId: input.decisionId, notificationReason: effect.reason },
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "agent_wakeup_request",
+      targetId: wakeId,
+      payload: { reason: effect.reason },
+    };
+  }
+  if (effect.kind === "create_delegated_issue") {
+    const delegated = await input.tx.insert(issues).values({
+      companyId: input.companyId,
+      projectId: input.issue.projectId,
+      projectWorkspaceId: input.issue.projectWorkspaceId,
+      goalId: input.issue.goalId,
+      parentId: input.issue.id,
+      title: effect.summary,
+      status: "todo",
+      priority: input.issue.priority,
+      assigneeAgentId: effect.agentId,
+      createdByAgentId: input.issue.assigneeAgentId,
+      workMode: "standard",
+    }).returning({ id: issues.id }).then((rows) => rows[0] ?? null);
+    if (!delegated) throw new Error("native_delegated_issue_not_persisted");
+    return {
+      effectKind: effect.kind,
+      targetType: "delegated_issue",
+      targetId: delegated.id,
+      payload: { summary: effect.summary, agentId: effect.agentId },
     };
   }
   if (effect.kind === "enqueue_continuation") {
@@ -220,6 +288,85 @@ async function materializeDecisionEffect(input: {
       payload: { owner: effect.owner, action: effect.action },
     };
   }
+  if (effect.kind === "schedule_retry") {
+    failAt("continuation_materialization", input.failpoint);
+    const wakeId = await enqueueWake({
+      tx: input.tx,
+      companyId: input.companyId,
+      issueId: input.issue.id,
+      agentId: effect.agentId,
+      reason: "issue_status_changed",
+      idempotencyKey: `native-status:${input.decisionId}:retry`,
+      payload: {
+        nativeDecisionId: input.decisionId,
+        retryCause: effect.cause,
+        retrySummary: effect.summary,
+      },
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "agent_wakeup_request",
+      targetId: wakeId,
+      payload: { cause: effect.cause, summary: effect.summary },
+    };
+  }
+  if (effect.kind === "record_finalization_error") {
+    failAt("recovery_materialization", input.failpoint);
+    const recovery = await issueRecoveryActionService(input.tx).upsertSourceScoped({
+      companyId: input.companyId,
+      sourceIssueId: input.issue.id,
+      kind: "active_run_watchdog",
+      ownerType: "agent",
+      ownerAgentId: effect.agentId,
+      cause: effect.cause,
+      fingerprint: nativeSha256({ runId: input.runId, decisionId: input.decisionId, cause: effect.cause }),
+      evidence: { runId: input.runId, decisionId: input.decisionId },
+      nextAction: effect.nextAction,
+      wakePolicy: null,
+      maxAttempts: 3,
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "issue_recovery_action",
+      targetId: recovery.id,
+      payload: { cause: effect.cause, nextAction: effect.nextAction },
+    };
+  }
+  if (effect.kind === "release_run_resources") {
+    failAt("recovery_materialization", input.failpoint);
+    return {
+      effectKind: effect.kind,
+      targetType: "heartbeat_run",
+      targetId: input.runId,
+      payload: {},
+    };
+  }
+  if (effect.kind === "record_expiry" || effect.kind === "schedule_reconciliation") {
+    failAt("recovery_materialization", input.failpoint);
+    if (!input.issue.assigneeAgentId) throw new Error("native_recovery_owner_missing");
+    const cause = effect.kind === "record_expiry" ? "attention_expired" : "native_reconciliation_required";
+    const recovery = await issueRecoveryActionService(input.tx).upsertSourceScoped({
+      companyId: input.companyId,
+      sourceIssueId: input.issue.id,
+      kind: "active_run_watchdog",
+      ownerType: "agent",
+      ownerAgentId: input.issue.assigneeAgentId,
+      cause,
+      fingerprint: nativeSha256({ runId: input.runId, decisionId: input.decisionId, cause }),
+      evidence: { runId: input.runId, decisionId: input.decisionId },
+      nextAction: effect.kind === "record_expiry"
+        ? "Review the expired attention route and choose a new authorized path."
+        : "Reconcile the native decision against the latest issue status version.",
+      wakePolicy: null,
+      maxAttempts: 3,
+    });
+    return {
+      effectKind: effect.kind,
+      targetType: "issue_recovery_action",
+      targetId: recovery.id,
+      payload: { cause },
+    };
+  }
   if (effect.kind === "record_recovery") {
     failAt("recovery_materialization", input.failpoint);
     const recovery = await issueRecoveryActionService(input.tx).upsertSourceScoped({
@@ -262,6 +409,10 @@ export async function commitNativeStatusDecision(input: {
   decision: NativeStatusDecision;
   failpoint?: NativeStatusCommitFailpoint;
 }) {
+  if (input.decision.reasonCode === null) {
+    throw new Error("native_status_reason_code_required");
+  }
+  const reasonCode = input.decision.reasonCode;
   const publications: ActivityPublication[] = [];
   const committed = await input.db.transaction(async (tx) => {
     const coordinator = await tx.select().from(nativeRunFinalizations).where(and(
@@ -284,7 +435,7 @@ export async function commitNativeStatusDecision(input: {
     }
     const decisionJson = {
       toStatus: input.decision.toStatus,
-      reasonCode: input.decision.reasonCode,
+      reasonCode,
       unblockDescriptor: input.decision.unblockDescriptor,
       effects: input.decision.effects,
     };
@@ -313,7 +464,7 @@ export async function commitNativeStatusDecision(input: {
         policyVersion: input.decision.policyVersion,
         fromStatus: issue.status,
         toStatus: input.decision.toStatus,
-        reasonCode: input.decision.reasonCode,
+        reasonCode,
         decisionJson,
         decisionDigest,
         applicationState: "proposed",
@@ -348,7 +499,7 @@ export async function commitNativeStatusDecision(input: {
       effectKind: "issue_status_projection",
       targetType: "issue",
       targetId: input.issueId,
-      payload: { fromStatus: issue.status, toStatus: input.decision.toStatus, reasonCode: input.decision.reasonCode },
+      payload: { fromStatus: issue.status, toStatus: input.decision.toStatus, reasonCode },
     });
 
     if (input.decision.toStatus === "done" && issue.status !== "done") {
@@ -441,7 +592,7 @@ export async function commitNativeStatusDecision(input: {
         decisionId: decisionRow.id,
         fromStatus: issue.status,
         toStatus: input.decision.toStatus,
-        reasonCode: input.decision.reasonCode,
+        reasonCode,
         effectCount: materialized.length,
       },
     });

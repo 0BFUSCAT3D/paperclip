@@ -14,9 +14,11 @@ import {
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import {
   arbitrateNativeStatus,
+  arbitrateNativeStatusScenario,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
   type NativeGovernanceGate,
+  type NativeStatusAuthorityScenario,
 } from "./status-arbiter.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
@@ -38,6 +40,26 @@ function authoritativeStatus(value: string): NativeAuthoritativeIssueStatus {
     throw new Error("native_issue_status_invalid");
   }
   return value as NativeAuthoritativeIssueStatus;
+}
+
+/** Server-owned terminal conversion used by live finalization and read models. */
+export function projectNativeTerminalRunStatus(
+  terminalState: "succeeded" | "failed" | "cancelled" | "active",
+) {
+  return terminalState === "active" ? "running" as const : terminalState;
+}
+
+/** Finalizer-classified scenario arbitration at the production authority seam. */
+export function resolveNativeFinalizerStatus(input: {
+  scenario: NativeStatusAuthorityScenario;
+  priorIssueStatus: NativeAuthoritativeIssueStatus;
+  agentId: string;
+  governanceGate?: NativeGovernanceGate | null;
+  blockerAction?: string;
+} | Parameters<typeof arbitrateNativeStatus>[0]) {
+  return "scenario" in input
+    ? arbitrateNativeStatusScenario(input)
+    : arbitrateNativeStatus(input);
 }
 
 async function pendingNativeGovernance(input: {
@@ -232,7 +254,7 @@ async function projectCommittedRun(input: {
   }
   const now = new Date();
   await input.db.update(heartbeatRuns).set({
-    status: terminalState as "succeeded" | "failed" | "cancelled",
+    status: projectNativeTerminalRunStatus(terminalState as "succeeded" | "failed" | "cancelled"),
     finishedAt: input.run.finishedAt ?? now,
     nativePhase: "committed",
     nativePhaseUpdatedAt: now,
@@ -324,11 +346,13 @@ export async function finalizeNativeRun(input: {
       runId: run.id,
       executionState: record(authoritativeIssue.executionState),
     });
-    const decision = arbitrateNativeStatus({
+    const decision = resolveNativeFinalizerStatus({
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
       governanceGate,
+      completionClaimPolicyAccepted:
+        contractRow.risk === "low" && contractRow.completionAuthority === "agent_claim_policy",
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
     });

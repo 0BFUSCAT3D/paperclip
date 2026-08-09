@@ -68,11 +68,17 @@ same-run pre-result resumption, lease races, and audit output. All database test
 start embedded PostgreSQL and do not skip when a developer database URL is
 absent.
 
-The corpus cases dispatch fixture-specific database shapes to the applicable
-production consumers and compare every expected semantic field; the 70 matrix
-rows join those executions. The recovery case uses a scripted provider only at
-the backend boundary while the real heartbeat reaper, lease claim, original
-run execution, persistence port, finalizer, and terminal projection execute.
+The corpus cases dispatch fixture-specific database shapes to named production
+consumers and derive all eleven expected fields from their returns and
+persisted rows: run status, status/preserve action, reason, required and
+forbidden effects, live-path kind, claim preservation, native-record behavior,
+decision count, maximum wake count, and maximum notification count. Every one
+of the 70 matrix rows requires evidence from its responsible finalizer,
+terminal projection, attention, cancellation, committer, reconciliation,
+compatibility, or migration consumer; a missing call or changed return fails
+the row. The recovery case uses a scripted provider only at the backend
+boundary while the real heartbeat reaper, lease claim, original run execution,
+persistence port, finalizer, and terminal projection execute.
 
 The command above is the repeatable scripted internal canary and actual
 flag-off legacy-heartbeat proof. It is not a live-provider canary. The remaining

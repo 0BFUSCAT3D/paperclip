@@ -4,6 +4,30 @@ import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import {
+  arbitrateNativeStatusScenario,
+  type NativeAuthoritativeIssueStatus,
+  type NativeStatusAuthorityScenario,
+} from "./status-arbiter.js";
+
+const RECONCILIATION_STATUS_SCENARIOS = new Set<NativeStatusAuthorityScenario>([
+  "equivalent_attention_family", "identical_result_before_ack", "reused_id_changed_material",
+  "result_preserved", "decision_committed_delivery_pending", "board_cancelled_before_cas",
+  "new_evidence_satisfies_contract", "new_policy_requires_review", "dependency_now_done",
+  "explicit_resume_capability", "authorized_writer_incremented_version",
+]);
+
+/** Append-only recovery/reconciliation re-arbitration from durable facts. */
+export function resolveNativeReconciliationStatus(input: {
+  scenario: NativeStatusAuthorityScenario;
+  priorIssueStatus: NativeAuthoritativeIssueStatus;
+  agentId: string;
+}) {
+  if (!RECONCILIATION_STATUS_SCENARIOS.has(input.scenario)) {
+    throw new Error(`native_reconciliation_scenario_invalid:${input.scenario}`);
+  }
+  return arbitrateNativeStatusScenario(input);
+}
 
 export type NativeSessionResumeClaim = { runId: string; leaseOwner: string };
 

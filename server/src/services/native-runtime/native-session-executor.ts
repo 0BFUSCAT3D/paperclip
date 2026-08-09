@@ -15,6 +15,10 @@ import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import {
+  arbitrateNativeStatusScenario,
+  type NativeAuthoritativeIssueStatus,
+} from "./status-arbiter.js";
 
 type ActiveNativeSession = {
   session: NativeSession;
@@ -45,6 +49,18 @@ export async function cancelNativeSession(runId: string, reason: string): Promis
     throw error;
   }
   return true;
+}
+
+/** Authenticated cancellation scope projected through the shared arbiter. */
+export function resolveNativeCancellationStatus(input: {
+  scope: "turn" | "run" | "issue";
+  priorIssueStatus: NativeAuthoritativeIssueStatus;
+  agentId: string;
+}) {
+  const scenario = input.scope === "turn"
+    ? "turn_scope" as const
+    : input.scope === "run" ? "run_scope" as const : "issue_scope_authorized" as const;
+  return arbitrateNativeStatusScenario({ ...input, scenario });
 }
 
 export async function executePaperclipNativeSession(input: {
