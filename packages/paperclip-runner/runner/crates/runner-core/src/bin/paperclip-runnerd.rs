@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use paperclip_runner_core::phase2::{run_local_runner, Phase2Error, RunnerConfig};
@@ -43,6 +43,82 @@ fn duration_value(args: &[String], name: &str, default: u64) -> Result<Duration,
     ))
 }
 
+fn repeated_values(args: &[String], name: &str) -> Result<Vec<String>, Phase2Error> {
+    let mut values = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == name {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| Phase2Error::invalid(format!("missing value for {name}")))?;
+            values.push(value.clone());
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(values)
+}
+
+/// Phase 7 keeps runnerd as the package-local process owner while the existing
+/// Codex app-server remains the provider protocol implementation. Stdio stays
+/// byte-for-byte JSON-RPC; runnerd writes process evidence only to stderr.
+fn run_codex_app_server_proxy(args: &[String]) -> Result<(), Phase2Error> {
+    let command_name = value(args, "--codex-command")?;
+    let codex_args = repeated_values(args, "--codex-arg")?;
+    let mut command = Command::new(&command_name);
+    command
+        .args(&codex_args)
+        .env_clear()
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    for key in [
+        "ALL_PROXY",
+        "CODEX_HOME",
+        "HOME",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "LANG",
+        "LC_ALL",
+        "NO_PROXY",
+        "NODE_EXTRA_CA_CERTS",
+        "PATH",
+        "PATHEXT",
+        "SSL_CERT_FILE",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "WINDIR",
+    ] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    let mut child = command.spawn().map_err(|error| {
+        Phase2Error::invalid(format!("failed to start Codex app-server: {error}"))
+    })?;
+    eprintln!(
+        "paperclip-runnerd: phase7 codex proxy started runner_pid={} codex_pid={}",
+        std::process::id(),
+        child.id()
+    );
+    let status = child.wait().map_err(|error| {
+        Phase2Error::invalid(format!("failed to wait for Codex app-server: {error}"))
+    })?;
+    eprintln!(
+        "paperclip-runnerd: phase7 codex proxy exited success={} code={}",
+        status.success(),
+        status.code().map_or_else(|| "signal".to_owned(), |code| code.to_string())
+    );
+    if status.success() {
+        Ok(())
+    } else {
+        Err(Phase2Error::invalid("Codex app-server exited unsuccessfully"))
+    }
+}
+
 fn run_phase3(
     args: &[String],
     bootstrap_ticket: Option<BootstrapTicket>,
@@ -82,6 +158,9 @@ fn run_phase3(
 
 fn run(bootstrap_ticket: Option<BootstrapTicket>) -> Result<(), Phase2Error> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|argument| argument == "--codex-app-server-proxy") {
+        return run_codex_app_server_proxy(&args);
+    }
     if args.iter().any(|argument| argument == "--connect-url") {
         return run_phase3(&args, bootstrap_ticket);
     }

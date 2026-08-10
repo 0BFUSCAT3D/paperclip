@@ -28,6 +28,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 5 browser SDK and reference console](phase-05-sdk.md)
 - [Phase 6 thin Paperclip adapter](phase-06-thin-paperclip-adapter.md)
 - [Phase 7 semantic catalog and authorization](phase-07-semantic-catalog.md)
+- [Phase 7 live runnerd and Codex loop](phase-07-live-runnerd-codex.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)
