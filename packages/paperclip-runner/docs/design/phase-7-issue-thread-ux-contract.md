@@ -409,3 +409,21 @@ the card still reads as history at a glance.
 
 Implemented in `devtools/issue-thread/src/issue-thread.css` and covered by the
 axe gate on the `interaction-resolved-mixed` slug at both viewports.
+
+### Revision 3 — `interaction-resolved-mixed` capture framing (2026-08-10, written by the contract owner during the 7G gate)
+
+Revision 1's §10.2 row required four resolved/expired card treatments visible
+in the `interaction-resolved-mixed` frame. Two of this contract's own rules
+make that impossible in one capture: §10.1's settle signal ends with
+auto-scroll to the latest thread item, and the §5/§8 card anatomy makes four
+resolved cards ~1100px tall — taller than either viewport. The seeded history
+(answered + accepted + rejected + `stale_target` + `superseded_by_comment`)
+cannot fit one auto-scrolled frame.
+
+The row now reads: the seeded state must contain **all five** treatments
+(answered, accepted, rejected, `stale_target`, `superseded_by_comment`), the
+frame shows the latest-scrolled portion with the expired-family chips
+(`Stale …`, `Superseded …`) fully visible, and the visual distinctness of all
+five treatments is asserted by the browser suite plus a scrolled review pass
+at the gate. Splitting the slug into two frames was rejected because the
+24-PNG matrix count is referenced by the 7F/7K evidence and the §9.7 axe gate.
