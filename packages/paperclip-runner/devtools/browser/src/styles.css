@@ -541,6 +541,10 @@ dd {
     padding: var(--space-5);
   }
 
+  .mode-switch {
+    flex-wrap: wrap;
+  }
+
   .page-header,
   .snapshot-heading,
   .timeline-heading {
