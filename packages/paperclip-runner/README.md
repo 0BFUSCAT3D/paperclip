@@ -31,6 +31,10 @@ Its audit-only attention path also terminates through the public port/finalizer
 call graph: duplicate and stale requests commit exact interaction receipts with
 no status decision, wake, notification, or issue status/version change, and a
 committed coordinator makes replay a no-op.
+Phase 7D adds the stable semantic-tool catalog, actor/task/mode/scenario policy,
+invocation-time dispatcher checks, typed denials, redacted authorization
+records, and one provider-neutral contract shared by fake and live Codex
+bindings. The implementation remains mock-only and package-local.
 
 ## Phase 0–5 quick start
 
@@ -116,6 +120,9 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 | `record:phase4b` | Run a safe real Codex task through the demo server and record reconnect/replay evidence. |
 | `console:phase5` | Start the public-SDK reference console and mini consumer on `127.0.0.1:4181`. |
 | `test:phase5` | Run targeted browser-client, reducer-projection, and React component contract tests. |
+| `check:phase-07-contract` | Verify the Phase 7A skill, MCP, and eval traceability contract. |
+| `generate:semantic-contracts` | Compile and regenerate the provider-neutral Phase 7D tool contract. |
+| `check:semantic-contracts` | Fail when the checked-in Phase 7D tool contract is stale. |
 | `test:browser:phase5` | Exercise both consumers with the fake driver, keyboard/a11y checks, reconnect/replay, measurements, and screenshots. |
 | `record:phase5:codex` | Run both public consumers against a safe real Codex session and capture live screenshots. |
 | `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
@@ -142,6 +149,7 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 - [Phase 5 SDK console tutorial](docs/tutorials/phase-05-sdk-console.md)
 - [Phase 5 browser SDK reference](docs/phase-05-sdk.md)
 - [Phase 5 component decision record](docs/design/phase-5-component-decisions.md)
+- [Phase 7 semantic catalog and authorization](docs/phase-07-semantic-catalog.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
