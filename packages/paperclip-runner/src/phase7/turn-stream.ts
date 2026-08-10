@@ -39,6 +39,33 @@ export const PHASE7_TURN_STREAM_ACCEPT = "application/x-ndjson" as const;
 export const PHASE7_TURN_STREAM_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
 /**
+ * Encoded UTF-8 length of a decoded string.
+ *
+ * The buffered-frame limit is named in bytes, so it has to be enforced in
+ * bytes: `String#length` counts UTF-16 code units, which lets a frame of
+ * multi-byte text run to roughly three times the stated cap before tripping it.
+ * Counted rather than encoded, because the check runs on every chunk and the
+ * point of the cap is to avoid allocating for an oversized frame.
+ */
+export function phase7Utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      // Surrogate pair: one code point, four bytes, two code units consumed.
+      const low = value.charCodeAt(index + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/**
  * Why the server emitted an interim frame. Carried for observability only: the
  * client renders `view` the same way whatever produced it.
  */
@@ -169,7 +196,7 @@ export function createPhase7TurnStreamDecoder<View, Payload>(): Phase7TurnStream
   return {
     push(chunk) {
       buffer += chunk;
-      if (buffer.length > PHASE7_TURN_STREAM_MAX_FRAME_BYTES) {
+      if (phase7Utf8ByteLength(buffer) > PHASE7_TURN_STREAM_MAX_FRAME_BYTES) {
         throw new Phase7TurnStreamError(
           "stream_frame_too_large",
           "A turn frame exceeded the stream frame limit.",

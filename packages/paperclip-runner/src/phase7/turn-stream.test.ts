@@ -17,8 +17,10 @@ import {
 import {
   createPhase7TurnStreamDecoder,
   encodePhase7TurnStreamFrame,
+  PHASE7_TURN_STREAM_MAX_FRAME_BYTES,
   PHASE7_TURN_STREAM_SCHEMA,
   Phase7TurnStreamError,
+  phase7Utf8ByteLength,
   readPhase7TurnStream,
   type Phase7TurnStreamFrame,
 } from "./turn-stream.js";
@@ -245,6 +247,30 @@ describe("Phase 7 turn stream framing", () => {
     const truncated = createPhase7TurnStreamDecoder();
     truncated.push(frame(1));
     expect(() => truncated.flush()).toThrow(/before a terminal frame/);
+  });
+
+
+  /**
+   * The buffered-frame limit is named in bytes. It used to be enforced with
+   * `String#length`, so a frame of three-byte characters could reach about
+   * three times the stated cap before the decoder objected (track 7U).
+   */
+  it("enforces the frame limit in encoded bytes, not code units", () => {
+    // Well under the cap by code units, well over it by encoded bytes.
+    const multiByte = "€".repeat(Math.ceil((PHASE7_TURN_STREAM_MAX_FRAME_BYTES / 3) * 1.2));
+
+    expect(multiByte.length).toBeLessThan(PHASE7_TURN_STREAM_MAX_FRAME_BYTES);
+    expect(phase7Utf8ByteLength(multiByte)).toBeGreaterThan(PHASE7_TURN_STREAM_MAX_FRAME_BYTES);
+    expect(() => createPhase7TurnStreamDecoder().push(multiByte)).toThrow(/frame limit/);
+  });
+
+  it("counts encoded bytes the way TextEncoder does, including surrogate pairs", () => {
+    for (const sample of ["", "ascii", "é", "€", "𝄞", "a€𝄞z", "\u{1F600}\u{1F601}"]) {
+      expect(phase7Utf8ByteLength(sample)).toBe(new TextEncoder().encode(sample).length);
+    }
+    // A lone surrogate is what a chunk boundary can leave in the buffer; it
+    // must be counted, not crash the count.
+    expect(phase7Utf8ByteLength("\uD83D")).toBe(3);
   });
 
   it("streams three gated deltas into growing client states that match the final text", async () => {

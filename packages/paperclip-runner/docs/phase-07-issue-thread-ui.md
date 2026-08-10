@@ -40,6 +40,61 @@ No provider, runner, or control-plane credential reaches the page. Redacted
 fields render as `••• redacted` with the redaction rule name, mock issues use
 the reserved `MCK-` prefix, and no real Paperclip URL is ever rendered.
 
+## What the browser is allowed to see
+
+The projection is an internal shape. What ships is the published DTO,
+`toPhase7PublicThreadView` (`src/issue-thread/public-view.ts`), which copies the
+view field by field — so a field added to the projection, or to any record it
+passes through, cannot reach a browser until it is listed there. Every response
+path uses it: interim stream frames, the settled payload, and reconnect or
+replay replies alike.
+
+Three narrowings stack, so no single omission opens a disclosure path:
+
+1. **At record time.** `redactPhase7EvidenceData`
+   (`src/phase7/evidence-redaction.ts`) is the only way an evidence entry enters
+   a live session. Provider notifications are reduced to a coarse category,
+   provider diagnostics to the fact that one occurred, tool arguments to the
+   catalog-declared field names they used, and tool results to the outcome,
+   revisions, and mock entity refs the UI resolves into cards. Provider thread
+   and session identity, model and token metadata, and raw tool payloads are
+   never retained, so no later reader, frame, or log can republish them.
+2. **In the projection.** `Runner & events` details are composed from the
+   redacted record rather than stringified from it, and `Calls & results` names
+   the operation and its field count instead of echoing arguments.
+3. **In the DTO.** Provider-authored turn and call identifiers are replaced by
+   in-view aliases (`turn-1`, `call-1`) that stay consistent across anchors,
+   evidence refs, and successive frames of one turn, and any value the caller
+   declares withheld is scrubbed from the encoded result.
+
+A streamed turn that fails answers with a code and fixed operator copy; the
+underlying message stays server side, because provider text can quote prompts
+and paths.
+
+## Session capability
+
+Every session-scoped route is bound to a per-browser capability. The server
+mints one on session creation, stores only its SHA-256 with the session record,
+sets it as an `HttpOnly; SameSite=Strict` cookie, and compares it in constant
+time on every read and mutation — message, reconnect, interaction, stop, reset,
+and new chat. A valid session id presented without its capability is answered
+`404`, exactly like an id that never existed, so an unauthorized caller cannot
+tell a live session from a dead one.
+
+Rotation belongs to the actions that start something new — `New chat`, a scenario
+POST, reset. Each revokes the caller's existing bindings before issuing the
+replacement cookie. Reopening a page whose stored id is simply gone mints a
+session under the capability the browser already holds instead, because rotating
+there would make two tabs of one surface revoke each other on every load while
+protecting nothing: one browser is one principal, and cross-browser denial rests
+on the binding rather than on how often the value changes.
+
+The two surfaces use separate cookie names (`paperclip_phase7_issue`,
+`paperclip_phase7_chat`) because they are separate pages of one origin: a single
+name would make opening the explorer revoke the clean room. A script that drives
+these routes has to behave like one browser — `scripts/phase7-cookie-jar.mjs` is
+what the smoke scripts use for that.
+
 ## Surfaces
 
 - **Header** — three identity chips (`Real Codex` / `Fake agent` / `Replay`,

@@ -22,6 +22,14 @@ import {
 
 const BASE = "/api/phase7/ui";
 
+/**
+ * Every route is session-scoped and mediated by the per-browser capability
+ * cookie the server sets, so the cookie has to ride along. Stated rather than
+ * left to the default so a future change to this client cannot silently drop
+ * the capability and fall back to session-id-only access (track 7U).
+ */
+const CREDENTIALS = "same-origin" as const;
+
 export interface Phase7CleanRoomIdentity {
   token: string;
   sequence: number;
@@ -74,6 +82,7 @@ async function post(path: string, body: unknown): Promise<Phase7LiveResponse> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    credentials: CREDENTIALS,
   });
   if (!response.ok) throw await readError(response, path);
   return (await response.json()) as Phase7LiveResponse;
@@ -97,6 +106,7 @@ async function postTurnStream(
     method: "POST",
     headers: { "content-type": "application/json", accept: PHASE7_TURN_STREAM_ACCEPT },
     body: JSON.stringify(body),
+    credentials: CREDENTIALS,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
   // Admission failures still answer with a JSON body and a real status code,
@@ -118,7 +128,7 @@ async function postTurnStream(
 export const phase7LiveClient = {
   async load(sessionId: string | null): Promise<Phase7LiveResponse> {
     const query = sessionId === null ? "" : `?sessionId=${encodeURIComponent(sessionId)}`;
-    const response = await fetch(`${BASE}/session${query}`);
+    const response = await fetch(`${BASE}/session${query}`, { credentials: CREDENTIALS });
     if (!response.ok) throw await readError(response, "/session");
     return (await response.json()) as Phase7LiveResponse;
   },
@@ -128,7 +138,7 @@ export const phase7LiveClient = {
   /** Reconnect to a clean room, or open one when there is nothing to resume. */
   async loadCleanRoom(sessionId: string | null): Promise<Phase7LiveResponse> {
     const query = sessionId === null ? "" : `?sessionId=${encodeURIComponent(sessionId)}`;
-    const response = await fetch(`${BASE}/cleanroom/session${query}`);
+    const response = await fetch(`${BASE}/cleanroom/session${query}`, { credentials: CREDENTIALS });
     if (!response.ok) throw await readError(response, "/cleanroom/session");
     return (await response.json()) as Phase7LiveResponse;
   },

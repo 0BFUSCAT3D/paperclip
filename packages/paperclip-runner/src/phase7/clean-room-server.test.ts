@@ -36,7 +36,22 @@ interface FakeProviderState {
   transports: FakeCleanRoomTransport[];
   /** Releases one step of a gated streaming turn (`stream` messages). */
   gate: Gate;
+  /** Lets the canary turn raise a provider diagnostic the way runnerd does. */
+  diagnostic: ((message: string) => void) | null;
 }
+
+/**
+ * Values a provider or tool could realistically carry that must never reach a
+ * browser. Each one is planted somewhere the rejected build republished it.
+ */
+const CANARIES = {
+  prompt: "CANARY-PROMPT-8f2a41d0",
+  credential: "CANARY-CREDENTIAL-sk-live-4b19c7ee",
+  environment: "CANARY-ENV-VALUE-3d77aa10",
+  diagnostic: "CANARY-DIAGNOSTIC-6c0be913",
+  providerEvent: "CANARY-PROVIDER-EVENT-91a4f2bd",
+  toolResult: "CANARY-TOOL-RESULT-c58d7e04",
+} as const;
 
 /** Single-slot signal, so a streamed turn advances only when the test says so. */
 class Gate {
@@ -92,6 +107,7 @@ class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {
 class FakeCleanRoomTransport implements CodexAppServerTransport {
   readonly queue = new AsyncNotifications();
   readonly exposedTools: string[] = [];
+  #callCounter = 0;
   #handler: CodexServerRequestHandler = async () => ({});
   #closed = false;
 
@@ -185,6 +201,10 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
       });
       return;
     }
+    if (message.includes("canary")) {
+      await this.#runCanaryTurn(turnId, message);
+      return;
+    }
     // The resumed turn carries the typed interaction result as its input, so it
     // is matched before the keyword branches it would otherwise trip.
     if (message.includes("semantic-interaction-result")) {
@@ -225,6 +245,59 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
     });
   }
 
+  /**
+   * One turn that carries every forbidden record class: provider protocol
+   * traffic that echoes the prompt and quotes model/token metadata, a
+   * diagnostic that quotes an environment value, and a tool call with an
+   * undeclared argument. The rejected build republished all of it.
+   */
+  async #runCanaryTurn(turnId: string, message: string): Promise<void> {
+    this.queue.push({
+      method: "item/started",
+      params: {
+        threadId: this.state.threadId,
+        turnId,
+        sessionId: this.state.providerSessionId,
+        item: {
+          id: `item_${CANARIES.providerEvent}`,
+          type: "reasoning",
+          text: `Working on: ${message}`,
+        },
+        model: "codex-internal-preview",
+        usage: { inputTokens: 4211, outputTokens: 77, cachedTokens: 1024 },
+        requestHeaders: { authorization: `Bearer ${CANARIES.credential}` },
+        rawPrompt: `${CANARIES.prompt} — verbatim provider prompt echo`,
+      },
+    });
+    this.state.diagnostic?.(
+      `codex app-server: PAPERCLIP_API_KEY=${CANARIES.environment} ${CANARIES.diagnostic}`,
+    );
+    const reply = await this.#call(turnId, "report_progress", {
+      idempotencyKey: `canary-${turnId}`,
+      body: "Recorded a mock status for the canary turn.",
+    });
+    // A second call carrying an argument no catalog schema declares. The mock
+    // control plane refuses it, and the refusal is itself recorded — which is
+    // how the rejected build republished the argument name and value.
+    await this.#call(turnId, "report_progress", {
+      idempotencyKey: `canary-undeclared-${turnId}`,
+      body: "Second status.",
+      internalProviderDetail: `${CANARIES.toolResult} ${CANARIES.credential}`,
+    });
+    this.queue.push({
+      method: "item/completed",
+      params: {
+        threadId: this.state.threadId,
+        turnId,
+        item: { id: `message-${turnId}`, type: "agentMessage", text: reply },
+      },
+    });
+    this.queue.push({
+      method: "turn/completed",
+      params: { threadId: this.state.threadId, turn: { id: turnId, status: "completed" } },
+    });
+  }
+
   async #call(turnId: string, tool: string, args: Record<string, unknown>): Promise<string> {
     const request: CodexRpcServerRequest = {
       id: `request-${turnId}`,
@@ -232,7 +305,7 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
       params: {
         threadId: this.state.threadId,
         turnId,
-        callId: `call-${turnId}`,
+        callId: `call-${turnId}-${++this.#callCounter}`,
         tool,
         arguments: args,
       },
@@ -255,6 +328,7 @@ function fakeTransportFactory(state: FakeProviderState): Phase7LiveTransportFact
       childEnvironmentKeys: ["CODEX_HOME", "HOME", "PATH"],
       diagnostics: [],
     };
+    state.diagnostic = (message) => options.onDiagnostic?.(message);
     const transport = new FakeCleanRoomTransport(state, () => {
       evidence.runnerExited = true;
       options.onEvidence?.(evidence);
@@ -336,6 +410,60 @@ class FrameReader {
   }
 }
 
+/**
+ * Minimal cookie jar.
+ *
+ * Every session-scoped route is bound to a per-browser capability cookie, so a
+ * test that shares one `fetch` shares one browser. Two jars are two browsers,
+ * which is exactly what the cross-session denial criteria need.
+ */
+class Jar {
+  #cookies = new Map<string, string>();
+
+  headers(): Record<string, string> {
+    if (this.#cookies.size === 0) return {};
+    return {
+      cookie: [...this.#cookies].map(([name, value]) => `${name}=${value}`).join("; "),
+    };
+  }
+
+  capture(response: Response): void {
+    for (const raw of response.headers.getSetCookie()) {
+      const pair = raw.split(";", 1)[0] ?? "";
+      const separator = pair.indexOf("=");
+      if (separator < 1) continue;
+      this.#cookies.set(pair.slice(0, separator).trim(), pair.slice(separator + 1).trim());
+    }
+  }
+
+  value(name: string): string | undefined {
+    return this.#cookies.get(name);
+  }
+}
+
+/** Sends one request through a jar, capturing whatever capability it is given. */
+async function send(
+  jar: Jar,
+  path: string,
+  init: RequestInit & { json?: unknown } = {},
+): Promise<Response> {
+  const { json, headers, ...rest } = init;
+  const response = await fetch(`${origin}${path}`, {
+    ...rest,
+    ...(json === undefined
+      ? {}
+      : { method: rest.method ?? "POST", body: JSON.stringify(json) }),
+    headers: {
+      ...(json === undefined ? {} : { "content-type": "application/json" }),
+      ...(headers as Record<string, string> | undefined),
+      ...jar.headers(),
+    },
+  });
+  jar.capture(response);
+  return response;
+}
+
+let jar: Jar;
 let server: Server;
 let origin: string;
 let middleware: Awaited<ReturnType<typeof createMiddleware>>;
@@ -372,19 +500,10 @@ async function call(
   path: string,
   body?: unknown,
   frames?: Phase7IssueThreadSnapshot[],
+  browser: Jar = jar,
 ): Promise<CleanRoomPayload> {
-  const url = `${origin}${path}`;
-  requestedUrls.push(url);
-  const response = await fetch(
-    url,
-    body === undefined
-      ? {}
-      : {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        },
-  );
+  requestedUrls.push(`${origin}${path}`);
+  const response = await send(browser, path, body === undefined ? {} : { json: body });
   if (response.headers.get("content-type")?.includes("x-ndjson") === true) {
     return await readTurn(response, frames);
   }
@@ -393,29 +512,22 @@ async function call(
   return payload;
 }
 
-async function status(path: string, body?: unknown): Promise<number> {
-  const response = await fetch(
-    `${origin}${path}`,
-    body === undefined
-      ? {}
-      : {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        },
-  );
+async function status(path: string, body?: unknown, browser: Jar = jar): Promise<number> {
+  const response = await send(browser, path, body === undefined ? {} : { json: body });
   await response.text();
   return response.status;
 }
 
 beforeEach(async () => {
   requestedUrls.length = 0;
+  jar = new Jar();
   providerState = {
     threadId: "codex-thread-clean-room",
     providerSessionId: "codex-provider-clean-room",
     nextTurn: 0,
     transports: [],
     gate: new Gate(),
+    diagnostic: null,
   };
   middleware = await createMiddleware(providerState);
   server = createServer((request, response) => {
@@ -632,10 +744,8 @@ describe("Phase 7 clean-room chat server", () => {
     for (let turn = 0; turn < opened.limits.maxTurns; turn += 1) {
       await call("/api/phase7/ui/message", { sessionId: opened.sessionId, message: `turn ${turn}` });
     }
-    const response = await fetch(`${origin}/api/phase7/ui/message`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: opened.sessionId, message: "one more" }),
+    const response = await send(jar, "/api/phase7/ui/message", {
+      json: { sessionId: opened.sessionId, message: "one more" },
     });
     const body = (await response.json()) as { error: string; message: string };
     expect(response.status).toBe(429);
@@ -645,10 +755,9 @@ describe("Phase 7 clean-room chat server", () => {
 
   it("streams the turn as frames while the POST is still open", async () => {
     const opened = await call("/api/phase7/ui/cleanroom/session");
-    const response = await fetch(`${origin}/api/phase7/ui/message`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/x-ndjson" },
-      body: JSON.stringify({ sessionId: opened.sessionId, message: "stream your answer" }),
+    const response = await send(jar, "/api/phase7/ui/message", {
+      headers: { accept: "application/x-ndjson" },
+      json: { sessionId: opened.sessionId, message: "stream your answer" },
     });
 
     expect(response.status).toBe(200);
@@ -708,10 +817,9 @@ describe("Phase 7 clean-room chat server", () => {
   it("interrupts the provider turn when the client abandons the stream", async () => {
     const opened = await call("/api/phase7/ui/cleanroom/session");
     const controller = new AbortController();
-    const response = await fetch(`${origin}/api/phase7/ui/message`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/x-ndjson" },
-      body: JSON.stringify({ sessionId: opened.sessionId, message: "stream your answer" }),
+    const response = await send(jar, "/api/phase7/ui/message", {
+      headers: { accept: "application/x-ndjson" },
+      json: { sessionId: opened.sessionId, message: "stream your answer" },
       signal: controller.signal,
     });
     const reader = new FrameReader(response);
@@ -753,5 +861,218 @@ describe("Phase 7 clean-room chat server", () => {
       `/api/phase7/ui/session?sessionId=${scenario.sessionId}`,
     );
     expect(scenarioAgain.view.turns).toEqual([]);
+  });
+
+  /**
+   * Track 7U, finding 1. The rejected build projected `provider_event` records
+   * and unredacted tool results into `view.evidence`, so one ordinary turn
+   * handed the browser provider protocol traffic, the echoed prompt, provider
+   * thread/turn/item ids, model and token metadata, and complete tool payloads.
+   * Every canary below was observable in that build's NDJSON response.
+   */
+  it("keeps provider traffic, diagnostics, and tool payloads out of every streamed surface", async () => {
+    const logs: string[] = [];
+    const stdout = process.stdout.write.bind(process.stdout);
+    const stderr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+      logs.push(String(chunk));
+      return stdout(chunk as string, ...(rest as []));
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+      logs.push(String(chunk));
+      return stderr(chunk as string, ...(rest as []));
+    }) as typeof process.stderr.write;
+
+    let opened: CleanRoomPayload;
+    let settled: CleanRoomPayload;
+    let reconnected: CleanRoomPayload;
+    let replayed: CleanRoomPayload;
+    const frames: Phase7IssueThreadSnapshot[] = [];
+    try {
+      opened = await call("/api/phase7/ui/cleanroom/session");
+      settled = await call(
+        "/api/phase7/ui/message",
+        { sessionId: opened.sessionId, message: `canary turn: ${CANARIES.prompt}` },
+        frames,
+      );
+      reconnected = await call("/api/phase7/ui/reconnect", { sessionId: opened.sessionId });
+      replayed = await call(`/api/phase7/ui/cleanroom/session?sessionId=${opened.sessionId}`);
+    } finally {
+      process.stdout.write = stdout;
+      process.stderr.write = stderr;
+    }
+
+    const capability = jar.value("paperclip_phase7_chat");
+    expect(capability).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+    // The turn really did run: without a settled reply the sweep below would
+    // pass on an empty transcript.
+    expect(frames.length).toBeGreaterThan(0);
+    expect(items(settled.view).some((item) => item.kind === "durable_comment")).toBe(true);
+
+    // The prompt is legitimately echoed once per turn as the user's own card;
+    // it must appear nowhere else, so user bodies are removed before scanning
+    // rather than exempted wholesale.
+    const withoutUserMessages = (view: Phase7IssueThreadSnapshot): string =>
+      JSON.stringify({
+        ...view,
+        turns: view.turns.map((turn) => ({
+          ...turn,
+          items: turn.items.filter((item) => item.kind !== "user_message"),
+        })),
+      });
+
+    const surfaces: Array<[string, string]> = [
+      ...frames.map((view, index) => [`frame ${index}`, withoutUserMessages(view)] as [string, string]),
+      ["settled payload", withoutUserMessages(settled.view)],
+      ["reconnect payload", withoutUserMessages(reconnected.view)],
+      ["replay payload", withoutUserMessages(replayed.view)],
+      ["persisted evidence", JSON.stringify(replayed.view.evidence)],
+      ["server log", logs.join("")],
+    ];
+
+    for (const [label, encoded] of surfaces) {
+      for (const [name, canary] of Object.entries(CANARIES)) {
+        expect(`${label}:${name}:${encoded.includes(canary)}`).toBe(`${label}:${name}:false`);
+      }
+      // Provider thread identity and the browser's own capability are equally
+      // off-limits, and the undeclared argument name must not be echoed either.
+      expect(encoded).not.toContain(providerState.threadId);
+      expect(encoded).not.toContain(providerState.providerSessionId);
+      expect(encoded).not.toContain(capability);
+      expect(encoded).not.toContain("internalProviderDetail");
+      expect(encoded).not.toContain("inputTokens");
+    }
+
+    // The evidence panel still says what happened — the fix is a summary, not a
+    // blank section.
+    const runner = replayed.view.evidence.runner;
+    expect(runner.some((record) => record.kind === "provider_event")).toBe(true);
+    expect(runner.filter((record) => record.kind === "provider_event").every((record) =>
+      /^provider event · [a-z_]+$/.test(record.detail),
+    )).toBe(true);
+    expect(runner.some((record) => record.detail.includes("diagnostic · withheld"))).toBe(true);
+    expect(replayed.view.evidence.calls.every((record) =>
+      record.providerRequest.startsWith("tools/call ") && !record.providerRequest.includes("{"),
+    )).toBe(true);
+  });
+
+  /**
+   * Track 7U, finding 2. The rejected build authorized any route on possession
+   * of a session id, because the only capability was minted once per gateway
+   * process and shared by every browser.
+   */
+  it("denies every session-scoped route to a second browser and after rotation", async () => {
+    const alice = new Jar();
+    const mallory = new Jar();
+
+    const aliceRoom = await call("/api/phase7/ui/cleanroom/session", undefined, undefined, alice);
+    const malloryRoom = await call("/api/phase7/ui/cleanroom/session", undefined, undefined, mallory);
+    const aliceIssue = await call("/api/phase7/ui/session?scenario=hb-baseline", undefined, undefined, alice);
+
+    expect(aliceRoom.sessionId).not.toBe(malloryRoom.sessionId);
+    expect(alice.value("paperclip_phase7_chat")).not.toBe(mallory.value("paperclip_phase7_chat"));
+
+    // Reciprocal read denial: neither browser can name the other's session.
+    for (const [reader, target] of [
+      [mallory, aliceRoom.sessionId],
+      [alice, malloryRoom.sessionId],
+    ] as Array<[Jar, string]>) {
+      expect(
+        await status(`/api/phase7/ui/cleanroom/session?sessionId=${target}`, undefined, reader),
+      ).toBe(404);
+    }
+
+    // Every mutation route, not only the ones that create sessions.
+    const mutations = ["message", "interrupt", "reconnect", "reset", "interaction"];
+    for (const route of mutations) {
+      expect(
+        await status(`/api/phase7/ui/${route}`, { sessionId: aliceRoom.sessionId, message: "hi" }, mallory),
+      ).toBe(404);
+      expect(
+        await status(`/api/phase7/ui/${route}`, { sessionId: aliceIssue.sessionId, message: "hi" }, mallory),
+      ).toBe(404);
+    }
+
+    // A cookie-less caller is refused too: the capability is required, not
+    // merely preferred when present.
+    expect(
+      await status("/api/phase7/ui/message", { sessionId: aliceRoom.sessionId, message: "hi" }, new Jar()),
+    ).toBe(404);
+
+    // Alice still owns her own sessions throughout.
+    expect(
+      await status(`/api/phase7/ui/cleanroom/session?sessionId=${aliceRoom.sessionId}`, undefined, alice),
+    ).toBe(200);
+    expect(await status(`/api/phase7/ui/session?sessionId=${aliceIssue.sessionId}`, undefined, alice)).toBe(200);
+  });
+
+  it("rotates the capability on reset and new chat and revokes the old one", async () => {
+    const alice = new Jar();
+    const opened = await call("/api/phase7/ui/cleanroom/session", undefined, undefined, alice);
+    const first = alice.value("paperclip_phase7_chat");
+
+    const stale = new Jar();
+    stale.capture(new Response(null, {
+      headers: { "set-cookie": `paperclip_phase7_chat=${first}` },
+    }));
+
+    const afterReset = await call("/api/phase7/ui/reset", { sessionId: opened.sessionId }, undefined, alice);
+    const second = alice.value("paperclip_phase7_chat");
+    expect(second).not.toBe(first);
+    expect(afterReset.sessionId).not.toBe(opened.sessionId);
+    // The old cookie is dead against the replacement session as well as the
+    // retired one, so a stolen cookie does not survive a reset.
+    expect(await status(`/api/phase7/ui/cleanroom/session?sessionId=${afterReset.sessionId}`, undefined, stale)).toBe(404);
+    expect(await status("/api/phase7/ui/message", { sessionId: afterReset.sessionId, message: "hi" }, stale)).toBe(404);
+
+    const afterNewChat = await call("/api/phase7/ui/cleanroom/session", { sessionId: afterReset.sessionId }, undefined, alice);
+    const third = alice.value("paperclip_phase7_chat");
+    expect(third).not.toBe(second);
+    const previous = new Jar();
+    previous.capture(new Response(null, {
+      headers: { "set-cookie": `paperclip_phase7_chat=${second}` },
+    }));
+    expect(await status(`/api/phase7/ui/cleanroom/session?sessionId=${afterNewChat.sessionId}`, undefined, previous)).toBe(404);
+    expect(await status("/api/phase7/ui/reset", { sessionId: afterNewChat.sessionId }, previous)).toBe(404);
+    expect(await status(`/api/phase7/ui/cleanroom/session?sessionId=${afterNewChat.sessionId}`, undefined, alice)).toBe(200);
+  });
+
+  it("lets two tabs of one browser hold their own sessions without revoking each other", async () => {
+    // One jar is one browser. Reloading a page whose stored id is gone must not
+    // rotate the capability, or two tabs would revoke each other on every load.
+    const browser = new Jar();
+    const tabA = await call("/api/phase7/ui/cleanroom/session", undefined, undefined, browser);
+    const capability = browser.value("paperclip_phase7_chat");
+    const tabB = await call("/api/phase7/ui/cleanroom/session", undefined, undefined, browser);
+
+    expect(tabB.sessionId).not.toBe(tabA.sessionId);
+    expect(browser.value("paperclip_phase7_chat")).toBe(capability);
+    for (const sessionId of [tabA.sessionId, tabB.sessionId]) {
+      expect(
+        await status(`/api/phase7/ui/cleanroom/session?sessionId=${sessionId}`, undefined, browser),
+      ).toBe(200);
+    }
+    // A different browser still reaches neither of them.
+    const stranger = new Jar();
+    for (const sessionId of [tabA.sessionId, tabB.sessionId]) {
+      expect(
+        await status(`/api/phase7/ui/cleanroom/session?sessionId=${sessionId}`, undefined, stranger),
+      ).toBe(404);
+    }
+  });
+
+  it("rotates the issue-surface capability on reset", async () => {
+    const alice = new Jar();
+    const opened = await call("/api/phase7/ui/session?scenario=hb-baseline", undefined, undefined, alice);
+    const first = alice.value("paperclip_phase7_issue");
+    const stale = new Jar();
+    stale.capture(new Response(null, {
+      headers: { "set-cookie": `paperclip_phase7_issue=${first}` },
+    }));
+
+    const reset = await call("/api/phase7/ui/reset", { sessionId: opened.sessionId }, undefined, alice);
+    expect(alice.value("paperclip_phase7_issue")).not.toBe(first);
+    expect(await status(`/api/phase7/ui/session?sessionId=${reset.sessionId}`, undefined, stale)).toBe(404);
+    expect(await status(`/api/phase7/ui/session?sessionId=${reset.sessionId}`, undefined, alice)).toBe(200);
   });
 });

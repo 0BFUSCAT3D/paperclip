@@ -24,6 +24,10 @@ import type {
   Phase7SemanticToolResult,
 } from "../semantic-tools/types.js";
 import {
+  redactPhase7EvidenceData,
+  type Phase7EvidenceKind,
+} from "./evidence-redaction.js";
+import {
   createPhase7RunnerdCodexTransport,
   type Phase7RunnerdCodexTransport,
   type Phase7RunnerdCodexTransportOptions,
@@ -58,18 +62,14 @@ export interface Phase7LiveTranscriptEntry {
 
 export interface Phase7LiveEvidenceEntry {
   id: string;
-  kind:
-    | "session"
-    | "provider_event"
-    | "tool_exposure"
-    | "tool_call"
-    | "tool_result"
-    | "interaction"
-    | "process"
-    | "diagnostic"
-    | "cleanup";
+  kind: Phase7EvidenceKind;
   at: string;
   turnId: string | null;
+  /**
+   * Redacted at append time by `redactPhase7EvidenceData`. Nothing here is a
+   * verbatim provider payload, tool argument, or tool result, so no reader,
+   * frame, replay payload, or log can reintroduce one (track 7U).
+   */
   data: Record<string, Phase7JsonValue>;
 }
 
@@ -1028,6 +1028,11 @@ export class Phase7LiveSession {
     return id;
   }
 
+  /**
+   * Records one evidence entry. Redaction happens here rather than at render
+   * time so the retained record is already the public one: a raw provider
+   * payload never enters the snapshot, the store, a stream frame, or a log.
+   */
   #appendEvidence(
     kind: Phase7LiveEvidenceEntry["kind"],
     turnId: string | null,
@@ -1039,7 +1044,7 @@ export class Phase7LiveSession {
       kind,
       at: this.#now().toISOString(),
       turnId,
-      data: jsonValue(data) as Record<string, Phase7JsonValue>,
+      data: redactPhase7EvidenceData(kind, jsonValue(data) as Record<string, unknown>),
     });
     if (this.#evidence.length > 2_000) this.#evidence.splice(0, this.#evidence.length - 2_000);
   }

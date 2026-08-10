@@ -17,6 +17,7 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
 
+import { createPhase7CookieJar } from "./phase7-cookie-jar.mjs";
 import { createPhase7IssueThreadMiddleware } from "./phase7-issue-thread-server.mjs";
 
 const { readPhase7TurnStream, PHASE7_TURN_STREAM_ACCEPT } = await import(
@@ -76,10 +77,13 @@ async function main() {
   const { port } = server.address();
   const origin = `http://127.0.0.1:${port}`;
 
-  const get = async (path) => (await fetch(`${origin}${path}`)).json();
+  // One jar for the whole run: the smoke drives the routes as a single browser
+  // would, so it carries the capability the server minted for it.
+  const jar = createPhase7CookieJar(origin);
+  const get = async (path) => (await jar.fetch(path)).json();
   const post = async (path, body) =>
     (
-      await fetch(`${origin}${path}`, {
+      await jar.fetch(path, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -91,7 +95,7 @@ async function main() {
    * than only the settled reply.
    */
   const turn = async (body) => {
-    const response = await fetch(`${origin}/api/phase7/ui/message`, {
+    const response = await jar.fetch("/api/phase7/ui/message", {
       method: "POST",
       headers: { "content-type": "application/json", accept: PHASE7_TURN_STREAM_ACCEPT },
       body: JSON.stringify(body),
@@ -158,12 +162,20 @@ async function main() {
       fresh.identity.companyId !== opened.identity.companyId &&
       fresh.identity.taskId !== opened.identity.taskId &&
       fresh.view.turns.length === 0;
-    const retired = await fetch(`${origin}/api/phase7/ui/message`, {
+    const retired = await jar.fetch("/api/phase7/ui/message", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId: opened.sessionId, message: "still there?" }),
     });
     assertions.priorAuthorityRetired = retired.status === 404;
+    // A second browser must not reach the room this one owns.
+    const stranger = createPhase7CookieJar(origin);
+    const foreign = await stranger.fetch(
+      `/api/phase7/ui/cleanroom/session?sessionId=${fresh.sessionId}`,
+    );
+    await foreign.text();
+    assertions.crossSessionDenied = foreign.status === 404;
+    assertions.capabilityBound = typeof jar.value("paperclip_phase7_chat") === "string";
 
     summary = {
       schema: "paperclip.phase7.clean-room-smoke.v1",

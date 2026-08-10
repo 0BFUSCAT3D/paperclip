@@ -1,3 +1,4 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -38,6 +39,78 @@ const MAX_MESSAGE_BYTES = 8 * 1024;
  * chatty provider cannot turn one turn into unbounded socket writes.
  */
 const MAX_TURN_STREAM_FRAMES = 600;
+
+/**
+ * Per-browser session capability (track 7U).
+ *
+ * A session id used to be the only thing a route checked, so possession of
+ * another browser's id authorized reading and mutating that browser's session.
+ * Each surface now mints its own high-entropy capability, stores only its
+ * SHA-256 with the session record, and compares in constant time on every read
+ * and mutation. A valid id presented without its capability is answered `404`,
+ * the same as an id that never existed: an unauthorized caller learns nothing
+ * about which ids are live.
+ *
+ * The two surfaces use separate cookie names on purpose. They are separate
+ * pages of one origin, so a single name would make opening the explorer revoke
+ * the clean room (and the reverse) instead of keeping two independent tenants.
+ */
+const CAPABILITY_COOKIES = Object.freeze({
+  issue: "paperclip_phase7_issue",
+  cleanroom: "paperclip_phase7_chat",
+});
+const CAPABILITY_BYTES = 32;
+const CAPABILITY_MAX_AGE_SECONDS = 30 * 60;
+
+/**
+ * A streamed turn fails with a code, never with the underlying text. Provider
+ * and driver messages can quote prompts, paths, or protocol detail, and a frame
+ * is browser surface, so the operator-facing copy is fixed here.
+ */
+const PUBLIC_TURN_ERROR_MESSAGE =
+  "The turn could not be completed. Nothing further was sent to the provider.";
+
+function sha256(value) {
+  return createHash("sha256").update(value, "utf8").digest();
+}
+
+function mintCapability() {
+  return randomBytes(CAPABILITY_BYTES).toString("base64url");
+}
+
+function capabilityMatches(presented, expectedHash) {
+  if (typeof presented !== "string" || presented.length < 32) return false;
+  const digest = sha256(presented);
+  // Length is compared first because `timingSafeEqual` throws on a mismatch;
+  // both operands are fixed-width digests, so this never short-circuits on a
+  // secret-dependent branch.
+  return digest.length === expectedHash.length && timingSafeEqual(digest, expectedHash);
+}
+
+function parseCookies(request) {
+  const header = request.headers.cookie;
+  const source = typeof header === "string" ? header : "";
+  const cookies = new Map();
+  for (const segment of source.split(";")) {
+    const separator = segment.indexOf("=");
+    if (separator < 1) continue;
+    cookies.set(segment.slice(0, separator).trim(), segment.slice(separator + 1).trim());
+  }
+  return cookies;
+}
+
+function presentedCapability(request, surface) {
+  return parseCookies(request).get(CAPABILITY_COOKIES[surface]) ?? "";
+}
+
+function capabilityCookie(request, surface, value, maxAgeSeconds = CAPABILITY_MAX_AGE_SECONDS) {
+  const forwardedProtocol = request.headers["x-forwarded-proto"];
+  const secure = String(Array.isArray(forwardedProtocol) ? forwardedProtocol[0] : forwardedProtocol ?? "")
+    .toLowerCase() === "https";
+  return `${CAPABILITY_COOKIES[surface]}=${value}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly${
+    secure ? "; Secure" : ""
+  }; SameSite=Strict`;
+}
 
 async function loadRunner() {
   return import(new URL("../dist/index.js", import.meta.url).href);
@@ -110,6 +183,7 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
    *   ownsWorkingDirectory: boolean,
    *   turns: number,
    *   createdAt: number,
+   *   capabilityHash: Buffer,
    *   connection: { state: string, attempt: number },
    * }>}
    */
@@ -133,12 +207,24 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     return bootstrap;
   }
 
+  /**
+   * The published view.
+   *
+   * The projection is an internal shape; `toPhase7PublicThreadView` is what the
+   * browser is allowed to see. Every response path calls this — never the
+   * projection directly — so interim frames, terminal payloads, and reconnect
+   * replies cannot disagree about what is public (track 7U).
+   */
   function view(runner, entry) {
-    return runner.projectPhase7IssueThread({
-      snapshot: entry.session.snapshot(),
+    const snapshot = entry.session.snapshot();
+    const projected = runner.projectPhase7IssueThread({
+      snapshot,
       connection: entry.connection,
       mode: "live",
       fixtureProfile: entry.scenario,
+    });
+    return runner.toPhase7PublicThreadView(projected, {
+      withheldValues: [snapshot.providerThreadId, snapshot.providerSessionId ?? ""],
     });
   }
 
@@ -179,7 +265,7 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     response.end(JSON.stringify(payload));
   }
 
-  async function createSession(runner, service, scenario, workingDirectory) {
+  async function createSession(runner, service, scenario, workingDirectory, capabilityHash) {
     const session = await service.create({
       seed: issueThreadSeed(runner, scenario),
       workingDirectory,
@@ -197,6 +283,7 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       ownsWorkingDirectory: false,
       turns: 0,
       createdAt: Date.now(),
+      capabilityHash,
       connection: { state: "connected", attempt: 0 },
     };
     sessions.set(session.id, entry);
@@ -214,7 +301,21 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     }
   }
 
-  async function createCleanRoomSession(runner, service) {
+  /**
+   * Revokes every session already bound to the presented capability before a
+   * replacement is minted, so a rotation deletes the old binding rather than
+   * leaving a second reachable session behind it.
+   */
+  async function revokeBoundSessions(service, surface, presented) {
+    if (presented.length === 0) return;
+    for (const [sessionId, entry] of [...sessions.entries()]) {
+      if (entry.surface !== surface) continue;
+      if (!capabilityMatches(presented, entry.capabilityHash)) continue;
+      await retire(service, sessionId, "capability rotated");
+    }
+  }
+
+  async function createCleanRoomSession(runner, service, capabilityHash) {
     const open = [...sessions.values()].filter((entry) => entry.surface === "cleanroom");
     // Bounded concurrency: the oldest clean room yields rather than refusing a
     // new board user, because an abandoned chat is the likelier tenant here.
@@ -239,6 +340,7 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       ownsWorkingDirectory: true,
       turns: 0,
       createdAt: Date.now(),
+      capabilityHash,
       connection: { state: "connected", attempt: 0 },
     };
     sessions.set(session.id, entry);
@@ -365,11 +467,13 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       });
     } catch (error) {
       finished = true;
+      // The code identifies the failure; the underlying message stays server
+      // side because it can quote provider text (track 7U).
       write({
         schema: runner.PHASE7_TURN_STREAM_SCHEMA,
         type: "error",
         error: error instanceof RouteError ? error.code : "turn_failed",
-        message: String(error instanceof Error ? error.message : error),
+        message: PUBLIC_TURN_ERROR_MESSAGE,
       });
     } finally {
       finished = true;
@@ -396,44 +500,114 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       const scenario =
         typeof body.scenario === "string" ? body.scenario : url.searchParams.get("scenario") ?? "hb-baseline";
 
-      if (route === CLEAN_ROOM_ROUTE && request.method === "GET") {
-        const existing = requestedId === null ? undefined : sessions.get(requestedId);
-        // A stale id from localStorage opens a fresh room rather than a dead
-        // end; a live id reconnects to the same durable chat.
+      /**
+       * Resolves the caller's own session, or `undefined`.
+       *
+       * A session that exists but belongs to another capability is reported as
+       * `denied` rather than as absent-so-make-a-new-one: the caller must not be
+       * handed a fresh session under an id it does not own, and must not be able
+       * to tell a live id from a dead one.
+       */
+      const ownedSession = (surface) => {
+        if (requestedId === null) return { state: "absent" };
+        const existing = sessions.get(requestedId);
+        if (existing === undefined) return { state: "absent" };
+        if (
+          existing.surface !== surface ||
+          !capabilityMatches(presentedCapability(request, surface), existing.capabilityHash)
+        ) {
+          return { state: "denied" };
+        }
+        return { state: "owned", entry: existing };
+      };
+
+      /**
+       * Mints a session for this browser.
+       *
+       * `rotate` separates the two reasons a session gets created. Starting
+       * something new — `New chat`, a scenario POST, a reset — rotates: the old
+       * bindings are revoked first so the cookie the caller arrived with stops
+       * working. Opening a page whose stored id is simply gone does not rotate;
+       * it reuses the capability the browser already holds. Two tabs of one
+       * surface would otherwise revoke each other's session on every load and
+       * ping-pong, and rotating there protects nothing: the browser is the same
+       * principal either way, and cross-browser denial rests on the binding, not
+       * on how often the value changes.
+       */
+      const mint = async (surface, { rotate }) => {
+        const presented = presentedCapability(request, surface);
+        const reuse = !rotate && presented.length >= 32;
+        if (rotate) await revokeBoundSessions(service, surface, presented);
+        const capability = reuse ? presented : mintCapability();
+        const capabilityHash = sha256(capability);
         const entry =
-          existing !== undefined && existing.surface === "cleanroom"
-            ? existing
-            : await createCleanRoomSession(runner, service);
+          surface === "cleanroom"
+            ? await createCleanRoomSession(runner, service, capabilityHash)
+            : await createSession(runner, service, scenario, workingDirectory, capabilityHash);
+        if (!reuse) {
+          response.setHeader("set-cookie", capabilityCookie(request, surface, capability));
+        }
+        return entry;
+      };
+
+      if (route === CLEAN_ROOM_ROUTE && request.method === "GET") {
+        // A stale id from localStorage opens a fresh room rather than a dead
+        // end; a live id reconnects to the same durable chat; another browser's
+        // id is refused.
+        const owned = ownedSession("cleanroom");
+        if (owned.state === "denied") {
+          send(response, 404, { error: "unknown_session" });
+          return;
+        }
+        const entry = owned.state === "owned" ? owned.entry : await mint("cleanroom", { rotate: false });
         send(response, 200, cleanRoomPayload(runner, entry));
         return;
       }
 
       if (route === CLEAN_ROOM_ROUTE && request.method === "POST") {
-        // `New chat`: retire the caller's room before minting the next one, so
-        // the prior session authority is cleared rather than left running.
-        if (requestedId !== null) await retire(service, requestedId, "new clean-room chat");
-        const entry = await createCleanRoomSession(runner, service);
+        // `New chat`: the caller's own room is retired and its capability
+        // rotated before the next one is minted, so the prior authority is
+        // cleared and the prior cookie stops working.
+        const owned = ownedSession("cleanroom");
+        if (owned.state === "denied") {
+          send(response, 404, { error: "unknown_session" });
+          return;
+        }
+        if (owned.state === "owned") {
+          await retire(service, owned.entry.session.id, "new clean-room chat");
+        }
+        const entry = await mint("cleanroom", { rotate: true });
         send(response, 201, cleanRoomPayload(runner, entry));
         return;
       }
 
       if (route === "session" && request.method === "GET") {
-        const existing = requestedId === null ? undefined : sessions.get(requestedId);
-        const entry =
-          existing !== undefined && existing.surface === "issue"
-            ? existing
-            : await createSession(runner, service, scenario, workingDirectory);
+        const owned = ownedSession("issue");
+        if (owned.state === "denied") {
+          send(response, 404, { error: "unknown_session" });
+          return;
+        }
+        const entry = owned.state === "owned" ? owned.entry : await mint("issue", { rotate: false });
         send(response, 200, payload(runner, entry));
         return;
       }
 
       if (route === "session" && request.method === "POST") {
-        const entry = await createSession(runner, service, scenario, workingDirectory);
+        const entry = await mint("issue", { rotate: true });
         send(response, 201, payload(runner, entry));
         return;
       }
 
-      const entry = requestedId === null ? undefined : sessions.get(requestedId);
+      // Shared session-scoped routes. The surface comes from the stored record,
+      // and the capability is then checked against that record — so `message`,
+      // `interrupt`, `reconnect`, `reset`, and `interaction` are all mediated,
+      // not just the routes that create sessions.
+      const located = requestedId === null ? undefined : sessions.get(requestedId);
+      const entry =
+        located !== undefined &&
+        capabilityMatches(presentedCapability(request, located.surface), located.capabilityHash)
+          ? located
+          : undefined;
       if (entry === undefined) {
         send(response, 404, { error: "unknown_session" });
         return;
@@ -463,12 +637,17 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
         await entry.session.reconnect();
         entry.connection = { state: "connected", attempt: 0 };
       } else if (route === "reset") {
+        // Reset rotates the capability as well as the session: the cookie the
+        // caller arrived with must stop working, here and on the replacement.
+        const capability = mintCapability();
+        const capabilityHash = sha256(capability);
         if (entry.surface === "cleanroom") {
           // A clean-room reset is a new tenant, not a rewound one: the seed is
           // blank either way, so restoring it would hand back the same mock
           // identities the board just saw.
           await retire(service, entry.session.id, "clean-room reset");
-          const replacement = await createCleanRoomSession(runner, service);
+          const replacement = await createCleanRoomSession(runner, service, capabilityHash);
+          response.setHeader("set-cookie", capabilityCookie(request, "cleanroom", capability));
           send(response, 200, cleanRoomPayload(runner, replacement));
           return;
         }
@@ -478,9 +657,11 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
           ...entry,
           session: next,
           turns: 0,
+          capabilityHash,
           connection: { state: "connected", attempt: 0 },
         };
         sessions.set(next.id, resetEntry);
+        response.setHeader("set-cookie", capabilityCookie(request, "issue", capability));
         send(response, 200, payload(runner, resetEntry));
         return;
       } else if (route === "interaction") {

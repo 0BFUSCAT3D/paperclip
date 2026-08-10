@@ -14,6 +14,7 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
 
+import { createPhase7CookieJar } from "./phase7-cookie-jar.mjs";
 import { createPhase7IssueThreadMiddleware } from "./phase7-issue-thread-server.mjs";
 
 const { readPhase7TurnStream, PHASE7_TURN_STREAM_ACCEPT } = await import(
@@ -21,8 +22,8 @@ const { readPhase7TurnStream, PHASE7_TURN_STREAM_ACCEPT } = await import(
 );
 
 /** Runs one turn over the NDJSON stream and returns its settled payload. */
-async function runTurn(origin, body) {
-  const response = await fetch(`${origin}/api/phase7/ui/message`, {
+async function runTurn(jar, body) {
+  const response = await jar.fetch("/api/phase7/ui/message", {
     method: "POST",
     headers: { "content-type": "application/json", accept: PHASE7_TURN_STREAM_ACCEPT },
     body: JSON.stringify(body),
@@ -68,10 +69,13 @@ async function main() {
   const { port } = server.address();
   const origin = `http://127.0.0.1:${port}`;
 
+  // One jar for the whole run: the routes are bound to a per-browser capability
+  // (track 7U), so the smoke has to behave like one browser.
+  const jar = createPhase7CookieJar(origin);
   const assertions = {};
   let sessionId = null;
   try {
-    const created = await (await fetch(`${origin}/api/phase7/ui/session`)).json();
+    const created = await (await jar.fetch("/api/phase7/ui/session")).json();
     sessionId = created.sessionId;
     assertions.sessionCreated = typeof sessionId === "string" && sessionId.length > 0;
     assertions.liveIdentity =
@@ -81,7 +85,7 @@ async function main() {
     assertions.mockIdentifier = created.view.issue.identifier.startsWith("MCK-");
     assertions.toolsProjected = created.view.evidence.tools.length >= 0;
 
-    const first = await runTurn(origin, {
+    const first = await runTurn(jar, {
       sessionId,
       message:
         "Call get_task_context, then call report_progress with a one-sentence status. Do not ask me anything.",
@@ -99,7 +103,7 @@ async function main() {
       (row) => row.disposition === "control_plane_owned",
     );
 
-    const second = await runTurn(origin, {
+    const second = await runTurn(jar, {
       sessionId,
       message: "Summarise the mock task in one line.",
     });
@@ -107,6 +111,11 @@ async function main() {
     assertions.composerReady = second.view.composer.state === "ready";
 
     assertions.noCredentialInView = credentialLeaks(second.view).length === 0;
+    // A browser without this run's capability must not reach this session.
+    const stranger = createPhase7CookieJar(origin);
+    const foreign = await stranger.fetch(`/api/phase7/ui/session?sessionId=${sessionId}`);
+    await foreign.text();
+    assertions.crossSessionDenied = foreign.status === 404;
 
     const failures = Object.entries(assertions).filter(([, ok]) => ok !== true);
     if (asJson) {

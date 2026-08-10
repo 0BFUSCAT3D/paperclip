@@ -13,6 +13,10 @@ import type {
   Phase7FixtureState,
   Phase7JsonValue,
 } from "../mock-core/phase7-control-plane-types.js";
+import {
+  phase7EvidenceDetail,
+  redactPhase7ToolResult,
+} from "../phase7/evidence-redaction.js";
 import type {
   Phase7LiveEvidenceEntry,
   Phase7LiveSessionSnapshot,
@@ -330,7 +334,7 @@ function toolActivityItem(pair: CallPair): Phase7ThreadItem {
     operationId: pair.operationId,
     summary: toolSummary(pair.operationId, pair.result),
     input: pair.input,
-    result: pair.result,
+    result: redactPhase7ToolResult(pair.result),
     evidenceRef: { section: "calls", recordId: pair.callId },
   };
 }
@@ -441,7 +445,9 @@ function derivedRecordItems(
       at: pair.at,
       operationId,
       status: task?.status ?? "in_review",
-      body: readString(readRecord(pair.input).summary, readString(readRecord(pair.input).reason)),
+      // The one input value the contract renders, carried under its own key by
+      // the evidence redactor rather than read out of raw arguments.
+      body: readString(readRecord(pair.input).dispositionSummary),
       blockerOwner: null,
       evidenceRef: { section: "calls", recordId: pair.callId },
     });
@@ -566,17 +572,21 @@ function evidenceModel(
     tools: turnIds.map((turnId) => ({ id: `tools-${turnId}`, turnId, rows })),
     calls: calls.map((pair) => {
       const payload = readRecord(pair.result ?? undefined);
+      const fields = readRecord(pair.input).fields;
+      const fieldCount = Array.isArray(fields) ? fields.length : 0;
       return {
         id: pair.callId,
         turnId: pair.turnId ?? "turn-0",
         operationId: pair.operationId,
         version: 1,
-        providerRequest: `tools/call ${pair.operationId} ${JSON.stringify(pair.input)}`,
+        // The arguments themselves are never republished — the redacted field
+        // list already says what the call carried (track 7U).
+        providerRequest: `tools/call ${pair.operationId} · ${fieldCount} field${fieldCount === 1 ? "" : "s"}`,
         dispatchedCommand:
           payload.ok === false ? "rejected before dispatch" : `control_plane.dispatch(${pair.operationId})`,
         outcome: payload.ok === false ? ("denied" as const) : ("ok" as const),
-        result: pair.result ?? null,
-        redactions: [],
+        result: pair.result === null ? null : redactPhase7ToolResult(pair.result),
+        redactions: pair.result === null ? [] : ["tool_result_detail"],
         threadAnchorId: `item-call-${pair.callId}`,
       };
     }),
@@ -611,12 +621,14 @@ function evidenceModel(
       stateRevision: decision.stateRevision,
       threadAnchorId: null,
     }))],
+    // A stringified record used to be the detail line, which republished every
+    // retained field. The detail is now composed from the redacted record.
     runner: snapshot.evidence.map((entry, index) => ({
       id: entry.id,
       turnId: entry.turnId ?? "turn-0",
       kind: entry.kind,
       ordinal: index + 1,
-      detail: JSON.stringify(entry.data),
+      detail: phase7EvidenceDetail(entry.kind, entry.data),
     })),
     state: calls
       .filter((pair) => pair.afterRevision !== null && pair.afterRevision !== pair.beforeRevision)
