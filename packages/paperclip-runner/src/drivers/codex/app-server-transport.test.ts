@@ -34,8 +34,9 @@ describe("Codex app-server transport limits", () => {
     await expect(transport.request("second", {})).rejects.toThrow(
       "codex app-server pending request limit 1 exceeded",
     );
+    const firstRejection = expect(first).rejects.toThrow("codex app-server transport closed");
     await transport.close();
-    await expect(first).rejects.toThrow("codex app-server transport closed");
+    await firstRejection;
   });
 
   it("fails closed when queued notifications exceed their count bound", async () => {
