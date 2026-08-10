@@ -14,10 +14,22 @@ acceptance record are in
 | Semantic tools + authorization/redaction | `exec vitest run src/tools/phase7-semantic-tools.test.ts` | 9 tests pass |
 | 106-case conformance | `test:phase7-evals` | 1 file (all 106 cases) passes |
 | Fake-agent matrix + bounded Codex + parity report | `report:phase7-evals` | `Phase 7 eval conformance passed: 106 cases across 16 groups.` |
-| Scenario runtime + explorer + routes | `test:phase7` | 49 tests pass |
-| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | 25 Playwright tests pass |
+| Scenario runtime + explorer + clean room + routes | `test:phase7` | 159 tests pass |
+| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | Playwright suites pass (58 in the issue-thread/clean-room suite) |
 | Screenshot acceptance set | `record:phase7` | 24 deterministic images |
 | Doc links + OKF bundle | `docs:validate` | 73 files, 28 OKF concepts, 5 indexes |
+
+## Live commands (not offline)
+
+The clean-room chat has no fake or replay path, so its end-to-end proof needs a
+Rust toolchain and a locally authenticated Codex. These are the only Phase 7
+commands that start a provider.
+
+| Surface | Command | Expected result |
+| --- | --- | --- |
+| Real Codex through real runnerd on a fresh mock tenant | `smoke:phase7:cleanroom` | every assertion `true`; two `MCK-` identifiers, one per chat |
+| Preset issue thread against real Codex | `smoke:phase7:ui` | every assertion `true` |
+| Clean-room screenshots | `record:phase7:cleanroom` | 7 images; intentionally not byte-stable |
 
 ## Notes
 
@@ -39,3 +51,4 @@ acceptance record are in
 - [Clean-start tutorial](tutorials/phase-07-scenario-explorer.md)
 - [Eval conformance](phase-07-eval-conformance.md)
 - [Scenario explorer](phase-07-scenario-explorer.md)
+- [Clean-room live chat](phase-07-clean-room-chat.md)

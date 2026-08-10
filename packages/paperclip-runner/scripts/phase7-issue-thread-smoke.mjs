@@ -18,7 +18,9 @@ import { createPhase7IssueThreadMiddleware } from "./phase7-issue-thread-server.
 
 const CREDENTIAL_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/i,
-  /sk-[a-z0-9]{8,}/i,
+  // Anchored so a mock id such as `task-cleanroom-3f2a9c11` cannot masquerade
+  // as an `sk-` provider key. A real key is preceded by a delimiter.
+  /(?<![A-Za-z0-9])sk-[a-z0-9]{8,}/i,
   /"api[_-]?key"\s*:/i,
   /PAPERCLIP_API_KEY/,
   /OPENAI_API_KEY/,

@@ -5,6 +5,13 @@ reads the thread, answers typed interactions inline, and inspects the evidence
 behind every mock mutation. The implementation follows the binding
 [Phase 7B issue-thread UX contract](design/phase-7-issue-thread-ux-contract.md).
 
+The same shell hosts a second primary path: the
+[clean-room live chat](phase-07-clean-room-chat.md) at `#/chat`, which starts a
+blank thread on a freshly minted mock tenant instead of a preset scenario. It
+reuses every surface described below — header, thread, composer, and Evidence
+panel — and differs only in what the session is seeded with and in refusing any
+non-live mode.
+
 ## Authority boundary
 
 ```text

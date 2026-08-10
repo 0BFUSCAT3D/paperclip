@@ -16,6 +16,8 @@ export interface ComposerProps {
   onRetry: () => void;
   onReset: () => void;
   onFocusPending: (interactionId: string) => void;
+  /** The clean room resets into a new tenant, so it names the action itself. */
+  resetLabel?: string;
 }
 
 function draftKey(sessionId: string): string {
@@ -31,7 +33,16 @@ function readDraft(sessionId: string): string {
 }
 
 export function Composer(props: ComposerProps) {
-  const { model, sessionId, onSend, onStop, onRetry, onReset, onFocusPending } = props;
+  const {
+    model,
+    sessionId,
+    onSend,
+    onStop,
+    onRetry,
+    onReset,
+    onFocusPending,
+    resetLabel = "Reset scenario",
+  } = props;
   const [value, setValue] = useState(() => readDraft(sessionId));
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -130,7 +141,7 @@ export function Composer(props: ComposerProps) {
             </button>
           ) : model.state === "disabled" ? (
             <button type="button" className="pit-button" onClick={onReset}>
-              Reset scenario
+              {resetLabel}
             </button>
           ) : null}
 

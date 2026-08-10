@@ -402,3 +402,267 @@ test.describe("Phase 7G issue thread", () => {
     });
   }
 });
+
+/* ------------------------------------------------------- Phase 7M clean room */
+
+/**
+ * The clean room is live-only by construction, so these tests stub the package
+ * session route rather than starting a real Codex process: what is under test
+ * here is the surface — entry, blank state, evidence-on-demand, identity
+ * rotation, failure honesty, and the narrow layout — not the tool loop, which
+ * `smoke:phase7:cleanroom` and the server suite cover against the real thing.
+ */
+
+const CLEAN_ROOM_API = "**/api/phase7/ui/cleanroom/session*";
+
+function cleanRoomView(identifier: string, withTurn: boolean) {
+  const guard = {
+    id: `network-guard-session-${identifier}`,
+    turnId: "turn-0",
+    category: "session",
+    outcome: "no_real_paperclip_request",
+    reason: "Real Paperclip API requests: 0. Child PAPERCLIP_* environment keys: none.",
+    stateRevision: 3,
+    threadAnchorId: null,
+  };
+  return {
+    schema: "paperclip.phase7.issue-thread-view.v1",
+    sessionId: `session-${identifier}`,
+    mode: "live",
+    identity: {
+      agentLabel: "Real Codex",
+      runnerLabel: "Real runnerd",
+      runnerAttached: true,
+      controlPlaneLabel: "Mock Paperclip",
+      controlPlaneTooltip: "All issue records are mock. No real Paperclip API is reachable.",
+      replaySource: null,
+    },
+    issue: {
+      identifier,
+      title: "Clean-room chat",
+      status: "in_progress",
+      priority: "medium",
+      assignee: "Mock Agent",
+      runState: `run-${identifier} · idle`,
+      scenarioId: "phase7-clean-room",
+      fixtureProfile: "clean-room",
+    },
+    turns: withTurn
+      ? [
+          {
+            id: "turn-1",
+            ordinal: 1,
+            mode: "live",
+            toolCallCount: 1,
+            at: "2026-08-10T12:00:00.000Z",
+            stoppedByUser: false,
+            items: [
+              {
+                kind: "user_message",
+                id: "transcript-1",
+                at: "2026-08-10T12:00:00.000Z",
+                author: "You (board user)",
+                body: "Read this issue and record a status.",
+              },
+              {
+                kind: "tool_activity",
+                id: "item-call-call-1",
+                at: "2026-08-10T12:00:01.000Z",
+                status: "ok",
+                operationId: "report_progress",
+                summary: "state revision 3",
+                input: { body: "first status" },
+                result: { ok: true, stateRevision: 3 },
+                evidenceRef: { section: "calls", recordId: "call-1" },
+              },
+              {
+                kind: "agent_message",
+                id: "transcript-2",
+                at: "2026-08-10T12:00:02.000Z",
+                author: "Real Codex",
+                body: "Recorded a first status on the mock issue.",
+                streaming: false,
+              },
+            ],
+          },
+        ]
+      : [],
+    composer: { state: "ready", helper: null, reason: null, pendingInteractionId: null },
+    evidence: {
+      tools: [],
+      calls: [],
+      authorization: [],
+      control_plane: [guard],
+      runner: [],
+      state: [],
+      traceability: [],
+      parity: [],
+    },
+    connection: { state: "connected", attempt: 0 },
+    replay: null,
+    renderedAt: "2026-08-10T12:00:02.000Z",
+  };
+}
+
+function cleanRoomPayload(identifier: string, withTurn = false) {
+  return {
+    sessionId: `session-${identifier}`,
+    surface: "cleanroom",
+    identity: {
+      token: identifier.toLowerCase().replace("mck-", "tok"),
+      sequence: Number(identifier.slice(4)),
+      companyId: `company-cleanroom-${identifier}`,
+      actorId: `actor-cleanroom-${identifier}`,
+      taskId: `task-cleanroom-${identifier}`,
+      identifier,
+    },
+    limits: { maxTurns: 24, maxMessageBytes: 8192 },
+    view: cleanRoomView(identifier, withTurn),
+  };
+}
+
+async function stubCleanRoom(page: Page, identifiers: string[]) {
+  let opened = 0;
+  await page.route(CLEAN_ROOM_API, async (route) => {
+    const identifier = identifiers[Math.min(opened, identifiers.length - 1)] ?? "MCK-1000";
+    opened += 1;
+    await route.fulfill({
+      status: route.request().method() === "POST" ? 201 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(cleanRoomPayload(identifier)),
+    });
+  });
+}
+
+async function openCleanRoom(page: Page, identifiers: string[] = ["MCK-1000"]) {
+  await stubCleanRoom(page, identifiers);
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto("/#/chat");
+  await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
+}
+
+test.describe("Phase 7M clean-room chat", () => {
+  test("the landing surface offers a clean-room entry that needs no scenario", async ({ page }) => {
+    await open(page, "thread-baseline");
+    const entry = page.getByTestId("surface-chat-link");
+    await expect(entry).toBeVisible();
+    await expect(entry).toHaveAttribute("href", "#/chat");
+    await expect(entry).toContainText("New chat");
+  });
+
+  test("a new chat opens a blank live thread with no scenario controls", async ({ page }) => {
+    await openCleanRoom(page);
+
+    await expect(page.locator('[data-surface="chat"]')).toBeVisible();
+    await expect(page.getByTestId("clean-room-empty")).toBeVisible();
+    await expect(page.locator("[data-turn-id]")).toHaveCount(0);
+    await expect(page.getByTestId("scenario-picker")).toHaveCount(0);
+    await expect(page.getByTestId("replay-button")).toHaveCount(0);
+    await expect(page.getByTestId("replay-strip")).toHaveCount(0);
+
+    const chips = page.getByTestId("identity-chips");
+    await expect(chips.getByTestId("agent-chip")).toHaveText("Real Codex");
+    await expect(chips.getByTestId("runner-chip")).toContainText("Real runnerd");
+    await expect(chips.getByTestId("control-plane-chip")).toHaveText("Mock Paperclip");
+    await expect(page.locator('[data-composer-state="ready"]')).toHaveCount(1);
+  });
+
+  test("evidence stays collapsed until it is asked for", async ({ page }) => {
+    await openCleanRoom(page);
+
+    await expect(page.locator(".pit-panel")).toHaveCount(0);
+    await expect(page.getByTestId("evidence-toggle")).toHaveAttribute("aria-expanded", "false");
+
+    await page.getByTestId("evidence-toggle").click();
+    await expect(page.locator(".pit-panel")).toBeVisible();
+    await page.getByRole("button", { name: /Control plane/ }).click();
+    await expect(page.getByText("Real Paperclip API requests: 0")).toBeVisible();
+  });
+
+  test("a sent message renders the live turn it produced", async ({ page }) => {
+    await openCleanRoom(page);
+    await page.route("**/api/phase7/ui/message", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: "session-MCK-1000",
+          surface: "cleanroom",
+          identity: cleanRoomPayload("MCK-1000").identity,
+          limits: { maxTurns: 24, maxMessageBytes: 8192 },
+          view: cleanRoomView("MCK-1000", true),
+        }),
+      });
+    });
+
+    await page.locator("#composer-input").fill("Read this issue and record a status.");
+    await page.getByTestId("composer-send").click();
+
+    await expect(page.getByTestId("clean-room-empty")).toHaveCount(0);
+    await expect(page.locator('[data-thread-item="user_message"]')).toBeVisible();
+    await expect(page.locator('[data-thread-item="agent_message"]')).toBeVisible();
+    await expect(page.locator('[data-tool-strip="report_progress"]')).toBeVisible();
+  });
+
+  test("New chat visibly rotates the mock identity", async ({ page }) => {
+    await openCleanRoom(page, ["MCK-1000", "MCK-2000"]);
+    await expect(page.locator(".pit-identifier")).toHaveText("MCK-1000");
+
+    await page.getByTestId("new-chat-button").click();
+    await expect(page.locator(".pit-identifier")).toHaveText("MCK-2000");
+    await expect(page.getByTestId("clean-room-empty")).toBeVisible();
+  });
+
+  test("a failed live start reports the failure instead of a fixture", async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.clear());
+    await page.route(CLEAN_ROOM_API, async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "phase7_issue_thread_unavailable",
+          message: "paperclip-runnerd exited before the Codex app-server was ready",
+        }),
+      });
+    });
+    await page.goto("/#/chat");
+
+    const error = page.getByTestId("surface-error");
+    await expect(error).toBeVisible();
+    await expect(error).toContainText("could not start a real Codex session");
+    await expect(page.getByTestId("surface-error-retry")).toBeVisible();
+    await expect(page.locator("[data-turn-id]")).toHaveCount(0);
+  });
+
+  test("the narrow layout keeps thread and composer usable without horizontal scroll", async ({
+    page,
+  }) => {
+    await page.setViewportSize(MOBILE);
+    await openCleanRoom(page);
+
+    await expect(page.getByTestId("clean-room-empty")).toBeVisible();
+    await expect(page.locator("#composer-input")).toBeVisible();
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+
+    await page.getByTestId("segment-evidence").click();
+    await expect(page.locator(".pit-panel")).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(0);
+  });
+
+  test("axe reports no serious or critical violation on the clean room", async ({ page }) => {
+    await page.setViewportSize(DESKTOP);
+    await openCleanRoom(page);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+
+    await page.setViewportSize(MOBILE);
+    await expect(page.getByTestId("clean-room-empty")).toBeVisible();
+    expect(await seriousAxeViolations(page)).toEqual([]);
+  });
+});

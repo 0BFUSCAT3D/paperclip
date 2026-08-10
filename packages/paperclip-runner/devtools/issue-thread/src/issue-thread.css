@@ -136,6 +136,96 @@ textarea {
   border: 0;
 }
 
+/* ---------------------------------------------------------- surface nav */
+
+/*
+ * Two primary paths, one rail. The links wrap rather than scroll horizontally,
+ * because the narrow layout must never introduce a horizontal scrollbar (§10).
+ */
+.pit-surface-nav {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pit-space-2);
+  padding: var(--pit-space-2) var(--pit-space-4);
+  background: var(--pit-surface-sunken);
+  border-bottom: 1px solid var(--pit-border);
+}
+
+.pit-surface-link {
+  display: inline-flex;
+  align-items: center;
+  /* The label and its qualifier are separate flex items, so the space between
+     them has to be a gap: a leading space inside the qualifier collapses. */
+  gap: var(--pit-space-1);
+  min-height: var(--pit-touch-target);
+  padding: 0 var(--pit-space-3);
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-md);
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+  text-decoration: none;
+}
+
+.pit-surface-link:hover {
+  color: var(--pit-foreground);
+  border-color: var(--pit-border-strong);
+}
+
+.pit-surface-link[aria-current="page"] {
+  background: var(--pit-accent-surface);
+  border-color: var(--pit-accent);
+  color: var(--pit-foreground);
+}
+
+.pit-surface-note {
+  color: var(--pit-faint-foreground);
+}
+
+.pit-surface-link[aria-current="page"] .pit-surface-note {
+  color: var(--pit-muted-foreground);
+}
+
+/* A load failure and the pre-session wait share the centred single-column. */
+.pit-app-error {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--pit-space-3);
+  max-width: var(--pit-thread-measure);
+  padding: var(--pit-space-6) var(--pit-space-4);
+}
+
+.pit-muted {
+  margin: 0;
+  color: var(--pit-muted-foreground);
+}
+
+/*
+ * The clean-room blank state. It carries the whole explanation of what the
+ * surface is, because the thread it replaces is deliberately empty.
+ */
+.pit-empty-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-3);
+  padding: var(--pit-space-5);
+  background: var(--pit-surface);
+  border: 1px dashed var(--pit-border-strong);
+  border-radius: var(--pit-radius-lg);
+}
+
+.pit-empty-thread h2 {
+  margin: 0;
+  font-size: var(--pit-text-base);
+  line-height: var(--pit-leading-tight);
+}
+
+.pit-empty-thread p {
+  margin: 0;
+}
+
 /* ---------------------------------------------------------------- header */
 
 .pit-header {
@@ -777,6 +867,11 @@ textarea {
 .pit-banner[data-tone="success"] {
   background: var(--pit-success-surface);
   border-bottom-color: var(--pit-success);
+}
+
+.pit-banner[data-tone="danger"] {
+  background: var(--pit-danger-surface);
+  border-bottom-color: var(--pit-danger);
 }
 
 @keyframes pit-slide {

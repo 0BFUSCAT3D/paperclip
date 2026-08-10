@@ -12,6 +12,11 @@ import { Chip, PriorityIcon, StatusBadge } from "./primitives";
 export interface IssueHeaderProps {
   snapshot: Phase7IssueThreadSnapshot;
   scenarios: string[];
+  /** `chat` is the clean room: no preset scenario, no recording to replay. */
+  surface?: "issue" | "chat";
+  /** Clean-room tenant token, rendered so identity rotation is visible. */
+  cleanRoomToken?: string | null;
+  onNewChat?: () => void;
   evidenceOpen: boolean;
   denialCount: number;
   segment: "thread" | "evidence";
@@ -27,6 +32,9 @@ export function IssueHeader(props: IssueHeaderProps) {
   const {
     snapshot,
     scenarios,
+    surface = "issue",
+    cleanRoomToken = null,
+    onNewChat,
     evidenceOpen,
     denialCount,
     segment,
@@ -37,6 +45,7 @@ export function IssueHeader(props: IssueHeaderProps) {
     onStop,
     onSelectSegment,
   } = props;
+  const chat = surface === "chat";
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const turnActive = snapshot.composer.state === "streaming" || snapshot.composer.state === "sending";
@@ -83,36 +92,54 @@ export function IssueHeader(props: IssueHeaderProps) {
         <Chip tone="mock" title={snapshot.identity.controlPlaneTooltip} testId="control-plane-chip">
           {snapshot.identity.controlPlaneLabel}
         </Chip>
+        {chat && cleanRoomToken !== null ? (
+          <Chip tone="accent" testId="clean-room-identity">
+            Clean room {cleanRoomToken}
+          </Chip>
+        ) : null}
       </div>
 
       <div className="pit-header-controls">
         <span className="pit-run-state">{snapshot.issue.runState}</span>
 
-        <label className="pit-visually-hidden" htmlFor="scenario-picker">
-          Scenario
-        </label>
-        <select
-          className="pit-select pit-desktop-only"
-          id="scenario-picker"
-          value={snapshot.issue.fixtureProfile}
-          onChange={(event) => onSelectScenario(event.target.value)}
-          data-testid="scenario-picker"
-        >
-          {scenarios.map((scenario) => (
-            <option key={scenario} value={scenario}>
-              {scenario}
-            </option>
-          ))}
-        </select>
+        {chat ? (
+          <button
+            type="button"
+            className="pit-button"
+            onClick={onNewChat}
+            data-testid="new-chat-button"
+          >
+            New chat
+          </button>
+        ) : (
+          <>
+            <label className="pit-visually-hidden" htmlFor="scenario-picker">
+              Scenario
+            </label>
+            <select
+              className="pit-select pit-desktop-only"
+              id="scenario-picker"
+              value={snapshot.issue.fixtureProfile}
+              onChange={(event) => onSelectScenario(event.target.value)}
+              data-testid="scenario-picker"
+            >
+              {scenarios.map((scenario) => (
+                <option key={scenario} value={scenario}>
+                  {scenario}
+                </option>
+              ))}
+            </select>
 
-        <button
-          type="button"
-          className="pit-button pit-desktop-only"
-          onClick={onReplay}
-          data-testid="replay-button"
-        >
-          Replay
-        </button>
+            <button
+              type="button"
+              className="pit-button pit-desktop-only"
+              onClick={onReplay}
+              data-testid="replay-button"
+            >
+              Replay
+            </button>
+          </>
+        )}
         <button
           type="button"
           className="pit-button pit-desktop-only"
@@ -147,35 +174,39 @@ export function IssueHeader(props: IssueHeaderProps) {
           </button>
           {menuOpen ? (
             <div className="pit-menu-list" role="menu" data-testid="overflow-menu">
-              <label className="pit-menu-item" htmlFor="scenario-picker-mobile">
-                Scenario
-                <select
-                  className="pit-select"
-                  id="scenario-picker-mobile"
-                  value={snapshot.issue.fixtureProfile}
-                  onChange={(event) => {
-                    setMenuOpen(false);
-                    onSelectScenario(event.target.value);
-                  }}
-                >
-                  {scenarios.map((scenario) => (
-                    <option key={scenario} value={scenario}>
-                      {scenario}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                role="menuitem"
-                className="pit-menu-item"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onReplay();
-                }}
-              >
-                Replay
-              </button>
+              {chat ? null : (
+                <>
+                  <label className="pit-menu-item" htmlFor="scenario-picker-mobile">
+                    Scenario
+                    <select
+                      className="pit-select"
+                      id="scenario-picker-mobile"
+                      value={snapshot.issue.fixtureProfile}
+                      onChange={(event) => {
+                        setMenuOpen(false);
+                        onSelectScenario(event.target.value);
+                      }}
+                    >
+                      {scenarios.map((scenario) => (
+                        <option key={scenario} value={scenario}>
+                          {scenario}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="pit-menu-item"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onReplay();
+                    }}
+                  >
+                    Replay
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 role="menuitem"
@@ -185,7 +216,7 @@ export function IssueHeader(props: IssueHeaderProps) {
                   onReset();
                 }}
               >
-                Reset scenario
+                {chat ? "Reset chat" : "Reset scenario"}
               </button>
             </div>
           ) : null}

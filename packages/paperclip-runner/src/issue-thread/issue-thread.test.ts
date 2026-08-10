@@ -49,7 +49,9 @@ function credentialLike(value: unknown): string[] {
   const patterns = [
     /"authorization"\s*:\s*"/i,
     /bearer\s+[a-z0-9._-]+/i,
-    /sk-[a-z0-9]{8,}/i,
+    // Anchored: a mock id such as `task-cleanroom-3f2a9c11` embeds `sk-` and
+    // would otherwise read as an `sk-` provider key.
+    /(?<![A-Za-z0-9])sk-[a-z0-9]{8,}/i,
     /"api[_-]?key"\s*:/i,
     /PAPERCLIP_API_KEY/,
   ];

@@ -17,6 +17,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 7: the Paperclip-style issue thread over a mock control plane](tutorials/phase-07-issue-thread.md) — the canonical clean-start tutorial for the final build: prove the 106-case conformance suite, open the issue thread in deterministic fake mode, record the byte-stable screenshot matrix, and optionally drive a real Codex turn — all from a clean checkout with no Paperclip service.
 - [Phase 7: explore the capability contract and scenario explorer](tutorials/phase-07-scenario-explorer.md) — companion tour of the read-only browser explorer over the mock control plane and the focused verification set.
 - [Phase 7I: chat with the mock control plane](tutorials/phase-07i-scenario-chat.md) — the scenario-explorer chat surface: send prompts to a Phase 7 scenario and watch the mock Paperclip activity for every turn: exposure, typed calls, denials, control-plane-owned actions, state diffs, wakes, and per-turn parity.
+- [Phase 7: chat with real Codex in a clean room](tutorials/phase-07-clean-room-chat.md) — the second primary path: open a blank chat on a freshly minted mock tenant, send a free-form message to real Codex through real runnerd, and inspect the tool, policy, and state evidence on demand.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -41,6 +42,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 7 live runnerd/Codex loop](phase-07-live-runnerd-codex.md)
 - [Phase 7 execution modes and identity (fake vs real Codex)](phase-07-execution-modes.md)
 - [Phase 7 Paperclip-style issue-thread UI](phase-07-issue-thread-ui.md)
+- [Phase 7 clean-room live chat](phase-07-clean-room-chat.md)
 - [Phase 7I interactive scenario chat](phase-07i-scenario-chat.md)
 - [Phase 7 final evidence manifest (Revision 3/4)](../knowledge/evidence/2026-08-10-phase-07i-final-evidence.md)
 - [Phase 7 future binding boundary (Phase 8 / ACPX)](phase-07-future-binding-boundary.md)

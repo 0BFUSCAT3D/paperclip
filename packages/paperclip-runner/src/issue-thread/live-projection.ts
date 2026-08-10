@@ -21,6 +21,7 @@ import { PHASE7_SEMANTIC_TOOL_CATALOG } from "../semantic-tools/catalog.js";
 import type { Phase7SemanticOperationId } from "../semantic-tools/types.js";
 import type {
   Phase7ComposerModel,
+  Phase7EvidenceControlPlaneRecord,
   Phase7EvidenceModel,
   Phase7EvidenceParityRecord,
   Phase7EvidenceToolRow,
@@ -505,6 +506,37 @@ function composerModel(
   return { state: "ready", helper: null, reason: null, pendingInteractionId: null };
 }
 
+/**
+ * The real-API block, rendered as a record rather than a claim in prose.
+ *
+ * Both the clean-room chat and the scenario path route every Paperclip
+ * operation through the in-process mock port, so "no request reached a real
+ * Paperclip API" is a fact the session already carries. Projecting it into the
+ * Control plane section is what makes it inspectable in the drawer instead of
+ * something a reader has to take on trust.
+ */
+function networkGuardRecord(
+  snapshot: Phase7LiveSessionSnapshot,
+  state: Phase7FixtureState | null,
+): Phase7EvidenceControlPlaneRecord {
+  const { realPaperclipRequests, childPaperclipEnvironmentKeys } = snapshot.networkEvidence;
+  return {
+    id: `network-guard-${snapshot.sessionId}`,
+    turnId: "turn-0",
+    category: "session",
+    outcome: realPaperclipRequests === 0 ? "no_real_paperclip_request" : "real_paperclip_request",
+    reason:
+      `Real Paperclip API requests: ${realPaperclipRequests}. ` +
+      `Child PAPERCLIP_* environment keys: ${
+        childPaperclipEnvironmentKeys.length === 0
+          ? "none"
+          : childPaperclipEnvironmentKeys.join(", ")
+      }.`,
+    stateRevision: state?.revision ?? 0,
+    threadAnchorId: null,
+  };
+}
+
 function evidenceModel(
   snapshot: Phase7LiveSessionSnapshot,
   state: Phase7FixtureState | null,
@@ -558,7 +590,7 @@ function evidenceModel(
       stateChangeRef: null,
       threadAnchorId: record.callId === null ? "" : `item-call-${record.callId}`,
     })),
-    control_plane: (state?.decisions ?? []).map((decision) => ({
+    control_plane: [networkGuardRecord(snapshot, state), ...(state?.decisions ?? []).map((decision) => ({
       id: decision.id,
       turnId: "turn-0",
       category:
@@ -575,7 +607,7 @@ function evidenceModel(
       reason: decision.reason,
       stateRevision: decision.stateRevision,
       threadAnchorId: null,
-    })),
+    }))],
     runner: snapshot.evidence.map((entry, index) => ({
       id: entry.id,
       turnId: entry.turnId ?? "turn-0",

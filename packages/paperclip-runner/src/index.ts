@@ -31,6 +31,7 @@ export * from "./tracer/phase1-replay.js";
 export * from "./tracer/phase2-live.js";
 export * from "./tools/index.js";
 export * as acceptedPhase7SemanticTools from "./semantic-tools/index.js";
+export * from "./phase7/clean-room.js";
 export * from "./phase7/live-session.js";
 export * from "./phase7/runnerd-codex-transport.js";
 export { projectPhase7IssueThread } from "./issue-thread/live-projection.js";

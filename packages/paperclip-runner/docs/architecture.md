@@ -264,7 +264,10 @@ suite and replay offline; the Codex (live) mode requires a locally authenticated
 Codex. See [execution modes and identity](phase-07-execution-modes.md) for the
 mode and eligibility rules, and [the live runnerd/Codex loop](phase-07-live-runnerd-codex.md)
 for the session API. The package server blocks every request to a real
-Paperclip API, and the evidence suite proves no such request occurred.
+Paperclip API, and the evidence suite proves no such request occurred. The same
+topology serves the [clean-room chat](phase-07-clean-room-chat.md): the only
+difference is a mock tenant seeded with a company, an agent, and one blank issue
+instead of a recorded eval case.
 
 ## Future integration rule
 

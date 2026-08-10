@@ -65,6 +65,16 @@ the runner session, not on the agent:
   Codex app-server and resumes the persisted provider thread; the session does
   not restart because the browser reconnected.
 
+## Two entry points, one live mode
+
+Live mode is reachable from both primary surfaces:
+
+- the preset scenario explorer, with `mode=live` on a chosen scenario;
+- the [clean-room chat](phase-07-clean-room-chat.md) at `#/chat`, which has no
+  other mode. It starts blank on a freshly minted mock tenant, pins `mode=live`
+  in the route, and reports a failure to start real Codex rather than falling
+  back to a fixture or a recording.
+
 ## Eligibility summary
 
 | Evidence | Eligible for |

@@ -58,3 +58,13 @@
   audit, native cancellation, migration coverage, a runnable tutorial, and
   deterministic mock/real-port evidence while retaining legacy as the kill-
   switch path.
+
+## 2026-08-10
+
+* **Phase 7M clean-room live chat**: Added a second primary path beside the
+  preset scenario explorer: a blank `#/chat` surface that mints a fresh mock
+  tenant (company, agent, one blank issue), drives real Codex through real
+  runnerd with a deterministic exposure profile, keeps tool, policy, event, and
+  state evidence in an on-demand drawer, rotates session authority and mock
+  identities on reset and new chat, and publishes the real-API block as an
+  inspectable control-plane record.

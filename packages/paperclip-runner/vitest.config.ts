@@ -18,6 +18,8 @@ export default defineConfig({
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
       "devtools/browser/src/**/*.test.ts",
+      "devtools/issue-thread/src/**/*.test.ts",
+      "devtools/issue-thread/src/**/*.test.tsx",
       "examples/phase7-explorer/src/**/*.test.ts",
       "examples/phase7-explorer/src/**/*.test.tsx",
       "scripts/phase2-browser-server.test.mjs",

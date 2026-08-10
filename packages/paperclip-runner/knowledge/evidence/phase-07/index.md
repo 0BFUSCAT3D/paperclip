@@ -47,3 +47,4 @@ recordings of the same route agree.
 
 * [Issue-thread UI matrix](ui/index.md) - Deterministic `fake`-mode captures for the 12 contract slugs at 1440×900 and 390×844; byte-stable across clean runs.
 * [Issue-thread live evidence](ui-live/index.md) - Real `paperclip-runnerd` and Codex frames; intentionally not byte-stable.
+* [Clean-room chat evidence](clean-room/index.md) - Real `paperclip-runnerd` and Codex frames on a freshly minted mock tenant: the entry point, the blank thread, a live turn, the on-demand evidence drawer, and the identity rotation `New chat` performs. Intentionally not byte-stable.

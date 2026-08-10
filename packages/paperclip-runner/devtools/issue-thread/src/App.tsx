@@ -14,11 +14,24 @@ import { EvidencePanel } from "./EvidencePanel";
 import { IssueHeader } from "./IssueHeader";
 import { applyFakeInteractionResponse } from "./fake-store";
 import type { Phase7InteractionResponse } from "./InteractionCard";
-import { phase7LiveClient, recallSession, rememberSession } from "./live-client";
+import {
+  phase7LiveClient,
+  recallSession,
+  rememberSession,
+  type Phase7CleanRoomIdentity,
+} from "./live-client";
 import { parsePhase7Route, phase7RouteHref, type Phase7Route } from "./route";
+import { SurfaceNav } from "./SurfaceNav";
 import { TurnGroup } from "./ThreadItems";
 
 const PANEL_OPEN_KEY = "paperclip-runner.phase7.panel.open";
+/**
+ * The clean room keeps its own panel preference. Evidence is collapsed by
+ * default there on purpose (revision 5: "the default view reads as plain
+ * chat"), and inheriting an explorer session's opened drawer would quietly
+ * break that on the very first visit.
+ */
+const CHAT_PANEL_OPEN_KEY = "paperclip-runner.phase7.chat.panel.open";
 const PANEL_WIDTH_KEY = "paperclip-runner.phase7.panel.width";
 const PANEL_MIN = 320;
 const PANEL_MAX = 640;
@@ -59,6 +72,10 @@ function scrollEvidenceIntoView(target: Element, block: "start" | "center"): voi
   panel.scrollTop = Math.max(0, panel.scrollTop - head.offsetHeight);
 }
 
+function describe(cause: unknown): string {
+  return String(cause instanceof Error ? cause.message : cause);
+}
+
 function useRoute(): Phase7Route {
   const [route, setRoute] = useState(() => parsePhase7Route(window.location));
   useEffect(() => {
@@ -88,11 +105,24 @@ function useLayout(): "side" | "overlay" | "segment" {
 
 export function App() {
   const route = useRoute();
+  const chat = route.surface === "chat";
   const layout = useLayout();
   const [snapshot, setSnapshot] = useState<Phase7IssueThreadSnapshot | null>(null);
+  const [identity, setIdentity] = useState<Phase7CleanRoomIdentity | null>(null);
+  /**
+   * Which surface produced `snapshot`. A hash change commits the new route in
+   * the same frame that still renders the old snapshot, so without this a
+   * capture or a test can catch one frame of "settled" that belongs to the
+   * surface it just navigated away from.
+   */
+  const [snapshotSurface, setSnapshotSurface] = useState(route.surface);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [loadNonce, setLoadNonce] = useState(0);
   const [settled, setSettled] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(() => readStoredFlag(PANEL_OPEN_KEY, false));
+  const [panelOpen, setPanelOpen] = useState(() =>
+    readStoredFlag(route.surface === "chat" ? CHAT_PANEL_OPEN_KEY : PANEL_OPEN_KEY, false),
+  );
   const [panelWidth, setPanelWidth] = useState(() => readStoredNumber(PANEL_WIDTH_KEY, 384));
   const [segment, setSegment] = useState<"thread" | "evidence">(route.segment);
   const [openSections, setOpenSections] = useState<Phase7EvidenceSectionId[]>(["tools"]);
@@ -112,24 +142,43 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     setSettled(false);
-    if (route.mode === "live") {
+    setError(null);
+    if (chat) {
+      // The clean room has no fixture fallback: if real Codex and real runnerd
+      // cannot start, the surface says so rather than rendering a canned thread.
+      void (async () => {
+        try {
+          const response = await phase7LiveClient.loadCleanRoom(recallSession("cleanroom"));
+          if (cancelled) return;
+          rememberSession(response.sessionId, "cleanroom");
+          setIdentity(response.identity ?? null);
+          setSnapshot(response.view);
+          setSnapshotSurface("chat");
+        } catch (cause) {
+          if (!cancelled) setError(String(cause instanceof Error ? cause.message : cause));
+        }
+      })();
+    } else if (route.mode === "live") {
       void (async () => {
         try {
           const response = await phase7LiveClient.load(recallSession());
           if (cancelled) return;
           rememberSession(response.sessionId);
           setSnapshot(response.view);
+          setSnapshotSurface("issue");
         } catch (cause) {
           if (!cancelled) setError(String(cause instanceof Error ? cause.message : cause));
         }
       })();
     } else {
+      setIdentity(null);
       setSnapshot(phase7IssueThreadFixture(route.shot ?? "thread-baseline", route.fixtureProfile));
+      setSnapshotSurface("issue");
     }
     return () => {
       cancelled = true;
     };
-  }, [route.mode, route.shot, route.fixtureProfile]);
+  }, [chat, route.mode, route.shot, route.fixtureProfile, loadNonce]);
 
   /* ------------------------------------------------------- deep-link params */
 
@@ -193,14 +242,17 @@ export function App() {
 
   /* -------------------------------------------------------------- handlers */
 
-  const persistPanel = useCallback((open: boolean, width: number) => {
-    try {
-      window.localStorage.setItem(PANEL_OPEN_KEY, String(open));
-      window.localStorage.setItem(PANEL_WIDTH_KEY, String(width));
-    } catch {
-      // Panel preference is a convenience, never a correctness requirement.
-    }
-  }, []);
+  const persistPanel = useCallback(
+    (open: boolean, width: number) => {
+      try {
+        window.localStorage.setItem(chat ? CHAT_PANEL_OPEN_KEY : PANEL_OPEN_KEY, String(open));
+        window.localStorage.setItem(PANEL_WIDTH_KEY, String(width));
+      } catch {
+        // Panel preference is a convenience, never a correctness requirement.
+      }
+    },
+    [chat],
+  );
 
   const openEvidence = useCallback(
     (section: Phase7EvidenceSectionId, recordId: string) => {
@@ -251,7 +303,7 @@ export function App() {
           void phase7LiveClient
             .respond(current.sessionId, response.interactionId, response.outcome, response.result)
             .then((next) => setSnapshot(next.view))
-            .catch((cause) => setError(String(cause)));
+            .catch((cause) => setActionError(describe(cause)));
           return {
             ...current,
             turns: current.turns.map((turn) => ({
@@ -273,13 +325,22 @@ export function App() {
 
   const send = useCallback(
     (message: string) => {
+      setActionError(null);
       setSnapshot((current) => {
         if (current === null) return current;
         if (route.mode === "live") {
           void phase7LiveClient
             .send(current.sessionId, message)
             .then((next) => setSnapshot(next.view))
-            .catch((cause) => setError(String(cause)));
+            .catch((cause) => {
+              setActionError(describe(cause));
+              // A refused turn must not strand the composer in `sending`.
+              setSnapshot((stale) =>
+                stale === null
+                  ? stale
+                  : { ...stale, composer: { ...stale.composer, state: "ready" } },
+              );
+            });
           return { ...current, composer: { ...current.composer, state: "sending" } };
         }
         return current;
@@ -295,7 +356,7 @@ export function App() {
         void phase7LiveClient
           .stop(current.sessionId)
           .then((next) => setSnapshot(next.view))
-          .catch((cause) => setError(String(cause)));
+          .catch((cause) => setActionError(describe(cause)));
         return current;
       }
       const turns = current.turns.map((turn, index) =>
@@ -310,8 +371,39 @@ export function App() {
     setAnnouncement("Turn stopped. Partial output is preserved.");
   }, [route.mode]);
 
+  /**
+   * Adopts a rotated clean room. Reset and `New chat` both land here: the
+   * server always answers with a new session id and new mock identities, so the
+   * client's job is only to forget the old ones.
+   */
+  const adoptCleanRoom = useCallback((next: Awaited<ReturnType<typeof phase7LiveClient.newCleanRoom>>) => {
+    rememberSession(next.sessionId, "cleanroom");
+    setIdentity(next.identity ?? null);
+    setSnapshot(next.view);
+    setActionError(null);
+    setAnnouncement(
+      `New clean-room chat started on ${next.view.issue.identifier}. The previous session was closed.`,
+    );
+  }, []);
+
+  const newChat = useCallback(() => {
+    setConfirmReset(false);
+    setAnnouncement("Starting a new clean-room chat…");
+    void phase7LiveClient
+      .newCleanRoom(snapshot?.sessionId ?? null)
+      .then(adoptCleanRoom)
+      .catch((cause) => setActionError(describe(cause)));
+  }, [adoptCleanRoom, snapshot]);
+
   const reset = useCallback(() => {
     setConfirmReset(false);
+    if (chat && snapshot !== null) {
+      void phase7LiveClient
+        .reset(snapshot.sessionId)
+        .then(adoptCleanRoom)
+        .catch((cause) => setActionError(describe(cause)));
+      return;
+    }
     if (route.mode === "live" && snapshot !== null) {
       void phase7LiveClient
         .reset(snapshot.sessionId)
@@ -319,19 +411,19 @@ export function App() {
           rememberSession(next.sessionId);
           setSnapshot(next.view);
         })
-        .catch((cause) => setError(String(cause)));
+        .catch((cause) => setActionError(describe(cause)));
       return;
     }
     setSnapshot(phase7IssueThreadFixture("thread-baseline", route.fixtureProfile));
     setAnnouncement("Scenario reset. The mock state is back to its clean seed.");
-  }, [route.fixtureProfile, route.mode, snapshot]);
+  }, [adoptCleanRoom, chat, route.fixtureProfile, route.mode, snapshot]);
 
   const retry = useCallback(() => {
     if (route.mode === "live" && snapshot !== null) {
       void phase7LiveClient
         .reconnect(snapshot.sessionId)
         .then((next) => setSnapshot(next.view))
-        .catch((cause) => setError(String(cause)));
+        .catch((cause) => setActionError(describe(cause)));
       return;
     }
     setSnapshot((current) =>
@@ -402,16 +494,47 @@ export function App() {
 
   if (error !== null) {
     return (
-      <main className="pit-app">
-        <p className="pit-composer-reason" role="alert">
-          {error}
-        </p>
-      </main>
+      <div className="pit-app" data-thread-state="failed" data-surface={route.surface}>
+        <SurfaceNav surface={route.surface} />
+        <main className="pit-app-error">
+          <p className="pit-composer-reason" role="alert" data-testid="surface-error">
+            {chat
+              ? `The clean-room chat could not start a real Codex session: ${error}`
+              : error}
+          </p>
+          {chat ? (
+            <p className="pit-muted">
+              The clean room only runs against real Codex through real runnerd, so it does not fall
+              back to a fixture or a recording.
+            </p>
+          ) : null}
+          <button
+            type="button"
+            className="pit-button"
+            data-variant="primary"
+            data-testid="surface-error-retry"
+            onClick={() => setLoadNonce((current) => current + 1)}
+          >
+            Try again
+          </button>
+        </main>
+      </div>
     );
   }
 
   if (snapshot === null) {
-    return <main className="pit-app" data-thread-state="loading" />;
+    return (
+      <div className="pit-app" data-thread-state="loading" data-surface={route.surface}>
+        <SurfaceNav surface={route.surface} />
+        <main className="pit-app-error">
+          <p className="pit-muted" role="status" data-testid="surface-loading">
+            {chat
+              ? "Starting real runnerd and a real Codex session for a fresh mock tenant…"
+              : "Loading…"}
+          </p>
+        </main>
+      </div>
+    );
   }
 
   const showThread = layout !== "segment" || segment === "thread";
@@ -420,13 +543,19 @@ export function App() {
   return (
     <div
       className="pit-app"
-      data-thread-state={settled ? "settled" : "loading"}
+      data-thread-state={settled && snapshotSurface === route.surface ? "settled" : "loading"}
       data-session-mode={snapshot.mode}
+      data-surface={route.surface}
       data-connection-state={snapshot.connection.state}
     >
+      <SurfaceNav surface={route.surface} />
+
       <IssueHeader
         snapshot={snapshot}
         scenarios={SCENARIOS}
+        surface={route.surface}
+        cleanRoomToken={identity?.token ?? null}
+        onNewChat={newChat}
         evidenceOpen={panelOpen}
         denialCount={denialCount}
         segment={segment}
@@ -450,6 +579,20 @@ export function App() {
         onStop={stop}
         onSelectSegment={setSegment}
       />
+
+      {actionError !== null ? (
+        <p className="pit-banner" data-tone="danger" role="alert" data-testid="action-error">
+          <span aria-hidden="true">⚠</span>
+          {actionError}
+          <button
+            type="button"
+            className="pit-link-button"
+            onClick={() => setActionError(null)}
+          >
+            Dismiss
+          </button>
+        </p>
+      ) : null}
 
       {snapshot.connection.state === "reconnecting" ? (
         <p className="pit-banner" role="status" data-testid="reconnect-banner">
@@ -528,17 +671,36 @@ export function App() {
               }}
             >
               <div className="pit-thread">
-                {snapshot.turns.map((turn) => (
-                  <TurnGroup
-                    key={turn.id}
-                    turn={turn}
-                    callbacks={{
-                      onOpenEvidence: openEvidence,
-                      onRespond: respond,
-                      focusInteractionId,
-                    }}
-                  />
-                ))}
+                {snapshot.turns.length === 0 ? (
+                  <section className="pit-empty-thread" data-testid="clean-room-empty">
+                    <h2>Start a clean-room chat</h2>
+                    <p>
+                      This is a blank thread on a brand-new mock tenant:{" "}
+                      <strong>{snapshot.issue.identifier}</strong> in{" "}
+                      <strong>Mock Paperclip (clean room)</strong>. Nothing has been said, called, or
+                      recorded yet.
+                    </p>
+                    <p className="pit-muted">
+                      Your first message starts a real Codex turn through real runnerd. Codex may
+                      call the semantic tools this session exposes, and every record it creates lands
+                      in the mock control plane only — never a real Paperclip API. Detailed tool,
+                      policy, event, and state evidence stays in the Evidence drawer until you open
+                      it.
+                    </p>
+                  </section>
+                ) : (
+                  snapshot.turns.map((turn) => (
+                    <TurnGroup
+                      key={turn.id}
+                      turn={turn}
+                      callbacks={{
+                        onOpenEvidence: openEvidence,
+                        onRespond: respond,
+                        focusInteractionId,
+                      }}
+                    />
+                  ))
+                )}
               </div>
             </div>
             {showJump ? (
@@ -562,7 +724,8 @@ export function App() {
             onSend={send}
             onStop={stop}
             onRetry={retry}
-            onReset={() => setConfirmReset(true)}
+            onReset={() => (chat ? newChat() : setConfirmReset(true))}
+            resetLabel={chat ? "New chat" : "Reset scenario"}
             onFocusPending={(interactionId) => {
               setFocusInteractionId(interactionId);
               document
@@ -635,10 +798,12 @@ export function App() {
             data-testid="reset-dialog"
           >
             <h2 className="pit-dialog-title" id="reset-dialog-title">
-              Reset scenario?
+              {chat ? "Reset this chat?" : "Reset scenario?"}
             </h2>
             <p>
-              This clears the mock state and starts a clean session. The transcript will be lost.
+              {chat
+                ? "This stops any active turn, closes this session's authority, and opens a new mock tenant with new identities. The transcript and its mock records will be lost."
+                : "This clears the mock state and starts a clean session. The transcript will be lost."}
             </p>
             <div className="pit-button-row">
               <button
@@ -654,8 +819,9 @@ export function App() {
                 className="pit-button"
                 data-variant="destructive"
                 onClick={reset}
+                data-testid="reset-confirm"
               >
-                Reset scenario
+                {chat ? "Reset chat" : "Reset scenario"}
               </button>
             </div>
           </div>

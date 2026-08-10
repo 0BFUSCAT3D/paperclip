@@ -1,9 +1,10 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 /**
- * Package server for the Phase 7G issue-thread UI.
+ * Package server for the Phase 7G issue-thread UI and the Phase 7M clean-room
+ * chat.
  *
  * The browser posts intents here; this process owns the real runnerd and Codex
  * app-server pair, the mock ControlPlanePort, and every policy decision. Each
@@ -13,18 +14,35 @@ import { resolve } from "node:path";
  * An interaction response is stored in the mock control plane before the
  * runner is resumed — that ordering is enforced inside `Phase7LiveSession`
  * (§5 response authority path).
+ *
+ * Two surfaces share one session registry and one set of turn routes:
+ *
+ * - `issue` seeds the preset scenario the explorer selects;
+ * - `cleanroom` seeds only a company, an agent, and a blank issue.
+ *
+ * Both run the same real runnerd + real Codex loop. Neither has a scripted or
+ * replay path in this process, so there is nothing here that could quietly
+ * substitute for a live turn.
  */
 
 const ROUTE_PREFIX = "/api/phase7/ui";
+const CLEAN_ROOM_ROUTE = "cleanroom/session";
+/** Bounded concurrency (revision 5 safety requirements). */
+const MAX_CLEAN_ROOM_SESSIONS = 4;
+/** Bounded output: a clean room is a demo, not a long-lived agent. */
+const MAX_TURNS_PER_SESSION = 24;
+const MAX_MESSAGE_BYTES = 8 * 1024;
 
 async function loadRunner() {
   return import(new URL("../dist/index.js", import.meta.url).href);
 }
 
-async function createWorkingDirectory() {
-  const scratchRoot =
-    process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? process.env.PAPERCLIP_SCRATCH_DIR ?? tmpdir();
-  return mkdtemp(resolve(scratchRoot, "phase7-issue-thread-"));
+function scratchRoot() {
+  return process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? process.env.PAPERCLIP_SCRATCH_DIR ?? tmpdir();
+}
+
+async function createWorkingDirectory(prefix = "phase7-issue-thread-") {
+  return mkdtemp(resolve(scratchRoot(), prefix));
 }
 
 /** Mock-only fixture seed. Identifiers use the reserved `MCK-` prefix (§1.3). */
@@ -64,11 +82,31 @@ function issueThreadSeed(runner, scenario) {
   });
 }
 
+class RouteError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export function createPhase7IssueThreadMiddleware(options = {}) {
   const load = options.loadRunner ?? loadRunner;
   let bootstrap = null;
   let bindHost = options.bindHost ?? "127.0.0.1";
-  /** @type {Map<string, { session: unknown, scenario: string, connection: { state: string, attempt: number } }>} */
+  /**
+   * @type {Map<string, {
+   *   session: unknown,
+   *   surface: "issue" | "cleanroom",
+   *   scenario: string,
+   *   identity: unknown,
+   *   workingDirectory: string,
+   *   ownsWorkingDirectory: boolean,
+   *   turns: number,
+   *   createdAt: number,
+   *   connection: { state: string, attempt: number },
+   * }>}
+   */
   const sessions = new Map();
 
   async function ready(requestedBindHost = bindHost) {
@@ -89,7 +127,7 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     return bootstrap;
   }
 
-  function view(runner, entry, sessionId) {
+  function view(runner, entry) {
     return runner.projectPhase7IssueThread({
       snapshot: entry.session.snapshot(),
       connection: entry.connection,
@@ -98,9 +136,29 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     });
   }
 
+  /**
+   * The clean room must never answer with a scripted or replayed turn. The
+   * projection is the only thing the browser sees, so the guard sits on the way
+   * out rather than on the way in.
+   */
+  function liveView(runner, entry) {
+    const projected = view(runner, entry);
+    if (projected.mode !== "live" || projected.identity.agentLabel !== "Real Codex") {
+      throw new RouteError(500, "live_mode_required", "The clean-room path refused a non-live view.");
+    }
+    return projected;
+  }
+
   async function readBody(request) {
     const chunks = [];
-    for await (const chunk of request) chunks.push(chunk);
+    let total = 0;
+    for await (const chunk of request) {
+      total += chunk.length;
+      if (total > MAX_MESSAGE_BYTES * 4) {
+        throw new RouteError(413, "request_too_large", "Request body exceeds the server limit.");
+      }
+      chunks.push(chunk);
+    }
     if (chunks.length === 0) return {};
     try {
       return JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -124,9 +182,78 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       actorId: "actor-1",
       companyId: "company-1",
     });
-    const entry = { session, scenario, connection: { state: "connected", attempt: 0 } };
+    const entry = {
+      session,
+      surface: "issue",
+      scenario,
+      identity: null,
+      workingDirectory,
+      ownsWorkingDirectory: false,
+      turns: 0,
+      createdAt: Date.now(),
+      connection: { state: "connected", attempt: 0 },
+    };
     sessions.set(session.id, entry);
     return entry;
+  }
+
+  /** Retire a session: stop its work, clear its authority, drop its workspace. */
+  async function retire(service, sessionId, reason) {
+    const entry = sessions.get(sessionId);
+    if (entry === undefined) return;
+    sessions.delete(sessionId);
+    await service.stop(sessionId, reason).catch(() => undefined);
+    if (entry.ownsWorkingDirectory) {
+      await rm(entry.workingDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  async function createCleanRoomSession(runner, service) {
+    const open = [...sessions.values()].filter((entry) => entry.surface === "cleanroom");
+    // Bounded concurrency: the oldest clean room yields rather than refusing a
+    // new board user, because an abandoned chat is the likelier tenant here.
+    for (const stale of open.slice(0, Math.max(0, open.length - (MAX_CLEAN_ROOM_SESSIONS - 1)))) {
+      await retire(service, stale.session.id, "clean-room capacity");
+    }
+    const workingDirectory = await createWorkingDirectory("phase7-clean-room-");
+    const { identity, input } = runner.createPhase7CleanRoomSessionInput({ workingDirectory });
+    let session;
+    try {
+      session = await service.create(input);
+    } catch (error) {
+      await rm(workingDirectory, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+    const entry = {
+      session,
+      surface: "cleanroom",
+      scenario: "clean-room",
+      identity,
+      workingDirectory,
+      ownsWorkingDirectory: true,
+      turns: 0,
+      createdAt: Date.now(),
+      connection: { state: "connected", attempt: 0 },
+    };
+    sessions.set(session.id, entry);
+    return entry;
+  }
+
+  function cleanRoomPayload(runner, entry) {
+    return {
+      sessionId: entry.session.id,
+      surface: "cleanroom",
+      identity: entry.identity,
+      limits: { maxTurns: MAX_TURNS_PER_SESSION, maxMessageBytes: MAX_MESSAGE_BYTES },
+      turns: entry.turns,
+      view: liveView(runner, entry),
+    };
+  }
+
+  function payload(runner, entry) {
+    return entry.surface === "cleanroom"
+      ? cleanRoomPayload(runner, entry)
+      : { sessionId: entry.session.id, surface: "issue", view: view(runner, entry) };
   }
 
   const middleware = async function phase7IssueThreadMiddleware(request, response, next) {
@@ -144,16 +271,40 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       const scenario =
         typeof body.scenario === "string" ? body.scenario : url.searchParams.get("scenario") ?? "hb-baseline";
 
+      if (route === CLEAN_ROOM_ROUTE && request.method === "GET") {
+        const existing = requestedId === null ? undefined : sessions.get(requestedId);
+        // A stale id from localStorage opens a fresh room rather than a dead
+        // end; a live id reconnects to the same durable chat.
+        const entry =
+          existing !== undefined && existing.surface === "cleanroom"
+            ? existing
+            : await createCleanRoomSession(runner, service);
+        send(response, 200, cleanRoomPayload(runner, entry));
+        return;
+      }
+
+      if (route === CLEAN_ROOM_ROUTE && request.method === "POST") {
+        // `New chat`: retire the caller's room before minting the next one, so
+        // the prior session authority is cleared rather than left running.
+        if (requestedId !== null) await retire(service, requestedId, "new clean-room chat");
+        const entry = await createCleanRoomSession(runner, service);
+        send(response, 201, cleanRoomPayload(runner, entry));
+        return;
+      }
+
       if (route === "session" && request.method === "GET") {
         const existing = requestedId === null ? undefined : sessions.get(requestedId);
-        const entry = existing ?? (await createSession(runner, service, scenario, workingDirectory));
-        send(response, 200, { sessionId: entry.session.id, view: view(runner, entry) });
+        const entry =
+          existing !== undefined && existing.surface === "issue"
+            ? existing
+            : await createSession(runner, service, scenario, workingDirectory);
+        send(response, 200, payload(runner, entry));
         return;
       }
 
       if (route === "session" && request.method === "POST") {
         const entry = await createSession(runner, service, scenario, workingDirectory);
-        send(response, 201, { sessionId: entry.session.id, view: view(runner, entry) });
+        send(response, 201, payload(runner, entry));
         return;
       }
 
@@ -164,7 +315,19 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       }
 
       if (route === "message") {
-        await entry.session.sendMessage(String(body.message ?? ""));
+        const message = String(body.message ?? "");
+        if (Buffer.byteLength(message, "utf8") > MAX_MESSAGE_BYTES) {
+          throw new RouteError(413, "message_too_large", "Message exceeds the server limit.");
+        }
+        if (entry.turns >= MAX_TURNS_PER_SESSION) {
+          throw new RouteError(
+            429,
+            "turn_limit",
+            `This chat reached its ${MAX_TURNS_PER_SESSION}-turn limit. Start a new chat to continue.`,
+          );
+        }
+        entry.turns += 1;
+        await entry.session.sendMessage(message);
       } else if (route === "interrupt") {
         await entry.session.interrupt("operator stopped the turn");
       } else if (route === "reconnect") {
@@ -172,15 +335,25 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
         await entry.session.reconnect();
         entry.connection = { state: "connected", attempt: 0 };
       } else if (route === "reset") {
+        if (entry.surface === "cleanroom") {
+          // A clean-room reset is a new tenant, not a rewound one: the seed is
+          // blank either way, so restoring it would hand back the same mock
+          // identities the board just saw.
+          await retire(service, entry.session.id, "clean-room reset");
+          const replacement = await createCleanRoomSession(runner, service);
+          send(response, 200, cleanRoomPayload(runner, replacement));
+          return;
+        }
         const next = await service.reset(entry.session.id);
         sessions.delete(entry.session.id);
         const resetEntry = {
+          ...entry,
           session: next,
-          scenario: entry.scenario,
+          turns: 0,
           connection: { state: "connected", attempt: 0 },
         };
         sessions.set(next.id, resetEntry);
-        send(response, 200, { sessionId: next.id, view: view(runner, resetEntry) });
+        send(response, 200, payload(runner, resetEntry));
         return;
       } else if (route === "interaction") {
         // The session stores the typed response in the mock control plane
@@ -195,8 +368,12 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
         return;
       }
 
-      send(response, 200, { sessionId: entry.session.id, view: view(runner, entry) });
+      send(response, 200, payload(runner, entry));
     } catch (error) {
+      if (error instanceof RouteError) {
+        send(response, error.status, { error: error.code, message: error.message });
+        return;
+      }
       send(response, 500, {
         error: "phase7_issue_thread_unavailable",
         message: String(error instanceof Error ? error.message : error),
@@ -208,8 +385,7 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     if (bootstrap === null) return;
     const { service } = await bootstrap;
     for (const sessionId of [...sessions.keys()]) {
-      await service.shutdown(sessionId, "server shutdown").catch(() => undefined);
-      sessions.delete(sessionId);
+      await retire(service, sessionId, "server shutdown");
     }
   };
   middleware.prepare = ready;
