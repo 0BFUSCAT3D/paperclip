@@ -20,6 +20,7 @@ import {
 } from "./scenario-execution.js";
 import { phase7StateDiff } from "./state-diff.js";
 import { phase7ScenarioParity, type Phase7EvalSuiteLookup } from "./scenario-parity.js";
+import { phase7FixtureRunCapabilities } from "./fixture-run-capabilities.js";
 
 /**
  * Executes one scenario against the Phase 7C mock control plane and the Phase
@@ -72,7 +73,7 @@ export async function phase7RunScenario(
       reason: entry.wakeReason,
       payload: phase7ContinuationWakePayload(entry, fixture, mode),
     },
-    capabilities: entry.scenarioClaims,
+    capabilities: phase7FixtureRunCapabilities(entry.scenarioClaims),
   });
 
   const runtime = new Phase7SemanticToolRuntime({

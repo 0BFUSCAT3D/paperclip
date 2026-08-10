@@ -5,6 +5,7 @@ import { Phase7MockControlPlaneAdapter } from "../mock-core/phase7-mock-control-
 import type { Phase7FixtureSeed, Phase7JsonValue } from "../mock-core/phase7-control-plane-types.js";
 import { Phase7SemanticToolRuntime } from "../tools/phase7-semantic-tool-runtime.js";
 import { Phase7CodexToolBinding, Phase7FakeAgentToolBinding } from "../tools/phase7-tool-bindings.js";
+import { phase7FixtureRunCapabilities } from "../phase7/fixture-run-capabilities.js";
 
 const GENERATED_HEADER = "# GENERATED FILE — DO NOT EDIT. Run pnpm generate:phase7-inventory.\n";
 const PACKAGE_ROOT = resolve(import.meta.dirname, "../..");
@@ -230,6 +231,7 @@ async function runtimeFor(actorGrants: string[] = []) {
     },
     backendKind: "mock",
     sourceInstanceId: "phase7-eval-suite",
+    capabilities: phase7FixtureRunCapabilities(actorGrants),
   });
   return {
     adapter,

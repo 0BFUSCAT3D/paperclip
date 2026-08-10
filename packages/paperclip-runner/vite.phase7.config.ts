@@ -32,7 +32,7 @@ export default defineConfig({
       },
       {
         find: "@paperclip-runner-local/phase7",
-        replacement: resolve(packageRoot, "src/phase7/index.ts"),
+        replacement: resolve(packageRoot, "src/phase7/browser-index.ts"),
       },
     ],
   },

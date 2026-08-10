@@ -123,7 +123,7 @@ const AUTHORED_CHAT_SCRIPTS: Record<string, ChatScriptFactory> = {
           command: {
             kind: "resolve_human_input",
             interactionId: CREATED_INTERACTION_REF(1),
-            outcome: "answered",
+            outcome: "accepted",
             result: { selectedOptionIds: ["scope-a", "scope-c"] },
           },
           summary:

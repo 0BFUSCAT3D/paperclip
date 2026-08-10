@@ -16,6 +16,7 @@ import {
   snapshotOf,
 } from "./scenario-execution.js";
 import { phase7ContinuationWakePayload } from "./scenario-runner.js";
+import { phase7FixtureRunCapabilities } from "./fixture-run-capabilities.js";
 import {
   phase7ScenarioParity,
   phase7TurnParity,
@@ -143,7 +144,7 @@ export class Phase7ChatSession {
         reason: entry.wakeReason,
         payload: phase7ContinuationWakePayload(entry, fixture, mode),
       },
-      capabilities: entry.scenarioClaims,
+      capabilities: phase7FixtureRunCapabilities(entry.scenarioClaims),
     });
 
     const runtime = new Phase7SemanticToolRuntime({

@@ -85,7 +85,7 @@ owns it.
 
 ```sh
 # Deterministic fake-mode app (no provider process)
-pnpm --filter @paperclipai/paperclip-runner console:phase7
+pnpm --filter @paperclipai/paperclip-runner console:issue-thread
 
 # Focused browser suite, including the axe gate on all 12 slugs × 2 viewports
 pnpm --filter @paperclipai/paperclip-runner test:browser:phase7

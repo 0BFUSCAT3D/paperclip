@@ -9,7 +9,7 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: "@paperclipai/paperclip-runner/react", replacement: resolve(packageRoot, "src/react/index.ts") },
-      { find: "@paperclip-runner-local/phase7", replacement: resolve(packageRoot, "src/phase7/index.ts") },
+      { find: "@paperclip-runner-local/phase7", replacement: resolve(packageRoot, "src/phase7/browser-index.ts") },
     ],
   },
   test: {

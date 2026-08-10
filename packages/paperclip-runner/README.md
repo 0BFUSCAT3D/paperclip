@@ -118,6 +118,14 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 | `test:phase5` | Run targeted browser-client, reducer-projection, and React component contract tests. |
 | `test:browser:phase5` | Exercise both consumers with the fake driver, keyboard/a11y checks, reconnect/replay, measurements, and screenshots. |
 | `record:phase5:codex` | Run both public consumers against a safe real Codex session and capture live screenshots. |
+| `check:phase-07-contract` | Verify the generated capability, legacy MCP, and eval traceability contract. |
+| `check:semantic-contracts` | Verify the provider-neutral semantic tool contract is current. |
+| `trace:phase7` | Run the real runnerd/Codex semantic loop against the mock control plane. |
+| `demo:phase7` | Start the Phase 7 scenario explorer over the mock control plane on `127.0.0.1:4183`. |
+| `console:issue-thread` | Start the Paperclip-style issue thread on `127.0.0.1:4184`. |
+| `test:phase7` | Run the scenario index, run-artifact, parity, explorer component, and route tests. |
+| `test:browser:phase7` | Exercise both the scenario explorer and issue-thread browser contracts. |
+| `record:phase7` | Record the twelve-route screenshot acceptance set at both viewports. |
 | `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
 | `test:browser` | Exercise static replay and live scenarios, then capture temporary screenshots under ignored test output. |
 | `verify` | Run the complete deterministic Phase 0 through Phase 5 acceptance sequence. |
@@ -142,6 +150,9 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 - [Phase 5 SDK console tutorial](docs/tutorials/phase-05-sdk-console.md)
 - [Phase 5 browser SDK reference](docs/phase-05-sdk.md)
 - [Phase 5 component decision record](docs/design/phase-5-component-decisions.md)
+- [Phase 7 semantic catalog and authorization](docs/phase-07-semantic-catalog.md)
+- [Phase 7 live runnerd/Codex loop](docs/phase-07-live-runnerd-codex.md)
+- [Phase 7 issue-thread UI](docs/phase-07-issue-thread-ui.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
