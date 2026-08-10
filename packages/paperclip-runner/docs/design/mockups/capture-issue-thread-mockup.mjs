@@ -1,7 +1,7 @@
 import { chromium } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
-const root = new URL("./packages/paperclip-runner/docs/design/mockups/phase-7-issue-thread.html", import.meta.url).href;
+const root = new URL("./phase-7-issue-thread.html", import.meta.url).href;
 const outDir = process.env.OUT_DIR;
 mkdirSync(outDir, { recursive: true });
 
