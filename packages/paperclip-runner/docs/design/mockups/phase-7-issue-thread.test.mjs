@@ -29,6 +29,8 @@ test("the capture recipe covers implemented mockup states and contract viewports
 
   assert.match(capture, /desktop: \{ width: 1440, height: 900 \}/);
   assert.match(capture, /mobile: \{ width: 390, height: 844 \}/);
+  assert.match(capture, /p = "\?state=resolved&seg=evidence"/);
+  assert.match(capture, /vp\.width === 390 && hscroll > 0/);
   assert.match(mockup, /data-thread-state="pending"/);
   assert.match(mockup, /dataset\.threadState = 'settled'/);
 });
