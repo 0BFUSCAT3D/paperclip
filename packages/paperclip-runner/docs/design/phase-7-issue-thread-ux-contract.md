@@ -1,15 +1,15 @@
 # Phase 7B — Issue-Thread UX Contract
 
 Status: **binding** for track 7G (Paperclip-style Web UI) and reviewable by tracks 7E/7K.
-Source of authority: Phase 7 plan (PAP-16897 `plan` document), Revision 3 §"Page information
+Source of authority: Phase 7 `plan` document, Revision 3 §"Page information
 architecture", §"Native issue-thread interactions", §"Live execution contract", and Revision 4
 §"Final evidence eligibility". Capability vocabulary: Phase 7A generated contract
 (`generated/phase-07/capabilities.yaml`, `mcp-tool-map.yaml`, `eval-traceability.yaml`,
-`contract-schema.json` — PAP-16939).
+`contract-schema.json`).
 
-If a corner of this contract is underspecified, 7G comments on PAP-16940 and waits for a
-revision. 7G does not diverge silently. Deviations are either fixed in the implementation or
-written back into this document as an explicit revision.
+If a corner of this contract is underspecified, 7G records the question on the source work
+item and waits for a revision. 7G does not diverge silently. Deviations are either fixed in
+the implementation or written back into this document as an explicit revision.
 
 ---
 
@@ -60,8 +60,8 @@ what runs it, what control plane it talks to, and whether this session is live.
    evidence eligibility).
 3. **Mock identifier scheme**: mock issues use a reserved prefix that cannot be confused with
    a real company (fixture default: `MCK-<n>`, e.g. `MCK-31`). The UI never renders a
-   `/PAP/...`-style link to a real control plane; mock entity links navigate inside the
-   explorer only.
+   instance-local link to a real control plane; mock entity links navigate inside the explorer
+   only.
 4. **No credential surface**: no header, panel, tooltip, error, or diff may contain a token,
    key, or `Authorization` value. Redacted fields render as `••• redacted` with the redaction
    rule name from the authorization record.
@@ -388,4 +388,4 @@ Implementation acceptance (UXDesigner review) requires:
 6. §9 accessibility gate green (axe + documented keyboard tour).
 7. Screenshot review posted to the 7G issue for UXDesigner acceptance before 7G closes.
 
-Questions or gaps → comment on PAP-16940.
+Questions or gaps → record them on the source work item.
