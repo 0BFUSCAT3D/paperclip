@@ -31,11 +31,12 @@ describe("Codex app-server transport limits", () => {
   it("bounds pending requests", async () => {
     const transport = nodeTransport("process.stdin.resume()", { maxPendingRequests: 1 });
     const first = transport.request("first", {});
+    const firstRejection = expect(first).rejects.toThrow("codex app-server transport closed");
     await expect(transport.request("second", {})).rejects.toThrow(
       "codex app-server pending request limit 1 exceeded",
     );
     await transport.close();
-    await expect(first).rejects.toThrow("codex app-server transport closed");
+    await firstRejection;
   });
 
   it("fails closed when queued notifications exceed their count bound", async () => {
