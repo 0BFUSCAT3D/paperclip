@@ -97,6 +97,7 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 | `typecheck` | Check TypeScript, Rust, generated schema sources, and browser types. |
 | `test` | Run Rust/TypeScript fixture, supervisor, fake-driver, live/replay, and boundary tests. |
 | `check:forbidden-imports` | Reject TypeScript imports and Cargo path dependencies that cross into Paperclip core. |
+| `check:tracked-imports` | Reject tracked imports and `package.json` entry points that only resolve against untracked files, so a clean checkout of any commit builds. |
 | `check:phase0-parity` | Require byte-for-byte equivalent Rust and TypeScript tracer output. |
 | `check:phase1-goldens` | Require all reducer snapshots and cross-language summaries to match checked goldens. |
 | `check:phase1-parity` | Run TypeScript and Rust against the same Phase 1 fixture summaries. |

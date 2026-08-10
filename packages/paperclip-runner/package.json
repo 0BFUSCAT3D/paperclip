@@ -41,7 +41,7 @@
     "typecheck:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
     "typecheck:rust": "cargo check --manifest-path runner/Cargo.toml --locked --workspace",
     "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
-    "test": "pnpm run build:phase2-binaries && pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs scripts/record-phase4-evidence.test.mjs scripts/validate-doc-links.test.mjs test/capability-contract.test.mjs",
+    "test": "pnpm run build:phase2-binaries && pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs scripts/check-tracked-imports.test.mjs scripts/record-phase4-evidence.test.mjs scripts/validate-doc-links.test.mjs test/capability-contract.test.mjs",
     "test:typescript": "vitest run",
     "test:rust": "cargo test --manifest-path runner/Cargo.toml --locked --workspace",
     "test:browser": "pnpm run build:typescript && pnpm run build:phase2-binaries && pnpm run build:browser && playwright test --config devtools/browser/playwright.config.ts",
@@ -58,6 +58,7 @@
     "check:phase1-goldens": "node scripts/generate-phase1-goldens.mjs --check",
     "check:browser-tokens": "node scripts/check-browser-tokens.mjs",
     "check:forbidden-imports": "node scripts/check-forbidden-imports.mjs",
+    "check:tracked-imports": "node scripts/check-tracked-imports.mjs",
     "generate:phase7-inventory": "node scripts/generate-phase7-inventory.mjs",
     "check:phase7-inventory": "node scripts/check-phase7-inventory.mjs",
     "test:phase7-inventory": "node scripts/check-phase7-inventory.test.mjs",
@@ -97,7 +98,7 @@
     "demo:phase7": "pnpm run build:typescript && vite --config vite.phase7.config.ts --host 127.0.0.1 --port 4183",
     "browser:dev": "pnpm run build:typescript && pnpm run build:phase2-binaries && vite --config vite.config.ts",
     "browser:preview": "vite preview --config vite.config.ts",
-    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run test:phase5 && pnpm run test:phase7 && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:phase5 && pnpm run test:browser:phase7 && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet && pnpm run trace:phase3",
+    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run test:phase5 && pnpm run test:phase7 && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:phase5 && pnpm run test:browser:phase7 && pnpm run check:forbidden-imports && pnpm run check:tracked-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet && pnpm run trace:phase3",
     "verify:rootless": "bash scripts/verify-rootless-linux.sh"
   },
   "peerDependencies": {

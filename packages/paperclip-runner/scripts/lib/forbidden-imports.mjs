@@ -44,7 +44,7 @@ async function collectSourceFiles(target) {
   return files;
 }
 
-function findSpecifiers(source) {
+export function findSpecifiers(source) {
   const found = [];
   for (const pattern of IMPORT_PATTERNS) {
     pattern.lastIndex = 0;
