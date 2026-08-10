@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en" data-session-mode="fake" data-thread-state="pending">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCK-31 — Phase 7 issue thread (mockup)</title>
+<style>
+  /* Deterministic mockup for the Phase 7B issue-thread UX contract.
+     States via query params: ?state=baseline|pending|resolved|replay|streaming
+                              &panel=open  &seg=thread|evidence
+     All timestamps are fixture-fixed. No animation (screenshot determinism). */
+  :root{
+    --background:oklch(0.17 0.005 260); --card:oklch(0.21 0.006 260);
+    --card-2:oklch(0.24 0.007 260); --foreground:oklch(0.93 0.004 260);
+    --muted-fg:oklch(0.68 0.008 260); --border:oklch(0.31 0.008 260);
+    --accent:oklch(0.28 0.01 260); --violet:oklch(0.62 0.19 295);
+    --indigo:oklch(0.62 0.17 275); --green:oklch(0.72 0.17 150);
+    --red:oklch(0.64 0.19 25); --amber:oklch(0.78 0.15 80);
+    --cyan:oklch(0.75 0.12 210); --ring:oklch(0.62 0.17 275);
+    --radius:10px;
+  }
+  *{box-sizing:border-box} html,body{margin:0;height:100%}
+  [hidden]{display:none!important}
+  body{background:var(--background);color:var(--foreground);
+       font:14px/1.55 "Inter","Segoe UI","DejaVu Sans","Liberation Sans",ui-sans-serif,system-ui,sans-serif;
+       display:flex;flex-direction:column;overflow:hidden}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .xs{font-size:12px;color:var(--muted-fg)}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+
+  /* ---------- header ---------- */
+  header{border-bottom:1px solid var(--border);padding:10px 16px;flex:none;
+         display:flex;flex-direction:column;gap:8px;background:var(--background);z-index:5}
+  .hrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+  .ident{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--muted-fg)}
+  h1{font-size:17px;font-weight:700;margin:0;white-space:nowrap;overflow:hidden;
+     text-overflow:ellipsis;min-width:0;flex:1}
+  .badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;
+         padding:2px 9px;font-size:11.5px;font-weight:500;border:1px solid var(--border)}
+  .badge .dot{width:7px;height:7px;border-radius:999px}
+  .b-inprogress{color:var(--indigo);border-color:color-mix(in oklch,var(--indigo),transparent 55%)}
+  .b-done{color:var(--green);border-color:color-mix(in oklch,var(--green),transparent 55%)}
+  .chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 10px;
+        font-size:11.5px;font-weight:600;border:1px solid}
+  .c-agent{color:var(--cyan);border-color:color-mix(in oklch,var(--cyan),transparent 50%);
+           background:color-mix(in oklch,var(--cyan),transparent 92%)}
+  .c-runner{color:var(--foreground);border-color:var(--border);background:var(--card)}
+  .c-mock{color:var(--amber);border-color:color-mix(in oklch,var(--amber),transparent 50%);
+          background:color-mix(in oklch,var(--amber),transparent 92%)}
+  .c-runner .dot{background:var(--muted-fg)}
+  .hactions{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+  .btn{border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-size:12.5px;
+       background:var(--card)}
+  .btn:hover{background:var(--accent)}
+  .btn-stop{color:var(--red);border-color:color-mix(in oklch,var(--red),transparent 55%)}
+  .btn-primary{background:var(--indigo);border-color:transparent;color:oklch(0.98 0 0);font-weight:600}
+
+  /* ---------- layout ---------- */
+  .shell{display:flex;flex:1;min-height:0}
+  .threadwrap{flex:1;display:flex;flex-direction:column;min-width:0}
+  .scroll{flex:1;overflow-y:auto;padding:18px 16px 8px}
+  .thread{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+
+  .turnhead{display:flex;align-items:center;gap:8px;color:var(--muted-fg);font-size:11.5px;
+            margin-top:6px}
+  .turnhead::before,.turnhead::after{content:"";flex:1;border-top:1px solid var(--border)}
+
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+        padding:10px 14px;position:relative}
+  .chead{display:flex;align-items:baseline;gap:8px;margin-bottom:4px;flex-wrap:wrap}
+  .author{font-weight:600;font-size:13px}
+  .durable{position:absolute;top:0;right:0;border-radius:0 var(--radius) 0 8px;
+           background:color-mix(in oklch,var(--indigo),transparent 82%);color:var(--indigo);
+           font-size:10.5px;font-weight:600;padding:2px 9px}
+  .sysnotice{display:flex;gap:8px;align-items:center;color:var(--muted-fg);font-size:12px;
+             padding:0 6px}
+
+  .strip{display:flex;align-items:center;gap:8px;border:1px solid var(--border);
+         border-radius:8px;padding:6px 10px;font-size:12.5px;background:var(--card-2)}
+  .strip .op{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+  .strip .sum{color:var(--muted-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+              flex:1;min-width:0}
+  .ok{color:var(--green)} .deny{color:var(--red)} .run{color:var(--amber)}
+  .strip.denied{border-color:color-mix(in oklch,var(--red),transparent 60%);
+                background:color-mix(in oklch,var(--red),transparent 94%)}
+  .viewlink{color:var(--indigo);font-size:11.5px;white-space:nowrap}
+
+  /* interaction cards */
+  .icard{border-left:3px solid var(--violet)}
+  .icard.resolved{border-left-color:var(--green)}
+  .icard.rejected{border-left-color:var(--red)}
+  .icard.stale{border-left-color:var(--border);opacity:.62}
+  .statechip{display:inline-flex;align-items:center;gap:5px;border-radius:999px;
+             padding:1.5px 9px;font-size:11px;font-weight:600}
+  .s-pending{background:color-mix(in oklch,var(--violet),transparent 85%);color:var(--violet)}
+  .s-ok{background:color-mix(in oklch,var(--green),transparent 87%);color:var(--green)}
+  .s-rej{background:color-mix(in oklch,var(--red),transparent 88%);color:var(--red)}
+  .s-gray{background:var(--accent);color:var(--muted-fg)}
+  .opt{display:flex;gap:9px;align-items:flex-start;border:1px solid var(--border);
+       border-radius:8px;padding:9px 12px;margin-top:8px}
+  .opt input{margin-top:3px;accent-color:var(--violet)}
+  .iactions{display:flex;gap:8px;margin-top:12px}
+  .target{display:inline-flex;gap:6px;align-items:center;background:var(--card-2);
+          border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:11.5px}
+
+  /* composer */
+  .composer{flex:none;border-top:1px solid var(--border);padding:10px 16px 14px;
+            background:var(--background)}
+  .cbox{max-width:760px;margin:0 auto}
+  .cfield{display:flex;gap:8px;align-items:flex-end;border:1px solid var(--border);
+          border-radius:12px;background:var(--card);padding:9px 10px 9px 14px}
+  .cfield textarea{flex:1;background:none;border:none;resize:none;color:inherit;font:inherit;
+                   height:22px;outline:none}
+  .helper{margin-top:6px;font-size:11.5px;color:var(--muted-fg)}
+  .helper a{color:var(--indigo)}
+  .composer[data-composer-state="waiting"] .cfield,
+  .composer[data-composer-state="disabled"] .cfield{opacity:.55}
+
+  /* evidence panel */
+  aside{width:384px;flex:none;border-left:1px solid var(--border);display:none;
+        flex-direction:column;background:var(--card);min-height:0}
+  body[data-panel="open"] aside{display:flex}
+  .phead{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;
+         align-items:center;font-weight:600;font-size:13px}
+  .pscroll{overflow-y:auto;flex:1}
+  .sect{border-bottom:1px solid var(--border)}
+  .sect>button{width:100%;display:flex;align-items:center;gap:8px;padding:9px 14px;
+               font-size:12.5px;font-weight:600;text-align:left}
+  .sect .count{margin-left:auto;color:var(--muted-fg);font-weight:400;font-size:11.5px}
+  .sbody{padding:2px 14px 12px;font-size:12px;color:var(--muted-fg);display:none}
+  .sect.open .sbody{display:block}
+  .rec{border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-top:6px;
+       background:var(--background)}
+  .rec .k{color:var(--muted-fg)} .rec .v{color:var(--foreground)}
+  .allow{color:var(--green);font-weight:600} .denyv{color:var(--red);font-weight:600}
+  .toolrow{display:flex;gap:8px;padding:3px 0;font-family:ui-monospace,Menlo,monospace;
+           font-size:11.5px;color:var(--foreground)}
+  .toolrow .grant{margin-left:auto;color:var(--amber);font-family:inherit}
+  .grouplabel{margin-top:9px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+              color:var(--muted-fg);font-weight:700}
+
+  /* replay + reconnect banners */
+  .banner{display:none;align-items:center;gap:10px;padding:7px 16px;font-size:12.5px;
+          border-bottom:1px solid var(--border)}
+  body[data-state="replay"] .banner.replay{display:flex;background:color-mix(in oklch,var(--violet),transparent 90%)}
+
+  /* mobile */
+  .seg{display:none}
+  @media (max-width:700px){
+    aside{position:static;width:100%;border-left:none}
+    body[data-seg="evidence"] aside{display:flex}
+    body[data-seg="evidence"] .threadwrap{display:none}
+    body:not([data-seg="evidence"]) aside{display:none}
+    .phead #pclose{display:none}
+    .seg{display:flex;gap:4px;background:var(--card);border:1px solid var(--border);
+         border-radius:10px;padding:3px;align-self:stretch}
+    .seg button{flex:1;border-radius:7px;padding:6px 0;font-size:13px;font-weight:600;
+                color:var(--muted-fg)}
+    .seg button[aria-selected="true"]{background:var(--accent);color:var(--foreground)}
+    .hactions .btn:not(.btn-stop):not(.menu){display:none}
+    h1{font-size:15px}
+  }
+</style>
+</head>
+<body data-panel="closed" data-seg="thread" data-state="baseline">
+
+<header>
+  <div class="hrow">
+    <span class="ident">MCK-31</span>
+    <h1>Ship the retry queue for outbound webhooks</h1>
+    <span class="badge b-inprogress"><span class="dot" style="background:var(--indigo)"></span>In&nbsp;progress</span>
+    <span class="badge" style="color:var(--amber)">▲ High</span>
+    <div class="hactions">
+      <button class="btn">Scenario ▾</button>
+      <button class="btn">Replay</button>
+      <button class="btn">Reset</button>
+      <button class="btn btn-stop" id="hstop" hidden>Stop</button>
+      <button class="btn menu" aria-haspopup="menu">⋯</button>
+      <button class="btn" id="ptoggle" aria-expanded="false">Evidence</button>
+    </div>
+  </div>
+  <div class="hrow">
+    <span class="chip c-agent" id="agentchip">◆ Fake agent</span>
+    <span class="chip c-runner"><span class="dot"></span><span id="runnerchip">In-process runner</span></span>
+    <span class="chip c-mock">⛁ Mock Paperclip</span>
+    <span class="xs">assignee&nbsp;<b style="color:var(--foreground)">mock-agent-01</b> · run <span class="mono">turn 3 idle</span></span>
+    <div class="seg" role="tablist" aria-label="Surface">
+      <button role="tab" aria-selected="true" id="segthread">Thread</button>
+      <button role="tab" aria-selected="false" id="segev">Evidence <span id="denybadge" hidden style="color:var(--red)">·1</span></button>
+    </div>
+  </div>
+</header>
+
+<div class="banner replay">▶ Replay · fake source — recorded run <span class="mono">rec-hb-baseline-01</span> · event 12 / 41 <button class="btn" style="margin-left:auto">Step</button><button class="btn">Next turn</button></div>
+
+<div class="shell">
+  <div class="threadwrap">
+    <div class="scroll">
+      <div class="thread">
+
+        <div class="sysnotice">⚙ Wake: <span class="mono">issue_blockers_resolved</span> → checkout by mock-agent-01 · 09:14:02</div>
+
+        <div class="turnhead">Turn 1 · fake · 2 tool calls · 09:14:05</div>
+
+        <div class="card">
+          <div class="chead"><span class="author">You (board user)</span><span class="xs">09:14:05</span></div>
+          Please pick up MCK-31, summarize the current state, and update the plan document before you start.
+        </div>
+
+        <div class="strip"><span class="ok">✓</span><span class="op">get_task_context</span><span class="sum">read issue, 4 comments, plan r3, 1 blocker</span><a class="viewlink" href="#">View in Evidence</a><span>›</span></div>
+
+        <div class="card">
+          <div class="chead"><span class="author" style="color:var(--cyan)">Fake agent</span><span class="xs">09:14:07</span></div>
+          The retry queue work is unblocked — <span class="mono">MCK-29</span> (schema change) is done. I'll revise the plan to cover backoff policy and dead-letter handling, then report progress.
+        </div>
+
+        <div class="strip"><span class="ok">✓</span><span class="op">write_document</span><span class="sum">plan r3 → r4 · “Add exponential backoff + DLQ section”</span><a class="viewlink" href="#">View in Evidence</a><span>›</span></div>
+
+        <div class="card">
+          <div class="durable">Recorded to mock thread</div>
+          <div class="chead"><span class="author">mock-agent-01</span><span class="xs">progress · 09:14:09</span></div>
+          Plan updated to r4: added backoff policy, DLQ routing, and a rollout gate. Remaining: confirm the plan, then implement the queue worker. Next owner: board confirmation.
+        </div>
+
+        <div class="turnhead">Turn 2 · fake · 2 tool calls · 09:15:20</div>
+
+        <div class="strip denied" id="denystrip" hidden><span class="deny">✕</span><span class="op">create_task</span><span class="sum">denied: missing grant <span class="mono">su:read_or_write</span></span><a class="viewlink" href="#">View in Evidence</a><span>›</span></div>
+
+        <!-- pending confirmation interaction -->
+        <section class="card icard" id="pendingcard" aria-label="Confirm plan revision r4">
+          <div class="chead">
+            <span class="author">Confirmation requested</span>
+            <span class="target mono">⌘ plan · r4</span>
+            <span class="statechip s-pending" style="margin-left:auto">● Waiting for you</span>
+          </div>
+          Accept the revised implementation plan? Backoff policy caps at 6 retries over 32 minutes; failures beyond that route to the dead-letter queue for manual review.
+          <label class="opt"><input type="checkbox" checked> <span><b>Include rollout gate</b><br><span class="xs">Hold at 5% of traffic for the first hour.</span></span></label>
+          <div class="iactions">
+            <button class="btn btn-primary">Accept plan r4</button>
+            <button class="btn">Request changes…</button>
+          </div>
+        </section>
+
+        <!-- resolved history variants -->
+        <section class="card icard resolved" id="resolvedok" hidden aria-label="Answered question">
+          <div class="chead"><span class="author">Question</span><span class="statechip s-ok" style="margin-left:auto">✓ Answered</span></div>
+          Which environment should the bounded retry test target? <b style="color:var(--foreground)">→ staging</b>
+        </section>
+        <section class="card icard rejected" id="resolvedrej" hidden aria-label="Changes requested">
+          <div class="chead"><span class="author">Confirmation</span><span class="target mono">⌘ plan · r3</span><span class="statechip s-rej" style="margin-left:auto">✕ Changes requested</span></div>
+          <span class="xs">Reason: “Backoff window too aggressive — cap at 32 minutes, not 2 hours.”</span>
+        </section>
+        <section class="card icard stale" id="resolvedstale" hidden aria-label="Stale confirmation">
+          <div class="chead"><span class="author">Confirmation</span><span class="target mono">⌘ plan · r2</span><span class="statechip s-gray" style="margin-left:auto">◌ Stale — plan moved to r3</span></div>
+          <span class="xs">Superseding revision: plan r3 · request evidence →</span>
+        </section>
+        <section class="card icard stale" id="resolvedsuper" hidden aria-label="Superseded confirmation">
+          <div class="chead"><span class="author">Checkbox confirmation</span><span class="statechip s-gray" style="margin-left:auto">◌ Superseded by a later comment</span></div>
+          <span class="xs">See comment at 09:18:44 · request evidence →</span>
+        </section>
+
+        <div class="sysnotice" id="stopnotice" hidden>⏹ Turn 3 stopped by user · partial output retained · 09:16:31</div>
+
+        <div class="card" id="streamcard" hidden>
+          <div class="chead"><span class="author" style="color:var(--cyan)">Fake agent</span><span class="xs">streaming…</span></div>
+          Registering the deliverable now — the queue-worker design note is ready and I’ll attach it to the issue before requesting review▍
+        </div>
+
+      </div>
+    </div>
+
+    <div class="composer" data-composer-state="waiting" id="composer">
+      <div class="cbox">
+        <div class="cfield">
+          <textarea aria-label="Message the agent" placeholder="Message the agent about MCK-31…" disabled></textarea>
+          <button class="btn btn-primary" id="sendbtn" disabled>Send</button>
+        </div>
+        <div class="helper" id="chelper"><a href="#pendingcard">Answer the pending request above</a> to continue.</div>
+      </div>
+    </div>
+  </div>
+
+  <aside aria-label="Run evidence">
+    <div class="phead">Evidence <span class="xs" style="font-weight:400">· Turn 2 ▾</span>
+      <button class="btn" style="margin-left:auto" id="pclose">Close</button></div>
+    <div class="pscroll">
+      <div class="sect open">
+        <button aria-expanded="true">Tools exposed <span class="count">7 visible · 3 withheld</span></button>
+        <div class="sbody">
+          <div class="grouplabel">Agent tool — always</div>
+          <div class="toolrow">get_task_context</div>
+          <div class="toolrow">report_progress</div>
+          <div class="toolrow">write_document</div>
+          <div class="toolrow">request_human_input</div>
+          <div class="toolrow">register_deliverable</div>
+          <div class="toolrow">finish_task</div>
+          <div class="toolrow">block_task</div>
+          <div class="grouplabel">Agent tool — granted</div>
+          <div class="toolrow" style="color:var(--muted-fg)">— none in this scenario</div>
+          <div class="grouplabel">Control plane (not exposed to the agent)</div>
+          <div class="toolrow" style="color:var(--muted-fg)">checkout / wake routing<span class="grant">control_plane_owned</span></div>
+          <div class="toolrow" style="color:var(--muted-fg)">budget · audit · replay<span class="grant">control_plane_owned</span></div>
+        </div>
+      </div>
+      <div class="sect open">
+        <button aria-expanded="true">Authorization <span class="count">3 allow · <span class="denyv" id="denycount" hidden>1 deny</span></span></button>
+        <div class="sbody">
+          <div class="rec"><span class="allow">allow</span> <span class="mono">write_document</span><br><span class="k">claims:</span> <span class="v mono">task:active</span> · <span class="k">redactions:</span> none · <span class="k">state:</span> plan r3→r4</div>
+          <div class="rec" id="denyrec" hidden><span class="denyv">deny</span> <span class="mono">create_task</span><br><span class="k">claims considered:</span> <span class="v mono">task:active</span> · <span class="k">missing:</span> <span class="v mono">su:read_or_write</span><br><span class="k">reason:</span> delegation requires an explicit grant</div>
+        </div>
+      </div>
+      <div class="sect"><button aria-expanded="false">Calls &amp; results <span class="count">4</span></button><div class="sbody"></div></div>
+      <div class="sect"><button aria-expanded="false">Control plane <span class="count">6</span></button><div class="sbody"></div></div>
+      <div class="sect"><button aria-expanded="false">Runner &amp; events <span class="count">18</span></button><div class="sbody"></div></div>
+      <div class="sect open">
+        <button aria-expanded="true">State diff <span class="count">2 entities</span></button>
+        <div class="sbody">
+          <div class="rec"><span class="k">documents.plan</span> <span class="v mono">r3 → r4</span><br><span class="k">interactions</span> <span class="v mono">+1 pending (confirmation)</span></div>
+        </div>
+      </div>
+      <div class="sect"><button aria-expanded="false">Traceability <span class="count">ix/ix-confirmation-plan-01</span></button><div class="sbody"></div></div>
+      <div class="sect open">
+        <button aria-expanded="true">Parity <span class="count">5/5 pass</span></button>
+        <div class="sbody"><div class="rec"><span class="allow">pass</span> plan write is revision-bound · <span class="allow">pass</span> confirmation targets r4 · <span class="allow">pass</span> no forbidden op called</div></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+  // Deterministic state switching — query params only, no clocks, no randomness.
+  const q = new URLSearchParams(location.search);
+  const state = q.get('state') || 'baseline';
+  const body = document.body;
+  body.dataset.state = state;
+  const show = id => document.getElementById(id).hidden = false;
+  const hide = id => document.getElementById(id).hidden = true;
+  const composer = document.getElementById('composer');
+  const helper = document.getElementById('chelper');
+  const send = document.getElementById('sendbtn');
+
+  if (state === 'baseline' || state === 'resolved' || state === 'replay' || state === 'streaming') hide('pendingcard');
+  if (state === 'baseline') { composer.dataset.composerState='ready';
+    helper.textContent='Cmd+Enter to send'; send.disabled=false;
+    composer.querySelector('textarea').disabled=false; }
+  if (state === 'resolved') { ['resolvedok','resolvedrej','resolvedstale','resolvedsuper','denystrip','denyrec','denybadge','denycount'].forEach(show);
+    show('stopnotice'); composer.dataset.composerState='ready';
+    helper.textContent='Cmd+Enter to send'; send.disabled=false;
+    composer.querySelector('textarea').disabled=false; }
+  if (state === 'streaming') { show('streamcard'); show('hstop');
+    composer.dataset.composerState='streaming'; send.textContent='Stop';
+    send.classList.remove('btn-primary'); send.classList.add('btn-stop'); send.disabled=false;
+    const ta=composer.querySelector('textarea'); ta.disabled=false;
+    helper.textContent='Codex is working — send to steer, or stop the turn.'; }
+  if (state === 'replay') { composer.dataset.composerState='disabled';
+    helper.textContent='Replay is read-only.';
+    document.getElementById('agentchip').textContent='▶ Replay';
+    document.getElementById('runnerchip').textContent='Recorded run'; }
+  if (q.get('panel') === 'open') { body.dataset.panel='open';
+    document.getElementById('ptoggle').setAttribute('aria-expanded','true'); }
+  if (q.get('seg') === 'evidence') { body.dataset.panel='open'; body.dataset.seg='evidence';
+    document.getElementById('segev').setAttribute('aria-selected','true');
+    document.getElementById('segthread').setAttribute('aria-selected','false'); }
+
+  document.getElementById('ptoggle').onclick=()=>{ body.dataset.panel = body.dataset.panel==='open'?'closed':'open'; };
+  document.getElementById('pclose').onclick=()=>{ body.dataset.panel='closed'; body.dataset.seg='thread'; };
+
+  // settle signal: scroll thread to bottom, then mark settled (capture hook)
+  const sc = document.querySelector('.scroll'); sc.scrollTop = sc.scrollHeight;
+  document.documentElement.dataset.threadState = 'settled';
+</script>
+</body>
+</html>
