@@ -106,6 +106,12 @@ Hosts without the Playwright chromium system libraries can either run
 `pnpm --filter @paperclipai/paperclip-runner verify:rootless` or set
 `PAPERCLIP_RUNNER_CHROMIUM_PATH` to a preinstalled Chromium.
 
+The committed PNGs are pinned to the Chromium build listed in the Phase 7G
+verification evidence, so `check:phase7:ui` needs that same browser. Point
+`PAPERCLIP_RUNNER_CHROMIUM_PATH` at it before comparing; a different build makes
+every shot mismatch at once, which reads like a regression but is not one. The
+check prints the Chromium version it recorded with whenever it reports drift.
+
 ## Accessibility
 
 The suite enforces the contract's blocking gate: axe reports zero serious or

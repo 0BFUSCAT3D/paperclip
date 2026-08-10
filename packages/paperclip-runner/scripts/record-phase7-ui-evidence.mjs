@@ -79,6 +79,9 @@ async function startPreview() {
   };
 }
 
+// Set by `record` so a drift report can name the Chromium build that produced it.
+let browserVersion = "unknown";
+
 async function record(targetDir) {
   await mkdir(targetDir, { recursive: true });
   const browser = await chromium.launch({
@@ -86,6 +89,7 @@ async function record(targetDir) {
       ? {}
       : { executablePath: process.env.PAPERCLIP_RUNNER_CHROMIUM_PATH }),
   });
+  browserVersion = browser.version();
   const recorded = [];
   try {
     for (const viewport of VIEWPORTS) {
@@ -174,7 +178,18 @@ async function main() {
         );
       }
       if (drift.length > 0) {
-        process.stderr.write(`Phase 7 UI evidence is not byte-stable:\n${drift.join("\n")}\n`);
+        process.stderr.write(
+          [
+            "Phase 7 UI evidence is not byte-stable:",
+            ...drift,
+            "",
+            `Recorded with Chromium ${browserVersion}.`,
+            "Committed PNGs are pinned to one Chromium build. A wholesale mismatch",
+            "usually means a different browser, not a UI regression: set",
+            "PAPERCLIP_RUNNER_CHROMIUM_PATH to the Chromium that recorded them.",
+            "",
+          ].join("\n"),
+        );
         process.exitCode = 1;
         return;
       }
