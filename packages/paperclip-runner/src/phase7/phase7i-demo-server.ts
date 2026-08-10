@@ -159,7 +159,8 @@ function sendError(res: ServerResponse, error: RequestFailure): void {
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  if (!header(req, "content-type").toLowerCase().startsWith("application/json")) {
+  const mediaType = header(req, "content-type").split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "application/json") {
     throw new RequestFailure(415, "json_required", "Mutation requests require application/json.");
   }
   const declaredLength = Number(header(req, "content-length"));
@@ -359,11 +360,11 @@ export class Phase7iDemoRuntime {
     if (header(req, "x-phase7i-proxy") !== "v1") {
       throw new RequestFailure(403, "trusted_proxy_required", "Request did not arrive through the trusted proxy.");
     }
-    const forwardedProtocol = header(req, "x-forwarded-proto").split(",")[0]?.trim().toLowerCase();
+    const forwardedProtocol = header(req, "x-forwarded-proto").toLowerCase();
     if (forwardedProtocol !== this.publicOrigin.protocol.slice(0, -1)) {
       throw new RequestFailure(403, "transport_denied", "Forwarded transport is not allowed.");
     }
-    const forwardedHost = header(req, "x-forwarded-host").split(",")[0]?.trim().toLowerCase();
+    const forwardedHost = header(req, "x-forwarded-host").toLowerCase();
     if (forwardedHost !== this.publicOrigin.host.toLowerCase()) {
       throw new RequestFailure(403, "host_denied", "Forwarded host is not allowed.");
     }
@@ -374,9 +375,12 @@ export class Phase7iDemoRuntime {
     if (header(req, "origin") !== this.publicOrigin.origin) {
       throw new RequestFailure(403, "origin_denied", "Request origin is not allowed.");
     }
-    const fetchSite = header(req, "sec-fetch-site").toLowerCase();
-    if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
-      throw new RequestFailure(403, "fetch_metadata_denied", "Cross-site mutation requests are not allowed.");
+    if (
+      header(req, "sec-fetch-site").toLowerCase() !== "same-origin" ||
+      header(req, "sec-fetch-mode").toLowerCase() !== "cors" ||
+      header(req, "sec-fetch-dest").toLowerCase() !== "empty"
+    ) {
+      throw new RequestFailure(403, "fetch_metadata_denied", "Mutation request metadata is not allowed.");
     }
   }
 

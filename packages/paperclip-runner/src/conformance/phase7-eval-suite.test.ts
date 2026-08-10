@@ -15,7 +15,13 @@ describe("Phase 7 offline eval conformance", () => {
       "restraint_no_call",
     ]);
     expect(report.fakeAgentOperationCount).toBe(report.codexOperationCount);
-    expect(report.boundedCodexSample).toHaveLength(9);
-    expect(report.results.every((result) => result.caseId && result.semanticOperation && result.authorizationDecision)).toBe(true);
+    expect(report.boundedCodexSample).toHaveLength(16);
+    expect(report.results.every((result) =>
+      result.caseId &&
+      result.semanticOperation &&
+      result.authorizationDecision &&
+      result.expectedSemantics.length > 0 &&
+      result.finalState.expected === result.finalState.observed,
+    )).toBe(true);
   });
 });

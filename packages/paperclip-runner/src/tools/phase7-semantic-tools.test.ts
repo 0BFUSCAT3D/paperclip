@@ -258,17 +258,6 @@ describe("Phase 7 exposure and authorization", () => {
     expect(revisions).toMatchObject({ ok: true, value: [{ id: revisionId, revision: 1 }] });
 
     expect(await runtime.invoke({
-      operationId: "request_human_input",
-      input: {
-        interactionKind: "confirmation",
-        title: "Confirm plan",
-        prompt: "Accept this plan?",
-        targetRevisionId: revisionId!,
-        continuationPolicy: "wake_assignee",
-      },
-      idempotencyKey: "confirm-plan-1",
-    })).toMatchObject({ ok: true });
-    expect(await runtime.invoke({
       operationId: "register_deliverable",
       input: {
         filename: "report.json",
@@ -285,6 +274,17 @@ describe("Phase 7 exposure and authorization", () => {
       input: { summary: "Ready for semantic review." },
       idempotencyKey: "review-1",
     })).toMatchObject({ ok: true });
+    expect(await runtime.invoke({
+      operationId: "request_human_input",
+      input: {
+        interactionKind: "confirmation",
+        title: "Confirm plan",
+        prompt: "Accept this plan?",
+        targetRevisionId: revisionId!,
+        continuationPolicy: "wake_assignee",
+      },
+      idempotencyKey: "confirm-plan-1",
+    })).toMatchObject({ ok: true });
 
     expect(adapter.snapshot()).toMatchObject({
       tasks: [{ status: "in_review" }],
@@ -292,6 +292,34 @@ describe("Phase 7 exposure and authorization", () => {
       interactions: [{ kind: "confirmation", status: "pending" }],
       artifacts: [{ filename: "report.json" }],
       workProducts: [{ type: "artifact" }],
+    });
+  });
+
+  it("keeps a pending human-input handoff in review instead of weakening the lifecycle", async () => {
+    const { adapter, runtime } = await runtimeFor();
+    expect(await runtime.invoke({
+      operationId: "request_human_input",
+      input: {
+        interactionKind: "confirmation",
+        title: "Confirm plan",
+        prompt: "Accept this plan?",
+        continuationPolicy: "wake_assignee",
+      },
+      idempotencyKey: "confirm-plan-first",
+    })).toMatchObject({ ok: true });
+
+    expect(await runtime.invoke({
+      operationId: "request_review",
+      input: { summary: "A duplicate review transition must fail closed." },
+      idempotencyKey: "duplicate-review",
+    })).toMatchObject({
+      ok: false,
+      error: { code: "operation_unsupported", reason: "mock_operation_rejected" },
+    });
+    expect(adapter.snapshot()).toMatchObject({
+      tasks: [{ status: "in_review" }],
+      interactions: [{ status: "pending" }],
+      comments: [],
     });
   });
 });

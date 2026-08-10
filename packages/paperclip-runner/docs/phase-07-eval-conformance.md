@@ -69,6 +69,14 @@ pnpm --filter @paperclipai/paperclip-runner report:phase7-evals
 ```
 
 The reporter writes `knowledge/evidence/phase-07/eval-parity-report.{json,md}`.
+
+Run the bounded provider conformance matrix separately. It creates exactly one
+real Codex turn for each of the 16 checked-in eval groups while retaining the
+in-process mock control plane:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner report:phase7-live-evals
+```
 Each failure carries its case ID, assertion class, semantic operation,
 authorization decision, and final state diff. The report is generated on demand
 and is not committed; delete it before running `docs:validate` (it carries no

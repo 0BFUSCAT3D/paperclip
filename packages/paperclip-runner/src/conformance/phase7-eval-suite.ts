@@ -6,6 +6,7 @@ import type { Phase7FixtureSeed, Phase7JsonValue } from "../mock-core/phase7-con
 import { Phase7SemanticToolRuntime } from "../tools/phase7-semantic-tool-runtime.js";
 import { Phase7CodexToolBinding, Phase7FakeAgentToolBinding } from "../tools/phase7-tool-bindings.js";
 import { phase7FixtureRunCapabilities } from "../phase7/fixture-run-capabilities.js";
+import { Phase7LiveSessionService } from "../phase7/live-session.js";
 
 const GENERATED_HEADER = "# GENERATED FILE — DO NOT EDIT. Run pnpm generate:phase7-inventory.\n";
 const PACKAGE_ROOT = resolve(import.meta.dirname, "../..");
@@ -41,9 +42,22 @@ export interface Phase7EvalCaseResult {
   group: string;
   assertionClasses: AssertionClass[];
   semanticOperation: string;
+  expectedSemantics: string[];
+  forbiddenSemantics: string[];
   authorizationDecision: string;
   stateDiff: string[];
+  finalState: { expected: "unchanged" | "mutated"; observed: "unchanged" | "mutated" };
   sourceAnchor: string;
+}
+
+export interface Phase7LiveCodexMatrixResult {
+  caseId: string;
+  group: string;
+  semanticOperation: string;
+  expectedCalls: string[];
+  forbiddenCalls: string[];
+  observedCalls: string[];
+  finalState: { expected: "unchanged" | "mutated"; observed: "unchanged" | "mutated" };
 }
 
 export interface Phase7EvalParityReport {
@@ -161,6 +175,7 @@ async function runCase(row: Phase7EvalRow): Promise<Phase7EvalCaseResult> {
   }
 
   const stateDiff = before === after ? [] : ["mock_state.revision"];
+  const expectedState = operationMutatesState(semanticOperation) ? "mutated" : "unchanged";
   if (row.assertionClasses.includes("restraint_no_call") && stateDiff.length !== 0) {
     throw failure(row, semanticOperation, authorizationDecision, stateDiff);
   }
@@ -170,8 +185,14 @@ async function runCase(row: Phase7EvalRow): Promise<Phase7EvalCaseResult> {
     group: row.group,
     assertionClasses: row.assertionClasses,
     semanticOperation,
+    expectedSemantics: row.expectedSemantics,
+    forbiddenSemantics: row.forbiddenSemantics,
     authorizationDecision,
     stateDiff,
+    finalState: {
+      expected: expectedState,
+      observed: stateDiff.length === 0 ? "unchanged" : "mutated",
+    },
     sourceAnchor: row.sourceAnchor,
   };
 }
@@ -191,7 +212,7 @@ function operationPlan(row: Phase7EvalRow): OperationPlan {
     bl: { operationId: "block_task", input: { reason: marker } },
     dp: { operationId: "write_document", input: { key: `plan-${row.id}`, title: row.title, body: marker, baseRevisionId: null } },
     ix: { operationId: "request_human_input", input: { interactionKind: "confirmation", title: row.title, prompt: marker, continuationPolicy: "wake_assignee" } },
-    ar: { operationId: "register_deliverable", input: { filename: `${row.id}.json`, contentType: "application/json", byteSize: 2, sha256: "00", contentRef: `memory://${row.id}`, title: row.title } },
+    ar: { operationId: "register_deliverable", input: { filename: `${row.id}.json`, contentType: "application/json", byteSize: 2, sha256: "0".repeat(64), contentRef: `memory://${row.id}`, title: row.title } },
   };
   const always = alwaysByGroup[row.group];
   if (always) return { ...always, grants: [] };
@@ -240,12 +261,94 @@ async function runtimeFor(actorGrants: string[] = []) {
 }
 
 function selectCodexSample(results: Phase7EvalCaseResult[]): Array<{ caseId: string; group: string; semanticOperation: string }> {
-  const groups = ["hb", "dp", "bl", "ap", "ar", "ix", "mh", "rs", "wk"];
+  const groups = [...new Set(results.map((result) => result.group))].sort();
   return groups.map((group) => {
     const result = results.find((candidate) => candidate.group === group);
     if (!result) throw new Error(`missing bounded Codex sample group ${group}`);
     return { caseId: result.caseId, group, semanticOperation: result.semanticOperation };
   });
+}
+
+/** Runs one bounded, real-Codex turn for each checked-in eval group. */
+export async function runPhase7LiveCodexMatrix(
+  workingDirectory = process.cwd(),
+): Promise<Phase7LiveCodexMatrixResult[]> {
+  const inventory = await readInventory();
+  assertInventory(inventory);
+  const matrix: Phase7LiveCodexMatrixResult[] = [];
+
+  for (const group of [...new Set(inventory.rows.map((row) => row.group))].sort()) {
+    const row = inventory.rows.find((candidate) => candidate.group === group);
+    if (!row) throw new Error(`missing live Codex representative for group ${group}`);
+    const plan = operationPlan(row);
+    const service = new Phase7LiveSessionService();
+    const session = await service.create({
+      workingDirectory,
+      seed: liveFixtureSeed(plan.grants),
+      capabilities: phase7FixtureRunCapabilities(plan.grants),
+      explicitClaims: plan.grants,
+      turnTimeoutMs: 60_000,
+      scenario: { id: `phase7-live-eval-${row.id}` },
+    });
+    try {
+      const initialMockState = session.snapshot().mockState;
+      const expectedCalls = row.primaryDisposition === "control_plane_owned" ? [] : [plan.operationId];
+      const liveInput = {
+        ...(typeof plan.input === "object" && plan.input !== null && !Array.isArray(plan.input) ? plan.input : {}),
+        idempotencyKey: `phase7-live:${row.id}`,
+      };
+      const prompt = expectedCalls.length === 0
+        ? "Do not call any tools. Reply with exactly: control-plane-owned."
+        : `Call ${plan.operationId} exactly once with this JSON input: ${JSON.stringify(liveInput)}. Do not call any other tool. Reply after the typed result.`;
+      await session.sendMessage(prompt);
+      const snapshot = session.snapshot();
+      const observedCalls = snapshot.evidence
+        .filter((entry) => entry.kind === "tool_call")
+        .map((entry) => String(entry.data.operationId));
+      const expectedState = operationMutatesState(plan.operationId) ? "mutated" : "unchanged";
+      const observedState = snapshot.mockState === initialMockState ? "unchanged" : "mutated";
+      if (JSON.stringify(observedCalls) !== JSON.stringify(expectedCalls) || observedState !== expectedState) {
+        throw new Error(JSON.stringify({
+          caseId: row.id,
+          expectedCalls,
+          observedCalls,
+          expectedState,
+          observedState,
+          toolResults: snapshot.evidence.filter((entry) => entry.kind === "tool_result").map((entry) => entry.data.result),
+        }));
+      }
+      matrix.push({
+        caseId: row.id,
+        group,
+        semanticOperation: plan.operationId,
+        expectedCalls,
+        forbiddenCalls: row.forbiddenSemantics,
+        observedCalls,
+        finalState: { expected: expectedState, observed: observedState },
+      });
+    } finally {
+      await service.shutdown(session.id, `Phase 7 live eval ${row.id} complete`);
+    }
+  }
+  return matrix;
+}
+
+function liveFixtureSeed(actorGrants: string[]): Phase7FixtureSeed {
+  return {
+    actors: [{
+      id: "actor-1",
+      companyId: "company-1",
+      name: "Eval fixture actor",
+      role: "engineer",
+      status: "active",
+      budgetId: "budget-actor-1",
+      capabilityGrants: actorGrants,
+    }],
+  };
+}
+
+function operationMutatesState(operationId: string): boolean {
+  return !["checkout_task", "search_tasks", "list_agents"].includes(operationId);
 }
 
 async function toolSurfaceParity(sample: Array<{ caseId: string; group: string; semanticOperation: string }>) {
@@ -290,13 +393,13 @@ function renderMarkdown(report: Phase7EvalParityReport): string {
     `- Groups: ${report.groups.length} (${report.groups.join(", ")})`,
     `- Assertion classes: ${report.assertionClasses.join(", ")}`,
     `- Fake-agent/Codex operations: ${report.fakeAgentOperationCount}/${report.codexOperationCount}`,
-    `- Bounded Codex binding sample: ${report.boundedCodexSample.map((entry) => `${entry.group}:${entry.caseId}`).join(", ")}`,
+    `- Bounded Codex binding matrix: ${report.boundedCodexSample.map((entry) => `${entry.group}:${entry.caseId}`).join(", ")}`,
     `- Semantic execution: ${Object.entries(byDisposition).map(([operation, count]) => `${operation}=${count}`).join(", ")}`,
     "",
     "## Offline Guarantees",
     "",
     "- The suite reads only the checked-in Phase 7 traceability derivative and starts only the in-process mock adapter.",
-    "- Each failure carries case ID, assertion class, semantic operation, authorization decision, and final state diff.",
+    "- Each result includes source expected/forbidden semantics plus expected and observed final mock state.",
     "- Optional operations are evaluated in both granted and absent configurations; control-plane-owned operations remain absent.",
     "",
   ].join("\n");
