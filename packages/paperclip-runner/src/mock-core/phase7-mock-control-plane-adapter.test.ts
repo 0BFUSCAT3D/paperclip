@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CONTROL_PLANE_CONFORMANCE_OPEN,
@@ -53,9 +53,22 @@ describe("Phase7MockControlPlaneAdapter", () => {
             nested: { authorization: "Bearer must-not-be-visible" },
           },
         },
-        capabilities: ["workspace:control", "task:write", "task:write"],
+        capabilities: [
+          "control_plane:wakes",
+          "governance:approvals:comment",
+          "governance:approvals:request",
+          "workspace:control",
+          "task:write",
+          "task:write",
+        ],
       });
-      expect(context.capabilities).toEqual(["task:write", "workspace:control"]);
+      expect(context.capabilities).toEqual([
+        "control_plane:wakes",
+        "governance:approvals:comment",
+        "governance:approvals:request",
+        "task:write",
+        "workspace:control",
+      ]);
       expect(context.wake.payload).toEqual({
         commentId: "comment-wake",
         apiKey: "[REDACTED]",
@@ -374,7 +387,7 @@ describe("Phase7MockControlPlaneAdapter", () => {
       ],
     });
     await adapter.start();
-    await adapter.openFixtureRun(OPEN);
+    await adapter.openFixtureRun({ ...OPEN, capabilities: ["control_plane:budget"] });
     await adapter.applyCommand({
       runId: "run-1",
       idempotencyKey: "usage-1",
@@ -395,6 +408,203 @@ describe("Phase7MockControlPlaneAdapter", () => {
         command: { kind: "report_progress", body: "Should not be accepted." },
       }),
     ).rejects.toMatchObject({ code: "budget_hard_stop" });
+  });
+
+  it("returns typed denials when a command claim is missing", async () => {
+    const adapter = seeded();
+    await adapter.start();
+    await adapter.openFixtureRun(OPEN);
+
+    const outcome = await adapter.tryApplyCommand({
+      runId: "run-1",
+      idempotencyKey: "workspace-without-claim",
+      command: {
+        kind: "control_workspace_service",
+        serviceId: "service-1",
+        action: "start",
+      },
+    });
+
+    expect(outcome).toEqual({
+      ok: false,
+      commandKind: "control_workspace_service",
+      stateRevision: 2,
+      error: {
+        code: "operation_not_authorized",
+        message: "the fixture run does not hold the required command claim",
+        retryable: false,
+      },
+    });
+    expect(adapter.snapshot().workspaceServices[0]?.status).toBe("stopped");
+    expect(adapter.decisionRecords().at(-1)).toMatchObject({
+      operation: "control_workspace_service",
+      outcome: "denied",
+      reason: "required_claim_missing",
+    });
+  });
+
+  it("enforces active-task ownership and legal transitions", async () => {
+    const adapter = seeded({
+      tasks: [
+        {
+          id: "task-1",
+          companyId: "company-1",
+          identifier: "MCK-1",
+          title: "Active task",
+          description: null,
+          status: "todo",
+          priority: "high",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-1",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+        {
+          id: "task-2",
+          companyId: "company-1",
+          identifier: "MCK-2",
+          title: "Other task",
+          description: null,
+          status: "todo",
+          priority: "low",
+          workMode: "standard",
+          parentId: null,
+          assigneeActorId: "actor-1",
+          checkoutRunId: null,
+          executionRunId: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      ],
+    });
+    await adapter.start();
+    await adapter.openFixtureRun(OPEN);
+
+    await expect(adapter.tryApplyCommand({
+      runId: "run-1",
+      idempotencyKey: "cross-task-write",
+      command: { kind: "report_progress", taskId: "task-2", body: "Not allowed." },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "task_scope_violation" },
+    });
+
+    await adapter.applyCommand({
+      runId: "run-1",
+      idempotencyKey: "review-once",
+      command: { kind: "request_review", summary: "Ready for review." },
+    });
+    await expect(adapter.tryApplyCommand({
+      runId: "run-1",
+      idempotencyKey: "review-twice",
+      command: { kind: "request_review", summary: "Still ready." },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "task_transition_illegal" },
+    });
+    expect(adapter.snapshot().comments.map((comment) => comment.body)).toEqual([
+      "Ready for review.",
+    ]);
+  });
+
+  it("rejects stale interaction targets and invalid interaction outcomes", async () => {
+    const adapter = seeded();
+    await adapter.start();
+    await adapter.openFixtureRun({
+      ...OPEN,
+      capabilities: ["control_plane:interactions"],
+    });
+    const first = await adapter.applyCommand({
+      runId: "run-1",
+      idempotencyKey: "plan-v1",
+      command: {
+        kind: "write_document",
+        key: "plan",
+        title: "Plan",
+        body: "Version one",
+        baseRevisionId: null,
+      },
+    });
+    const firstRevisionId = first.entityRefs.find((ref) => ref.startsWith("revision:"))!.slice(9);
+    const second = await adapter.applyCommand({
+      runId: "run-1",
+      idempotencyKey: "plan-v2",
+      command: {
+        kind: "write_document",
+        key: "plan",
+        title: "Plan",
+        body: "Version two",
+        baseRevisionId: firstRevisionId,
+      },
+    });
+    const secondRevisionId = second.entityRefs.find((ref) => ref.startsWith("revision:"))!.slice(9);
+
+    await expect(adapter.tryApplyCommand({
+      runId: "run-1",
+      idempotencyKey: "stale-confirmation",
+      command: {
+        kind: "request_human_input",
+        interactionKind: "confirmation",
+        title: "Confirm",
+        prompt: "Accept?",
+        targetRevisionId: firstRevisionId,
+        continuationPolicy: "wake_assignee",
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "interaction_target_stale" },
+    });
+
+    const interaction = await adapter.applyCommand({
+      runId: "run-1",
+      idempotencyKey: "current-confirmation",
+      command: {
+        kind: "request_human_input",
+        interactionKind: "confirmation",
+        title: "Confirm",
+        prompt: "Accept?",
+        targetRevisionId: secondRevisionId,
+        continuationPolicy: "wake_assignee",
+      },
+    });
+    const interactionId = interaction.entityRefs.find((ref) => ref.startsWith("interaction:"))!.slice(12);
+    await expect(adapter.tryApplyCommand({
+      runId: "run-1",
+      idempotencyKey: "invalid-confirmation-answer",
+      command: {
+        kind: "resolve_human_input",
+        interactionId,
+        outcome: "answered",
+        result: { answer: "yes" },
+      },
+    })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "interaction_outcome_invalid" },
+    });
+  });
+
+  it("performs complete mock operations without any Paperclip network request", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("network access is forbidden in the mock control plane"),
+    );
+    try {
+      const adapter = seeded();
+      await adapter.start();
+      await adapter.openFixtureRun(OPEN);
+      await adapter.applyCommand({
+        runId: "run-1",
+        idempotencyKey: "offline-progress",
+        command: { kind: "report_progress", body: "Committed offline." },
+      });
+      const restored = Phase7MockControlPlaneAdapter.restore(adapter.serialize());
+      expect(restored.snapshot().comments).toMatchObject([{ body: "Committed offline." }]);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
   });
 
   it("implements the existing ControlPlanePort conformance contract", async () => {

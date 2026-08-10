@@ -13,9 +13,11 @@ import {
   type PrpEvent,
 } from "../protocol/phase1-contract.js";
 import {
+  PHASE7_COMMAND_REQUIRED_CLAIMS,
   createPhase7FixtureState,
   type Phase7AuditRecord,
   type Phase7CommandEnvelope,
+  type Phase7CommandOutcome,
   type Phase7CommandResult,
   type Phase7DecisionRecord,
   type Phase7FaultRule,
@@ -143,6 +145,18 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
       throw new Phase7MockControlPlaneError(
         "terminal_task_requires_resume",
         "terminal fixture tasks require an explicit resume",
+      );
+    }
+    if (
+      !["backlog", "todo", "blocked", "in_review"].includes(task.status) &&
+      !(input.resume === true && ["done", "cancelled"].includes(task.status))
+    ) {
+      this.#deny(input.identity.runId, "open_run", "checkout_status_illegal", [
+        `task:${task.id}`,
+      ]);
+      throw new Phase7MockControlPlaneError(
+        "task_transition_illegal",
+        `fixture task cannot be checked out from ${task.status}`,
       );
     }
 
@@ -408,6 +422,7 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
         `expected state revision ${envelope.expectedRevision}, found ${this.#state.revision}`,
       );
     }
+    this.#authorizeCommand(run, envelope.command);
 
     const fault = this.#consumeFault("apply_command", envelope.command.kind);
     this.#throwBeforeFault(fault, run.id, envelope.command.kind);
@@ -434,6 +449,24 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
     });
     this.#throwAfterFault(fault, run.id, envelope.command.kind);
     return deepFreeze(clone(result));
+  }
+
+  async tryApplyCommand(envelope: Phase7CommandEnvelope): Promise<Phase7CommandOutcome> {
+    try {
+      return { ok: true, result: await this.applyCommand(envelope) };
+    } catch (error) {
+      if (!(error instanceof Phase7MockControlPlaneError)) throw error;
+      return deepFreeze({
+        ok: false,
+        commandKind: envelope.command.kind,
+        stateRevision: this.#state.revision,
+        error: {
+          code: error.code,
+          message: error.message,
+          retryable: error.retryable,
+        },
+      });
+    }
   }
 
   async completeRun(result: NativeRunResult | CompleteControlPlaneRunInput): Promise<void> {
@@ -571,8 +604,10 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
         };
         if (
           interaction.targetRevisionId !== null &&
-          !this.#state.documents.some((document) =>
-            document.revisions.some((revision) => revision.id === interaction.targetRevisionId),
+          !this.#state.documents.some(
+            (document) =>
+              document.taskId === task.id &&
+              document.revisions.some((revision) => revision.id === interaction.targetRevisionId),
           )
         ) {
           throw new Phase7MockControlPlaneError(
@@ -580,8 +615,21 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
             "interaction target revision does not exist",
           );
         }
+        if (
+          interaction.targetRevisionId !== null &&
+          !this.#state.documents.some(
+            (document) =>
+              document.taskId === task.id &&
+              document.latestRevisionId === interaction.targetRevisionId,
+          )
+        ) {
+          throw new Phase7MockControlPlaneError(
+            "interaction_target_stale",
+            "interaction target revision is not current",
+          );
+        }
         this.#state.interactions.push(interaction);
-        task.status = "in_review";
+        this.#transitionTask(run, task, "in_review", command.kind);
         entityRefs.push(`interaction:${interaction.id}`);
         break;
       }
@@ -596,6 +644,15 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
           throw new Phase7MockControlPlaneError(
             "interaction_already_resolved",
             "fixture interaction has already been resolved",
+          );
+        }
+        const allowedOutcomes = interaction.kind === "questions" || interaction.kind === "item_verdicts"
+          ? ["answered", "rejected", "expired"]
+          : ["accepted", "rejected", "expired"];
+        if (!allowedOutcomes.includes(command.outcome)) {
+          throw new Phase7MockControlPlaneError(
+            "interaction_outcome_invalid",
+            `${command.outcome} is not valid for ${interaction.kind}`,
           );
         }
         interaction.status = command.outcome;
@@ -656,6 +713,9 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
       }
       case "set_dependencies": {
         this.#replaceDependencies(task, command.blockedByTaskIds);
+        if (command.blockedByTaskIds.length > 0) {
+          this.#transitionTask(run, task, "blocked", command.kind);
+        }
         entityRefs.push(...command.blockedByTaskIds.map((id) => `task:${id}`));
         break;
       }
@@ -703,7 +763,7 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
           decidedAt: null,
         };
         this.#state.approvals.push(approval);
-        task.status = "in_review";
+        this.#transitionTask(run, task, "in_review", command.kind);
         entityRefs.push(`approval:${approval.id}`);
         break;
       }
@@ -789,7 +849,7 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
         if (stopped) {
           actor.status = "paused";
           run.status = "budget_stopped";
-          task.status = "blocked";
+          this.#transitionTask(run, task, "blocked", command.kind);
           if (task.checkoutRunId === run.id) task.checkoutRunId = null;
           if (task.executionRunId === run.id) task.executionRunId = null;
           const comment = this.#appendComment(
@@ -809,7 +869,7 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
             "a fixture task with unresolved blockers cannot be finished",
           );
         }
-        task.status = "done";
+        this.#transitionTask(run, task, "done", command.kind);
         task.completedAt = this.#now();
         const comment = this.#appendComment(task.id, run.actorId, command.summary);
         entityRefs.push(`comment:${comment.id}`);
@@ -821,13 +881,13 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
           this.#replaceDependencies(task, command.blockedByTaskIds);
           entityRefs.push(...command.blockedByTaskIds.map((id) => `task:${id}`));
         }
-        task.status = "blocked";
+        this.#transitionTask(run, task, "blocked", command.kind);
         const comment = this.#appendComment(task.id, run.actorId, command.reason);
         entityRefs.push(`comment:${comment.id}`);
         break;
       }
       case "request_review": {
-        task.status = "in_review";
+        this.#transitionTask(run, task, "in_review", command.kind);
         const comment = this.#appendComment(
           task.id,
           run.actorId,
@@ -844,9 +904,9 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
             "the fixture run does not own the task checkout lock",
           );
         }
+        this.#transitionTask(run, task, "todo", command.kind);
         task.checkoutRunId = null;
         task.executionRunId = null;
-        task.status = "todo";
         const comment = this.#appendComment(task.id, run.actorId, command.reason);
         entityRefs.push(`comment:${comment.id}`);
         break;
@@ -980,8 +1040,6 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
         createdAt: this.#now(),
       });
     }
-    if (unique.length > 0) task.status = "blocked";
-    else if (task.status === "blocked") task.status = "todo";
   }
 
   #dependsOn(taskId: string, candidateAncestorId: string, visited = new Set<string>()): boolean {
@@ -1127,10 +1185,97 @@ export class Phase7MockControlPlaneAdapter implements Phase7MockControlPlanePort
     }
   }
 
+  #authorizeCommand(run: Phase7FixtureRun, command: Phase7SemanticCommand): void {
+    const requiredClaims = PHASE7_COMMAND_REQUIRED_CLAIMS[command.kind];
+    const missingClaims = requiredClaims.filter((claim) => !run.capabilities.includes(claim));
+    if (missingClaims.length > 0) {
+      this.#deny(run.id, command.kind, "required_claim_missing", [`task:${run.taskId}`]);
+      throw new Phase7MockControlPlaneError(
+        "operation_not_authorized",
+        "the fixture run does not hold the required command claim",
+      );
+    }
+
+    const task = this.#commandTask(run, command);
+    if (
+      task.assigneeActorId !== run.actorId ||
+      task.checkoutRunId !== run.id ||
+      task.executionRunId !== run.id
+    ) {
+      this.#deny(run.id, command.kind, "run_does_not_own_task", [`task:${task.id}`]);
+      throw new Phase7MockControlPlaneError(
+        "task_ownership_violation",
+        "the fixture run does not own the active task",
+      );
+    }
+
+    if (command.kind === "decide_approval") {
+      const actor = this.#actor(run.actorId);
+      if (!["board", "approver", "security"].includes(actor.role.trim().toLowerCase())) {
+        this.#deny(run.id, command.kind, "actor_role_not_authorized", [
+          `actor:${actor.id}`,
+        ]);
+        throw new Phase7MockControlPlaneError(
+          "operation_not_authorized",
+          "the fixture actor role cannot decide approvals",
+        );
+      }
+      const approval = this.#state.approvals.find(
+        (candidate) => candidate.id === command.approvalId && candidate.companyId === run.companyId,
+      );
+      if (approval?.requestedByActorId === actor.id) {
+        this.#deny(run.id, command.kind, "self_approval_forbidden", [
+          `approval:${approval.id}`,
+        ]);
+        throw new Phase7MockControlPlaneError(
+          "self_approval_forbidden",
+          "the fixture actor cannot decide its own approval request",
+        );
+      }
+    }
+  }
+
   #commandTask(run: Phase7FixtureRun, command: Phase7SemanticCommand): Phase7FixtureTask {
     const task = this.#task(command.taskId ?? run.taskId);
     this.#assertCompany(run.companyId, task.companyId);
+    if (task.id !== run.taskId) {
+      this.#deny(run.id, command.kind, "active_task_scope_required", [`task:${task.id}`]);
+      throw new Phase7MockControlPlaneError(
+        "task_scope_violation",
+        "semantic commands are scoped to the active fixture task",
+      );
+    }
     return task;
+  }
+
+  #transitionTask(
+    run: Phase7FixtureRun,
+    task: Phase7FixtureTask,
+    next: Phase7FixtureTask["status"],
+    operation: Phase7SemanticCommand["kind"],
+  ): void {
+    const allowed: Record<Phase7FixtureTask["status"], readonly Phase7FixtureTask["status"][]> = {
+      backlog: ["todo", "cancelled"],
+      todo: ["in_progress", "blocked", "cancelled"],
+      in_progress: ["in_review", "blocked", "done", "cancelled"],
+      in_review: ["in_progress", "done", "cancelled"],
+      blocked: ["todo", "in_progress", "cancelled"],
+      done: [],
+      cancelled: [],
+    };
+    const releaseToTodo = operation === "release_task" && task.status === "in_progress" && next === "todo";
+    const preserveReview =
+      (operation === "request_human_input" || operation === "request_approval") &&
+      task.status === "in_review" &&
+      next === "in_review";
+    if (!releaseToTodo && !preserveReview && !allowed[task.status].includes(next)) {
+      this.#deny(run.id, operation, "task_transition_illegal", [`task:${task.id}`]);
+      throw new Phase7MockControlPlaneError(
+        "task_transition_illegal",
+        `fixture task cannot transition from ${task.status} to ${next}`,
+      );
+    }
+    task.status = next;
   }
 
   #assertCompany(expected: string, ...actual: string[]): void {

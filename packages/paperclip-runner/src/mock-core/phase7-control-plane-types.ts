@@ -401,12 +401,53 @@ export interface Phase7CommandResult {
   scheduledWakeIds: string[];
 }
 
+export interface Phase7CommandErrorResult {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+export type Phase7CommandOutcome =
+  | { ok: true; result: Phase7CommandResult }
+  | {
+      ok: false;
+      commandKind: Phase7SemanticCommand["kind"];
+      stateRevision: number;
+      error: Phase7CommandErrorResult;
+    };
+
+/**
+ * Claims enforced by the mock command boundary itself. The semantic catalog
+ * may hide ungranted operations earlier, but direct adapter consumers cannot
+ * bypass these checks.
+ */
+export const PHASE7_COMMAND_REQUIRED_CLAIMS = {
+  report_progress: [],
+  write_document: [],
+  request_human_input: [],
+  resolve_human_input: ["control_plane:interactions"],
+  register_deliverable: [],
+  set_dependencies: ["dependencies:write"],
+  create_task: ["delegation:tasks:create"],
+  request_approval: ["governance:approvals:request"],
+  decide_approval: ["governance:approvals:decide"],
+  comment_on_approval: ["governance:approvals:comment"],
+  control_workspace_service: ["workspace:control"],
+  record_budget_usage: ["control_plane:budget"],
+  finish_task: [],
+  block_task: [],
+  request_review: [],
+  release_task: ["control_plane:release"],
+  schedule_wake: ["control_plane:wakes"],
+} as const satisfies Record<Phase7SemanticCommand["kind"], readonly string[]>;
+
 export interface Phase7MockControlPlanePort extends ControlPlanePort {
   start(): Promise<void>;
   stop(): Promise<void>;
   openFixtureRun(input: Phase7OpenFixtureRunInput): Promise<Phase7RunContext>;
   context(runId: string): Phase7RunContext;
   applyCommand(envelope: Phase7CommandEnvelope): Promise<Phase7CommandResult>;
+  tryApplyCommand(envelope: Phase7CommandEnvelope): Promise<Phase7CommandOutcome>;
   snapshot(): Readonly<Phase7FixtureState>;
   decisionRecords(): readonly Phase7DecisionRecord[];
   serialize(): string;
