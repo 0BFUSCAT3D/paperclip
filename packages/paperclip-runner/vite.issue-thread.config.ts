@@ -18,5 +18,8 @@ export default defineConfig({
     outDir: resolve(packageRoot, "dist-issue-thread"),
     emptyOutDir: true,
     target: "esnext",
+    // Keep every WOFF2 inspectable in the built asset graph, including the
+    // intentionally tiny supplemental-symbol subset.
+    assetsInlineLimit: 0,
   },
 });

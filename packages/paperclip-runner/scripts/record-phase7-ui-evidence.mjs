@@ -81,30 +81,95 @@ async function startPreview() {
 
 // Set by `record` so a drift report can name the Chromium build that produced it.
 let browserVersion = "unknown";
-let fontProbe = { interWidth: 0, dejavuWidth: 0, interResolves: false };
+let fontProbe = {
+  sansFamily: "Paperclip Issue Thread Inter",
+  monoFamily: "Paperclip Issue Thread DejaVu Sans Mono",
+  symbolFamily: "Paperclip Issue Thread Symbols",
+  interWidth: 0,
+  serifWidth: 0,
+  monoWidth: 0,
+  sansStatuses: [],
+  monoStatuses: [],
+  symbolStatuses: [],
+  interResolves: false,
+  monoResolves: false,
+  symbolsResolve: false,
+};
 
 /**
- * The committed matrix is recorded with Inter active. When fontconfig cannot
- * resolve Inter, every text node falls back to DejaVu Sans and all 24 shots
- * drift at once — refuse to record or compare under that environment instead
- * of producing a whole-page mystery diff.
+ * Prove that the Vite-managed font faces registered and loaded from the built
+ * bundle. The family names are package-specific, so an ambient host font can
+ * never make this probe pass when either asset is missing.
  */
 async function probeFonts(browser) {
   const context = await browser.newContext();
   const page = await context.newPage();
-  const probe = await page.evaluate(() => {
-    const canvas = document.createElement("canvas").getContext("2d");
+  await page.goto(routeFor("thread-baseline", "desktop"));
+  await page.waitForSelector('[data-thread-state="settled"]', { timeout: 30_000 });
+  const probe = await page.evaluate(async () => {
+    const normalizeFamily = (family) => family.trim().replace(/^['"]|['"]$/g, "");
+    const styles = getComputedStyle(document.documentElement);
+    const sansFamily = normalizeFamily(styles.getPropertyValue("--pit-font-sans").split(",")[0]);
+    const monoFamily = normalizeFamily(styles.getPropertyValue("--pit-font-mono").split(",")[0]);
+    const symbolFamily = normalizeFamily(styles.getPropertyValue("--pit-font-symbols"));
     const sample = "Wire the runner spike to the mock control plane";
+    const requested = [
+      ...[400, 500, 600, 700].map((weight) => ({ family: sansFamily, weight })),
+      ...[400, 700].map((weight) => ({ family: monoFamily, weight })),
+      { family: symbolFamily, weight: 400, sample: "◐⏳\uFE0E" },
+    ];
+    const loadResults = await Promise.all(
+      requested.map(async ({ family, weight, sample: faceSample }) => {
+        try {
+          const loaded = await document.fonts.load(
+            `${weight} 24px "${family}"`,
+            faceSample ?? sample,
+          );
+          return loaded.length > 0;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    await document.fonts.ready;
+
+    const faceStatuses = (family) =>
+      [...document.fonts]
+        .filter((face) => normalizeFamily(face.family) === family)
+        .map((face) => face.status);
+    const canvas = document.createElement("canvas").getContext("2d");
     const width = (font) => {
       canvas.font = font;
       return Math.round(canvas.measureText(sample).width);
     };
-    const interWidth = width("700 24px Inter");
-    const dejavuWidth = width('700 24px "DejaVu Sans"');
+    const sansStatuses = faceStatuses(sansFamily);
+    const monoStatuses = faceStatuses(monoFamily);
+    const symbolStatuses = faceStatuses(symbolFamily);
     return {
-      interWidth,
-      dejavuWidth,
-      interResolves: document.fonts.check("16px Inter") && interWidth !== dejavuWidth,
+      sansFamily,
+      monoFamily,
+      symbolFamily,
+      interWidth: width(`700 24px "${sansFamily}"`),
+      serifWidth: width("700 24px serif"),
+      monoWidth: width(`400 24px "${monoFamily}"`),
+      sansStatuses,
+      monoStatuses,
+      symbolStatuses,
+      interResolves:
+        sansFamily === "Paperclip Issue Thread Inter" &&
+        sansStatuses.length === 1 &&
+        sansStatuses.every((status) => status === "loaded") &&
+        loadResults.slice(0, 4).every(Boolean),
+      monoResolves:
+        monoFamily === "Paperclip Issue Thread DejaVu Sans Mono" &&
+        monoStatuses.length === 2 &&
+        monoStatuses.every((status) => status === "loaded") &&
+        loadResults.slice(4, 6).every(Boolean),
+      symbolsResolve:
+        symbolFamily === "Paperclip Issue Thread Symbols" &&
+        symbolStatuses.length === 2 &&
+        symbolStatuses.every((status) => status === "loaded") &&
+        loadResults[6] === true,
     };
   });
   await context.close();
@@ -122,12 +187,13 @@ async function record(targetDir) {
   const recorded = [];
   try {
     fontProbe = await probeFonts(browser);
-    if (!fontProbe.interResolves) {
+    if (!fontProbe.interResolves || !fontProbe.monoResolves || !fontProbe.symbolsResolve) {
       throw new Error(
-        `font environment mismatch: "Inter" does not resolve distinctly ` +
-          `(Inter ${fontProbe.interWidth}px vs DejaVu Sans ${fontProbe.dejavuWidth}px). ` +
-          "The committed matrix is recorded with Inter active; make Inter visible to " +
-          "fontconfig before recording or checking.",
+        "bundled font asset mismatch: the Phase 7 issue-thread faces did not load " +
+          `from the built bundle (sans ${fontProbe.sansFamily}: ${fontProbe.sansStatuses.join(",") || "missing"}; ` +
+          `mono ${fontProbe.monoFamily}: ${fontProbe.monoStatuses.join(",") || "missing"}; ` +
+          `symbols ${fontProbe.symbolFamily}: ${fontProbe.symbolStatuses.join(",") || "missing"}). ` +
+          "Run build:issue-thread and verify that Vite emitted all referenced WOFF2 assets.",
       );
     }
     for (const viewport of VIEWPORTS) {
@@ -189,9 +255,12 @@ async function main() {
           `- Chromium ${browserVersion} — pin the exact binary with \`PAPERCLIP_CHROMIUM_BIN\``,
           "  (honoured by the agent-browser wrapper) alongside",
           "  `PAPERCLIP_RUNNER_CHROMIUM_PATH`.",
-          `- Sans stack resolves to Inter (probe: Inter ${fontProbe.interWidth}px vs`,
-          `  DejaVu Sans ${fontProbe.dejavuWidth}px for the title string). The recorder`,
-          "  refuses to run when Inter does not resolve.",
+          `- Bundled sans face: ${fontProbe.sansFamily} (weights 400/500/600/700,`,
+          `  probe ${fontProbe.interWidth}px vs generic serif ${fontProbe.serifWidth}px).`,
+          `- Bundled mono face: ${fontProbe.monoFamily} (weights 400/700,`,
+          `  probe ${fontProbe.monoWidth}px). Status glyphs use the bundled`,
+          `  ${fontProbe.symbolFamily} subsets. The recorder refuses to run when any`,
+          "  Vite-managed face is missing or fails to load.",
           "",
         ].join("\n"),
         "utf8",
@@ -230,12 +299,11 @@ async function main() {
             "Phase 7 UI evidence is not byte-stable:",
             ...drift,
             "",
-            `Recorded with Chromium ${browserVersion}; sans probe Inter=${fontProbe.interWidth}px, DejaVu Sans=${fontProbe.dejavuWidth}px.`,
-            "Committed PNGs are pinned to one Chromium build and one font environment.",
-            "A wholesale mismatch usually means a different browser or font set, not a",
-            "UI regression: set PAPERCLIP_RUNNER_CHROMIUM_PATH (and PAPERCLIP_CHROMIUM_BIN",
-            "for the wrapper) to the Chromium that recorded them, and compare the font",
-            "probe against knowledge/evidence/phase-07/ui/index.md.",
+            `Recorded with Chromium ${browserVersion}; bundled Inter probe=${fontProbe.interWidth}px, mono=${fontProbe.monoWidth}px.`,
+            "Committed PNGs are pinned to one Chromium build; their fonts are bundled.",
+            "A wholesale mismatch usually means a different browser build, not ambient",
+            "fontconfig state: set PAPERCLIP_RUNNER_CHROMIUM_PATH (and",
+            "PAPERCLIP_CHROMIUM_BIN for the wrapper) to the Chromium that recorded them.",
             "",
           ].join("\n"),
         );

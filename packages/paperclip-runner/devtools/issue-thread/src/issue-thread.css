@@ -6,6 +6,52 @@
  * raw color literals — `pnpm check:browser-tokens` enforces that.
  */
 
+@font-face {
+  font-family: "Paperclip Issue Thread Inter";
+  src: url("./fonts/inter-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Paperclip Issue Thread DejaVu Sans Mono";
+  src: url("./fonts/dejavu-sans-mono-latin-400.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Paperclip Issue Thread DejaVu Sans Mono";
+  src: url("./fonts/dejavu-sans-mono-latin-700.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+}
+
+/* Inter intentionally omits several status glyphs. Keep those deterministic
+   with two tiny, disjoint symbol subsets instead of consulting host fonts. */
+@font-face {
+  font-family: "Paperclip Issue Thread Symbols";
+  src: url("./fonts/dejavu-sans-symbols.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  unicode-range: U+00A7, U+00B7, U+2013-2014, U+2022, U+2026, U+203A, U+2192,
+    U+22EF, U+2304, U+25AC, U+25B2, U+25B6, U+25BC, U+25C6, U+25CB, U+25D0-25D1,
+    U+2699, U+26A0, U+2713, U+2715, U+275A;
+}
+
+@font-face {
+  font-family: "Paperclip Issue Thread Symbols";
+  src: url("./fonts/noto-sans-symbols2-hourglass.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  unicode-range: U+231B, U+23F3, U+FE0E;
+}
+
 :root {
   color-scheme: dark;
 
@@ -41,8 +87,9 @@
   --pit-ring: oklch(0.78 0.11 275);
 
   /* Type ramp */
-  --pit-font-sans: "Inter", "DejaVu Sans", ui-sans-serif, system-ui, sans-serif;
-  --pit-font-mono: "DejaVu Sans Mono", ui-monospace, "SFMono-Regular", monospace;
+  --pit-font-sans: "Paperclip Issue Thread Inter", "Paperclip Issue Thread Symbols", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --pit-font-mono: "Paperclip Issue Thread DejaVu Sans Mono", "Paperclip Issue Thread Symbols", "DejaVu Sans Mono", ui-monospace, monospace;
+  --pit-font-symbols: "Paperclip Issue Thread Symbols";
   --pit-text-xs: 0.75rem;
   --pit-text-sm: 0.875rem;
   --pit-text-base: 1rem;
@@ -94,6 +141,7 @@ body {
  */
 body {
   font-family: var(--pit-font-sans);
+  font-variant-emoji: text;
   font-size: var(--pit-text-sm);
   line-height: var(--pit-leading-normal);
 }

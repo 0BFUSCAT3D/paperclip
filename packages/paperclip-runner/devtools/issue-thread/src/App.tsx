@@ -240,14 +240,27 @@ export function App() {
   useLayoutEffect(() => {
     // A deep link has to land on what it addressed. With `rec` that is the
     // record; without it, the opened section's header — otherwise the link
-    // half-arrives with the section still below the fold. Layout effect so the
-    // scroll is committed before paint and a capture can never race it.
+    // half-arrives with the section still below the fold. Wait for the bundled
+    // faces before measuring: a host fallback can otherwise move the retained
+    // scroll position by a pixel even after the final webfonts replace it.
     if (route.panel === null || snapshot === null) return;
-    const target =
-      route.record === null
-        ? document.querySelector(`[data-evidence-section="${CSS.escape(route.panel)}"]`)
-        : document.querySelector(`[data-record-id="${CSS.escape(route.record)}"]`);
-    if (target !== null) scrollEvidenceIntoView(target, route.record === null ? "start" : "center");
+    let cancelled = false;
+    void (async () => {
+      if (typeof document.fonts?.ready?.then === "function") {
+        await document.fonts.ready;
+      }
+      if (cancelled) return;
+      const target =
+        route.record === null
+          ? document.querySelector(`[data-evidence-section="${CSS.escape(route.panel)}"]`)
+          : document.querySelector(`[data-record-id="${CSS.escape(route.record)}"]`);
+      if (target !== null) {
+        scrollEvidenceIntoView(target, route.record === null ? "start" : "center");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [route.panel, route.record, snapshot, panelOpen, segment, openSections]);
 
   useEffect(() => {

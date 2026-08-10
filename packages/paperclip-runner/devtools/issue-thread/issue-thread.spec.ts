@@ -51,6 +51,51 @@ async function seriousAxeViolations(page: Page): Promise<AxeViolation[]> {
 }
 
 test.describe("Phase 7G issue thread", () => {
+  test("loads the bundled sans and mono faces before the thread settles", async ({ page }) => {
+    await open(page, "thread-baseline");
+
+    const probe = await page.evaluate(async () => {
+      const normalizeFamily = (family: string) => family.trim().replace(/^['"]|['"]$/g, "");
+      const styles = getComputedStyle(document.documentElement);
+      const sansFamily = normalizeFamily(styles.getPropertyValue("--pit-font-sans").split(",")[0]);
+      const monoFamily = normalizeFamily(styles.getPropertyValue("--pit-font-mono").split(",")[0]);
+      const symbolFamily = normalizeFamily(styles.getPropertyValue("--pit-font-symbols"));
+      await document.fonts.load(`400 16px "${symbolFamily}"`, "◐⏳\uFE0E");
+      const statuses = (family: string) =>
+        [...document.fonts]
+          .filter((face) => normalizeFamily(face.family) === family)
+          .map((face) => face.status);
+
+      return {
+        sansFamily,
+        monoFamily,
+        symbolFamily,
+        sansStatuses: statuses(sansFamily),
+        monoStatuses: statuses(monoFamily),
+        symbolStatuses: statuses(symbolFamily),
+        sansWeightsLoaded: [400, 500, 600, 700].every((weight) =>
+          document.fonts.check(`${weight} 16px "${sansFamily}"`, "Paperclip"),
+        ),
+        monoWeightsLoaded: [400, 700].every((weight) =>
+          document.fonts.check(`${weight} 16px "${monoFamily}"`, "PAP-17003"),
+        ),
+        symbolsLoaded: document.fonts.check(`400 16px "${symbolFamily}"`, "◐⏳\uFE0E"),
+      };
+    });
+
+    expect(probe).toEqual({
+      sansFamily: "Paperclip Issue Thread Inter",
+      monoFamily: "Paperclip Issue Thread DejaVu Sans Mono",
+      symbolFamily: "Paperclip Issue Thread Symbols",
+      sansStatuses: ["loaded"],
+      monoStatuses: ["loaded", "loaded"],
+      symbolStatuses: ["loaded", "loaded"],
+      sansWeightsLoaded: true,
+      monoWeightsLoaded: true,
+      symbolsLoaded: true,
+    });
+  });
+
   test("baseline thread renders identity, turns, and the §3 item types", async ({ page }) => {
     await open(page, "thread-baseline");
 
