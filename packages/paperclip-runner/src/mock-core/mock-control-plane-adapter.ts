@@ -197,3 +197,6 @@ function canonicalJson(value: unknown): string {
   }
   return JSON.stringify(value) ?? "undefined";
 }
+
+export * from "./phase7-control-plane-types.js";
+export * from "./phase7-mock-control-plane-adapter.js";
