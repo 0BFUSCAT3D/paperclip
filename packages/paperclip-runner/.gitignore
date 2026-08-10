@@ -2,5 +2,7 @@
 /dist-phase5/
 /playwright-report/
 /test-results/
+/runner/target/
+!scripts/check-browser-tokens.mjs
 !scripts/check-forbidden-imports.mjs
 !scripts/check-forbidden-imports.test.mjs
