@@ -139,6 +139,8 @@ describe("secrets CLI helpers", () => {
     delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_SECRETS_AWS_DEPLOYMENT_ID;
     delete process.env.PAPERCLIP_SECRETS_AWS_KMS_KEY_ID;
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
   });
 
   afterEach(() => {
