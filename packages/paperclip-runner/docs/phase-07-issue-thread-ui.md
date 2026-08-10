@@ -168,11 +168,17 @@ Hosts without the Playwright chromium system libraries can either run
 `pnpm --filter @paperclipai/paperclip-runner verify:rootless` or set
 `PAPERCLIP_RUNNER_CHROMIUM_PATH` to a preinstalled Chromium.
 
-The committed PNGs are pinned to the Chromium build listed in the Phase 7G
-verification evidence, so `check:phase7:ui` needs that same browser. Point
-`PAPERCLIP_RUNNER_CHROMIUM_PATH` at it before comparing; a different build makes
-every shot mismatch at once, which reads like a regression but is not one. The
-check prints the Chromium version it recorded with whenever it reports drift.
+The committed PNGs are pinned to the Chromium build and font environment listed
+in `knowledge/evidence/phase-07/ui/index.md`, so `check:phase7:ui` needs that
+same browser and font set. Point `PAPERCLIP_RUNNER_CHROMIUM_PATH` at the
+recorded browser before comparing — and when that path is the agent-browser
+wrapper, also set `PAPERCLIP_CHROMIUM_BIN` to the exact binary, because the
+wrapper otherwise picks the newest installed Playwright Chromium. A different
+build or font set makes every shot mismatch at once, which reads like a
+regression but is not one. The recorder probes that `Inter` resolves distinctly
+from the DejaVu Sans fallback and refuses to record or compare when it does
+not; the drift report prints the Chromium version and font probe it recorded
+with.
 
 ## Accessibility
 

@@ -27,3 +27,12 @@ Deterministic `fake` mode; no provider, runner, or credential is involved.
 - `thread-baseline--mobile.png`
 - `turn-streaming--desktop.png`
 - `turn-streaming--mobile.png`
+
+## Recording environment
+
+- Chromium 151.0.7922.34 — pin the exact binary with `PAPERCLIP_CHROMIUM_BIN`
+  (honoured by the agent-browser wrapper) alongside
+  `PAPERCLIP_RUNNER_CHROMIUM_PATH`.
+- Sans stack resolves to Inter (probe: Inter 549px vs
+  DejaVu Sans 641px for the title string). The recorder
+  refuses to run when Inter does not resolve.

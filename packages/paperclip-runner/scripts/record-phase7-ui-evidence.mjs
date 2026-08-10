@@ -81,6 +81,35 @@ async function startPreview() {
 
 // Set by `record` so a drift report can name the Chromium build that produced it.
 let browserVersion = "unknown";
+let fontProbe = { interWidth: 0, dejavuWidth: 0, interResolves: false };
+
+/**
+ * The committed matrix is recorded with Inter active. When fontconfig cannot
+ * resolve Inter, every text node falls back to DejaVu Sans and all 24 shots
+ * drift at once — refuse to record or compare under that environment instead
+ * of producing a whole-page mystery diff.
+ */
+async function probeFonts(browser) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const probe = await page.evaluate(() => {
+    const canvas = document.createElement("canvas").getContext("2d");
+    const sample = "Wire the runner spike to the mock control plane";
+    const width = (font) => {
+      canvas.font = font;
+      return Math.round(canvas.measureText(sample).width);
+    };
+    const interWidth = width("700 24px Inter");
+    const dejavuWidth = width('700 24px "DejaVu Sans"');
+    return {
+      interWidth,
+      dejavuWidth,
+      interResolves: document.fonts.check("16px Inter") && interWidth !== dejavuWidth,
+    };
+  });
+  await context.close();
+  return probe;
+}
 
 async function record(targetDir) {
   await mkdir(targetDir, { recursive: true });
@@ -92,6 +121,15 @@ async function record(targetDir) {
   browserVersion = browser.version();
   const recorded = [];
   try {
+    fontProbe = await probeFonts(browser);
+    if (!fontProbe.interResolves) {
+      throw new Error(
+        `font environment mismatch: "Inter" does not resolve distinctly ` +
+          `(Inter ${fontProbe.interWidth}px vs DejaVu Sans ${fontProbe.dejavuWidth}px). ` +
+          "The committed matrix is recorded with Inter active; make Inter visible to " +
+          "fontconfig before recording or checking.",
+      );
+    }
     for (const viewport of VIEWPORTS) {
       for (const slug of PHASE7_UI_SHOT_SLUGS) {
         const context = await browser.newContext({
@@ -146,6 +184,15 @@ async function main() {
           "",
           ...manifest.map((name) => `- \`${name}\``),
           "",
+          "## Recording environment",
+          "",
+          `- Chromium ${browserVersion} — pin the exact binary with \`PAPERCLIP_CHROMIUM_BIN\``,
+          "  (honoured by the agent-browser wrapper) alongside",
+          "  `PAPERCLIP_RUNNER_CHROMIUM_PATH`.",
+          `- Sans stack resolves to Inter (probe: Inter ${fontProbe.interWidth}px vs`,
+          `  DejaVu Sans ${fontProbe.dejavuWidth}px for the title string). The recorder`,
+          "  refuses to run when Inter does not resolve.",
+          "",
         ].join("\n"),
         "utf8",
       );
@@ -183,10 +230,12 @@ async function main() {
             "Phase 7 UI evidence is not byte-stable:",
             ...drift,
             "",
-            `Recorded with Chromium ${browserVersion}.`,
-            "Committed PNGs are pinned to one Chromium build. A wholesale mismatch",
-            "usually means a different browser, not a UI regression: set",
-            "PAPERCLIP_RUNNER_CHROMIUM_PATH to the Chromium that recorded them.",
+            `Recorded with Chromium ${browserVersion}; sans probe Inter=${fontProbe.interWidth}px, DejaVu Sans=${fontProbe.dejavuWidth}px.`,
+            "Committed PNGs are pinned to one Chromium build and one font environment.",
+            "A wholesale mismatch usually means a different browser or font set, not a",
+            "UI regression: set PAPERCLIP_RUNNER_CHROMIUM_PATH (and PAPERCLIP_CHROMIUM_BIN",
+            "for the wrapper) to the Chromium that recorded them, and compare the font",
+            "probe against knowledge/evidence/phase-07/ui/index.md.",
             "",
           ].join("\n"),
         );
