@@ -65,6 +65,8 @@
     "trace:phase3": "pnpm run build:typescript && pnpm run build:phase2-binaries && node dist/cli/phase3-recovery.js",
     "trace:phase4": "pnpm run build:typescript && node dist/cli/phase4-codex.js",
     "trace:phase6": "pnpm run build:typescript && node dist/cli/phase6-paperclip.js",
+    "trace:phase7": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node dist/cli/phase7-live.js",
+    "test:phase7": "vitest run src/phase7/live-session.test.ts src/semantic-tools/semantic-tools.test.ts src/mock-core/phase7-mock-control-plane-adapter.test.ts",
     "demo:phase4b": "pnpm run build:typescript && node scripts/phase4b-demo-server.mjs",
     "record:phase4b": "pnpm run build:typescript && node scripts/record-phase4b-evidence.mjs",
     "record:phase4": "pnpm run build:typescript && node scripts/record-phase4-evidence.mjs",
