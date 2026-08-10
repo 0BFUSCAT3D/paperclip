@@ -34,8 +34,14 @@ on the issue-thread surface and the live loop.
 Install the package workspace from the repository root:
 
 ```sh
-pnpm install --filter @paperclipai/paperclip-runner --lockfile=false --offline --ignore-scripts --dev
+NODE_ENV=development pnpm install --filter @paperclipai/paperclip-runner --frozen-lockfile --offline --ignore-scripts
 ```
+
+This keeps the checked-in lockfile authoritative while using only packages
+already present in the pnpm store, so the offline install does not re-resolve
+dependencies to registry-latest versions. Setting `NODE_ENV=development`
+ensures the complete test toolchain is installed even when the checkout
+inherits `NODE_ENV=production`.
 
 ## 1. Prove the 106-case conformance suite (about 1 minute)
 
