@@ -39,8 +39,12 @@ non-empty, and no fixture or projected view matches a credential pattern.
 
 # Browser suite
 
-`pnpm exec playwright test --config devtools/issue-thread/playwright.config.ts`
-— **46/46 passed**.
+`pnpm test:browser:phase7` — **50/50 passed**.
+
+The script now runs `build:issue-thread` before Playwright. It did not, and the
+suite's `vite preview` server serves the built bundle, so a run could pass
+against a stale `dist-issue-thread/` that predated the source under test. That
+is how the four round-2 regressions below first came up red against fixed code.
 
 Functional coverage: baseline item types and turn headers; durable comments
 distinguished from model prose; collapsed tool strips with `aria-expanded` and
@@ -57,8 +61,18 @@ draft survival across refresh; the 390px no-horizontal-scroll assertion; the
 mobile denial badge; 44px touch targets; Escape closing the `⋯` menu; focus
 moving to the Evidence heading; and the `waiting` composer anchor.
 
+Round-2 additions from the PAP-16952 gate review:
+
+* **Escape closes the desktop overlay sheet** at 1000×800 and returns focus to
+  the `Evidence` toggle (§9.1, was blocking).
+* **Resolving a card moves focus to its state chip** (§9.2, was blocking).
+* **The replay strip steps, advances, and plays through** to 18/18, then parks
+  itself with `Next turn` disabled (§6 `play-all`).
+* **The deliverable strip and card report one size in one unit** — both now
+  format through `phase7FormatBytes`.
+
 Accessibility gate: axe (WCAG 2.1 A/AA) on all **12 slugs × 2 viewports** —
-zero serious or critical violations.
+zero serious or critical violations, re-run after the round-2 fixes.
 
 # Screenshot matrix
 
@@ -72,6 +86,14 @@ slugs at 1440×900 and 390×844. Every mobile capture asserts
 `scrollWidth - clientWidth <= 0` on the scrolling element before the shot. All
 frames are deterministic `fake` mode rendered from package fixtures, so no
 provider, runner process, or credential is involved.
+
+Five frames were re-recorded for the round-2 fixes and re-verified byte-stable:
+`replay-mode--{desktop,mobile}` (the `Play all` control, and the progress bar
+wrapping to its own row at 390px so it is not squeezed to a stub),
+`debug-panel-open--{desktop,mobile}` (`?panel=` without `rec=` now scrolls the
+opened section clear of the sticky panel head, so the §10.2 "authorization
+records" requirement is met in frame rather than below the fold), and
+`deliverable-registered--desktop` (`18.4 kB` → `18.0 kB`, matching its card).
 
 # Live runnerd and Codex
 

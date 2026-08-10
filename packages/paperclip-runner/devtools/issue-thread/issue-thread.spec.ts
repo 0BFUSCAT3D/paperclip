@@ -146,6 +146,15 @@ test.describe("Phase 7G issue thread", () => {
     ).toBeVisible();
   });
 
+  test("the deliverable strip and card report one size in one unit", async ({ page }) => {
+    await open(page, "deliverable-registered");
+    const card = page.locator('[data-thread-item="deliverable"]');
+    await expect(card).toContainText("18.0 kB");
+    await expect(
+      page.locator('[data-tool-strip="register_deliverable"]'),
+    ).toContainText("18.0 kB");
+  });
+
   test("a denial quotes the authorization record verbatim and badges Evidence", async ({
     page,
   }) => {
@@ -249,6 +258,28 @@ test.describe("Phase 7G issue thread", () => {
     await expect(page.locator('[data-composer-state="disabled"] textarea')).toBeDisabled();
   });
 
+  test("the replay strip steps, advances, and plays through to the end", async ({ page }) => {
+    await open(page, "replay-mode");
+    const strip = page.getByTestId("replay-strip");
+    const progress = page.getByRole("progressbar", { name: "Replay progress" });
+
+    await page.getByTestId("replay-step-back").click();
+    await expect(strip).toContainText("Replay 11/18");
+    await expect(progress).toHaveAttribute("aria-valuenow", "11");
+
+    await page.getByTestId("replay-next-turn").click();
+    await expect(strip).toContainText("Replay 12/18");
+
+    // Play-all runs the recording out and parks itself at the last ordinal
+    // instead of leaving the operator to click Next turn eighteen times (§6).
+    const playAll = page.getByTestId("replay-play-all");
+    await playAll.click();
+    await expect(playAll).toHaveAttribute("aria-pressed", "true");
+    await expect(strip).toContainText("Replay 18/18", { timeout: 15_000 });
+    await expect(playAll).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByTestId("replay-next-turn")).toBeDisabled();
+  });
+
   test("a terminal disposition disables the composer with a reason", async ({ page }) => {
     await open(page, "disposition-terminal");
     await expect(page.locator('[data-thread-item="disposition"]')).toContainText("Done");
@@ -319,6 +350,36 @@ test.describe("Phase 7G issue thread", () => {
     await open(page, "thread-baseline");
     await page.getByTestId("evidence-toggle").click();
     await expect(page.getByRole("heading", { name: "Evidence" })).toBeFocused();
+  });
+
+  test("Escape closes the desktop overlay sheet and returns focus to its toggle", async ({
+    page,
+  }) => {
+    // Between the mobile segment and the docked side panel, Evidence renders as
+    // an overlay sheet; §9.1 makes Escape dismiss it.
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await open(page, "thread-baseline");
+    await page.getByTestId("evidence-toggle").click();
+
+    const panel = page.getByTestId("evidence-panel");
+    await expect(panel).toHaveAttribute("data-layout", "overlay");
+    await expect(page.getByRole("heading", { name: "Evidence" })).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+    await expect(page.getByTestId("evidence-toggle")).toBeFocused();
+  });
+
+  test("resolving an interaction card moves focus to its state chip", async ({ page }) => {
+    await open(page, "interaction-question-pending");
+    const card = page.locator('[data-interaction-id="ix-questions-01"]');
+
+    await card.getByRole("radio", { name: "Yes — runner owns it" }).check();
+    await card.getByRole("combobox").selectOption("hb-baseline");
+    await card.getByRole("button", { name: "Submit answers" }).click();
+
+    await expect(card).toHaveAttribute("data-interaction-state", "answered");
+    await expect(card.getByTestId("interaction-state-chip")).toBeFocused();
   });
 
   test("the waiting composer anchor focuses the pending card", async ({ page }) => {

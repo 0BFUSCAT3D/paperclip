@@ -427,6 +427,18 @@ export function phase7DispositionLabel(disposition: Phase7ToolDisposition): stri
 }
 
 /**
+ * The one byte formatter for the whole surface. Deliverable sizes surface in
+ * two places — the tool-activity strip summary and the deliverable card — and
+ * they must agree, so both sides (fixtures, live projection, and the browser
+ * components) format through here rather than rolling their own division.
+ */
+export function phase7FormatBytes(byteSize: number): string {
+  if (byteSize < 1024) return `${byteSize} B`;
+  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} kB`;
+  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
  * Authorization denials that the agent actually hit. Drives the `Evidence`
  * badge (§2.2) and reads straight off authorization records — the browser never
  * decides whether something was denied.

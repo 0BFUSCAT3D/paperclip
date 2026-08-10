@@ -1156,6 +1156,21 @@ textarea {
   .pit-thread-scroll {
     padding: var(--pit-space-4) var(--pit-space-3);
   }
+
+  /*
+   * Three transport controls plus a progress bar do not fit on one 390px row —
+   * squeezing them leaves the bar as an unreadable stub. Wrap so the bar keeps
+   * the full width on its own line, below the label and buttons.
+   */
+  .pit-replay-strip {
+    flex-wrap: wrap;
+    padding: var(--pit-space-2) var(--pit-space-3);
+  }
+
+  .pit-replay-strip .pit-progress {
+    order: 1;
+    flex-basis: 100%;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

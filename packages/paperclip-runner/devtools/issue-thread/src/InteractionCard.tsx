@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import type {
   Phase7ThreadInteractionCard,
@@ -79,8 +79,22 @@ export function InteractionCard({
   const [rejectReason, setRejectReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const firstControl = useRef<HTMLElement | null>(null);
+  const stateChip = useRef<HTMLSpanElement | null>(null);
+  const previousState = useRef<Phase7ThreadInteractionState>(card.state);
   const resolved = RESOLVED_STATES.has(card.state);
   const busy = card.state === "submitting";
+
+  useEffect(() => {
+    // Contract §9.2: resolving a card moves focus to its state chip. The
+    // controls the user just used unmount on resolve, so without this the
+    // keyboard caret would fall back to `body` exactly when the card changes.
+    const from = previousState.current;
+    previousState.current = card.state;
+    if (from === card.state) return;
+    if (!RESOLVED_STATES.has(from) && RESOLVED_STATES.has(card.state)) {
+      stateChip.current?.focus();
+    }
+  }, [card.state]);
 
   function respond(response: Phase7InteractionResponse) {
     setError(null);
@@ -104,7 +118,12 @@ export function InteractionCard({
         <h3 className="pit-interaction-title" id={titleId}>
           {card.title}
         </h3>
-        <Chip tone={stateTone(card.state)} testId="interaction-state-chip">
+        <Chip
+          tone={stateTone(card.state)}
+          testId="interaction-state-chip"
+          tabIndex={-1}
+          chipRef={stateChip}
+        >
           <span aria-hidden="true">{STATE_GLYPH[card.state]}</span>
           {card.stateLabel}
         </Chip>

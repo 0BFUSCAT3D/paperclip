@@ -12,7 +12,7 @@ import type {
   Phase7ThreadItem,
   Phase7ThreadTurn,
 } from "./types.js";
-import { PHASE7_ISSUE_THREAD_VIEW_SCHEMA } from "./types.js";
+import { PHASE7_ISSUE_THREAD_VIEW_SCHEMA, phase7FormatBytes } from "./types.js";
 
 export const PHASE7_UI_SHOT_SLUGS = [
   "thread-baseline",
@@ -896,6 +896,7 @@ const BUILDERS: Record<Phase7UiShotSlug, () => Phase7IssueThreadSnapshot> = {
   "deliverable-registered": () => {
     const snapshot = baseline();
     const turn = lastTurn(snapshot);
+    const deliverableBytes = 18_432;
     turn.toolCallCount = 1;
     turn.items.push(
       {
@@ -904,7 +905,8 @@ const BUILDERS: Record<Phase7UiShotSlug, () => Phase7IssueThreadSnapshot> = {
         at: at(4, 20),
         status: "ok",
         operationId: "register_deliverable",
-        summary: "spike-trace.json registered · 18.4 kB",
+        // Same formatter as the deliverable card so the two never disagree.
+        summary: `spike-trace.json registered · ${phase7FormatBytes(deliverableBytes)}`,
         input: { filename: "spike-trace.json", contentType: "application/json" },
         result: { commandKind: "register_deliverable", stateRevision: 4 },
         evidenceRef: { section: "calls", recordId: "call-5" },
@@ -915,7 +917,7 @@ const BUILDERS: Record<Phase7UiShotSlug, () => Phase7IssueThreadSnapshot> = {
         at: at(4, 20),
         filename: "spike-trace.json",
         deliverableKind: "attachment bytes",
-        byteSize: 18_432,
+        byteSize: deliverableBytes,
         registeredBy: AGENT,
         contentRef: "mock://artifacts/artifact-7",
         evidenceRef: { section: "calls", recordId: "call-5" },

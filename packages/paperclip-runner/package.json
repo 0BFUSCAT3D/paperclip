@@ -81,7 +81,7 @@
     "verify:rootless": "bash scripts/verify-rootless-linux.sh",
     "build:issue-thread": "vite build --config vite.phase7.config.ts",
     "console:phase7": "pnpm run build:typescript && vite --config vite.phase7.config.ts --host 127.0.0.1 --port 4183",
-    "test:browser:phase7": "pnpm run build:typescript && playwright test --config devtools/issue-thread/playwright.config.ts",
+    "test:browser:phase7": "pnpm run build:typescript && pnpm run build:issue-thread && playwright test --config devtools/issue-thread/playwright.config.ts",
     "record:phase7:ui": "pnpm run build:typescript && pnpm run build:issue-thread && node scripts/record-phase7-ui-evidence.mjs",
     "check:phase7:ui": "pnpm run build:typescript && pnpm run build:issue-thread && node scripts/record-phase7-ui-evidence.mjs --check",
     "smoke:phase7:ui": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/phase7-issue-thread-smoke.mjs",

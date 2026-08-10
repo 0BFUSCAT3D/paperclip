@@ -56,9 +56,17 @@ the reserved `MCK-` prefix, and no real Paperclip URL is ever rendered.
   into the matching record, and each record links back to its thread anchor.
 
 The panel is collapsed by default and resizable between 320px and 640px with a
-keyboard-operable splitter. Below 1100px it becomes an overlay sheet; below
-768px the page switches to a `Thread` / `Evidence` segmented control, with Stop
-kept outside the `⋯` menu while a turn is active.
+keyboard-operable splitter. Below 1100px it becomes an overlay sheet that
+Escape dismisses; below 768px the page switches to a `Thread` / `Evidence`
+segmented control, with Stop kept outside the `⋯` menu while a turn is active.
+Closing the panel by either route hands focus back to the visible control that
+owns it.
+
+- **Replay strip** — in `mode=replay` a progress strip pins under the header
+  with `Step back`, `Next turn`, and `Play all`. `?at=<ordinal>` is the single
+  source of truth for the parked ordinal, so the three controls and the deep
+  link all move the same value; `Play all` advances one ordinal every 800 ms
+  and parks itself at the end of the recording.
 
 ## Routes
 
@@ -104,11 +112,20 @@ The suite enforces the contract's blocking gate: axe reports zero serious or
 critical WCAG 2.1 A/AA violations on every screenshot route at both viewports.
 Structure is one `h1`, `header`/`main`/`complementary` landmarks, a `form`
 composer, `section` interaction cards labelled by their prompt, and tool strips
-as disclosure buttons with `aria-expanded`. Focus moves to the Evidence heading
-when the panel opens and to the pending card's first control from the `waiting`
-composer anchor. Every state chip pairs color with a glyph and text, all
-actionable controls clear 44×44 CSS px on mobile, and `prefers-reduced-motion`
-disables the pulse dot, banner slide, and smooth scrolling.
+as disclosure buttons with `aria-expanded`. Every state chip pairs color with a
+glyph and text, all actionable controls clear 44×44 CSS px on mobile, and
+`prefers-reduced-motion` disables the pulse dot, banner slide, and smooth
+scrolling.
+
+Focus management (§9.2) is covered by named regressions in the browser suite:
+
+- Opening Evidence moves focus to its heading; closing it — with the `Close`
+  button or with Escape on the overlay sheet — returns focus to the toggle.
+- Resolving an interaction card moves focus to the card's state chip. The
+  controls the user just operated unmount on resolve, so without this the
+  keyboard caret drops to `body` at the moment the card changes.
+- The `waiting` composer's anchor moves focus to the pending card's first
+  control.
 
 ## Contract deviations
 

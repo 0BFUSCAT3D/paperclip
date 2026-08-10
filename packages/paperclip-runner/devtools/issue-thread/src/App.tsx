@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   PHASE7_DEFAULT_FIXTURE_PROFILE,
@@ -22,6 +22,8 @@ const PANEL_OPEN_KEY = "paperclip-runner.phase7.panel.open";
 const PANEL_WIDTH_KEY = "paperclip-runner.phase7.panel.width";
 const PANEL_MIN = 320;
 const PANEL_MAX = 640;
+/** Play-all cadence for the replay strip (§6); slow enough to read a turn. */
+const REPLAY_STEP_MS = 800;
 const SCENARIOS = ["hb-baseline", "dp-documents", "ix-interactions", "ar-artifacts"];
 
 function readStoredNumber(key: string, fallback: number): number {
@@ -41,6 +43,20 @@ function readStoredFlag(key: string, fallback: boolean): boolean {
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Scroll an Evidence target into the panel viewport. `start` alignment has to
+ * account for the sticky panel head, which would otherwise sit on top of the
+ * section header the deep link was supposed to reveal.
+ */
+function scrollEvidenceIntoView(target: Element, block: "start" | "center"): void {
+  target.scrollIntoView({ block });
+  if (block !== "start") return;
+  const panel = target.closest<HTMLElement>(".pit-panel");
+  const head = panel?.querySelector<HTMLElement>(".pit-panel-head");
+  if (panel == null || head == null) return;
+  panel.scrollTop = Math.max(0, panel.scrollTop - head.offsetHeight);
 }
 
 function useRoute(): Phase7Route {
@@ -87,6 +103,7 @@ export function App() {
   const [announcement, setAnnouncement] = useState("");
   const [showJump, setShowJump] = useState(false);
   const [reconnected, setReconnected] = useState(false);
+  const [playing, setPlaying] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const cancelResetRef = useRef<HTMLButtonElement | null>(null);
 
@@ -127,6 +144,19 @@ export function App() {
     );
     setHighlightedRecordId(route.record);
   }, [route.panel, route.record]);
+
+  useLayoutEffect(() => {
+    // A deep link has to land on what it addressed. With `rec` that is the
+    // record; without it, the opened section's header — otherwise the link
+    // half-arrives with the section still below the fold. Layout effect so the
+    // scroll is committed before paint and a capture can never race it.
+    if (route.panel === null || snapshot === null) return;
+    const target =
+      route.record === null
+        ? document.querySelector(`[data-evidence-section="${CSS.escape(route.panel)}"]`)
+        : document.querySelector(`[data-record-id="${CSS.escape(route.record)}"]`);
+    if (target !== null) scrollEvidenceIntoView(target, route.record === null ? "start" : "center");
+  }, [route.panel, route.record, snapshot, panelOpen, segment, openSections]);
 
   useEffect(() => {
     setSegment(route.segment);
@@ -188,6 +218,24 @@ export function App() {
     },
     [panelWidth, persistPanel],
   );
+
+  const closeEvidence = useCallback(() => {
+    setPanelOpen(false);
+    persistPanel(false, panelWidth);
+    if (layout === "segment") setSegment("thread");
+    // Focus came into the panel when it opened (§9.2), so hand it back to the
+    // visible control that owns the panel rather than dropping it on `body`.
+    window.setTimeout(() => {
+      const candidates = ['[data-testid="evidence-toggle"]', '[data-testid="segment-thread"]'];
+      for (const selector of candidates) {
+        const control = document.querySelector<HTMLElement>(selector);
+        if (control !== null && control.offsetParent !== null) {
+          control.focus();
+          return;
+        }
+      }
+    }, 0);
+  }, [layout, panelWidth, persistPanel]);
 
   const jumpToThread = useCallback((anchorId: string) => {
     setSegment("thread");
@@ -309,6 +357,42 @@ export function App() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [confirmReset]);
 
+  /* ----------------------------------------------------------- replay (§6) */
+
+  // `?at=<ordinal>` is the source of truth for where the recording is parked,
+  // so step / next-turn / play-all and the deep link all move the same value.
+  const replay = useMemo(() => {
+    if (snapshot === null || snapshot.replay === null) return null;
+    const { total } = snapshot.replay;
+    const ordinal =
+      route.at === null ? snapshot.replay.ordinal : Math.min(total, Math.max(0, route.at));
+    return { ordinal, total };
+  }, [snapshot, route.at]);
+
+  const seekReplay = useCallback(
+    (ordinal: number) => {
+      setPlaying(false);
+      window.location.hash = phase7RouteHref(route, { at: ordinal });
+    },
+    [route],
+  );
+
+  useEffect(() => {
+    if (!playing || replay === null) return;
+    if (replay.ordinal >= replay.total) {
+      setPlaying(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      window.location.hash = phase7RouteHref(route, { at: replay.ordinal + 1 });
+    }, REPLAY_STEP_MS);
+    return () => window.clearTimeout(timer);
+  }, [playing, replay, route]);
+
+  useEffect(() => {
+    if (replay === null) setPlaying(false);
+  }, [replay]);
+
   /* ---------------------------------------------------------------- render */
 
   const denialCount = useMemo(
@@ -379,45 +463,53 @@ export function App() {
         </p>
       ) : null}
 
-      {snapshot.replay !== null ? (
+      {replay !== null ? (
         <div className="pit-replay-strip" data-testid="replay-strip">
           <span>
-            Replay {snapshot.replay.ordinal}/{snapshot.replay.total}
+            Replay {replay.ordinal}/{replay.total}
           </span>
           <div
             className="pit-progress"
             role="progressbar"
             aria-valuemin={0}
-            aria-valuemax={snapshot.replay.total}
-            aria-valuenow={snapshot.replay.ordinal}
+            aria-valuemax={replay.total}
+            aria-valuenow={replay.ordinal}
             aria-label="Replay progress"
           >
             <div
               className="pit-progress-fill"
-              style={{ width: `${(snapshot.replay.ordinal / snapshot.replay.total) * 100}%` }}
+              style={{ width: `${(replay.ordinal / replay.total) * 100}%` }}
             />
           </div>
           <button
             type="button"
             className="pit-button"
-            onClick={() => {
-              window.location.hash = phase7RouteHref(route, {
-                at: Math.max(0, (route.at ?? snapshot.replay?.ordinal ?? 0) - 1),
-              });
-            }}
+            disabled={replay.ordinal <= 0}
+            data-testid="replay-step-back"
+            onClick={() => seekReplay(replay.ordinal - 1)}
           >
             Step back
           </button>
           <button
             type="button"
             className="pit-button"
-            onClick={() => {
-              window.location.hash = phase7RouteHref(route, {
-                at: (route.at ?? snapshot.replay?.ordinal ?? 0) + 1,
-              });
-            }}
+            disabled={replay.ordinal >= replay.total}
+            data-testid="replay-next-turn"
+            onClick={() => seekReplay(replay.ordinal + 1)}
           >
             Next turn
+          </button>
+          <button
+            type="button"
+            className="pit-button"
+            data-variant={playing ? undefined : "primary"}
+            aria-pressed={playing}
+            disabled={!playing && replay.ordinal >= replay.total}
+            data-testid="replay-play-all"
+            onClick={() => setPlaying((current) => !current)}
+          >
+            <span aria-hidden="true">{playing ? "❚❚" : "▶"}</span>
+            {playing ? "Pause" : "Play all"}
           </button>
         </div>
       ) : null}
@@ -527,11 +619,7 @@ export function App() {
                   : [...current, section],
               )
             }
-            onClose={() => {
-              setPanelOpen(false);
-              persistPanel(false, panelWidth);
-              if (layout === "segment") setSegment("thread");
-            }}
+            onClose={closeEvidence}
             onJumpToThread={jumpToThread}
           />
         ) : null}

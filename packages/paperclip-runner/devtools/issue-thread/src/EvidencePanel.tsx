@@ -118,6 +118,21 @@ export function EvidencePanel(props: EvidencePanelProps) {
     headingRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    // Contract §9.1: Escape closes the desktop overlay sheet. The side panel is
+    // a persistent region rather than a sheet, and the mobile segment is a tab
+    // view, so neither of those is dismissible this way.
+    if (layout !== "overlay") return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      // A modal dialog owns Escape while it is open (§6 reset confirm).
+      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+      onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [layout, onClose]);
+
   const isOpen = (section: Phase7EvidenceSectionId) => openSections.includes(section);
 
   return (

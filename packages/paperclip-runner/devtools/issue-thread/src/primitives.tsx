@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 import type { Phase7TaskStatus } from "../../../src/mock-core/phase7-control-plane-types";
 
@@ -49,14 +49,26 @@ export function Chip({
   children,
   title,
   testId,
+  /** Set to -1 so focus management can land on a chip without adding a tab stop. */
+  tabIndex,
+  chipRef,
 }: {
   tone?: "live" | "mock" | "accent" | "success" | "danger";
   children: ReactNode;
   title?: string;
   testId?: string;
+  tabIndex?: number;
+  chipRef?: Ref<HTMLSpanElement>;
 }) {
   return (
-    <span className="pit-chip" data-tone={tone} title={title} data-testid={testId}>
+    <span
+      className="pit-chip"
+      data-tone={tone}
+      title={title}
+      data-testid={testId}
+      tabIndex={tabIndex}
+      ref={chipRef}
+    >
       {children}
     </span>
   );
@@ -75,8 +87,5 @@ export function Timestamp({ value }: { value: string }) {
   );
 }
 
-export function formatBytes(byteSize: number): string {
-  if (byteSize < 1024) return `${byteSize} B`;
-  if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} kB`;
-  return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
-}
+/** Re-exported so the thread strip and the deliverable card share one unit. */
+export { phase7FormatBytes as formatBytes } from "../../../src/issue-thread/types";
