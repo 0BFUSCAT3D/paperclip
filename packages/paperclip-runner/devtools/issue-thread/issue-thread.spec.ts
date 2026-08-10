@@ -3,6 +3,10 @@ import { createRequire } from "node:module";
 import { expect, test, type Page } from "@playwright/test";
 
 import { PHASE7_UI_SHOT_SLUGS } from "../../src/issue-thread/fixtures";
+import type {
+  Phase7IssueThreadSnapshot,
+  Phase7ThreadItem,
+} from "../../src/issue-thread/types";
 
 const require = createRequire(import.meta.url);
 const AXE_PATH = require.resolve("axe-core/axe.min.js");
@@ -664,5 +668,201 @@ test.describe("Phase 7M clean-room chat", () => {
     await page.setViewportSize(MOBILE);
     await expect(page.getByTestId("clean-room-empty")).toBeVisible();
     expect(await seriousAxeViolations(page)).toEqual([]);
+  });
+});
+
+/* ------------------------------------ pending-request live region (PAP-16978) */
+
+/**
+ * Clean-room QA (PAP-16974) heard the visually hidden status region still
+ * announce "A request is waiting for your answer." after the request had been
+ * answered: the live path re-renders with the same request still pending while
+ * the submit is in flight, which used to re-arm the pending copy and leave it
+ * standing once the request settled. These tests pin the live region to the
+ * request's actual state across pending → answered → a later turn.
+ */
+
+const PENDING_ANNOUNCEMENT = "A request is waiting for your answer.";
+
+function questionsItem(state: "pending" | "answered" | "withdrawn"): Phase7ThreadItem {
+  return {
+    kind: "interaction",
+    id: "item-ix-1",
+    at: "2026-08-10T12:00:03.000Z",
+    interactionId: "ix-questions-01",
+    interactionKind: "questions",
+    title: "One scoping question",
+    prompt: "Answer this before I continue.",
+    payload: {
+      kind: "questions",
+      submitLabel: "Submit answers",
+      questions: [
+        {
+          id: "q1",
+          prompt: "Should the runner own process cleanup?",
+          control: "radio",
+          options: ["Yes — runner owns it", "No — harness owns it"],
+          required: true,
+        },
+      ],
+    },
+    state,
+    target: null,
+    stateLabel:
+      state === "pending" ? "Waiting for you" : state === "answered" ? "Answered" : "Withdrawn",
+    resolvedSummary:
+      state === "answered" ? ["Should the runner own process cleanup? Yes — runner owns it"] : [],
+    reason: null,
+    supersededBy: null,
+    evidenceRef: { section: "authorization", recordId: "authz-ix-1" },
+  };
+}
+
+/** A clean-room view carrying one request in the given state. */
+function interactionView(
+  identifier: string,
+  state: "pending" | "answered",
+  options: { withdrawn?: boolean; extraTurn?: boolean } = {},
+): Phase7IssueThreadSnapshot {
+  const view = JSON.parse(
+    JSON.stringify(cleanRoomView(identifier, true)),
+  ) as Phase7IssueThreadSnapshot;
+  view.turns[0].items.push(questionsItem(options.withdrawn === true ? "withdrawn" : state));
+  if (options.extraTurn === true) {
+    view.turns.push({
+      id: "turn-2",
+      ordinal: 2,
+      mode: "live",
+      toolCallCount: 0,
+      at: "2026-08-10T12:01:00.000Z",
+      stoppedByUser: false,
+      items: [
+        {
+          kind: "user_message",
+          id: "transcript-3",
+          at: "2026-08-10T12:01:00.000Z",
+          author: "You (board user)",
+          body: "Carry on with the plan.",
+        },
+        {
+          kind: "agent_message",
+          id: "transcript-4",
+          at: "2026-08-10T12:01:01.000Z",
+          author: "Real Codex",
+          body: "Folded the answer into the plan.",
+          streaming: false,
+        },
+      ],
+    });
+  }
+  view.composer =
+    state === "pending"
+      ? {
+          state: "waiting",
+          helper: "Answer the pending request above to continue.",
+          reason: null,
+          pendingInteractionId: "ix-questions-01",
+        }
+      : { state: "ready", helper: null, reason: null, pendingInteractionId: null };
+  return view;
+}
+
+async function openWithPendingRequest(page: Page) {
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.route(CLEAN_ROOM_API, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...cleanRoomPayload("MCK-1000"),
+        view: interactionView("MCK-1000", "pending"),
+      }),
+    });
+  });
+  await page.goto("/#/chat");
+  await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
+}
+
+test.describe("pending-request live region", () => {
+  test("the pending announcement is dropped once the request is answered", async ({ page }) => {
+    await openWithPendingRequest(page);
+
+    const live = page.getByTestId("thread-live-region");
+    await expect(live).toHaveText(PENDING_ANNOUNCEMENT);
+    await expect(page.locator('[data-composer-state="waiting"]')).toBeVisible();
+
+    await page.route("**/api/phase7/ui/interaction", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...cleanRoomPayload("MCK-1000"),
+          view: interactionView("MCK-1000", "answered"),
+        }),
+      });
+    });
+
+    const card = page.locator('[data-interaction-id="ix-questions-01"]');
+    await card.getByRole("radio", { name: "Yes — runner owns it" }).check();
+    await card.getByRole("button", { name: "Submit answers" }).click();
+
+    await expect(card).toHaveAttribute("data-interaction-state", "answered");
+    await expect(page.locator('[data-composer-state="ready"]')).toHaveCount(1);
+    await expect(live).not.toContainText(PENDING_ANNOUNCEMENT);
+    await expect(live).toHaveText("Your answer was recorded.");
+
+    // A later turn must not resurrect the pending guidance either.
+    await page.route("**/api/phase7/ui/message", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...cleanRoomPayload("MCK-1000"),
+          view: interactionView("MCK-1000", "answered", { extraTurn: true }),
+        }),
+      });
+    });
+    await page.locator("#composer-input").fill("Carry on with the plan.");
+    await page.getByTestId("composer-send").click();
+
+    await expect(page.locator("[data-turn-id]")).toHaveCount(2);
+    await expect(live).not.toContainText(PENDING_ANNOUNCEMENT);
+  });
+
+  test("a request withdrawn server-side replaces the pending announcement", async ({ page }) => {
+    // Nobody answers here: the request goes away while the session is
+    // reconnecting, so the correction has to come from the settled snapshot.
+    await page.addInitScript(() => window.localStorage.clear());
+    await page.route(CLEAN_ROOM_API, async (route) => {
+      const view = interactionView("MCK-1000", "pending");
+      view.composer.state = "reconnecting";
+      view.connection = { state: "reconnecting", attempt: 2 };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...cleanRoomPayload("MCK-1000"), view }),
+      });
+    });
+    await page.goto("/#/chat");
+    await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
+
+    const live = page.getByTestId("thread-live-region");
+    await expect(live).toHaveText(PENDING_ANNOUNCEMENT);
+
+    await page.route("**/api/phase7/ui/reconnect", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...cleanRoomPayload("MCK-1000"),
+          view: interactionView("MCK-1000", "answered", { withdrawn: true }),
+        }),
+      });
+    });
+    await page.getByRole("button", { name: "Retry now" }).click();
+
+    await expect(page.locator('[data-interaction-state="withdrawn"]')).toBeVisible();
+    await expect(live).not.toContainText(PENDING_ANNOUNCEMENT);
+    await expect(live).toHaveText("The pending request is resolved. Withdrawn.");
   });
 });

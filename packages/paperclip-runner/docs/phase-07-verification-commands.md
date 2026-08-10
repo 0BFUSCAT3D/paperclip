@@ -15,7 +15,7 @@ acceptance record are in
 | 106-case conformance | `test:phase7-evals` | 1 file (all 106 cases) passes |
 | Fake-agent matrix + bounded Codex + parity report | `report:phase7-evals` | `Phase 7 eval conformance passed: 106 cases across 16 groups.` |
 | Scenario runtime + explorer + clean room + routes | `test:phase7` | 159 tests pass |
-| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | Playwright suites pass (58 in the issue-thread/clean-room suite) |
+| Browser IA, accessibility, determinism, boundary | `test:browser:phase7` | Playwright suites pass (60 in the issue-thread/clean-room suite) |
 | Screenshot acceptance set | `record:phase7` | 24 deterministic images |
 | Doc links + OKF bundle | `docs:validate` | 73 files, 28 OKF concepts, 5 indexes |
 

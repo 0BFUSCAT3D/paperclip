@@ -37,6 +37,14 @@ const PANEL_MIN = 320;
 const PANEL_MAX = 640;
 /** Play-all cadence for the replay strip (§6); slow enough to read a turn. */
 const REPLAY_STEP_MS = 800;
+/**
+ * The pending-request guidance is a constant because the settle path has to
+ * recognise its own stale announcement: a screen reader must not still be told
+ * a request is waiting after it was answered (PAP-16978).
+ */
+const PENDING_ANNOUNCEMENT = "A request is waiting for your answer.";
+const ANSWERED_ANNOUNCEMENT = "Your answer was recorded.";
+const SETTLED_ANNOUNCEMENT = "The pending request is resolved.";
 const SCENARIOS = ["hb-baseline", "dp-documents", "ix-interactions", "ar-artifacts"];
 
 function readStoredNumber(key: string, fallback: number): number {
@@ -74,6 +82,18 @@ function scrollEvidenceIntoView(target: Element, block: "start" | "center"): voi
 
 function describe(cause: unknown): string {
   return String(cause instanceof Error ? cause.message : cause);
+}
+
+/** Resolution copy for a request that settled without this client answering it. */
+function settledAnnouncement(snapshot: Phase7IssueThreadSnapshot, interactionId: string): string {
+  for (const turn of snapshot.turns) {
+    for (const item of turn.items) {
+      if (item.kind === "interaction" && item.interactionId === interactionId) {
+        return `${SETTLED_ANNOUNCEMENT} ${item.stateLabel}.`;
+      }
+    }
+  }
+  return SETTLED_ANNOUNCEMENT;
 }
 
 function useRoute(): Phase7Route {
@@ -136,6 +156,8 @@ export function App() {
   const [playing, setPlaying] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const cancelResetRef = useRef<HTMLButtonElement | null>(null);
+  /** Last announced pending request, so the live region tracks transitions. */
+  const announcedPendingRef = useRef<string | null>(null);
 
   /* --------------------------------------------------------------- loading */
 
@@ -234,10 +256,27 @@ export function App() {
   useEffect(() => {
     if (snapshot === null) return;
     const pending = snapshot.composer.pendingInteractionId;
-    if (pending !== null) setAnnouncement("A request is waiting for your answer.");
-    else if (snapshot.connection.state === "reconnecting") {
-      setAnnouncement(`Connection lost — retrying (attempt ${snapshot.connection.attempt}).`);
+    const announced = announcedPendingRef.current;
+    announcedPendingRef.current = pending;
+
+    if (pending !== null) {
+      // Announce a request once, when it arrives. Re-announcing on every
+      // snapshot would talk over the outcome the user just triggered: a live
+      // submit re-renders with the same request still pending.
+      if (pending !== announced) setAnnouncement(PENDING_ANNOUNCEMENT);
+      return;
     }
+    if (snapshot.connection.state === "reconnecting") {
+      setAnnouncement(`Connection lost — retrying (attempt ${snapshot.connection.attempt}).`);
+      return;
+    }
+    if (announced === null) return;
+    // The request settled. Anything the resolution itself announced stands;
+    // only the now-false "still waiting" guidance is replaced, so a screen
+    // reader never carries pending-state copy into later turns (PAP-16978).
+    setAnnouncement((current) =>
+      current === PENDING_ANNOUNCEMENT ? settledAnnouncement(snapshot, announced) : current,
+    );
   }, [snapshot]);
 
   /* -------------------------------------------------------------- handlers */
@@ -318,7 +357,7 @@ export function App() {
         }
         return applyFakeInteractionResponse(current, response);
       });
-      setAnnouncement("Your answer was recorded.");
+      setAnnouncement(ANSWERED_ANNOUNCEMENT);
     },
     [route.mode],
   );
@@ -828,7 +867,12 @@ export function App() {
         </div>
       ) : null}
 
-      <p className="pit-visually-hidden" role="status" aria-live="polite">
+      <p
+        className="pit-visually-hidden"
+        role="status"
+        aria-live="polite"
+        data-testid="thread-live-region"
+      >
         {announcement}
       </p>
     </div>
