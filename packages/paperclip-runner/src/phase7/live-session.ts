@@ -138,6 +138,65 @@ export interface Phase7LiveTurnResult {
   snapshot: Phase7LiveSessionSnapshot;
 }
 
+/**
+ * Live turn events (track 7Q).
+ *
+ * A turn used to be observable only through its resolved result, so everything
+ * downstream — the package server, the browser — could do nothing but wait.
+ * These events expose the same work as it happens without changing what the
+ * turn finally assembles: `assistantText` on a `delta` event is the running
+ * value of the very buffer `sendMessage` resolves with, not a parallel copy.
+ *
+ * The stream is ordered by `seq` (monotonic per session, from 1) and bounded:
+ * a turn emits at most `PHASE7_LIVE_TURN_EVENT_LIMIT` events, after which only
+ * terminal and error events are delivered. A pathological provider can make a
+ * turn long; it cannot make the event stream unbounded.
+ */
+export type Phase7LiveTurnEvent =
+  | {
+      seq: number;
+      at: string;
+      turnId: string | null;
+      kind: "delta";
+      /** Assembled assistant text so far — monotonic within one agent message. */
+      assistantText: string;
+    }
+  | {
+      seq: number;
+      at: string;
+      turnId: string | null;
+      kind: "activity";
+      /** `turn_started`, `tool_call`, `tool_result`, or `stop_requested`. */
+      reason: string;
+    }
+  | {
+      seq: number;
+      at: string;
+      turnId: string | null;
+      kind: "terminal";
+      status: Phase7LiveTurnResult["status"];
+      assistantText: string;
+    }
+  | {
+      seq: number;
+      at: string;
+      turnId: string | null;
+      kind: "error";
+      message: string;
+    };
+
+export type Phase7LiveTurnListener = (event: Phase7LiveTurnEvent) => void;
+
+/** Distributive `Omit`, so each event variant keeps its own discriminated shape. */
+type Phase7LiveTurnEventInput = Phase7LiveTurnEvent extends infer Variant
+  ? Variant extends Phase7LiveTurnEvent
+    ? Omit<Variant, "seq" | "at">
+    : never
+  : never;
+
+/** Bound on interim events per turn; terminal and error always get through. */
+export const PHASE7_LIVE_TURN_EVENT_LIMIT = 4_000;
+
 export interface Phase7InteractionResolution {
   interactionId: string;
   outcome: "answered" | "accepted" | "rejected" | "expired";
@@ -183,6 +242,13 @@ interface TurnWaiter {
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   assistantText: string;
+  /**
+   * Transcript entry the assistant reply is being written into while the turn
+   * runs, or `null` before the first delta. Streaming into a real transcript
+   * entry rather than a side buffer is what lets one rendered card grow: the
+   * projection sees the same entry id from the first delta to the last.
+   */
+  draftId: string | null;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -381,6 +447,9 @@ export class Phase7LiveSession {
   #turnWaiter: TurnWaiter | null = null;
   #pump: Promise<void> | null = null;
   #persistChain: Promise<void> = Promise.resolve();
+  readonly #listeners = new Set<Phase7LiveTurnListener>();
+  #eventSeq = 0;
+  #turnEventCount = 0;
 
   private constructor(options: OpenSessionOptions & { snapshot?: Phase7LiveSessionSnapshot }) {
     this.#port = options.port;
@@ -444,6 +513,80 @@ export class Phase7LiveSession {
     return structuredClone(pendingInteractions(this.#port));
   }
 
+  /**
+   * Observe live turn events. Returns the unsubscribe function; a listener that
+   * throws is dropped rather than allowed to break the provider pump, because a
+   * broken consumer must not be able to stall or fail the turn it is watching.
+   */
+  subscribe(listener: Phase7LiveTurnListener): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  #emit(event: Phase7LiveTurnEventInput): void {
+    const bounded = event.kind === "delta" || event.kind === "activity";
+    if (bounded) {
+      if (this.#turnEventCount >= PHASE7_LIVE_TURN_EVENT_LIMIT) return;
+      this.#turnEventCount += 1;
+    }
+    this.#eventSeq += 1;
+    const published = {
+      ...event,
+      seq: this.#eventSeq,
+      at: this.#now().toISOString(),
+    } as Phase7LiveTurnEvent;
+    for (const listener of [...this.#listeners]) {
+      try {
+        listener(published);
+      } catch {
+        this.#listeners.delete(listener);
+      }
+    }
+  }
+
+  /**
+   * Mirrors the turn waiter's assembled text into its transcript draft. The
+   * waiter's buffer stays the single assembly point, so the draft can never
+   * diverge from what the turn will finally resolve with.
+   */
+  #syncAssistantDraft(turnId: string | null): void {
+    const waiter = this.#turnWaiter;
+    if (waiter === null || waiter.assistantText.length === 0) return;
+    if (waiter.draftId === null) {
+      waiter.draftId = this.#appendTranscript("assistant", waiter.assistantText, turnId);
+      return;
+    }
+    const draft = this.#transcript.find((entry) => entry.id === waiter.draftId);
+    if (draft === undefined) return;
+    draft.text = waiter.assistantText;
+    if (draft.turnId === null && turnId !== null) draft.turnId = turnId;
+  }
+
+  /**
+   * Settles the streamed draft against the authoritative final text. An
+   * interrupted turn keeps whatever it had streamed; a turn that produced
+   * nothing leaves no empty card behind.
+   */
+  #settleAssistantDraft(waiter: TurnWaiter, assistantText: string, turnId: string): void {
+    const index =
+      waiter.draftId === null
+        ? -1
+        : this.#transcript.findIndex((entry) => entry.id === waiter.draftId);
+    if (index < 0) {
+      if (assistantText.length > 0) this.#appendTranscript("assistant", assistantText, turnId);
+      return;
+    }
+    if (assistantText.length === 0) {
+      this.#transcript.splice(index, 1);
+      return;
+    }
+    const draft = this.#transcript[index]!;
+    draft.text = assistantText;
+    draft.turnId = draft.turnId ?? turnId;
+  }
+
   snapshot(): Phase7LiveSessionSnapshot {
     const records = [
       ...this.#priorAuthorizationRecords,
@@ -484,14 +627,26 @@ export class Phase7LiveSession {
       throw new Error("Phase 7 live session already has an active turn");
     }
     this.#status = "running";
-    this.#appendTranscript("user", value, null);
+    this.#turnEventCount = 0;
+    // Held by id, not by position: a provider can start streaming before
+    // `turn/start` resolves, in which case the assistant draft is already the
+    // last transcript entry and the user message would never learn its turn.
+    const userEntryId = this.#appendTranscript("user", value, null);
     let response: Record<string, unknown>;
     const terminal = new Promise<Omit<Phase7LiveTurnResult, "snapshot">>((resolve, reject) => {
       const timer = setTimeout(() => {
+        const waiter = this.#turnWaiter;
         this.#turnWaiter = null;
+        if (waiter !== null) {
+          this.#emit({
+            turnId: this.#activeTurnId,
+            kind: "error",
+            message: `Phase 7 Codex turn timed out after ${this.#config.turnTimeoutMs}ms`,
+          });
+        }
         reject(new Error(`Phase 7 Codex turn timed out after ${this.#config.turnTimeoutMs}ms`));
       }, this.#config.turnTimeoutMs);
-      this.#turnWaiter = { resolve, reject, timer, assistantText: "" };
+      this.#turnWaiter = { resolve, reject, timer, assistantText: "", draftId: null };
     });
     try {
       response = await this.#transport.request("turn/start", {
@@ -516,8 +671,12 @@ export class Phase7LiveSession {
       throw new Error("Codex turn identity changed during start");
     }
     if (this.#turnWaiter !== null) this.#activeTurnId = turnId;
-    const lastUser = this.#transcript.at(-1);
-    if (lastUser?.role === "user" && lastUser.turnId === null) lastUser.turnId = turnId;
+    const sent = this.#transcript.find((entry) => entry.id === userEntryId);
+    if (sent !== undefined && sent.turnId === null) sent.turnId = turnId;
+    const draftId = (this.#turnWaiter as TurnWaiter | null)?.draftId ?? null;
+    const draft =
+      draftId === null ? undefined : this.#transcript.find((entry) => entry.id === draftId);
+    if (draft !== undefined && draft.turnId === null) draft.turnId = turnId;
     await this.#persist();
     const result = await terminal;
     await this.#persist();
@@ -529,6 +688,7 @@ export class Phase7LiveSession {
     this.#status = "stopping";
     const turnId = this.#activeTurnId;
     this.#appendEvidence("session", turnId, { action: "stop_requested", reason });
+    this.#emit({ turnId, kind: "activity", reason: "stop_requested" });
     await this.#transport.request("turn/interrupt", {
       threadId: this.#providerThreadId,
       turnId,
@@ -733,6 +893,7 @@ export class Phase7LiveSession {
       input: jsonValue(request.params.arguments),
       beforeRevision,
     });
+    this.#emit({ turnId, kind: "activity", reason: "tool_call" });
     const result = await this.#dispatcher.dispatch({
       runId: this.#authority.runId,
       callId,
@@ -746,6 +907,7 @@ export class Phase7LiveSession {
       beforeRevision,
       afterRevision: result.stateRevision,
     });
+    this.#emit({ turnId, kind: "activity", reason: "tool_result" });
     await this.#persist();
     return this.#codexToolResponse(result);
   }
@@ -789,17 +951,32 @@ export class Phase7LiveSession {
     });
     if (notification.method === "turn/started") {
       if (turnId.length > 0) this.#activeTurnId = turnId;
+      this.#emit({ turnId: turnId || this.#activeTurnId, kind: "activity", reason: "turn_started" });
     } else if (notification.method === "item/agentMessage/delta") {
-      if (this.#turnWaiter !== null) this.#turnWaiter.assistantText += text(params.delta);
+      if (this.#turnWaiter !== null) {
+        this.#turnWaiter.assistantText += text(params.delta);
+        this.#publishAssistantProgress(turnId || this.#activeTurnId);
+      }
     } else if (notification.method === "item/completed" && text(item.type) === "agentMessage") {
       const assistantText = text(item.text);
       if (assistantText.length > 0 && this.#turnWaiter !== null) {
         this.#turnWaiter.assistantText = assistantText;
+        this.#publishAssistantProgress(turnId || this.#activeTurnId);
       }
     } else if (notification.method === "turn/completed") {
       this.#completeTurn(turnId, terminalStatus(turn.status));
     }
     void this.#persist();
+  }
+
+  /** Streams the assembled text into the transcript draft and announces it. */
+  #publishAssistantProgress(turnId: string | null): void {
+    this.#syncAssistantDraft(turnId);
+    this.#emit({
+      turnId,
+      kind: "delta",
+      assistantText: this.#turnWaiter?.assistantText ?? "",
+    });
   }
 
   #completeTurn(turnId: string, status: Phase7LiveTurnResult["status"]): void {
@@ -808,9 +985,10 @@ export class Phase7LiveSession {
     clearTimeout(waiter.timer);
     this.#turnWaiter = null;
     const assistantText = waiter.assistantText.trim();
-    if (assistantText.length > 0) this.#appendTranscript("assistant", assistantText, turnId);
+    this.#settleAssistantDraft(waiter, assistantText, turnId);
     this.#activeTurnId = null;
     this.#status = "idle";
+    this.#emit({ turnId, kind: "terminal", status, assistantText });
     waiter.resolve({ turnId, status, assistantText });
   }
 
@@ -819,20 +997,35 @@ export class Phase7LiveSession {
     if (waiter === null) return;
     clearTimeout(waiter.timer);
     this.#turnWaiter = null;
+    const turnId = this.#activeTurnId;
     this.#activeTurnId = null;
     this.#status = "failed";
+    // Whatever the turn had already streamed stays in the transcript; a failed
+    // turn should read as an interrupted reply, not as one that never spoke.
+    if (turnId !== null) this.#settleAssistantDraft(waiter, waiter.assistantText.trim(), turnId);
+    this.#emit({
+      turnId,
+      kind: "error",
+      message: redactCodexDiagnostic(error instanceof Error ? error.message : String(error)),
+    });
     waiter.reject(error instanceof Error ? error : new Error(String(error)));
   }
 
-  #appendTranscript(role: Phase7LiveTranscriptEntry["role"], message: string, turnId: string | null): void {
+  #appendTranscript(
+    role: Phase7LiveTranscriptEntry["role"],
+    message: string,
+    turnId: string | null,
+  ): string {
     this.#entryCounter += 1;
+    const id = `transcript-${String(this.#entryCounter).padStart(6, "0")}`;
     this.#transcript.push({
-      id: `transcript-${String(this.#entryCounter).padStart(6, "0")}`,
+      id,
       role,
       text: message,
       turnId,
       at: this.#now().toISOString(),
     });
+    return id;
   }
 
   #appendEvidence(

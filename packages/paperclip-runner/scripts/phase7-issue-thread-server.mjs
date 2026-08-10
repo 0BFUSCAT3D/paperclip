@@ -32,6 +32,12 @@ const MAX_CLEAN_ROOM_SESSIONS = 4;
 /** Bounded output: a clean room is a demo, not a long-lived agent. */
 const MAX_TURNS_PER_SESSION = 24;
 const MAX_MESSAGE_BYTES = 8 * 1024;
+/**
+ * Bounded frames per streamed turn. Past this the turn keeps running and still
+ * settles with the authoritative payload; only the interim views stop, so a
+ * chatty provider cannot turn one turn into unbounded socket writes.
+ */
+const MAX_TURN_STREAM_FRAMES = 600;
 
 async function loadRunner() {
   return import(new URL("../dist/index.js", import.meta.url).href);
@@ -256,6 +262,125 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
       : { sessionId: entry.session.id, surface: "issue", view: view(runner, entry) };
   }
 
+  /** The clean room keeps its live-only guard on every frame, not just the last. */
+  function frameView(runner, entry) {
+    return entry.surface === "cleanroom" ? liveView(runner, entry) : view(runner, entry);
+  }
+
+  /**
+   * Streams one turn as NDJSON frames (track 7Q).
+   *
+   * The turn used to be awaited whole and answered once, so the browser could
+   * only ever reveal a finished reply. Now every provider delta, tool call, and
+   * tool result the live session announces is projected and written while the
+   * POST is still open. The final `settled` frame carries exactly the payload
+   * the single JSON response used to carry, so the terminal projection — not
+   * any interim frame — remains the authority.
+   *
+   * Interim frames are coalesced onto the next event-loop turn: a burst of
+   * deltas that arrives in one tick becomes one frame, while deltas separated
+   * by real provider I/O each get their own. That bounds the write rate without
+   * a timer, and without inventing a cadence the provider did not have.
+   */
+  async function streamTurn(runner, entry, message, request, response) {
+    response.statusCode = 200;
+    for (const [name, value] of Object.entries(runner.PHASE7_TURN_STREAM_HEADERS)) {
+      response.setHeader(name, value);
+    }
+    // Headers before the first frame: a client that waits for them must not be
+    // held until the provider speaks.
+    response.flushHeaders();
+
+    let seq = 0;
+    let frames = 0;
+    let finished = false;
+    let scheduled = null;
+    let pendingReason = null;
+    let pendingTurnId = null;
+
+    const write = (frame) => {
+      if (response.writableEnded || response.destroyed) return;
+      seq += 1;
+      response.write(runner.encodePhase7TurnStreamFrame({ ...frame, seq }));
+    };
+
+    const flush = () => {
+      scheduled = null;
+      if (finished || pendingReason === null) return;
+      if (frames >= MAX_TURN_STREAM_FRAMES) return;
+      const reason = pendingReason;
+      const turnId = pendingTurnId;
+      pendingReason = null;
+      pendingTurnId = null;
+      let projected;
+      try {
+        projected = frameView(runner, entry);
+      } catch {
+        // A projection failure is reported by the terminal frame; dropping an
+        // interim view must never abort a turn that is still running.
+        return;
+      }
+      frames += 1;
+      write({
+        schema: runner.PHASE7_TURN_STREAM_SCHEMA,
+        type: "frame",
+        reason,
+        turnId,
+        view: projected,
+      });
+    };
+
+    const unsubscribe = entry.session.subscribe((event) => {
+      if (finished || event.kind === "terminal" || event.kind === "error") return;
+      pendingReason = event.kind === "delta" ? "delta" : event.reason === "stop_requested" ? "stop_requested" : "activity";
+      pendingTurnId = event.turnId;
+      if (scheduled === null) scheduled = setImmediate(flush);
+    });
+
+    // A browser that navigates away, reloads, or aborts the fetch mid-turn is a
+    // stop: the provider turn is interrupted rather than left running against a
+    // socket nobody is reading.
+    const onDisconnect = () => {
+      if (finished) return;
+      void entry.session.interrupt("client disconnected").catch(() => undefined);
+    };
+    request.on("aborted", onDisconnect);
+    response.on("close", onDisconnect);
+
+    // `sendMessage` records the user message and marks the session running
+    // before its first await, so starting it and *then* flushing makes the
+    // opening frame already show what was sent and a live composer.
+    const turn = entry.session.sendMessage(message);
+    pendingReason = "open";
+    pendingTurnId = null;
+    flush();
+
+    try {
+      await turn;
+      finished = true;
+      write({
+        schema: runner.PHASE7_TURN_STREAM_SCHEMA,
+        type: "settled",
+        payload: payload(runner, entry),
+      });
+    } catch (error) {
+      finished = true;
+      write({
+        schema: runner.PHASE7_TURN_STREAM_SCHEMA,
+        type: "error",
+        error: error instanceof RouteError ? error.code : "turn_failed",
+        message: String(error instanceof Error ? error.message : error),
+      });
+    } finally {
+      finished = true;
+      if (scheduled !== null) clearImmediate(scheduled);
+      unsubscribe();
+      request.off("aborted", onDisconnect);
+      response.off("close", onDisconnect);
+      response.end();
+    }
+  }
+
   const middleware = async function phase7IssueThreadMiddleware(request, response, next) {
     const url = new URL(request.url ?? "/", "http://phase7.local");
     if (!url.pathname.startsWith(`${ROUTE_PREFIX}/`)) {
@@ -327,7 +452,10 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
           );
         }
         entry.turns += 1;
-        await entry.session.sendMessage(message);
+        // Every admission check has already answered with its own status code;
+        // from here the response is a stream, so a failure is a framed error.
+        await streamTurn(runner, entry, message, request, response);
+        return;
       } else if (route === "interrupt") {
         await entry.session.interrupt("operator stopped the turn");
       } else if (route === "reconnect") {
@@ -370,6 +498,12 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
 
       send(response, 200, payload(runner, entry));
     } catch (error) {
+      if (response.headersSent) {
+        // A streamed turn reports its own failures as a framed error; there is
+        // no status code left to send once the first frame is on the wire.
+        if (!response.writableEnded) response.end();
+        return;
+      }
       if (error instanceof RouteError) {
         send(response, error.status, { error: error.code, message: error.message });
         return;

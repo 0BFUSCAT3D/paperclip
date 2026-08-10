@@ -495,7 +495,10 @@ function composerModel(
       pendingInteractionId,
     };
   }
-  if (snapshot.activeTurnId !== null) {
+  // `running` covers the window between accepting a message and the provider
+  // reporting a turn id. A streamed turn is observable in that window, so the
+  // composer has to read as streaming there rather than briefly as ready.
+  if (snapshot.activeTurnId !== null || snapshot.status === "running") {
     return {
       state: "streaming",
       helper: "Codex is working — send to steer, or stop the turn.",

@@ -34,5 +34,6 @@ export * as acceptedPhase7SemanticTools from "./semantic-tools/index.js";
 export * from "./phase7/clean-room.js";
 export * from "./phase7/live-session.js";
 export * from "./phase7/runnerd-codex-transport.js";
+export * from "./phase7/turn-stream.js";
 export { projectPhase7IssueThread } from "./issue-thread/live-projection.js";
 export * as phase7IssueThread from "./issue-thread/index.js";

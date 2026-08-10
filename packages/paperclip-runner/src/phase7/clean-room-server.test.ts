@@ -12,6 +12,11 @@ import type {
 } from "../drivers/codex/app-server-transport.js";
 import type { Phase7IssueThreadSnapshot, Phase7ThreadItem } from "../issue-thread/types.js";
 import type { Phase7LiveTransportFactory } from "./live-session.js";
+import {
+  createPhase7TurnStreamDecoder,
+  readPhase7TurnStream,
+  type Phase7TurnStreamFrame,
+} from "./turn-stream.js";
 
 /**
  * Clean-room chat, driven through the same HTTP routes the browser uses.
@@ -29,7 +34,32 @@ interface FakeProviderState {
   providerSessionId: string;
   nextTurn: number;
   transports: FakeCleanRoomTransport[];
+  /** Releases one step of a gated streaming turn (`stream` messages). */
+  gate: Gate;
 }
+
+/** Single-slot signal, so a streamed turn advances only when the test says so. */
+class Gate {
+  #waiters: Array<() => void> = [];
+  #ready = 0;
+
+  wait(): Promise<void> {
+    if (this.#ready > 0) {
+      this.#ready -= 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.#waiters.push(resolve));
+  }
+
+  release(): void {
+    const waiter = this.#waiters.shift();
+    if (waiter === undefined) this.#ready += 1;
+    else waiter();
+  }
+}
+
+/** Assistant deltas the gated turn emits, one release at a time. */
+const STREAM_DELTAS = ["Reading ", "the clean-room ", "issue."] as const;
 
 class AsyncNotifications implements AsyncIterable<CodexRpcNotification> {
   #values: CodexRpcNotification[] = [];
@@ -131,6 +161,30 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
     await new Promise((resolve) => setTimeout(resolve, 0));
     let assistantText = `Nothing to do for "${message}".`;
     if (message.includes("hang")) return;
+    if (message.includes("stream")) {
+      for (const delta of STREAM_DELTAS) {
+        await this.state.gate.wait();
+        this.queue.push({
+          method: "item/agentMessage/delta",
+          params: { threadId: this.state.threadId, turnId, delta },
+        });
+      }
+      await this.state.gate.wait();
+      assistantText = STREAM_DELTAS.join("");
+      this.queue.push({
+        method: "item/completed",
+        params: {
+          threadId: this.state.threadId,
+          turnId,
+          item: { id: `message-${turnId}`, type: "agentMessage", text: assistantText },
+        },
+      });
+      this.queue.push({
+        method: "turn/completed",
+        params: { threadId: this.state.threadId, turn: { id: turnId, status: "completed" } },
+      });
+      return;
+    }
     // The resumed turn carries the typed interaction result as its input, so it
     // is matched before the keyword branches it would otherwise trip.
     if (message.includes("semantic-interaction-result")) {
@@ -222,6 +276,66 @@ function items(view: Phase7IssueThreadSnapshot): Phase7ThreadItem[] {
   return view.turns.flatMap((turn) => turn.items);
 }
 
+/** Assistant text a reader would see in the projected thread. */
+function assistantText(view: Phase7IssueThreadSnapshot): string {
+  return items(view)
+    .map((item) => (item.kind === "agent_message" ? item.body : ""))
+    .join("");
+}
+
+/** Polls until `ready` holds, so nothing in the suite waits on a fixed delay. */
+async function settle(ready: () => boolean | Promise<boolean>, attempts = 200): Promise<void> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await ready()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("the clean-room stream never reached the expected state");
+}
+
+type CleanRoomFrame = Phase7TurnStreamFrame<Phase7IssueThreadSnapshot, CleanRoomPayload>;
+
+/**
+ * Pulls frames off an open turn response one at a time. Reading incrementally
+ * — rather than awaiting the whole body — is the point: it is what proves the
+ * server answers before the turn is released.
+ */
+class FrameReader {
+  readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
+  readonly #decoder = createPhase7TurnStreamDecoder<Phase7IssueThreadSnapshot, CleanRoomPayload>();
+  readonly #text = new TextDecoder();
+  #queue: CleanRoomFrame[] = [];
+
+  constructor(response: Response) {
+    if (response.body === null) throw new Error("the turn response had no body");
+    this.#reader = response.body.getReader();
+  }
+
+  async next(): Promise<CleanRoomFrame> {
+    while (this.#queue.length === 0) {
+      const chunk = await this.#reader.read();
+      if (chunk.done) {
+        this.#queue.push(...this.#decoder.flush());
+        break;
+      }
+      this.#queue.push(...this.#decoder.push(this.#text.decode(chunk.value, { stream: true })));
+    }
+    const frame = this.#queue.shift();
+    if (frame === undefined) throw new Error("the turn stream ended without another frame");
+    return frame;
+  }
+
+  async nextMatching(predicate: (frame: CleanRoomFrame) => boolean): Promise<CleanRoomFrame> {
+    for (;;) {
+      const frame = await this.next();
+      if (predicate(frame)) return frame;
+    }
+  }
+
+  async end(): Promise<void> {
+    await this.#reader.cancel().catch(() => undefined);
+  }
+}
+
 let server: Server;
 let origin: string;
 let middleware: Awaited<ReturnType<typeof createMiddleware>>;
@@ -237,7 +351,28 @@ async function createMiddleware(state: FakeProviderState) {
   });
 }
 
-async function call(path: string, body?: unknown): Promise<CleanRoomPayload> {
+/**
+ * Reads a turn response. `/message` answers with the NDJSON turn stream, so the
+ * helper collects every interim view and returns the settled payload — the same
+ * value the route used to answer with in one shot.
+ */
+async function readTurn(
+  response: Response,
+  frames: Phase7IssueThreadSnapshot[] = [],
+): Promise<CleanRoomPayload> {
+  return await readPhase7TurnStream<Phase7IssueThreadSnapshot, CleanRoomPayload>(
+    response,
+    (frame) => {
+      frames.push(frame.view);
+    },
+  );
+}
+
+async function call(
+  path: string,
+  body?: unknown,
+  frames?: Phase7IssueThreadSnapshot[],
+): Promise<CleanRoomPayload> {
   const url = `${origin}${path}`;
   requestedUrls.push(url);
   const response = await fetch(
@@ -250,6 +385,9 @@ async function call(path: string, body?: unknown): Promise<CleanRoomPayload> {
           body: JSON.stringify(body),
         },
   );
+  if (response.headers.get("content-type")?.includes("x-ndjson") === true) {
+    return await readTurn(response, frames);
+  }
   const payload = (await response.json()) as CleanRoomPayload & { error?: string };
   if (!response.ok) throw new Error(`${path} → ${response.status} ${payload.error ?? ""}`);
   return payload;
@@ -277,6 +415,7 @@ beforeEach(async () => {
     providerSessionId: "codex-provider-clean-room",
     nextTurn: 0,
     transports: [],
+    gate: new Gate(),
   };
   middleware = await createMiddleware(providerState);
   server = createServer((request, response) => {
@@ -502,6 +641,99 @@ describe("Phase 7 clean-room chat server", () => {
     expect(response.status).toBe(429);
     expect(body.error).toBe("turn_limit");
     expect(body.message).toContain("Start a new chat");
+  });
+
+  it("streams the turn as frames while the POST is still open", async () => {
+    const opened = await call("/api/phase7/ui/cleanroom/session");
+    const response = await fetch(`${origin}/api/phase7/ui/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+      body: JSON.stringify({ sessionId: opened.sessionId, message: "stream your answer" }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+    // A cache or proxy directive that permitted transformation could coalesce
+    // the frames back into one body, which is the failure being fixed.
+    expect(response.headers.get("cache-control")).toContain("no-transform");
+    expect(response.headers.get("content-length")).toBeNull();
+
+    const reader = new FrameReader(response);
+    // The body is readable before the gated turn produces anything at all.
+    const open = await reader.next();
+    expect(open.type).toBe("frame");
+    if (open.type !== "frame") return;
+    expect(open.reason).toBe("open");
+    expect(assistantText(open.view)).toBe("");
+    expect(open.view.turns.at(-1)?.items.some((item) => item.kind === "user_message")).toBe(true);
+
+    const streamed: string[] = [];
+    for (let index = 0; index < STREAM_DELTAS.length; index += 1) {
+      providerState.gate.release();
+      const frame = await reader.nextMatching(
+        (candidate) =>
+          candidate.type !== "frame" || assistantText(candidate.view) === STREAM_DELTAS.slice(0, index + 1).join(""),
+      );
+      expect(frame.type).toBe("frame");
+      if (frame.type !== "frame") return;
+      streamed.push(assistantText(frame.view));
+      expect(frame.view.composer.state).toBe("streaming");
+    }
+
+    expect(streamed).toEqual([
+      STREAM_DELTAS[0],
+      STREAM_DELTAS.slice(0, 2).join(""),
+      STREAM_DELTAS.join(""),
+    ]);
+
+    providerState.gate.release();
+    const settled = await reader.nextMatching((candidate) => candidate.type === "settled");
+    expect(settled.type).toBe("settled");
+    if (settled.type !== "settled") return;
+    // The terminal payload is the authority and is the same shape the route
+    // used to answer with in one JSON response.
+    expect(settled.payload.sessionId).toBe(opened.sessionId);
+    expect(settled.payload.surface).toBe("cleanroom");
+    expect(assistantText(settled.payload.view)).toBe(STREAM_DELTAS.join(""));
+    expect(settled.payload.view.composer.state).toBe("ready");
+    const messages = items(settled.payload.view).filter((item) => item.kind === "agent_message");
+    expect(messages).toHaveLength(1);
+    await reader.end();
+
+    // The stream left the session usable rather than wedged mid-turn.
+    const next = await call("/api/phase7/ui/cleanroom/session", { sessionId: opened.sessionId });
+    expect(next.sessionId).not.toBe(opened.sessionId);
+  });
+
+  it("interrupts the provider turn when the client abandons the stream", async () => {
+    const opened = await call("/api/phase7/ui/cleanroom/session");
+    const controller = new AbortController();
+    const response = await fetch(`${origin}/api/phase7/ui/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+      body: JSON.stringify({ sessionId: opened.sessionId, message: "stream your answer" }),
+      signal: controller.signal,
+    });
+    const reader = new FrameReader(response);
+    await reader.next();
+    providerState.gate.release();
+    await reader.nextMatching(
+      (candidate) => candidate.type === "frame" && assistantText(candidate.view).length > 0,
+    );
+
+    controller.abort();
+    // The abandoned turn is interrupted rather than left running: the session
+    // returns to `ready`, which a still-active turn would never do.
+    await settle(async () => {
+      const probe = await call(`/api/phase7/ui/cleanroom/session?sessionId=${opened.sessionId}`);
+      return probe.sessionId === opened.sessionId && probe.view.composer.state === "ready";
+    });
+    const after = await call("/api/phase7/ui/message", {
+      sessionId: opened.sessionId,
+      message: "Read the issue and report progress.",
+    });
+    expect(after.sessionId).toBe(opened.sessionId);
+    expect(items(after.view).some((item) => item.kind === "durable_comment")).toBe(true);
   });
 
   it("keeps the preset scenario surface working and isolated from the clean room", async () => {

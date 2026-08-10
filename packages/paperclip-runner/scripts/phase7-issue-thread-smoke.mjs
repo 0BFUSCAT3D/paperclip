@@ -16,6 +16,25 @@ import { once } from "node:events";
 
 import { createPhase7IssueThreadMiddleware } from "./phase7-issue-thread-server.mjs";
 
+const { readPhase7TurnStream, PHASE7_TURN_STREAM_ACCEPT } = await import(
+  new URL("../dist/index.js", import.meta.url).href
+);
+
+/** Runs one turn over the NDJSON stream and returns its settled payload. */
+async function runTurn(origin, body) {
+  const response = await fetch(`${origin}/api/phase7/ui/message`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: PHASE7_TURN_STREAM_ACCEPT },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`turn failed with HTTP ${response.status}`);
+  let frames = 0;
+  const settled = await readPhase7TurnStream(response, () => {
+    frames += 1;
+  });
+  return { ...settled, frames };
+}
+
 const CREDENTIAL_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/i,
   // Anchored so a mock id such as `task-cleanroom-3f2a9c11` cannot masquerade
@@ -62,17 +81,12 @@ async function main() {
     assertions.mockIdentifier = created.view.issue.identifier.startsWith("MCK-");
     assertions.toolsProjected = created.view.evidence.tools.length >= 0;
 
-    const first = await (
-      await fetch(`${origin}/api/phase7/ui/message`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          message:
-            "Call get_task_context, then call report_progress with a one-sentence status. Do not ask me anything.",
-        }),
-      })
-    ).json();
+    const first = await runTurn(origin, {
+      sessionId,
+      message:
+        "Call get_task_context, then call report_progress with a one-sentence status. Do not ask me anything.",
+    });
+    assertions.turnStreamed = first.frames >= 2;
     const firstItems = first.view.turns.flatMap((turn) => turn.items);
     assertions.userMessageRendered = firstItems.some((item) => item.kind === "user_message");
     assertions.toolActivityRendered = firstItems.some((item) => item.kind === "tool_activity");
@@ -85,13 +99,10 @@ async function main() {
       (row) => row.disposition === "control_plane_owned",
     );
 
-    const second = await (
-      await fetch(`${origin}/api/phase7/ui/message`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId, message: "Summarise the mock task in one line." }),
-      })
-    ).json();
+    const second = await runTurn(origin, {
+      sessionId,
+      message: "Summarise the mock task in one line.",
+    });
     assertions.multiTurnThread = second.view.turns.length > first.view.turns.length;
     assertions.composerReady = second.view.composer.state === "ready";
 

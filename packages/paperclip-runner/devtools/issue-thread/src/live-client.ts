@@ -1,4 +1,9 @@
 import type { Phase7IssueThreadSnapshot } from "../../../src/issue-thread/types";
+import {
+  PHASE7_TURN_STREAM_ACCEPT,
+  Phase7TurnStreamError,
+  readPhase7TurnStream,
+} from "../../../src/phase7/turn-stream";
 
 /**
  * Browser client for the package session server.
@@ -7,6 +12,12 @@ import type { Phase7IssueThreadSnapshot } from "../../../src/issue-thread/types"
  * posts intents and renders what comes back; it never patches the snapshot
  * locally, which is what keeps policy and state authority on the server
  * (contract §11).
+ *
+ * A turn is the one route that answers with many of those projections instead
+ * of one: `send` consumes NDJSON frames as the provider produces them, hands
+ * each interim view to `onFrame`, and resolves with the settled payload. The
+ * authority rule is unchanged — every frame is still a server projection, and
+ * the settled one is final.
  */
 
 const BASE = "/api/phase7/ui";
@@ -68,6 +79,42 @@ async function post(path: string, body: unknown): Promise<Phase7LiveResponse> {
   return (await response.json()) as Phase7LiveResponse;
 }
 
+/** Interim projection delivered while the turn is still running. */
+export type Phase7TurnFrameHandler = (view: Phase7IssueThreadSnapshot) => void;
+
+export interface Phase7SendOptions {
+  onFrame?: Phase7TurnFrameHandler;
+  /** Abort the turn stream — used when the surface is torn down or rotated. */
+  signal?: AbortSignal;
+}
+
+async function postTurnStream(
+  path: string,
+  body: unknown,
+  options: Phase7SendOptions,
+): Promise<Phase7LiveResponse> {
+  const response = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: PHASE7_TURN_STREAM_ACCEPT },
+    body: JSON.stringify(body),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
+  // Admission failures still answer with a JSON body and a real status code,
+  // because they are decided before the first frame is written.
+  if (!response.ok) throw await readError(response, path);
+  try {
+    return await readPhase7TurnStream<Phase7IssueThreadSnapshot, Phase7LiveResponse>(
+      response,
+      (frame) => options.onFrame?.(frame.view),
+    );
+  } catch (cause) {
+    if (cause instanceof Phase7TurnStreamError) {
+      throw new Phase7LiveError(cause.code, cause.message);
+    }
+    throw cause;
+  }
+}
+
 export const phase7LiveClient = {
   async load(sessionId: string | null): Promise<Phase7LiveResponse> {
     const query = sessionId === null ? "" : `?sessionId=${encodeURIComponent(sessionId)}`;
@@ -89,8 +136,16 @@ export const phase7LiveClient = {
   newCleanRoom(sessionId: string | null): Promise<Phase7LiveResponse> {
     return post("/cleanroom/session", sessionId === null ? {} : { sessionId });
   },
-  send(sessionId: string, message: string): Promise<Phase7LiveResponse> {
-    return post("/message", { sessionId, message });
+  /**
+   * Runs one turn. `onFrame` fires for every interim projection the server
+   * writes while the POST is open; the resolved value is the settled payload.
+   */
+  send(
+    sessionId: string,
+    message: string,
+    options: Phase7SendOptions = {},
+  ): Promise<Phase7LiveResponse> {
+    return postTurnStream("/message", { sessionId, message }, options);
   },
   stop(sessionId: string): Promise<Phase7LiveResponse> {
     return post("/interrupt", { sessionId });

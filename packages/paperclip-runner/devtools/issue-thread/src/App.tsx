@@ -154,10 +154,28 @@ export function App() {
   const [showJump, setShowJump] = useState(false);
   const [reconnected, setReconnected] = useState(false);
   const [playing, setPlaying] = useState(false);
+  /** True while a turn stream is open, so the surface never reads as settled. */
+  const [streamingTurn, setStreamingTurn] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const cancelResetRef = useRef<HTMLButtonElement | null>(null);
   /** Last announced pending request, so the live region tracks transitions. */
   const announcedPendingRef = useRef<string | null>(null);
+  /**
+   * Turn generation. Reset, `New chat`, and leaving the surface all bump it, so
+   * a frame from a turn that has since been abandoned is dropped instead of
+   * appended to a thread it no longer belongs to.
+   */
+  const turnGenerationRef = useRef(0);
+  const turnAbortRef = useRef<AbortController | null>(null);
+
+  /** Abandons any open turn stream: the server sees the disconnect and stops. */
+  const abandonTurn = useCallback(() => {
+    turnGenerationRef.current += 1;
+    const controller = turnAbortRef.current;
+    turnAbortRef.current = null;
+    setStreamingTurn(false);
+    controller?.abort();
+  }, []);
 
   /* --------------------------------------------------------------- loading */
 
@@ -199,8 +217,11 @@ export function App() {
     }
     return () => {
       cancelled = true;
+      // Leaving the surface (or reloading it) must not leave a turn streaming
+      // into a thread that is no longer on screen.
+      abandonTurn();
     };
-  }, [chat, route.mode, route.shot, route.fixtureProfile, loadNonce]);
+  }, [abandonTurn, chat, route.mode, route.shot, route.fixtureProfile, loadNonce]);
 
   /* ------------------------------------------------------- deep-link params */
 
@@ -362,39 +383,66 @@ export function App() {
     [route.mode],
   );
 
+  /**
+   * Sends one message and renders the turn as it arrives.
+   *
+   * Each frame is a whole server projection, so the surface still never patches
+   * state locally — it just gets more than one projection per turn. The settled
+   * payload is applied last and stays the authority.
+   */
   const send = useCallback(
     (message: string) => {
+      if (snapshot === null) return;
+      if (route.mode !== "live") return;
       setActionError(null);
-      setSnapshot((current) => {
-        if (current === null) return current;
-        if (route.mode === "live") {
-          void phase7LiveClient
-            .send(current.sessionId, message)
-            .then((next) => setSnapshot(next.view))
-            .catch((cause) => {
-              setActionError(describe(cause));
-              // A refused turn must not strand the composer in `sending`.
-              setSnapshot((stale) =>
-                stale === null
-                  ? stale
-                  : { ...stale, composer: { ...stale.composer, state: "ready" } },
-              );
-            });
-          return { ...current, composer: { ...current.composer, state: "sending" } };
-        }
-        return current;
-      });
+      abandonTurn();
+      const generation = turnGenerationRef.current;
+      const controller = new AbortController();
+      turnAbortRef.current = controller;
+      setStreamingTurn(true);
+      setSnapshot((current) =>
+        current === null ? current : { ...current, composer: { ...current.composer, state: "sending" } },
+      );
+      void phase7LiveClient
+        .send(snapshot.sessionId, message, {
+          signal: controller.signal,
+          onFrame: (view) => {
+            if (turnGenerationRef.current === generation) setSnapshot(view);
+          },
+        })
+        .then((next) => {
+          if (turnGenerationRef.current === generation) setSnapshot(next.view);
+        })
+        .catch((cause) => {
+          if (turnGenerationRef.current !== generation || controller.signal.aborted) return;
+          setActionError(describe(cause));
+          // A refused turn must not strand the composer in `sending`.
+          setSnapshot((stale) =>
+            stale === null ? stale : { ...stale, composer: { ...stale.composer, state: "ready" } },
+          );
+        })
+        .finally(() => {
+          if (turnGenerationRef.current !== generation) return;
+          turnAbortRef.current = null;
+          setStreamingTurn(false);
+        });
     },
-    [route.mode],
+    [abandonTurn, route.mode, snapshot],
   );
 
   const stop = useCallback(() => {
     setSnapshot((current) => {
       if (current === null) return current;
       if (route.mode === "live") {
+        // Stop reaches the provider interrupt through its own request; the open
+        // turn stream keeps rendering and its terminal frame — not this
+        // response — decides what the stopped turn finally looks like.
+        const streaming = turnAbortRef.current !== null;
         void phase7LiveClient
           .stop(current.sessionId)
-          .then((next) => setSnapshot(next.view))
+          .then((next) => {
+            if (!streaming && turnAbortRef.current === null) setSnapshot(next.view);
+          })
           .catch((cause) => setActionError(describe(cause)));
         return current;
       }
@@ -427,15 +475,19 @@ export function App() {
 
   const newChat = useCallback(() => {
     setConfirmReset(false);
+    // The room this turn belongs to is about to be retired, so the stream is
+    // dropped before the request that retires it.
+    abandonTurn();
     setAnnouncement("Starting a new clean-room chat…");
     void phase7LiveClient
       .newCleanRoom(snapshot?.sessionId ?? null)
       .then(adoptCleanRoom)
       .catch((cause) => setActionError(describe(cause)));
-  }, [adoptCleanRoom, snapshot]);
+  }, [abandonTurn, adoptCleanRoom, snapshot]);
 
   const reset = useCallback(() => {
     setConfirmReset(false);
+    abandonTurn();
     if (chat && snapshot !== null) {
       void phase7LiveClient
         .reset(snapshot.sessionId)
@@ -455,7 +507,7 @@ export function App() {
     }
     setSnapshot(phase7IssueThreadFixture("thread-baseline", route.fixtureProfile));
     setAnnouncement("Scenario reset. The mock state is back to its clean seed.");
-  }, [adoptCleanRoom, chat, route.fixtureProfile, route.mode, snapshot]);
+  }, [abandonTurn, adoptCleanRoom, chat, route.fixtureProfile, route.mode, snapshot]);
 
   const retry = useCallback(() => {
     if (route.mode === "live" && snapshot !== null) {
@@ -582,7 +634,13 @@ export function App() {
   return (
     <div
       className="pit-app"
-      data-thread-state={settled && snapshotSurface === route.surface ? "settled" : "loading"}
+      data-thread-state={
+        streamingTurn
+          ? "streaming"
+          : settled && snapshotSurface === route.surface
+            ? "settled"
+            : "loading"
+      }
       data-session-mode={snapshot.mode}
       data-surface={route.surface}
       data-connection-state={snapshot.connection.state}

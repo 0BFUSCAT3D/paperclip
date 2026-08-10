@@ -19,6 +19,10 @@ import { once } from "node:events";
 
 import { createPhase7IssueThreadMiddleware } from "./phase7-issue-thread-server.mjs";
 
+const { readPhase7TurnStream, PHASE7_TURN_STREAM_ACCEPT } = await import(
+  new URL("../dist/index.js", import.meta.url).href
+);
+
 const CREDENTIAL_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/i,
   // Anchored so a mock id such as `task-cleanroom-3f2a9c11` cannot masquerade
@@ -40,6 +44,22 @@ function assert(condition, message) {
 
 function items(view) {
   return view.turns.flatMap((turn) => turn.items);
+}
+
+function assistantText(view) {
+  return items(view)
+    .filter((item) => item.kind === "agent_message")
+    .map((item) => item.body)
+    .join("");
+}
+
+/**
+ * Interim assistant states are monotonic when each one extends the last. That
+ * is the property the streamed turn has to hold against a real provider, not
+ * just against a scripted one.
+ */
+function monotonic(states) {
+  return states.every((state, index) => index === 0 || state.startsWith(states[index - 1]));
 }
 
 async function main() {
@@ -65,6 +85,24 @@ async function main() {
         body: JSON.stringify(body),
       })
     ).json();
+  /**
+   * Runs one turn and records what the browser would have rendered along the
+   * way, so the smoke proves incremental delivery from a real Codex turn rather
+   * than only the settled reply.
+   */
+  const turn = async (body) => {
+    const response = await fetch(`${origin}/api/phase7/ui/message`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: PHASE7_TURN_STREAM_ACCEPT },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`turn failed with HTTP ${response.status}`);
+    const states = [];
+    const settled = await readPhase7TurnStream(response, (frame) => {
+      states.push(assistantText(frame.view));
+    });
+    return { ...settled, states };
+  };
 
   const assertions = {};
   let summary = {};
@@ -86,18 +124,21 @@ async function main() {
       opened.view.issue.identifier === opened.identity.identifier &&
       opened.view.issue.identifier.startsWith("MCK-");
 
-    const first = await post("/api/phase7/ui/message", {
+    const first = await turn({
       sessionId: opened.sessionId,
       message:
         "Read this issue with get_task_context, then call report_progress with a one-sentence status. Do not ask me anything.",
     });
     const firstItems = items(first.view);
+    const growing = first.states.filter((state) => state.length > 0);
+    assertions.streamedIncrementally =
+      growing.length >= 2 && monotonic(growing) && growing.at(-1) === assistantText(first.view);
     assertions.realCodexTurn = firstItems.some((item) => item.kind === "agent_message");
     assertions.semanticToolCalled = firstItems.some((item) => item.kind === "tool_activity");
     assertions.mockStateMutated = firstItems.some((item) => item.kind === "durable_comment");
     assertions.authorizationRecorded = first.view.evidence.authorization.length > 0;
 
-    const second = await post("/api/phase7/ui/message", {
+    const second = await turn({
       sessionId: opened.sessionId,
       message: "In one line, what status did you just record?",
     });
@@ -131,6 +172,8 @@ async function main() {
       newChatSessionId: fresh.sessionId,
       newChatIssue: fresh.view.issue.identifier,
       turns: second.view.turns.length,
+      streamedStates: first.states.length,
+      streamedPrefixes: first.states.filter((state) => state.length > 0).slice(0, 3),
       toolCalls: second.view.evidence.calls.map((call) => ({
         operationId: call.operationId,
         outcome: call.outcome,

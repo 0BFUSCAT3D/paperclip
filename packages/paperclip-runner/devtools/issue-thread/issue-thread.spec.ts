@@ -525,6 +525,33 @@ function cleanRoomPayload(identifier: string, withTurn = false) {
   };
 }
 
+/**
+ * A turn now answers with the NDJSON stream, so a stubbed turn has to speak it.
+ * These stubs deliver one settled frame: they exercise what a turn *produced*,
+ * while incremental delivery is proved against the real server below.
+ */
+function turnStreamBody(payload: unknown, interim: unknown[] = []): string {
+  const frames = interim.map((view, index) => ({
+    schema: "paperclip.phase7.turn-stream.v1",
+    type: "frame",
+    seq: index + 1,
+    reason: "delta",
+    turnId: "turn-1",
+    view,
+  }));
+  return [
+    ...frames,
+    {
+      schema: "paperclip.phase7.turn-stream.v1",
+      type: "settled",
+      seq: frames.length + 1,
+      payload,
+    },
+  ]
+    .map((frame) => `${JSON.stringify(frame)}\n`)
+    .join("");
+}
+
 async function stubCleanRoom(page: Page, identifiers: string[]) {
   let opened = 0;
   await page.route(CLEAN_ROOM_API, async (route) => {
@@ -588,8 +615,8 @@ test.describe("Phase 7M clean-room chat", () => {
     await page.route("**/api/phase7/ui/message", async (route) => {
       await route.fulfill({
         status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
+        contentType: "application/x-ndjson",
+        body: turnStreamBody({
           sessionId: "session-MCK-1000",
           surface: "cleanroom",
           identity: cleanRoomPayload("MCK-1000").identity,
@@ -815,8 +842,8 @@ test.describe("pending-request live region", () => {
     await page.route("**/api/phase7/ui/message", async (route) => {
       await route.fulfill({
         status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
+        contentType: "application/x-ndjson",
+        body: turnStreamBody({
           ...cleanRoomPayload("MCK-1000"),
           view: interactionView("MCK-1000", "answered", { extraTurn: true }),
         }),
@@ -864,5 +891,122 @@ test.describe("pending-request live region", () => {
     await expect(page.locator('[data-interaction-state="withdrawn"]')).toBeVisible();
     await expect(live).not.toContainText(PENDING_ANNOUNCEMENT);
     await expect(live).toHaveText("The pending request is resolved. Withdrawn.");
+  });
+});
+
+/* -------------------------------------------- Phase 7Q streamed live turn */
+
+/**
+ * Streaming is proved against the real package server, not a stub: port 4185
+ * runs the same built bundle and the same session middleware with a scripted
+ * Codex provider (`vite.issue-thread-stream.config.ts`), so the NDJSON turn
+ * stream, the live session, the projection, and the browser client are all the
+ * shipped code. A `route.fulfill` stub cannot show this — it can only deliver a
+ * body in one piece, which is exactly the behaviour under repair.
+ */
+
+const STREAM_ORIGIN = "http://127.0.0.1:4185";
+const STREAM_REPLY =
+  "Reading the clean-room issue. It is blank, with one mock agent and one mock task. " +
+  "Recording a first status against the mock control plane. Done — every record stayed in the mock port.";
+
+async function openStreamingCleanRoom(page: Page): Promise<void> {
+  await page.addInitScript(() => window.localStorage.clear());
+  await page.goto(`${STREAM_ORIGIN}/#/chat`);
+  await expect(page.locator('[data-thread-state="settled"]')).toBeVisible({ timeout: 60_000 });
+}
+
+test.describe("Phase 7Q streamed live turn", () => {
+  test("one assistant card grows while the turn POST is still open", async ({ page }) => {
+    await openStreamingCleanRoom(page);
+
+    const states: Array<{ id: string; body: string }> = [];
+    let pendingWhileGrowing = 0;
+    let settledWhileGrowing = 0;
+    let turnFinished = false;
+    // Sample the rendered card, not the network: what has to be proved is that
+    // a reader sees the reply grow, and only the DOM can say that.
+    const sampler = (async () => {
+      while (!turnFinished) {
+        const sample = await page.evaluate(() => {
+          const card = document.querySelector('[data-thread-item="agent_message"]');
+          const app = document.querySelector(".pit-app");
+          return {
+            id: card?.id ?? null,
+            body: card?.querySelector(".pit-card-body")?.textContent ?? null,
+            threadState: app?.getAttribute("data-thread-state") ?? null,
+            composer:
+              document.querySelector("[data-composer-state]")?.getAttribute("data-composer-state") ??
+              null,
+          };
+        });
+        if (sample.id !== null && sample.body !== null && sample.body.length > 0) {
+          if (states.at(-1)?.body !== sample.body) states.push({ id: sample.id, body: sample.body });
+          if (sample.body !== STREAM_REPLY) {
+            pendingWhileGrowing += 1;
+            if (sample.threadState === "settled") settledWhileGrowing += 1;
+          }
+        }
+        await page.waitForTimeout(60);
+      }
+    })();
+
+    await page.locator("#composer-input").fill("Read this issue and record a status.");
+    await page.getByTestId("composer-send").click();
+
+    // The whole reply only appears at the end; the card gets there in pieces.
+    await expect(page.locator('[data-thread-item="agent_message"]')).toContainText(STREAM_REPLY, {
+      timeout: 60_000,
+    });
+    turnFinished = true;
+    await sampler;
+
+    const bodies = states.map((state) => state.body);
+    expect(bodies.length).toBeGreaterThanOrEqual(3);
+    // One card: every observed state belonged to the same transcript entry.
+    expect(new Set(states.map((state) => state.id)).size).toBe(1);
+    for (let index = 1; index < bodies.length; index += 1) {
+      expect(bodies[index]!.startsWith(bodies[index - 1]!)).toBe(true);
+    }
+    expect(bodies.at(-1)).toBe(STREAM_REPLY);
+    // Partial states were observed, and the surface never claimed to be
+    // settled while one of them was on screen.
+    expect(pendingWhileGrowing).toBeGreaterThanOrEqual(2);
+    expect(settledWhileGrowing).toBe(0);
+
+    // Settled arrives only after the terminal frame.
+    await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
+    await expect(page.locator('[data-composer-state="ready"]')).toHaveCount(1);
+    await expect(page.locator('[data-thread-item="agent_message"]')).toHaveCount(1);
+    await expect(page.locator('[data-thread-item="agent_message"]')).toHaveAttribute(
+      "data-streaming",
+      "false",
+    );
+  });
+
+  test("Stop interrupts the streamed turn and keeps the partial reply", async ({ page }) => {
+    await openStreamingCleanRoom(page);
+
+    await page.locator("#composer-input").fill("Start a long answer so I can stop it.");
+    await page.getByTestId("composer-send").click();
+
+    const card = page.locator('[data-thread-item="agent_message"]');
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(card).toHaveAttribute("data-streaming", "true");
+    const partial = ((await card.locator(".pit-card-body").textContent()) ?? "").trim();
+    expect(partial.length).toBeGreaterThan(0);
+    expect(STREAM_REPLY.startsWith(partial)).toBe(true);
+
+    await page.getByTestId("composer-stop").click();
+
+    // The stopped turn settles on what it had said, and nothing lands later.
+    await expect(page.locator('[data-thread-state="settled"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("stopped-marker")).toBeVisible();
+    const stopped = ((await card.locator(".pit-card-body").textContent()) ?? "").trim();
+    expect(STREAM_REPLY.startsWith(stopped)).toBe(true);
+    expect(stopped).not.toBe(STREAM_REPLY);
+    await page.waitForTimeout(1_500);
+    expect(((await card.locator(".pit-card-body").textContent()) ?? "").trim()).toBe(stopped);
+    await expect(page.locator('[data-thread-item="agent_message"]')).toHaveCount(1);
   });
 });
