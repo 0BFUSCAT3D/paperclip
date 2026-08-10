@@ -118,6 +118,7 @@ p {
 }
 
 .mode-switch {
+  flex-wrap: wrap;
   margin-bottom: var(--space-6);
 }
 
