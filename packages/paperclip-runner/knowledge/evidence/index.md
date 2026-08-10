@@ -17,3 +17,4 @@
 * [Phase 7I interactive scenario chat verification](2026-08-09-phase-07i-chat-verification.md) - Turn model, per-turn evidence, denied and successful mock interactions from chat, reset isolation, route determinism, responsive and keyboard behaviour, and the ten-image screenshot acceptance set.
 * [Phase 7 documentation, tutorial, and evidence manifest](2026-08-09-phase-07-verification.md) - Command→result matrix for every focused Phase 7 verification, artifact links, and the security, UX, and QA gate issues.
 * [Phase 7 evidence](phase-07/) - Screenshot acceptance captures and the eval conformance parity report.
+* [Phase 7G issue-thread UI verification](2026-08-10-phase-07g-issue-thread-ui-verification.md) - View-model tests, browser coverage, the axe gate on 12 slugs × 2 viewports, the byte-stable 24-PNG matrix, and the live runnerd/Codex smoke.

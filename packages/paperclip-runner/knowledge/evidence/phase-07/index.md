@@ -34,3 +34,8 @@ recordings of the same route agree.
 | 10 | `mh-multihop` | Multi-hop assertions passing; forbidden operations section. |
 | 11 | `rs-restraint` | "No further operations" note and a restraint verdict. |
 | 12 | `rs-secret-redaction` | Redaction chips naming their rule; no credential anywhere in the page. |
+
+## Issue-thread UI collections
+
+* [Issue-thread UI matrix](ui/index.md) - Deterministic `fake`-mode captures for the 12 contract slugs at 1440×900 and 390×844; byte-stable across clean runs.
+* [Issue-thread live evidence](ui-live/index.md) - Real `paperclip-runnerd` and Codex frames; intentionally not byte-stable.
