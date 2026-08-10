@@ -19,6 +19,15 @@ export interface CodexAppServerTransport {
   notifications(): AsyncIterable<CodexRpcNotification>;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
   close(): Promise<void>;
+  processInfo?(): CodexTransportProcessInfo;
+}
+
+export interface CodexTransportProcessInfo {
+  pid: number | null;
+  processGroupId: number | null;
+  exited: boolean;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
 }
 
 class BoundedAsyncQueue<T> implements AsyncIterable<T> {
@@ -260,6 +269,10 @@ export interface ProcessCodexTransportOptions {
   maxQueuedNotifications?: number;
   maxQueuedNotificationBytes?: number;
   maxInflightServerRequests?: number;
+  /** Starts a dedicated process group so runnerd and its Codex child are reaped together. */
+  processGroup?: boolean;
+  closeGraceMs?: number;
+  onProcess?: (info: CodexTransportProcessInfo) => void;
 }
 
 const DEFAULT_MAX_LINE_BYTES = 1024 * 1024;
@@ -281,6 +294,14 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
   });
   #inflightServerRequests = 0;
   #closed = false;
+  #exited = false;
+  #exitCode: number | null = null;
+  #exitSignal: NodeJS.Signals | null = null;
+  #resolveExit!: () => void;
+  readonly #exitPromise: Promise<void>;
+  readonly #processGroup: boolean;
+  readonly #closeGraceMs: number;
+  readonly #onProcess?: (info: CodexTransportProcessInfo) => void;
   #onDiagnostic?: (message: string) => void;
   readonly #maxLineBytes: number;
   readonly #maxPendingRequests: number;
@@ -299,6 +320,12 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
       options.maxInflightServerRequests,
       DEFAULT_MAX_INFLIGHT_SERVER_REQUESTS,
     );
+    this.#processGroup = options.processGroup === true && process.platform !== "win32";
+    this.#closeGraceMs = positiveLimit(options.closeGraceMs, 1_000);
+    this.#onProcess = options.onProcess;
+    this.#exitPromise = new Promise<void>((resolve) => {
+      this.#resolveExit = resolve;
+    });
     this.#notifications = new BoundedAsyncQueue(
       positiveLimit(options.maxQueuedNotifications, DEFAULT_MAX_QUEUED_NOTIFICATIONS),
       positiveLimit(
@@ -309,7 +336,9 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
     this.#process = spawn(options.command ?? "codex", options.args ?? ["app-server"], {
       env: options.environment ?? createSanitizedCodexEnvironment(),
       stdio: "pipe",
+      detached: this.#processGroup,
     });
+    this.#onProcess?.(this.processInfo());
     this.#stdoutDecoder = new BoundedLineDecoder(
       this.#maxLineBytes,
       (line, bytes) => this.#onLine(line, bytes),
@@ -326,6 +355,11 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
     this.#process.stderr.on("end", () => this.#stderrDecoder.end());
     this.#process.on("error", (error) => this.#fatal(error));
     this.#process.on("exit", (code, signal) => {
+      this.#exited = true;
+      this.#exitCode = code;
+      this.#exitSignal = signal;
+      this.#resolveExit();
+      this.#onProcess?.(this.processInfo());
       if (!this.#closed) {
         this.#fatal(
           new Error(
@@ -368,13 +402,51 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
   }
 
   async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#stdoutDecoder.close();
-    this.#stderrDecoder.close();
-    this.#process.kill("SIGTERM");
-    this.#notifications.close();
-    this.#failAll(new Error("codex app-server transport closed"));
+    const firstClose = !this.#closed;
+    if (firstClose) {
+      this.#closed = true;
+      this.#stdoutDecoder.close();
+      this.#stderrDecoder.close();
+      this.#notifications.close();
+      this.#failAll(new Error("codex app-server transport closed"));
+    }
+    if (!this.#exited) {
+      if (firstClose) this.#signal("SIGTERM");
+      const exited = await Promise.race([
+        this.#exitPromise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), this.#closeGraceMs)),
+      ]);
+      if (!exited && !this.#exited) {
+        this.#signal("SIGKILL");
+        await Promise.race([
+          this.#exitPromise,
+          new Promise<void>((resolve) => setTimeout(resolve, this.#closeGraceMs)),
+        ]);
+      }
+    }
+  }
+
+  processInfo(): CodexTransportProcessInfo {
+    return {
+      pid: this.#process.pid ?? null,
+      processGroupId: this.#processGroup ? this.#process.pid ?? null : null,
+      exited: this.#exited,
+      exitCode: this.#exitCode,
+      signal: this.#exitSignal,
+    };
+  }
+
+  #signal(signal: NodeJS.Signals): void {
+    const pid = this.#process.pid;
+    if (this.#processGroup && pid !== undefined) {
+      try {
+        process.kill(-pid, signal);
+        return;
+      } catch {
+        // The group may already be gone; the direct child kill below is idempotent.
+      }
+    }
+    this.#process.kill(signal);
   }
 
   #write(message: unknown): void {
@@ -479,7 +551,7 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
     this.#closed = true;
     this.#stdoutDecoder.close();
     this.#stderrDecoder.close();
-    this.#process.kill("SIGKILL");
+    this.#signal("SIGKILL");
     this.#notifications.close(error);
     this.#failAll(error);
     this.#onDiagnostic?.(redactCodexDiagnostic(error.message));

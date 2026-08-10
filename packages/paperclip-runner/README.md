@@ -34,7 +34,10 @@ committed coordinator makes replay a no-op.
 Phase 7D adds the stable semantic-tool catalog, actor/task/mode/scenario policy,
 invocation-time dispatcher checks, typed denials, redacted authorization
 records, and one provider-neutral contract shared by fake and live Codex
-bindings. The implementation remains mock-only and package-local.
+bindings. Phase 7E starts a real package-local runnerd and Codex app-server,
+routes allowed semantic calls through the mock `ControlPlanePort`, resumes the
+same provider thread, and performs bounded process-group cleanup. The data plane
+remains mock-only and package-local.
 
 ## Phase 0–5 quick start
 
@@ -123,6 +126,8 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 | `check:phase-07-contract` | Verify the Phase 7A skill, MCP, and eval traceability contract. |
 | `generate:semantic-contracts` | Compile and regenerate the provider-neutral Phase 7D tool contract. |
 | `check:semantic-contracts` | Fail when the checked-in Phase 7D tool contract is stale. |
+| `test:phase7` | Prove the Phase 7 mock adapter, semantic policy, live session persistence, interaction resume, stop, and reset contracts. |
+| `trace:phase7` | Run a real runnerd and Codex app-server semantic-tool smoke with process and network evidence. |
 | `test:browser:phase5` | Exercise both consumers with the fake driver, keyboard/a11y checks, reconnect/replay, measurements, and screenshots. |
 | `record:phase5:codex` | Run both public consumers against a safe real Codex session and capture live screenshots. |
 | `browser:dev` | Start the standalone live/replay/recovery browser devtool. |
@@ -150,6 +155,7 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 - [Phase 5 browser SDK reference](docs/phase-05-sdk.md)
 - [Phase 5 component decision record](docs/design/phase-5-component-decisions.md)
 - [Phase 7 semantic catalog and authorization](docs/phase-07-semantic-catalog.md)
+- [Phase 7 live runnerd and Codex loop](docs/phase-07-live-runnerd-codex.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)
