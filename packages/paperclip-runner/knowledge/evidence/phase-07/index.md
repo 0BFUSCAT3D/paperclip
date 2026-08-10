@@ -1,5 +1,13 @@
 # Phase 7 evidence
 
+**Eligibility.** The deterministic `fake`-mode captures on this page — the
+scenario-explorer set below and the [issue-thread UI matrix](ui/index.md) — are
+byte-stable and prove the contract and replay; they are **not** eligible for a
+final live acceptance criterion. The [live issue-thread frames](ui-live/index.md)
+are the ones that satisfy live criteria. The scenario-explorer captures are
+Revision 2 historical evidence. The authoritative command-and-result record is
+the [final evidence manifest](../2026-08-10-phase-07i-final-evidence.md).
+
 Phase 7E writes its conformance parity report into this directory as
 `eval-parity-report.json` and `eval-parity-report.md`. The explorer bundles the
 JSON when it is present and renders "Not run" when it is not; it never

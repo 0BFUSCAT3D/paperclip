@@ -14,8 +14,9 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 4b: run the live Codex protocol console](tutorials/phase-04b-live-console.md) — chat with a live session in the browser, steer it, stop it three ways, answer its requests, change its goal, break its connection, and replay the record.
 - [Phase 5: run the SDK console and mini consumer](tutorials/phase-05-sdk-console.md) — exercise the versioned public browser/React surface in two independent consumers against fake and real drivers.
 - [Phase 6: run the thin Paperclip adapter](tutorials/phase-06-thin-paperclip-adapter.md) — prove mock/real conformance, run one feature-flagged local task, inspect replay/finalization, disable the kill switch, and verify legacy fallback.
-- [Phase 7: explore the capability contract and scenario explorer](tutorials/phase-07-scenario-explorer.md) — prove the 106-case conformance suite, open the read-only browser explorer over the mock control plane, and run the focused verification set, all from a clean checkout with no Paperclip service or external eval repository.
-- [Phase 7I: chat with the mock control plane](tutorials/phase-07i-scenario-chat.md) — send prompts to a Phase 7 scenario and watch the mock Paperclip activity for every turn: exposure, typed calls, denials, control-plane-owned actions, state diffs, wakes, and per-turn parity.
+- [Phase 7: the Paperclip-style issue thread over a mock control plane](tutorials/phase-07-issue-thread.md) — the canonical clean-start tutorial for the final build: prove the 106-case conformance suite, open the issue thread in deterministic fake mode, record the byte-stable screenshot matrix, and optionally drive a real Codex turn — all from a clean checkout with no Paperclip service.
+- [Phase 7: explore the capability contract and scenario explorer](tutorials/phase-07-scenario-explorer.md) — companion tour of the read-only browser explorer over the mock control plane and the focused verification set.
+- [Phase 7I: chat with the mock control plane](tutorials/phase-07i-scenario-chat.md) — the scenario-explorer chat surface: send prompts to a Phase 7 scenario and watch the mock Paperclip activity for every turn: exposure, typed calls, denials, control-plane-owned actions, state diffs, wakes, and per-turn parity.
 - [Cumulative end-to-end tutorial](tutorials/end-to-end.md) — the shortest complete workflow available at the current phase.
 
 ## Reference
@@ -38,8 +39,10 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 7 eval-derived conformance](phase-07-eval-conformance.md)
 - [Phase 7 browser scenario explorer](phase-07-scenario-explorer.md)
 - [Phase 7 live runnerd/Codex loop](phase-07-live-runnerd-codex.md)
+- [Phase 7 execution modes and identity (fake vs real Codex)](phase-07-execution-modes.md)
 - [Phase 7 Paperclip-style issue-thread UI](phase-07-issue-thread-ui.md)
 - [Phase 7I interactive scenario chat](phase-07i-scenario-chat.md)
+- [Phase 7 final evidence manifest (Revision 3/4)](../knowledge/evidence/2026-08-10-phase-07i-final-evidence.md)
 - [Phase 7 future binding boundary (Phase 8 / ACPX)](phase-07-future-binding-boundary.md)
 - [Phase 7 verification commands](phase-07-verification-commands.md)
 - [Phase 7 scenario explorer UX interaction map](design/phase-7-scenario-explorer-ux.md)

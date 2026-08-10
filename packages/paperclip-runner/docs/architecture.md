@@ -228,6 +228,44 @@ service, database, ACPX session, or provider credential; the
 integration is Phase 8 (ACPX) and requires separate approval; see
 [the future binding boundary](phase-07-future-binding-boundary.md).
 
+## Phase 7 live process topology
+
+The live surface adds a real provider turn loop over the same mock core. The
+package server owns every credential and every child process; the browser holds
+none.
+
+```text
+ browser (issue thread + evidence panel; no credential)
+        |  HTTP/SSE over the trusted-proxy boundary
+        v
+ package server ── projectPhase7IssueThread ──> Phase7IssueThreadSnapshot
+        |                                          (one contract, two producers)
+        |  owns session, tool loop, provider auth
+        v
+ paperclip-runnerd (real binary, owns the Codex process group)
+        |  newline-delimited JSON-RPC over stdio
+        v
+ codex app-server (real session)
+        |  tool request
+        v
+ Phase7SemanticDispatcher ── typed command ──> in-process mock ControlPlanePort
+        ^                                          |
+        +──────── typed result / typed denial ─────+
+```
+
+Three actors stay separate at all times: **Real Codex** (the app-server
+session), **Real runnerd** (the package-local binary), and **Mock Paperclip**
+(the in-process `ControlPlanePort`). The same
+`Phase7IssueThreadSnapshot` is produced by deterministic `fake` fixtures for the
+screenshot matrix and by the server-side projection for a live session; the
+projection reads only durable records and decides nothing, so UI-side state math
+is a defect by construction. The scripted (`fake`) mode drives the conformance
+suite and replay offline; the Codex (live) mode requires a locally authenticated
+Codex. See [execution modes and identity](phase-07-execution-modes.md) for the
+mode and eligibility rules, and [the live runnerd/Codex loop](phase-07-live-runnerd-codex.md)
+for the session API. The package server blocks every request to a real
+Paperclip API, and the evidence suite proves no such request occurred.
+
 ## Future integration rule
 
 The [implementation plan](../spec/paperclip-native-runner-implementation-plan.md)
