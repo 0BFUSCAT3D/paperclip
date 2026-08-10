@@ -16,6 +16,8 @@
   },
   "include": [
     "devtools/browser/src/**/*.ts",
+    "devtools/issue-thread/src/**/*.ts",
+    "devtools/issue-thread/src/**/*.tsx",
     "devtools/browser/src/**/*.tsx",
     "examples/*/src/**/*.ts",
     "examples/*/src/**/*.tsx"

@@ -194,7 +194,7 @@ from the page.
 | `accepted` | status `accepted` | Green check chip `Accepted`, chosen values summarized inline, controls collapse to read-only summary. |
 | `answered` | status `answered` | Same as accepted with `Answered` chip (questions / verdicts complete). |
 | `rejected` | status `rejected` | Red chip `Changes requested`, reason quoted in the card. |
-| `stale_target` | status `expired`, `result.outcome=stale_target` | Gray chip `Stale — plan moved to r5`, link to the superseding revision, controls removed, body dimmed (60% opacity). |
+| `stale_target` | status `expired`, `result.outcome=stale_target` | Gray chip `Stale — plan moved to r5`, link to the superseding revision, controls removed, body dimmed (see revision 2). |
 | `superseded_by_comment` | status `expired`, `result.outcome=superseded_by_comment` | Gray chip `Superseded by a later comment`, link to that comment. |
 | `expired` | status `expired`, no outcome | Gray chip `Expired <relative time>`. |
 | `withdrawn` | status `cancelled`, `result.outcome=withdrawn` | Gray chip `Withdrawn`, optional reason. |
@@ -389,3 +389,23 @@ Implementation acceptance (UXDesigner review) requires:
 7. Screenshot review posted to the 7G issue for UXDesigner acceptance before 7G closes.
 
 Questions or gaps → comment on PAP-16940.
+
+---
+
+## Revisions
+
+### Revision 2 — expired-family dimming (2026-08-10, written back by 7G)
+
+Revision 1 specified a literal 60% opacity on the body of `stale_target` and the
+other expired-family cards (§5). Measured against the card surface in the dark
+theme, that renders the card's text at ~3.16:1, which fails §9.5's 4.5:1 bar and
+the blocking axe gate in §9.7 — the two rules cannot both hold.
+
+§9 wins because it is the blocking gate. "Dimmed" is now specified as a
+**recessed treatment**: the card drops to the sunken surface token and its
+secondary text drops to the muted-foreground token, both of which clear 4.5:1.
+The gray state chip, removed controls, and neutral left border are unchanged, so
+the card still reads as history at a glance.
+
+Implemented in `devtools/issue-thread/src/issue-thread.css` and covered by the
+axe gate on the `interaction-resolved-mixed` slug at both viewports.

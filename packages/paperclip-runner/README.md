@@ -36,8 +36,12 @@ invocation-time dispatcher checks, typed denials, redacted authorization
 records, and one provider-neutral contract shared by fake and live Codex
 bindings. Phase 7E starts a real package-local runnerd and Codex app-server,
 routes allowed semantic calls through the mock `ControlPlanePort`, resumes the
-same provider thread, and performs bounded process-group cleanup. The data plane
-remains mock-only and package-local.
+same provider thread, and performs bounded process-group cleanup. Phase 7G
+renders that session as a native Paperclip issue thread: typed interaction
+cards, a six-state composer, and an eight-section Evidence panel that shows the
+calls, authorization records, control-plane decisions, state diffs, and the
+operations deliberately withheld from the agent. The data plane remains
+mock-only and package-local.
 
 ## Phase 0–5 quick start
 
@@ -127,6 +131,13 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 | `generate:semantic-contracts` | Compile and regenerate the provider-neutral Phase 7D tool contract. |
 | `check:semantic-contracts` | Fail when the checked-in Phase 7D tool contract is stale. |
 | `test:phase7` | Prove the Phase 7 mock adapter, semantic policy, live session persistence, interaction resume, stop, and reset contracts. |
+| `console:phase7` | Serve the Phase 7G issue-thread UI on loopback. |
+| `test:browser:phase7` | Run the Phase 7G browser suite, including the axe gate on every screenshot route. |
+| `record:phase7:ui` | Record the deterministic 12-slug × 2-viewport screenshot matrix. |
+| `check:phase7:ui` | Fail when a recorded Phase 7G screenshot is not byte-stable. |
+| `check:browser-tokens` | Fail when a browser surface paints with a raw color instead of a semantic token. |
+| `smoke:phase7:ui` | Drive real runnerd and Codex through the issue-thread server's HTTP routes. |
+| `record:phase7:ui:live` | Capture live-mode browser evidence (not byte-stable by construction). |
 | `trace:phase7` | Run a real runnerd and Codex app-server semantic-tool smoke with process and network evidence. |
 | `test:browser:phase5` | Exercise both consumers with the fake driver, keyboard/a11y checks, reconnect/replay, measurements, and screenshots. |
 | `record:phase5:codex` | Run both public consumers against a safe real Codex session and capture live screenshots. |
@@ -156,6 +167,7 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 - [Phase 5 component decision record](docs/design/phase-5-component-decisions.md)
 - [Phase 7 semantic catalog and authorization](docs/phase-07-semantic-catalog.md)
 - [Phase 7 live runnerd and Codex loop](docs/phase-07-live-runnerd-codex.md)
+- [Phase 7 Paperclip-style issue-thread UI](docs/phase-07-issue-thread-ui.md)
 - [PRP compatibility/versioning policy](docs/protocol-compatibility.md)
 - [Cumulative end-to-end tutorial](docs/tutorials/end-to-end.md)
 - [Journal guide](docs/journal.md)

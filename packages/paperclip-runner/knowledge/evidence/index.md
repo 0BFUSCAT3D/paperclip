@@ -13,3 +13,8 @@
 * [Phase 4b QA verification](2026-08-08-phase-04b-qa-verification.md) - Independent QA pass: clean-start tutorial in a real browser, deterministic demos, real Codex end-to-end session, full `verify` acceptance (exit 0), and screenshots (PAP-16837).
 * [Phase 5 browser SDK verification](2026-08-08-phase-05-verification.md) - Targeted and package-acceptance evidence for the versioned SDK, both public consumers, fake/real drivers, accessibility, reconnect, replay, and screenshots.
 * [Phase 6 thin Paperclip adapter verification](2026-08-09-phase-06-verification.md) - Mock and database-backed conformance, authoritative completion, restart recovery, migration repair, atomic liveness, internal canary, and deterministic post-kill-switch legacy evidence.
+* [Phase 7G issue-thread UI verification](2026-08-10-phase-07g-issue-thread-ui-verification.md) - View-model tests, 46 browser tests, the axe gate on 12 slugs × 2 viewports, the byte-stable 24-PNG matrix, and the live runnerd/Codex smoke.
+
+## Screenshot collections
+
+* [Phase 7 screenshot collections](phase-07/) - Deterministic issue-thread UI matrix and live runnerd/Codex frames.

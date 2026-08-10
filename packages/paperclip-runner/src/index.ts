@@ -31,3 +31,4 @@ export * from "./tracer/phase1-replay.js";
 export * from "./tracer/phase2-live.js";
 export * from "./semantic-tools/index.js";
 export * from "./phase7/index.js";
+export * from "./issue-thread/index.js";

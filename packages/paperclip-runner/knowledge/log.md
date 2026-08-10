@@ -48,3 +48,9 @@
   audit, native cancellation, migration coverage, a runnable tutorial, and
   deterministic mock/real-port evidence while retaining legacy as the kill-
   switch path.
+* **Phase 7G issue-thread UI**: Added the package-local Paperclip-style issue
+  thread, its typed interaction cards, six-state composer, eight-section Evidence
+  panel, the single `Phase7IssueThreadSnapshot` view contract with deterministic
+  fixture and live-projection producers, the loopback session server, the
+  byte-stable 12-slug screenshot matrix, the axe accessibility gate, and the
+  restored browser design-token check.

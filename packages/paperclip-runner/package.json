@@ -26,7 +26,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm run build:typescript && pnpm run build:rust && pnpm run build:browser && pnpm run build:phase5",
+    "build": "pnpm run build:typescript && pnpm run build:rust && pnpm run build:browser && pnpm run build:phase5 && pnpm run build:issue-thread",
     "build:typescript": "pnpm run generate:protocol-types && tsc -p tsconfig.json",
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace",
     "build:browser": "vite build --config vite.config.ts",
@@ -77,8 +77,15 @@
     "console:phase5": "pnpm run build:typescript && vite --config vite.phase5.config.ts --host 127.0.0.1 --port 4181",
     "browser:dev": "pnpm run build:typescript && pnpm run build:phase2-binaries && vite --config vite.config.ts",
     "browser:preview": "vite preview --config vite.config.ts",
-    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run test:phase5 && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:phase5 && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet && pnpm run trace:phase3",
-    "verify:rootless": "bash scripts/verify-rootless-linux.sh"
+    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run test:phase5 && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:phase5 && pnpm run test:browser:phase7 && pnpm run check:forbidden-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet && pnpm run trace:phase3",
+    "verify:rootless": "bash scripts/verify-rootless-linux.sh",
+    "build:issue-thread": "vite build --config vite.phase7.config.ts",
+    "console:phase7": "pnpm run build:typescript && vite --config vite.phase7.config.ts --host 127.0.0.1 --port 4183",
+    "test:browser:phase7": "pnpm run build:typescript && playwright test --config devtools/issue-thread/playwright.config.ts",
+    "record:phase7:ui": "pnpm run build:typescript && pnpm run build:issue-thread && node scripts/record-phase7-ui-evidence.mjs",
+    "check:phase7:ui": "pnpm run build:typescript && pnpm run build:issue-thread && node scripts/record-phase7-ui-evidence.mjs --check",
+    "smoke:phase7:ui": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/phase7-issue-thread-smoke.mjs",
+    "record:phase7:ui:live": "pnpm run build:typescript && pnpm run build:issue-thread && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/record-phase7-ui-live-evidence.mjs"
   },
   "peerDependencies": {
     "react": ">=18",
@@ -91,6 +98,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
     "ajv": "^8.20.0",
+    "axe-core": "^4.12.1",
     "json-schema-to-ts": "^3.1.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

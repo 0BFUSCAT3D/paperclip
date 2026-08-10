@@ -29,6 +29,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 6 thin Paperclip adapter](phase-06-thin-paperclip-adapter.md)
 - [Phase 7 semantic catalog and authorization](phase-07-semantic-catalog.md)
 - [Phase 7 live runnerd and Codex loop](phase-07-live-runnerd-codex.md)
+- [Phase 7 Paperclip-style issue-thread UI](phase-07-issue-thread-ui.md)
 - [Engineering journal guide](journal.md)
 - [Dated shadcn/ui and AI Elements compatibility note](research/2026-08-07-ui-library-compatibility.md)
 - [Phase 4b live-console interaction map](design/phase-4b-interaction-map.md)
@@ -36,6 +37,7 @@ Each tutorial starts with an explanation of what the phase is and what the phase
 - [Phase 5 component and SDK surface plan](design/phase-5-component-plan.md)
 - [Phase 5 SDK extraction decision record](design/phase-5-component-decisions.md)
 - [Phase 6 thin Paperclip adapter boundary](design/phase-6-thin-paperclip-adapter.md)
+- [Phase 7 issue-thread UX contract](design/phase-7-issue-thread-ux-contract.md)
 - [Package README](../README.md)
 
 Phase 6 is implemented as a default-off server integration at the public

@@ -1,0 +1,343 @@
+import { createRequire } from "node:module";
+
+import { expect, test, type Page } from "@playwright/test";
+
+import { PHASE7_UI_SHOT_SLUGS } from "../../src/issue-thread/fixtures";
+
+const require = createRequire(import.meta.url);
+const AXE_PATH = require.resolve("axe-core/axe.min.js");
+
+const DESKTOP = { width: 1440, height: 900 };
+const MOBILE = { width: 390, height: 844 };
+
+function route(slug: string, params: Record<string, string> = {}): string {
+  const query = new URLSearchParams({ shot: slug, capture: "1", ...params });
+  return `/#/issue/hb-baseline?${query.toString()}`;
+}
+
+/** Every route settles on a data attribute, never on a timeout (§10.1). */
+async function open(page: Page, slug: string, params: Record<string, string> = {}) {
+  await page.goto(route(slug, params));
+  await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
+}
+
+interface AxeViolation {
+  id: string;
+  impact: string | null;
+  nodes: unknown[];
+}
+
+async function seriousAxeViolations(page: Page): Promise<AxeViolation[]> {
+  await page.addScriptTag({ path: AXE_PATH });
+  const violations = await page.evaluate(async () => {
+    const axe = (window as unknown as { axe: { run: (context: unknown, options: unknown) => Promise<{ violations: AxeViolation[] }> } }).axe;
+    const results = await axe.run(document, {
+      resultTypes: ["violations"],
+      runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+    });
+    return results.violations.map((violation) => ({
+      id: violation.id,
+      impact: violation.impact ?? null,
+      nodes: violation.nodes.length,
+    }));
+  });
+  return (violations as unknown as AxeViolation[]).filter(
+    (violation) => violation.impact === "serious" || violation.impact === "critical",
+  );
+}
+
+test.describe("Phase 7G issue thread", () => {
+  test("baseline thread renders identity, turns, and the §3 item types", async ({ page }) => {
+    await open(page, "thread-baseline");
+
+    await expect(page.locator('[data-session-mode="fake"]').first()).toBeVisible();
+    const chips = page.getByTestId("identity-chips");
+    await expect(chips.getByTestId("agent-chip")).toHaveText("Fake agent");
+    await expect(chips.getByTestId("runner-chip")).toContainText("In-process runner");
+    await expect(chips.getByTestId("control-plane-chip")).toHaveText("Mock Paperclip");
+
+    await expect(page.locator("h1")).toHaveCount(1);
+    await expect(page.locator('[data-turn-id]')).toHaveCount(3);
+    for (const kind of ["user_message", "agent_message", "durable_comment", "tool_activity"]) {
+      await expect(page.locator(`[data-thread-item="${kind}"]`).first()).toBeVisible();
+    }
+    await expect(page.locator('[data-composer-state="ready"]')).toHaveCount(1);
+  });
+
+  test("a durable progress comment is visually distinct from model prose", async ({ page }) => {
+    await open(page, "thread-baseline");
+    await expect(
+      page.locator('[data-thread-item="durable_comment"]').getByText("Recorded to mock thread"),
+    ).toBeVisible();
+    await expect(
+      page.locator('[data-thread-item="agent_message"]').first().getByText("Recorded to mock thread"),
+    ).toHaveCount(0);
+  });
+
+  test("tool strips are collapsed disclosures that deep-link into Evidence", async ({ page }) => {
+    await open(page, "thread-baseline");
+    const strip = page.locator('[data-tool-strip="get_task_context"] button').first();
+    await expect(strip).toHaveAttribute("aria-expanded", "false");
+    await strip.click();
+    await expect(strip).toHaveAttribute("aria-expanded", "true");
+
+    await page.getByRole("button", { name: "View in Evidence" }).first().click();
+    const panel = page.getByTestId("evidence-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel.locator('[data-record-id="call-1"][data-highlighted="true"]')).toBeVisible();
+  });
+
+  test("a pending question card resolves inline and releases the composer", async ({ page }) => {
+    await open(page, "interaction-question-pending");
+
+    await expect(page.locator('[data-composer-state="waiting"]')).toBeVisible();
+    const card = page.locator('[data-interaction-id="ix-questions-01"]');
+    await expect(card).toHaveAttribute("data-interaction-state", "pending");
+    await expect(card.getByTestId("interaction-state-chip")).toContainText("Waiting for you");
+
+    // The submit is rejected until every required question is answered.
+    await card.getByRole("button", { name: "Submit answers" }).click();
+    await expect(card.getByRole("alert")).toContainText("required");
+
+    await card.getByRole("radio", { name: "Yes — runner owns it" }).check();
+    await card.getByRole("combobox").selectOption("hb-baseline");
+    await card.getByRole("button", { name: "Submit answers" }).click();
+
+    await expect(card).toHaveAttribute("data-interaction-state", "answered");
+    await expect(card.getByTestId("interaction-state-chip")).toContainText("Answered");
+    await expect(page.locator('[data-composer-state="ready"]').first()).toBeVisible();
+  });
+
+  test("a revision-bound confirmation names its target and requires a reject reason", async ({
+    page,
+  }) => {
+    await open(page, "interaction-confirmation-pending");
+    const card = page.locator('[data-interaction-id="ix-confirmation-plan-01"]');
+    await expect(card.getByTestId("interaction-target")).toHaveText("plan · r4");
+
+    await card.getByRole("button", { name: "Request changes" }).click();
+    await expect(card.getByRole("alert")).toContainText("reason is required");
+    await expect(card).toHaveAttribute("data-interaction-state", "pending");
+
+    await card.getByRole("textbox").fill("Split the acceptance section first.");
+    await card.getByRole("button", { name: "Request changes" }).click();
+    await expect(card).toHaveAttribute("data-interaction-state", "rejected");
+    await expect(card).toContainText("Split the acceptance section first.");
+  });
+
+  test("resolved, rejected, stale, and superseded cards stay distinct in history", async ({
+    page,
+  }) => {
+    await open(page, "interaction-resolved-mixed");
+    for (const state of ["answered", "accepted", "rejected", "stale_target", "superseded_by_comment"]) {
+      await expect(
+        page.locator(`[data-interaction-state="${state}"]`),
+        `missing ${state}`,
+      ).toHaveCount(1);
+    }
+    // Expired treatments keep their controls removed but stay reachable.
+    await expect(
+      page.locator('[data-interaction-state="stale_target"] button', { hasText: "Approve" }),
+    ).toHaveCount(0);
+    await expect(
+      page.locator('[data-interaction-state="stale_target"]').getByRole("button", {
+        name: "View request evidence",
+      }),
+    ).toBeVisible();
+  });
+
+  test("a denial quotes the authorization record verbatim and badges Evidence", async ({
+    page,
+  }) => {
+    await open(page, "denial-optional-tool");
+    await expect(page.getByTestId("denial-reason")).toHaveText(
+      "denied: missing grant su:read_or_write",
+    );
+    await expect(page.getByTestId("evidence-toggle")).toContainText("(1)");
+
+    await page.locator('[data-thread-item="denial"]').getByRole("button", { name: "View in Evidence" }).click();
+    const record = page.getByTestId("evidence-panel").locator('[data-record-id="authz-deny-1"]');
+    await expect(record).toHaveAttribute("data-allowed", "false");
+    await expect(record).toContainText("denied: missing grant su:read_or_write");
+  });
+
+  test("Evidence exposes eight sections, a turn selector, and the withheld control-plane list", async ({
+    page,
+  }) => {
+    await open(page, "debug-panel-open", { panel: "authorization" });
+    const panel = page.getByTestId("evidence-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel.locator("[data-evidence-section]")).toHaveCount(8);
+    await expect(panel.locator("#evidence-turn-selector")).toBeVisible();
+
+    // The Tools section is open by default; assert its groups directly.
+    await expect(
+      panel.locator('[data-evidence-section="tools"] button').first(),
+    ).toHaveAttribute("aria-expanded", "true");
+    await expect(panel.getByText("Control plane (not exposed to the agent)")).toBeVisible();
+    await expect(
+      panel.locator('[data-disposition="control_plane_owned"]', { hasText: "create_task" }),
+    ).toBeVisible();
+    await expect(panel.getByText("Agent tool — always")).toBeVisible();
+    await expect(panel.getByText("Agent tool — granted")).toBeVisible();
+  });
+
+  test("Evidence records link back to their thread anchor", async ({ page }) => {
+    await open(page, "debug-panel-open", { panel: "calls" });
+    const panel = page.getByTestId("evidence-panel");
+    await panel.locator('[data-record-id="call-1"]').getByRole("button", { name: "Show in thread" }).click();
+    await expect(page.locator('[data-tool-strip="get_task_context"]')).toBeInViewport();
+  });
+
+  test("the splitter resizes the panel from the keyboard", async ({ page }) => {
+    await open(page, "debug-panel-open", { panel: "tools" });
+    const splitter = page.getByRole("separator", { name: "Resize the evidence panel" });
+    const before = await splitter.getAttribute("aria-valuenow");
+    await splitter.focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect(splitter).not.toHaveAttribute("aria-valuenow", before ?? "");
+  });
+
+  test("reset is confirmed, escapable, and clears the thread", async ({ page }) => {
+    await open(page, "disposition-terminal");
+    await page.getByTestId("reset-button").click();
+    const dialog = page.getByTestId("reset-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("The transcript will be lost.");
+    await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+
+    await page.getByTestId("reset-button").click();
+    await page
+      .getByTestId("reset-dialog")
+      .getByRole("button", { name: "Reset scenario", exact: true })
+      .click();
+    await expect(page.locator('[data-thread-item="disposition"]')).toHaveCount(0);
+    await expect(page.locator('[data-composer-state="ready"]').first()).toBeVisible();
+  });
+
+  test("stop keeps the partial turn and marks it", async ({ page }) => {
+    await open(page, "turn-streaming");
+    await expect(page.locator('[data-composer-state="streaming"]')).toBeVisible();
+    await expect(page.getByTestId("composer-stop")).toBeVisible();
+    await expect(page.locator('[data-composer-state="streaming"] textarea')).toBeEnabled();
+
+    await page.getByTestId("composer-stop").click();
+    await expect(page.getByTestId("stopped-marker")).toBeVisible();
+    await expect(page.locator('[data-thread-item="agent_message"]').last()).toContainText(
+      "Two dependent tasks are still open",
+    );
+  });
+
+  test("reconnect pins an amber banner and disables the composer", async ({ page }) => {
+    await open(page, "reconnect-banner");
+    await expect(page.getByTestId("reconnect-banner")).toContainText("attempt 2");
+    await expect(page.locator('[data-composer-state="reconnecting"]')).toBeVisible();
+    await expect(page.locator('[data-composer-state="reconnecting"] textarea')).toBeDisabled();
+
+    await page.getByRole("button", { name: "Retry now" }).click();
+    await expect(page.getByText("Reconnected")).toBeVisible();
+  });
+
+  test("replay is read-only and labelled as fake-derived", async ({ page }) => {
+    await open(page, "replay-mode");
+    await expect(page.getByTestId("agent-chip")).toContainText("Replay · fake source");
+    await expect(page.getByTestId("composer-reason")).toHaveText("Replay is read-only");
+    await expect(page.getByTestId("replay-strip")).toContainText("Replay 12/18");
+    await expect(page.locator('[data-composer-state="disabled"] textarea')).toBeDisabled();
+  });
+
+  test("a terminal disposition disables the composer with a reason", async ({ page }) => {
+    await open(page, "disposition-terminal");
+    await expect(page.locator('[data-thread-item="disposition"]')).toContainText("Done");
+    await expect(page.getByTestId("composer-reason")).toHaveText("Issue is done");
+  });
+
+  test("composer drafts survive a refresh", async ({ page }) => {
+    await open(page, "thread-baseline");
+    await page.locator("#composer-input").fill("Draft that must survive F5.");
+    await page.reload();
+    await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
+    await expect(page.locator("#composer-input")).toHaveValue("Draft that must survive F5.");
+  });
+
+  test("mobile keeps the thread usable with no horizontal page scroll", async ({ page }) => {
+    await page.setViewportSize(MOBILE);
+    await open(page, "turn-streaming");
+
+    const overflow = await page.evaluate(() => {
+      const element = document.scrollingElement as HTMLElement;
+      return element.scrollWidth - element.clientWidth;
+    });
+    expect(overflow).toBeLessThanOrEqual(0);
+
+    // Stop stays outside the overflow menu while a turn is active (§2.2).
+    await expect(page.getByTestId("stop-button")).toBeVisible();
+    await expect(page.getByTestId("stop-button")).toBeEnabled();
+    await expect(page.getByTestId("overflow-menu")).toHaveCount(0);
+
+    await page.getByTestId("segment-evidence").click();
+    await expect(page.getByTestId("evidence-panel")).toBeVisible();
+    await expect(page.getByTestId("evidence-panel")).toHaveAttribute("data-layout", "segment");
+  });
+
+  test("mobile surfaces the denial count on the Evidence segment", async ({ page }) => {
+    await page.setViewportSize(MOBILE);
+    await open(page, "denial-optional-tool");
+    await expect(page.getByTestId("segment-denial-badge")).toHaveText("1");
+  });
+
+  test("every actionable control meets the 44px touch target on mobile", async ({ page }) => {
+    await page.setViewportSize(MOBILE);
+    await open(page, "interaction-question-pending");
+    const undersized = await page.evaluate(() => {
+      const selectors = "button:not([hidden]), select, textarea, [role='radio']";
+      return [...document.querySelectorAll(selectors)]
+        .filter((node) => {
+          const element = node as HTMLElement;
+          if (element.offsetParent === null) return false;
+          const rect = element.getBoundingClientRect();
+          return rect.height < 44;
+        })
+        .map((node) => (node as HTMLElement).className || node.tagName);
+    });
+    expect(undersized).toEqual([]);
+  });
+
+  test("the mobile overflow menu closes with Escape", async ({ page }) => {
+    await page.setViewportSize(MOBILE);
+    await open(page, "thread-baseline");
+    await page.getByTestId("overflow-menu-button").click();
+    await expect(page.getByTestId("overflow-menu")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("overflow-menu")).toHaveCount(0);
+  });
+
+  test("opening Evidence moves focus to its heading", async ({ page }) => {
+    await open(page, "thread-baseline");
+    await page.getByTestId("evidence-toggle").click();
+    await expect(page.getByRole("heading", { name: "Evidence" })).toBeFocused();
+  });
+
+  test("the waiting composer anchor focuses the pending card", async ({ page }) => {
+    await open(page, "interaction-question-pending");
+    await page.getByTestId("pending-anchor").click();
+    await expect(page.locator('[data-interaction-id="ix-questions-01"]')).toBeInViewport();
+  });
+
+  for (const slug of PHASE7_UI_SHOT_SLUGS) {
+    test(`axe reports no serious or critical violation on ${slug} (desktop)`, async ({ page }) => {
+      await page.setViewportSize(DESKTOP);
+      await open(page, slug, slug === "debug-panel-open" ? { panel: "authorization" } : {});
+      expect(await seriousAxeViolations(page)).toEqual([]);
+    });
+
+    test(`axe reports no serious or critical violation on ${slug} (mobile)`, async ({ page }) => {
+      await page.setViewportSize(MOBILE);
+      await open(page, slug, slug === "debug-panel-open" ? { panel: "authorization", seg: "evidence" } : {});
+      expect(await seriousAxeViolations(page)).toEqual([]);
+    });
+  }
+});
