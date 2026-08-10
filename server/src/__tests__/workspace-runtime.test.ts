@@ -5495,7 +5495,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       }
       throw new Error("Timed out waiting for runtime service process marker");
     };
-    const waitForPersistedStatus = async (status: string) => {
+    const waitForPersistedStatus = async (
+      status: string,
+      isReady?: (row: typeof workspaceRuntimeServices.$inferSelect) => boolean,
+    ) => {
       const deadline = Date.now() + 5_000;
       while (Date.now() < deadline) {
         const row = await db
@@ -5503,7 +5506,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
           .from(workspaceRuntimeServices)
           .where(eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceId))
           .then((rows) => rows[0] ?? null);
-        if (row?.status === status) return row;
+        if (row?.status === status && (!isReady || isReady(row))) return row;
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       throw new Error(`Timed out waiting for persisted runtime service status ${status}`);
@@ -5570,7 +5573,10 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       expect(existsSync(markerPath)).toBe(false);
 
       await waitForMarker(markerPath);
-      const startingRow = await waitForPersistedStatus("starting");
+      const startingRow = await waitForPersistedStatus(
+        "starting",
+        (row) => typeof row.providerRef === "string",
+      );
       expect(startingRow).toMatchObject({
         companyId,
         projectId,
