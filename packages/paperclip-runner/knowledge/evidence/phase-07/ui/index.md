@@ -33,6 +33,9 @@ Deterministic `fake` mode; no provider, runner, or credential is involved.
 - Chromium 151.0.7922.34 — pin the exact binary with `PAPERCLIP_CHROMIUM_BIN`
   (honoured by the agent-browser wrapper) alongside
   `PAPERCLIP_RUNNER_CHROMIUM_PATH`.
-- Sans stack resolves to Inter (probe: Inter 549px vs
-  DejaVu Sans 641px for the title string). The recorder
-  refuses to run when Inter does not resolve.
+- Bundled sans face: Paperclip Issue Thread Inter (weights 400/500/600/700,
+  probe 531px vs generic serif 499px).
+- Bundled mono face: Paperclip Issue Thread DejaVu Sans Mono (weights 400/700,
+  probe 658px). Status glyphs use the bundled
+  Paperclip Issue Thread Symbols subsets. The recorder refuses to run when any
+  Vite-managed face is missing or fails to load.
