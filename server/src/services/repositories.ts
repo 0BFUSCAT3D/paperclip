@@ -378,5 +378,25 @@ export function repositoryService(db: Db) {
         .returning();
       return rows.map(toRepository);
     },
+
+    markProviderRepositoriesUnavailable: async (
+      companyId: string,
+      connectionId: string,
+      providerRepositoryIds: string[],
+      reason: string,
+    ) => {
+      if (providerRepositoryIds.length === 0) return [];
+      const rows = await db
+        .update(repositories)
+        .set({ state: "unavailable", unavailableReason: reason, updatedAt: new Date() })
+        .where(and(
+          eq(repositories.companyId, companyId),
+          eq(repositories.connectionId, connectionId),
+          inArray(repositories.providerRepositoryId, providerRepositoryIds),
+          ne(repositories.state, "archived"),
+        ))
+        .returning();
+      return rows.map(toRepository);
+    },
   };
 }

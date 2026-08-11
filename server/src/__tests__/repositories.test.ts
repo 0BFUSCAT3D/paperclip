@@ -533,11 +533,18 @@ describeEmbeddedPostgres("repository services and routes", () => {
       provider: "test_provider",
       sync: async () => ({
         cursor: "cursor-1",
-        repositories: [{
-          providerRepositoryId: "provider-repo-1",
-          cloneUrl: "https://git.example.com/acme/provider-repo.git",
-          visibility: "private",
-        }],
+        repositories: [
+          {
+            providerRepositoryId: "provider-repo-1",
+            cloneUrl: "https://git.example.com/acme/provider-repo-renamed.git",
+            visibility: "private",
+          },
+          {
+            providerRepositoryId: "provider-repo-not-imported",
+            cloneUrl: "https://git.example.com/acme/not-imported.git",
+            visibility: "private",
+          },
+        ],
       }),
       disconnect: async () => {},
     };
@@ -560,9 +567,24 @@ describeEmbeddedPostgres("repository services and routes", () => {
     expect(created.created).toBe(true);
     expect(duplicate.created).toBe(false);
 
+    const providerRepository = await repositoryService(db).upsertProviderRepository(
+      seeded.companyA.id,
+      created.connection.id,
+      provider.provider,
+      {
+        providerRepositoryId: "provider-repo-1",
+        cloneUrl: "https://git.example.com/acme/provider-repo.git",
+        visibility: "private",
+      },
+    );
     const synced = await connections.sync(seeded.companyA.id, created.connection.id);
     expect(synced?.repositories).toHaveLength(1);
-    const providerRepository = synced!.repositories[0]!;
+    expect(synced?.repositories[0]).toMatchObject({
+      id: providerRepository.id,
+      name: "provider-repo-renamed",
+    });
+    expect((await repositoryService(db).list(seeded.companyA.id)).map((repository) => repository.name))
+      .not.toContain("not-imported");
     await repositoryAccessService(db).attachProjectRepository({
       companyId: seeded.companyA.id,
       projectId: seeded.projectOne.id,

@@ -68,7 +68,7 @@ export function createGitHubAppTransport(config: GitHubAppTransportConfig): GitH
       },
     });
     if (!response.ok) {
-      throw new Error(`GitHub app request ${path} failed with ${response.status}`);
+      throw new Error(`GitHub App request failed with status ${response.status}`);
     }
     return (await response.json()) as T;
   }
@@ -94,7 +94,7 @@ export function createGitHubAppTransport(config: GitHubAppTransportConfig): GitH
       },
     });
     if (!response.ok) {
-      throw new Error(`GitHub installation request ${path} failed with ${response.status}`);
+      throw new Error(`GitHub repository provider request failed with status ${response.status}`);
     }
     return (await response.json()) as T;
   }
@@ -122,20 +122,40 @@ export function createGitHubAppTransport(config: GitHubAppTransportConfig): GitH
     createInstallationAccessToken,
 
     async listRepositories(input) {
-      const params = new URLSearchParams({ per_page: String(input.perPage), page: String(input.page) });
-      const body = await installationRequest<{ total_count: number; repositories: GitHubRepository[] }>(
-        input.installationId,
-        `/installation/repositories?${params.toString()}`,
-      );
       const query = input.query?.trim().toLowerCase();
       if (!query) {
+        const params = new URLSearchParams({ per_page: String(input.perPage), page: String(input.page) });
+        const body = await installationRequest<{ total_count: number; repositories: GitHubRepository[] }>(
+          input.installationId,
+          `/installation/repositories?${params.toString()}`,
+        );
         return { totalCount: body.total_count ?? null, items: body.repositories ?? [] };
       }
-      // The installation-repositories endpoint has no server-side search; filter
-      // the page client-side. total_count no longer reflects the filtered set.
+
+      // GitHub does not search installation repositories server-side. Walk the
+      // complete installation catalog before paginating so a match on a later
+      // upstream page is neither omitted nor given a misleading next cursor.
+      const matches: GitHubRepository[] = [];
+      let upstreamPage = 1;
+      const upstreamPageSize = 100;
+      for (;;) {
+        const params = new URLSearchParams({
+          per_page: String(upstreamPageSize),
+          page: String(upstreamPage),
+        });
+        const body = await installationRequest<{ total_count: number; repositories: GitHubRepository[] }>(
+          input.installationId,
+          `/installation/repositories?${params.toString()}`,
+        );
+        const pageItems = body.repositories ?? [];
+        matches.push(...pageItems.filter((repo) => repo.full_name.toLowerCase().includes(query)));
+        if (pageItems.length < upstreamPageSize || upstreamPage * upstreamPageSize >= body.total_count) break;
+        upstreamPage += 1;
+      }
+      const start = (input.page - 1) * input.perPage;
       return {
-        totalCount: null,
-        items: (body.repositories ?? []).filter((repo) => repo.full_name.toLowerCase().includes(query)),
+        totalCount: matches.length,
+        items: matches.slice(start, start + input.perPage),
       };
     },
 

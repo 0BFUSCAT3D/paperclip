@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { repositoryConnections } from "@paperclipai/db";
+import { repositoryConnections, repositories } from "@paperclipai/db";
 import type { CreateRepositoryConnection, RepositoryConnection } from "@paperclipai/shared";
 import {
   REPOSITORY_PROVIDER_ANY_HOST,
@@ -337,12 +337,36 @@ export function repositoryConnectionService(
         });
         return await db.transaction(async (tx) => {
           const transactionalRepositories = repositoryService(tx as unknown as Db);
+          const importedRows = await tx
+            .select({ providerRepositoryId: repositories.providerRepositoryId })
+            .from(repositories)
+            .where(and(
+              eq(repositories.companyId, companyId),
+              eq(repositories.connectionId, id),
+            ));
+          const importedIds = new Set(
+            importedRows
+              .map((repository) => repository.providerRepositoryId)
+              .filter((providerRepositoryId): providerRepositoryId is string => Boolean(providerRepositoryId)),
+          );
+          const snapshotsById = new Map(
+            result.repositories.map((snapshot) => [snapshot.providerRepositoryId, snapshot]),
+          );
           const syncedRepositories = [];
-          for (const snapshot of result.repositories) {
+          for (const providerRepositoryId of importedIds) {
+            const snapshot = snapshotsById.get(providerRepositoryId);
+            if (!snapshot) continue;
             syncedRepositories.push(
               await transactionalRepositories.upsertProviderRepository(companyId, id, row.provider, snapshot),
             );
           }
+          const unavailableIds = [...importedIds].filter((providerRepositoryId) => !snapshotsById.has(providerRepositoryId));
+          syncedRepositories.push(...await transactionalRepositories.markProviderRepositoriesUnavailable(
+            companyId,
+            id,
+            unavailableIds,
+            "Repository is no longer available through its provider connection",
+          ));
           const completed = await tx
             .update(repositoryConnections)
             .set({

@@ -228,7 +228,10 @@ export function createGitHubProvider(deps: GitHubProviderDeps): RepositoryProvid
         query: input.query?.trim() || null,
       });
       const items = result.items.map(toDiscovered);
-      const nextCursor = items.length === perPage ? String(page + 1) : null;
+      const hasNextPage = result.totalCount !== null
+        ? page * perPage < result.totalCount
+        : items.length === perPage;
+      const nextCursor = hasNextPage ? String(page + 1) : null;
       return { items, nextCursor, total: result.totalCount };
     },
 
