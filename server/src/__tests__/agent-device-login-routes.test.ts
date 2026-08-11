@@ -73,6 +73,7 @@ const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
 }));
+const mockDeviceLoginPromotion = vi.hoisted(() => vi.fn());
 
 // Capture every logger call, so the redaction test can assert the logs and the
 // activity omit the URL, the code, the credential bytes, and the lease id.
@@ -144,6 +145,17 @@ vi.mock("../middleware/logger.js", () => ({
   logger: mockLogger,
   httpLogger: (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
+
+// Retain the production readiness helper while making the promotion decision
+// observable. This lets the route test prove that a resolved but rejected
+// Decision H outcome becomes a failed terminal rather than authenticated.
+vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-codex-local/server")>();
+  return {
+    ...actual,
+    promoteDeviceLoginCredential: mockDeviceLoginPromotion,
+  };
+});
 
 // Keep the real login-session service and the real conflict error. Replace only
 // the store factory and the production runtime factory with the harness fakes.
@@ -271,6 +283,7 @@ describe("adapter device-login routes", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mockDeviceLoginPromotion.mockResolvedValue("promoted");
     harness.store = createMemoryStore();
     harness.runtime = createFakeRuntime();
     harness.acquisitions = [];
@@ -511,6 +524,30 @@ describe("adapter device-login routes", () => {
       .send({ environmentId: SANDBOX_ENV_2 });
     expect(second.status, JSON.stringify(second.body)).toBe(409);
     expect(harness.acquisitions).toHaveLength(1);
+  });
+
+  it("fails closed when promotion loses the sole-owner claim", async () => {
+    // This is the expiry/reaper-race result from Decision H. It is a normal
+    // resolved adapter outcome, but it must never be accepted as authentication.
+    mockDeviceLoginPromotion.mockResolvedValueOnce("not_sole_owner");
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    const sessionId = start.body.sessionId as string;
+
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+
+    const row = (harness.store as ReturnType<typeof createMemoryStore>).rows.get(sessionId);
+    expect(row?.status).toBe("failed");
+    expect(mockDeviceLoginPromotion).toHaveBeenCalledTimes(1);
   });
 
   it("omits the URL, code, credential bytes, and lease id from logs and activity", async () => {

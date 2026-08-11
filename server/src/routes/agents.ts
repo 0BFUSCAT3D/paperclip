@@ -262,7 +262,7 @@ export function agentRoutes(
     // or unready credential fails the session and writes nothing.
     promotion: {
       async promote(authBytes, context) {
-        await promoteDeviceLoginCredential({
+        const outcome = await promoteDeviceLoginCredential({
           authBytes,
           companyId: context.companyId,
           userInitiated: true,
@@ -280,6 +280,13 @@ export function agentRoutes(
             logger.info({ sessionId: context.sessionId }, line);
           },
         });
+        // A resolved promotion is not necessarily an accepted promotion. In
+        // particular, a reaper/expiry race can revoke this session's sole
+        // ownership between the service transition and Decision H. Fail closed:
+        // only a credential write or a deliberate safe keep can authenticate.
+        if (outcome !== "promoted" && outcome !== "kept") {
+          throw new Error(`device-login credential promotion rejected: ${outcome}`);
+        }
       },
     },
     recordActivity: (event) => {
