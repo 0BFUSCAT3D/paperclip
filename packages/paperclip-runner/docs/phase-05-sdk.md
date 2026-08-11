@@ -2,7 +2,19 @@
 
 ## Public package surface
 
-Phase 5 freezes the first browser SDK as package version `0.1.0`.
+Phase 5 freezes the browser SDK as package version `0.1.2`.
+
+Version `0.1.1` adds direct chat mode. The browser sends the operator message
+as plain Codex input. The protocol inspector still shows the event stream,
+reducer state, requests, and replay data. The Phase 4 task fixtures remain
+available from the session controls.
+
+Version `0.1.2` adds the canonical events for each transcript item to the
+optional `debugEvents` projection. `ToolItem` renders these events inside a
+nested `Debug details` disclosure. Completed Terminal rows stay folded by
+default, while operators can inspect command input, output, provider items,
+delta updates, event ids, sequence numbers, and timestamps. Long chat and
+command content wraps at mobile widths without horizontal page scrolling.
 
 | Import | Purpose |
 | --- | --- |
@@ -68,9 +80,15 @@ Components take reducer/protocol shapes. Every component owns a stable
 lineage, goal, connection, and replay states come only from canonical events
 or public session state.
 
+The reference server has two driver modes behind the same HTTP/SSE contract.
+Deterministic manifests use `Phase4bScriptedDriver`. Real chat mode uses
+`CodexAppServerDriver`, which starts a real local `codex app-server` process.
+The Node server owns provider authentication and the disposable working
+directory; browser code receives only canonical runner events.
+
 ## Five extension points
 
-These are the complete extension surface for `0.1.0`:
+These are the complete extension surface for `0.1.2`:
 
 1. `Conversation`, `Message`, `ReasoningItem`, and `ToolItem` accept
    `renderItemBody(item)` for markdown, highlighting, or another item body.

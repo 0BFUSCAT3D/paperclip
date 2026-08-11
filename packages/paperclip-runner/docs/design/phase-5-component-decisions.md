@@ -6,7 +6,7 @@ Status: implemented from the approved [Phase 5 component plan](phase-5-component
 ## Outcome
 
 The accepted Phase 4b transport and reducer contracts were copied into a
-versioned `0.1.0` public surface. The reference console and a deliberately
+versioned `0.1.2` public surface. The reference console and a deliberately
 small second consumer import only public package subpaths. Phase 4b and the
 Phase 1–3 surfaces remain the comparison baseline.
 
@@ -53,6 +53,9 @@ consumers can opt into rich item bodies through the one renderer contract.
 - The reference console renders one React tree selected at the 900px
   breakpoint. Rendering two trees would duplicate landmarks, test IDs, and
   live regions.
+- The compact layout keeps the transcript and composer as the primary view.
+  A single accessible Menu opens session controls or the protocol inspector in
+  a modal panel; secondary controls never replace or duplicate the chat tree.
 - A real provider may explicitly disable goals. The consumer gates buttons on
   that capability and preserves the upstream diagnostic instead of emulating
   a goal.
@@ -61,10 +64,43 @@ consumers can opt into rich item bodies through the one renderer contract.
   redaction, reconnect, and replay evidence.
 - Minimal hosts may lack Playwright shared libraries. The package rootless
   helper runs the same browser commands from a run-owned cache.
+- Assistant text uses the canonical reducer text but reveals queued additions
+  progressively at the character level. Reduced-motion clients receive the
+  complete current text immediately; protocol events and replay stay unchanged.
+- A completed assistant item that contains a semantic result JSON object shows
+  its summary and disposition as the primary agent response. Completion checks,
+  remaining work, and the exact protocol JSON stay behind a `Completion details`
+  disclosure, while the protocol inspector continues to expose the full event
+  record.
+- Transcript follow mode anchors the latest settled assistant response instead
+  of terminal or diagnostic events appended after it. The complete ordered
+  transcript remains available below the response, and manual scrolling still
+  disengages follow mode.
 
 ## Compatibility rule
 
-`0.1.0` is the first frozen SDK surface. Any later removal or semantic change
+`0.1.2` is the current frozen SDK surface. Any later removal or semantic change
 to an export, hook field, component prop, `data-slot`, extension point, or
 token needs a versioned compatibility decision. Additive protocol fields stay
 forward-compatible; the schema and shared reducer remain authoritative.
+
+## Direct chat presentation
+
+The reference console opens in a normal Codex chat mode. This mode sends plain
+user text and permits follow-up turns in the same provider thread. It does not
+add the Phase 4 task envelope, semantic completion tools, or output schema.
+
+The workspace sandbox and server-only provider authentication stay active.
+The deterministic Phase 4 fixtures remain selectable for protocol tests. The
+chat layout removes decorative panel outlines and keeps the protocol inspector
+available on demand. The header includes a package version and an iteration
+emoji so a reviewer can identify the deployed build.
+
+## Terminal diagnostics and responsive wrapping
+
+`TranscriptItemEntry.debugEvents` is an additive, optional projection of the
+canonical item events already retained by the client. `ToolItem` shows this
+data in a nested folded disclosure rather than inventing a second diagnostic
+model. Long commands, payloads, and assistant text wrap within the center
+column; mobile layouts keep every transcript descendant intrinsically
+shrinkable so the page does not gain a horizontal scrollbar.

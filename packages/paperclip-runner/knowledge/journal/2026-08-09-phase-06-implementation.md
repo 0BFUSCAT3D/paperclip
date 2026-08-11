@@ -9,6 +9,21 @@ entry_kind: phase
 phase: "6"
 ---
 
+# Superseding scope correction
+
+The board clarified on 2026-08-09 that the current checkpoint must not install
+or execute the runner in any Paperclip instance. Active implementation is now
+the package-local standalone demo runner and demo page. Historical product
+integration notes below remain evidence of prior work, not instructions for the
+current checkpoint.
+
+The standalone example consumes a declared
+`@paperclipai/paperclip-runner/standalone` entrypoint. Native-demo and
+legacy-demo are distinct injectable `ControlPlanePort` adapter factories. The
+resolver constructs only the selected factory, and the selected adapter owns
+the invocation evidence. This keeps the kill-switch claim observable instead
+of deriving it from resolver metadata.
+
 # Context
 
 The approved Phase 6 design permits one narrow Paperclip integration at the

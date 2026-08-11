@@ -1,5 +1,11 @@
 # Phase 6 Thin Paperclip Adapter Boundary
 
+> **Scope correction — 2026-08-09:** The board superseded real Paperclip
+> installation and live-instance execution for the current checkpoint. Active
+> Phase 6 work is limited to the standalone demo runner and demo page under
+> `packages/paperclip-runner/`. Product/server/database sections below are
+> retained as historical design context, not current execution instructions.
+
 Status: design approved; remediation 8 documentation reconciliation complete; final CTO gate pending
 Date: 2026-08-09
 Decision scope: the first feature-flagged Paperclip native run, including the

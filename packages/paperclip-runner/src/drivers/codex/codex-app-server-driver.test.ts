@@ -272,6 +272,43 @@ async function traceCompletedProposal(
 }
 
 describe("Codex app-server Phase 4 driver", () => {
+  it("sends direct chat as plain text and permits a follow-up turn", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = makeDriver([transport], { conversationMode: "direct" });
+    const session = await driver.openSession({
+      runId: "run-chat",
+      normalizedSessionId: "normalized-chat",
+      workingDirectory: "/workspace",
+    });
+
+    const threadStart = transport.calls.find((call) => call.method === "thread/start");
+    expect(threadStart?.params).not.toHaveProperty("baseInstructions");
+    expect(threadStart?.params.dynamicTools).toEqual([]);
+
+    const first = await session.startTurn({ message: { role: "user", text: "Hello Codex" } });
+    const firstStart = transport.calls.find((call) => call.method === "turn/start");
+    expect(firstStart?.params).not.toHaveProperty("outputSchema");
+    expect(firstStart?.params.input).toEqual([
+      { type: "text", text: "Hello Codex", text_elements: [] },
+    ]);
+    transport.push("turn/started", {
+      threadId: "thread-1",
+      turn: { id: first.turnId, status: "inProgress" },
+    });
+    transport.push("turn/completed", {
+      threadId: "thread-1",
+      turn: { id: first.turnId, status: "completed", items: [] },
+    });
+    await collectUntilTerminal(session.events());
+
+    transport.turnStartResponse = Promise.resolve({
+      turn: { id: "turn-2", status: "inProgress", items: [] },
+    });
+    await expect(
+      session.startTurn({ message: { role: "user", text: "And a follow-up" } }),
+    ).resolves.toEqual({ turnId: "turn-2" });
+  });
+
   it("passes the common typed-event contract and reports one provider turn terminal", async () => {
     const transport = new FakeCodexTransport();
     const driver = makeDriver([transport]);

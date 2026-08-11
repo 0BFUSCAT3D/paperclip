@@ -108,7 +108,7 @@ export function useRunnerConsole(options: RunnerClientOptions = {}): RunnerConso
     [options.baseUrl, options.eventSourceFactory, options.fetchImpl],
   );
   const [manifests, setManifests] = useState<ManifestSummary[]>([]);
-  const [selectedManifestId, setSelectedManifestId] = useState("completion");
+  const [selectedManifestId, setSelectedManifestId] = useState("chat");
   const [state, setState] = useState<RunnerSessionState | null>(null);
   const [events, setEvents] = useState<PrpEvent[]>([]);
   const [connection, setConnection] = useState<ConnectionStatus>("idle");

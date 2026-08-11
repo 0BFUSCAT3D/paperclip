@@ -6687,14 +6687,20 @@ authorized that transition on 2026-08-08, so no additional planning approval is
 required after those gates pass. Phase 5 generalizes the accepted browser proof
 into a stable TypeScript SDK, reusable component contracts, and a second minimal
 consumer application. The board accepted Phase 5 on 2026-08-09 and authorized
-Phase 6 to start. Phase 6 is the first Paperclip control-plane integration phase
-and must remain a thin, feature-flagged adapter over the package contracts proven
-by the standalone mock-core path. It must not move runner responsibilities into
-the core or change the default legacy adapter path.
+Phase 6 to start. Later on 2026-08-09, the board narrowed the active Phase 6
+checkpoint to the standalone demo runner and demo page only. The current phase
+must remain a thin, package-local, feature-flagged adapter simulation over the
+contracts proven by the mock-core path. It must not install into or mutate a
+Paperclip instance, move runner responsibilities into the core, or change the
+default legacy path. The board then redirected Phase 7 away from a real
+Paperclip bridge. Phase 7 must instead provide a package-local mock Paperclip
+control plane, a complete semantic agent-tool suite, a browser scenario
+explorer, and an eval-parity suite derived from the Paperclip skill and
+Paperclip Evals. ACPX/provider portability moves to Phase 8.
 
 ## 30. Dependency sequencing
 
-The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md). Phases 0–5 are complete and accepted. The board authorized Phase 6 on 2026-08-09. The current order is Phase 6 integration design, thin feature-flagged adapter implementation, mandatory Security and CTO reviews, QA of native and legacy paths, and the Phase 6 human checkpoint. Phase 7 remains gated until that complete checkpoint passes.
+The phase dependency graph, task-creation gates, owner guidance, per-phase completion contract, and retained issue-sized future backlog are maintained in [`paperclip-native-runner-implementation-plan.md`](./paperclip-native-runner-implementation-plan.md). Phases 0–5 are complete and accepted. The board authorized Phase 6 on 2026-08-09, then restricted its active scope to the package-local standalone demo. The current order is the Phase 6 standalone checkpoint; detailed planning and approval for Phase 7 mock Paperclip/tool/eval parity; then Phase 7 implementation and human validation. Phase 8 begins the ACPX/provider portability work only after Phase 7 passes. A real Paperclip bridge is not authorized by these phases and requires a separate future plan.
 
 ---
 

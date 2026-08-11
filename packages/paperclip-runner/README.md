@@ -24,13 +24,13 @@ replay, and a redacted protocol inspector. Phase 5 extracts that accepted
 transport, reducer projection, hook, components, styles, and reference console
 into versioned public subpaths, then proves the surface with a second minimal
 consumer.
-Phase 6 adds a default-off Paperclip adapter at the public control-plane/session
-boundary, durable PRP replay and result finalization, and a kill switch that
-keeps the legacy adapter path as the default.
-Its audit-only attention path also terminates through the public port/finalizer
-call graph: duplicate and stale requests commit exact interaction receipts with
-no status decision, wake, notification, or issue status/version change, and a
-committed coordinator makes replay a no-op.
+Phase 6 currently adds a package-local standalone adapter demo at the public
+control-plane/session boundary. It proves PRP replay, reducer projection,
+result finalization, a default legacy path, a feature-flagged native demo path,
+and a kill switch without contacting or modifying a Paperclip instance.
+Consumers import this demo contract through the declared
+`@paperclipai/paperclip-runner/standalone` subpath instead of package source
+files.
 
 ## Phase 0–5 quick start
 
@@ -81,8 +81,12 @@ pnpm --filter @paperclipai/paperclip-runner browser:dev --host 127.0.0.1 --port 
 # Phase 5: open the public-SDK reference console and mini consumer.
 pnpm --filter @paperclipai/paperclip-runner console:phase5
 
-# Phase 6: prove the mock-side integration contract.
-pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- --target mock --scenario happy-path
+# Phase 6: run the standalone legacy/native/kill-switch tracer and page.
+pnpm --filter @paperclipai/paperclip-runner trace:phase6
+pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- --feature-flag enabled
+pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- --feature-flag enabled --kill-switch enabled
+pnpm --filter @paperclipai/paperclip-runner demo:phase6
+
 ```
 
 Phase 4b provider-backed routes are loopback-only and reject wildcard/LAN
@@ -164,3 +168,9 @@ and JSON content; see the protocol-server tutorial for direct `curl` examples.
 Phase 4 adds the package-local real-model reference driver, Phase 4b adds the
 package-local browser console, and Phase 5 extracts a reusable public SDK plus
 two standalone consumers. Production Paperclip integration remains deferred.
+
+The Phase 5 reference console opens in direct chat mode. Enter a normal prompt,
+then open the protocol inspector to review events and reducer state. Expand a
+Terminal row and its nested **Debug details** disclosure to inspect every
+canonical event retained for that command. The header marker `🖇️ v0.1.2`
+identifies the current console iteration.

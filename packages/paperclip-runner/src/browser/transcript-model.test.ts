@@ -119,6 +119,10 @@ describe("buildTranscript", () => {
     const tool = entries[2];
     expect(tool.kind === "item" && tool.input).toBe("docs/phase-04b-protocol-server.md");
     expect(tool.kind === "item" && tool.output).toContain("server-sent events");
+    expect(tool.kind === "item" && tool.debugEvents?.map((event) => event.eventType)).toEqual([
+      "item.started",
+      "item.completed",
+    ]);
   });
 
   it("marks an interrupted item and never claims it completed cleanly", async () => {

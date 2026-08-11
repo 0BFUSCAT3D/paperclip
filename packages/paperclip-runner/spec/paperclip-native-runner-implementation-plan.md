@@ -405,11 +405,17 @@ conditionally authorized, but its issue graph remains uncreated until the Phase
 
 ## Phase 6 — Thin Paperclip integration adapter
 
-**Purpose:** prove integration with the product without moving runner responsibilities into the core or changing legacy behavior.
+**Scope correction (2026-08-09):** the board explicitly withdrew real-instance
+installation and execution from the current phase. Phase 6 now proves the
+adapter selection, public contract, reducer, replay, finalization, legacy
+default, and kill switch in the standalone package demo only. Do not change a
+Paperclip instance, server, database, agent profile, or product feature flag.
 
-**Tracer bullet:** behind a feature flag, one Paperclip task uses the same package contract and reducer already proven against the mock core; legacy tasks continue on the current adapter path.
+**Purpose:** prove the thin integration boundary in a standalone demo without moving runner responsibilities into the core or changing legacy behavior.
 
-**Precondition:** explicit board acceptance of Phases 0–5 and CTO approval of the integration design. No production integration issue starts before this gate.
+**Tracer bullet:** behind a package-local feature flag, one standalone demo run uses the same package contract and reducer already proven against the mock core; the default and kill-switch paths remain legacy.
+
+**Precondition:** explicit board acceptance of Phases 0–5 and CTO approval of the standalone adapter design. Production integration remains separately gated.
 
 **Gate status (2026-08-09):** the board accepted Phase 5 and authorized Phase 6
 to start. Create the Phase 6 issue graph now, but keep implementation blocked on
@@ -425,31 +431,120 @@ No Phase 6 implementation code starts until the CTO gate accepts that record.
 
 **Deliverables:**
 
-- a package-owned `NativeSessionBackend`, a server-bound Paperclip
-  `ControlPlanePort`, and a narrow core seam that only composes them;
-- feature-flagged runtime selection;
-- mapping to existing workspace preparation/finalization, cancellation, budgets, approvals, audit, and issue status authority;
-- native event persistence/replay adapter using the proven schema;
+- a package-owned standalone native/legacy adapter simulator over `ControlPlanePort`;
+- package-local feature-flagged runtime selection;
+- canonical event replay, reducer projection, and finalization summaries;
 - legacy compatibility tests and kill switch;
-- integration tutorial that starts with mock mode, then enables one local Paperclip native run.
+- a standalone browser demo and tutorial that require no Paperclip service.
 
-**Tests/evidence:** contract suite runs against mock and real Paperclip adapters, legacy regression suite is unchanged, company scoping, cancellation, finalization, approval, audit, budget, and workspace tests pass.
+**Tests/evidence:** the contract suite runs against the standalone selected adapter, reducer/replay/finalization assertions pass, the legacy default remains unchanged, and the kill switch returns selection to legacy. Product company/auth/governance checks are deferred with real integration.
 
-**Owners/review:** CodexCoder implementation; SecurityEngineer mandatory company/auth/governance review; CTO mandatory architecture review; QA validates both native and legacy paths.
+**Owners/review:** CodexCoder implementation; CTO reviews the package boundary; QA validates native-demo, legacy, and kill-switch paths. Security review is required only when real product auth/governance integration is separately authorized.
 
 **Depends on:** Phases 4 and 5.
 
-**Human checkpoint:** enable the feature flag for one test task, compare mock and product behavior, inspect replay and finalization, then disable it and confirm legacy behavior remains intact.
+**Human checkpoint:** use the standalone page to compare native-demo and legacy behavior, inspect replay and finalization, enable the kill switch, and confirm legacy behavior remains intact without contacting Paperclip.
 
-## Phase 7 — Portability, provider simulation, and release-quality reference kit
+## Phase 7 — Mock Paperclip control plane, agent tools, and eval parity
 
-**Purpose:** prove that the package is an SDK/reference implementation rather than a Codex-only product feature.
+**Scope correction (2026-08-09):** do not bridge the runner into the real
+Paperclip control plane yet. Phase 7 remains entirely under
+`packages/paperclip-runner/` and proves that a skillless agent can still operate
+Paperclip semantics through a mock adapter and a complete, testable tool suite.
 
-**Tracer bullet:** run the same conformance scenario through a second driver or fake hosted-provider backend without changing protocol, reducer, browser, or tutorial structure.
+**Purpose:** account for every behavior taught by the current Paperclip skill
+and exercised by Paperclip Evals, then prove which behavior moves into the
+control plane, which behavior always needs an agent tool, and which behavior
+needs an optional role- or situation-specific tool.
+
+**Tracer bullet:** open the package-local Web UI, choose an eval-derived
+scenario, run a skillless fake or Codex-backed agent against the mock Paperclip
+adapter, inspect every tool request and control-plane-owned action, and finish
+with the same observable issue, comment, document, interaction, approval,
+artifact, blocker, and run state expected by the corresponding eval case.
+
+**Normative capability disposition:** Phase 7 produces a machine-readable
+inventory with exactly one primary disposition for every skill/eval capability:
+
+| Disposition | Meaning | Initial capability families |
+| --- | --- | --- |
+| `control_plane_owned` | The runner or mock control plane performs the action. The model does not receive a tool for the normal path. | identity and run credential injection; wake routing; inbox polling and work selection; atomic checkout, lock, release, retry, and deduplication; budget hard stops; audit recording; persistence/replay; blocker wake scheduling; final run reconciliation |
+| `always_agent_tool` | A skillless agent needs a typed semantic operation when the task calls for the behavior. | read current task/context; report progress; finish, block, or request review with a durable explanation; read/write task documents and plans; request human input or confirmation; attach or register inspectable deliverables; inspect the result of an agent-initiated operation |
+| `optional_agent_tool` | The capability is exposed only when role, task mode, policy, or explicit configuration permits it. | search/list issues; create or reassign subtasks; edit priority/status outside semantic completion; manage dependencies; inspect agents/projects/goals; request or decide approvals; control workspace services; manage routines, company skills, secrets, imports/exports, and other administrative surfaces; generic API escape hatch |
+
+The detailed inventory must cover all 16 existing Paperclip Evals groups
+(`hb`, `co`, `st`, `cm`, `se`, `su`, `bl`, `dp`, `ix`, `ap`, `ar`, `er`,
+`rf`, `mh`, `rs`, and `wk`), every current Paperclip skill workflow/reference
+section, and every tool in the existing 41-tool `packages/mcp-server` surface.
+Each row records the source behavior, disposition, mock owner, proposed tool or
+reason no tool exists, authorization policy, test cases, UI evidence, and any
+intentional gap. The inventory may split one broad legacy function into a
+control-plane action plus a narrower agent tool, but no capability may be
+silently omitted.
 
 **Deliverables:**
 
-- ACP/acpx driver proof or another approved second driver;
+- a package-local mock Paperclip `ControlPlanePort` adapter with deterministic
+  company, agent, issue, comment, document, interaction, approval, artifact,
+  blocker, workspace, budget, and run state;
+- a transport-neutral semantic tool catalog generated from the capability
+  inventory, with explicit always/optional exposure policy and no raw
+  credential available to the model;
+- a traceability manifest that maps the Paperclip Evals corpus, skill sections,
+  and existing MCP tools to mock scenarios and conformance assertions;
+- an eval-compatible fixture/assertion importer or checked-in package-local
+  derivative, so Phase 7 does not depend on the `paperclip-evals` repository at
+  runtime;
+- a browser scenario explorer using the established runner components to show
+  mock state, agent-visible tools, control-plane-owned actions, authorization
+  decisions, request/response history, and final parity verdict;
+- reference documentation, a hand-run Phase 7 tutorial, cumulative tutorial
+  updates, screenshots, exact command evidence, and an OKF journal entry, all
+  under `packages/paperclip-runner/`.
+
+**Tests/evidence:** inventory completeness checks; one-to-one eval traceability;
+tool-schema and authorization tests; always/optional exposure tests; negative
+tests proving control-plane-owned actions are unavailable to the model;
+scenario tests for all 16 eval groups; multi-hop and restraint/no-call cases;
+mock state snapshots; browser component/accessibility tests; fake-agent full
+suite; a bounded real-Codex sample; clean-start tutorial execution by QA.
+
+The suite must preserve the useful structure of the existing Paperclip skill
+evals rather than merely copy their prompts. Each migrated case must state
+whether it validates a control-plane invariant, an agent tool, a policy gate,
+or a combined multi-hop flow. Skill-present and skill-absent results are
+reference baselines; the Phase 7 pass condition is semantic parity through the
+new runner contract, not imitation of legacy `curl` traffic.
+
+**Owners/review:** Senior Planning Engineer prepares the detailed Phase 7 child
+plan; EvalsEngineer reviews the inventory and corpus mapping; UXDesigner reviews
+the browser scenario explorer before implementation; CodexCoder implements;
+SecurityEngineer reviews tool authorization, credential isolation, approvals,
+secrets, workspace controls, and the generic escape hatch; QA runs the clean
+suite and tutorial; CTO approves the capability boundary before implementation.
+
+**Depends on:** the Phase 6 standalone adapter checkpoint. It does not depend on
+or authorize a real Paperclip bridge.
+
+**Human checkpoint:** choose representative heartbeat, planning, blocker,
+approval, artifact, interaction, and manager scenarios in the browser; inspect
+the capability disposition and tool/control-plane transcript; run the complete
+package-local suite; and approve the inventory before ACPX or real Paperclip
+integration starts.
+
+## Phase 8 — ACPX portability, provider simulation, and release-quality reference kit
+
+**Purpose:** prove that the package is an SDK/reference implementation rather
+than a Codex-only product feature, starting with a first-class ACPX
+implementation that consumes the Phase 7 tool and control-plane contracts.
+
+**Tracer bullet:** run the same Phase 7 conformance scenario through ACPX and a
+fake hosted-provider backend without changing protocol, reducer, browser,
+capability inventory, or tutorial structure.
+
+**Deliverables:**
+
+- first-class ACPX driver and tool-binding implementation;
 - fake remote backend and provider capability matrix;
 - standalone MCP binding and credential-plan fixtures;
 - channel/media boundary fixtures that terminate at the mock core;
@@ -461,9 +556,9 @@ No Phase 6 implementation code starts until the CTO gate accepts that record.
 
 **Owners/review:** CodexCoder implementation; EvalsEngineer/Performance Analyst for conformance and benchmarks when available; SecurityEngineer review; DevRel documentation review; QA full clean-room validation; CTO final review.
 
-**Depends on:** Phase 6 for product integration evidence, while standalone provider fixtures may begin after Phase 5.
+**Depends on:** Phase 7 capability inventory, semantic tool contract, mock adapter, and eval-parity checkpoint. A real Paperclip bridge remains separately gated.
 
-**Human checkpoint:** follow the cumulative tutorial from a clean checkout, compare two backend/driver paths, browse the journal and screenshots, and decide whether to proceed from spike/reference kit to production rollout.
+**Human checkpoint:** follow the cumulative tutorial from a clean checkout, compare Codex and ACPX paths, browse the journal and screenshots, and decide whether to proceed from spike/reference kit to a separately planned production bridge.
 
 ## Phase dependency graph and task-creation policy
 
@@ -475,11 +570,15 @@ PAP-16717 Plan and phase governance
   ├─ Phase 3 Durable transport/recovery            complete
   ├─ Phase 4 Skillless Codex driver                 implemented; review pending
   ├─ Phase 5 Browser SDK/reference console         deferred; blocks on Phase 3
-  ├─ Phase 6 Paperclip integration adapter          deferred; blocks on Phases 4 and 5 + board gate
-  └─ Phase 7 Portability/release reference kit     deferred; blocks on Phase 6 for final closure
+  ├─ Phase 6 Standalone adapter simulator           active; blocks on Phases 4 and 5 + board gate
+  ├─ Phase 7 Mock Paperclip/tools/eval parity       planning; blocks on Phase 6 checkpoint
+  └─ Phase 8 ACPX/portability reference kit         deferred; blocks on Phase 7 checkpoint
 ```
 
-Create child issues for Phase 0 and Phase 1 only. Do not create Phase 2 through Phase 7 issues until the Phase 0–1 human checkpoint is complete and this plan and the spike specification have been revised with measured findings.
+Create one Phase 7 planning-mode child issue now. Do not create Phase 7
+implementation/review/QA grandchildren until its detailed plan is approved.
+Do not create Phase 8 tasks until the Phase 7 human checkpoint is complete and
+the specs have been revised with measured findings.
 
 An active phase can contain these grandchildren when needed:
 
@@ -495,12 +594,16 @@ To honor the one-branch requirement, do not run multiple code-writing grandchild
 ## Risks and controls
 
 - **Risk: standalone code quietly imports core internals.** Control: forbidden-import test and dependency review in Phase 0.
-- **Risk: mock behavior diverges from Paperclip.** Control: one shared port contract and the same conformance suite against mock and real adapters in Phase 6.
+- **Risk: mock behavior diverges from Paperclip.** Control: Phase 7 imports the
+  eval taxonomy and expected state transitions, records one disposition for
+  every skill/MCP capability, and requires explicit evidence for intentional
+  differences. Real-adapter parity remains a later, separately gated proof.
 - **Risk: UI library assumptions conflict with Vite/design tokens.** Control: source-level compatibility spike, selective adoption, UX review, token gates, no Next.js migration.
 - **Risk: journal becomes write-only ceremony.** Control: OKF index pages, backlinks, decision/evidence fields, tutorial for querying it, and phase acceptance requiring retrieval of prior decisions.
 - **Risk: real model work obscures runner defects.** Control: fake driver remains the primary deterministic suite; real Codex begins only in Phase 4.
 - **Risk: one branch creates merge conflicts.** Control: dependency-ordered writers, disjoint scopes only, phase checkpoint commits, and no parallel overlapping implementation.
-- **Risk: core integration expands into a rewrite.** Control: explicit Phase 6 gate, thin adapter, feature flag, kill switch, legacy regression tests, CTO review.
+- **Risk: core integration expands into a rewrite.** Control: Phases 6–8 remain
+  package-local; any real bridge requires a new explicit plan and board gate.
 - **Risk: humans cannot exercise early layers.** Control: every phase includes a small executable tutorial and browser/CLI evidence, starting at Phase 0.
 
 ## Plan maintenance
@@ -514,7 +617,11 @@ Keep this plan and the spike specification current as implementation produces ne
 
 ## Future work retained from the original implementation breakdown
 
-The eight tracer phases above are the active sequencing model. The following issue-sized backlog is retained from the original spike specification so that detailed implementation scope is not lost. Treat these items as future work and planning input, not as authorization to create Phase 2–7 tasks before the Phase 0–1 checkpoint.
+The nine tracer phases above are the active sequencing model. The following
+issue-sized backlog is retained from the original spike specification so that
+detailed implementation scope is not lost. Treat these items as future work and
+planning input, not as authorization to create implementation tasks outside the
+current board-approved phase gate.
 
 
 The issue identifiers below are placeholders. Each issue is intended to be assignable to a Paperclip worker with a narrow contract.

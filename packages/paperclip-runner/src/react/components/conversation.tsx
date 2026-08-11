@@ -71,11 +71,29 @@ export function Conversation({
     });
   }, []);
 
+  const scrollToLatestResponse = React.useCallback((smooth: boolean): boolean => {
+    const viewport = viewportRef.current;
+    if (viewport === null) return false;
+    const responses = viewport.querySelectorAll<HTMLElement>(
+      '.pcr-message[data-role="assistant"]:not([data-state="streaming"])',
+    );
+    const response = responses.item(responses.length - 1);
+    if (response === null) return false;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+    const viewportTop = viewport.getBoundingClientRect().top;
+    const responseTop = response.getBoundingClientRect().top;
+    viewport.scrollTo({
+      top: Math.max(viewport.scrollTop + responseTop - viewportTop - 16, 0),
+      behavior: smooth && !reduceMotion ? "smooth" : "auto",
+    });
+    return true;
+  }, []);
+
   React.useEffect(() => {
     if (!following) return;
-    scrollToBottom(true);
+    if (!scrollToLatestResponse(false)) scrollToBottom(false);
     setSeenCount(entries.length);
-  }, [entries.length, following, scrollToBottom]);
+  }, [entries, following, scrollToBottom, scrollToLatestResponse]);
 
   function reengage() {
     setFollowing(true);
@@ -156,7 +174,7 @@ export function Conversation({
             if (entry.role === "tool") {
               return (
                 <li key={entry.key} data-highlighted={entry.item.itemId === highlightItemId}>
-                  <ToolItem item={entry.item} name={entry.toolName ?? entry.item.kind} status={toolStatus(entry)} input={entry.input} output={entry.output} failure={entry.failure} {...(renderItemBody === undefined ? {} : { renderItemBody })} />
+                  <ToolItem item={entry.item} name={entry.toolName ?? entry.item.kind} status={toolStatus(entry)} input={entry.input} output={entry.output} failure={entry.failure} debugEvents={entry.debugEvents} {...(renderItemBody === undefined ? {} : { renderItemBody })} />
                 </li>
               );
             }

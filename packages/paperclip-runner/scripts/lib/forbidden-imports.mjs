@@ -85,6 +85,7 @@ function violationReason({ file, packageRoot, specifier }) {
   const publicRunnerImports = new Set([
     "@paperclipai/paperclip-runner/browser",
     "@paperclipai/paperclip-runner/react",
+    "@paperclipai/paperclip-runner/standalone",
     "@paperclipai/paperclip-runner/styles.css",
   ]);
   if (
@@ -94,7 +95,7 @@ function violationReason({ file, packageRoot, specifier }) {
     return "runner consumers may import only declared public subpaths";
   }
   if (isExampleConsumer && specifier === "@paperclipai/paperclip-runner") {
-    return "runner consumers may import only browser, react, and styles.css public subpaths";
+    return "runner consumers may import only declared public subpaths";
   }
   if (
     specifier.startsWith("@paperclipai/") &&

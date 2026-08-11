@@ -15,6 +15,7 @@ export * from "./drivers/codex/codex-app-server-driver.js";
 export * from "./mock-core/mock-control-plane-adapter.js";
 export * from "./mock-core/phase7-control-plane-types.js";
 export * from "./mock-core/phase7-mock-control-plane-adapter.js";
+export * from "./standalone/phase6-demo.js";
 export * from "./mock-core/phase4-codex-runner.js";
 export * from "./mock-core/phase4b-demo-server.js";
 export * from "./mock-core/phase4b-demo-manifests.js";

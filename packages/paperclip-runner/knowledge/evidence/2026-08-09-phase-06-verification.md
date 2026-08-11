@@ -285,3 +285,87 @@ legacy selection, and restoring the agent profile. Those commands intentionally
 do not pass credentials to the package or model. They were not run during this
 remediation because changing live instance and agent rollout state requires
 operator approval; no new live-provider evidence is claimed here.
+
+On 2026-08-09 the board accepted the issue-thread confirmation for the bounded
+live checkpoint at commit `f0eb3d5c18`. The resumed heartbeat captured the
+agent profile and verified that no rollout mutation had occurred, but its
+run-scoped agent JWT received HTTP `403` from
+`GET /api/instance/settings/experimental`. The checkpoint stopped before
+patching either the agent profile or the instance flag. A board/operator-authenticated
+execution context is still required to run tutorial sections 3 through 7; the
+acceptance interaction authorizes the operation but does not elevate the
+heartbeat credential.
+
+# Standalone scope correction
+
+On 2026-08-09 the board superseded the live-instance checkpoint. No runner may
+be installed into a Paperclip instance, no product experimental setting or
+agent profile may be changed, and no new work for this checkpoint may occur
+outside `packages/paperclip-runner/`.
+
+The replacement package-local tracer adds:
+
+- `src/standalone/phase6-demo.ts`, which resolves native-demo versus legacy,
+  runs the selected path through the public `ControlPlanePort` conformance
+  suite, and reduces the same canonical PRP events;
+- a default legacy path, an explicit native demo flag, and a kill switch that
+  deterministically returns to legacy;
+- `examples/phase6-standalone/`, which displays selection, replay, reducer,
+  finalization, invocation counters, and inspectable JSON without network calls;
+- a standalone tutorial with no Paperclip service or credential prerequisite.
+
+Targeted verification:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec tsc -p tsconfig.json --noEmit
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/standalone/phase6-demo.test.ts src/conformance/control-plane-port.test.ts
+pnpm --filter @paperclipai/paperclip-runner run build:phase6
+```
+
+Result: TypeScript passed; 2 test files and 5 tests passed; Vite built the
+standalone page successfully. No Paperclip API or instance was used by these
+checks.
+
+## CTO review remediation
+
+The first standalone CTO review found two defects: the example deep-imported a
+source file, and both modes constructed the same adapter while reporting
+synthetic selection counters. The remediation adds the declared
+`@paperclipai/paperclip-runner/standalone` export with matching TypeScript and
+Vite aliases and guard allowlist. It also adds distinct native-demo and
+legacy-demo factories typed by `ControlPlanePort`. Only the resolved factory is
+constructed, and invocation evidence is read from the selected adapter's
+lifecycle counter.
+
+Injected-spy tests prove that default mode constructs and invokes only legacy,
+flag-enabled mode constructs and invokes only native, and flag plus kill switch
+constructs and invokes only legacy. Each selected adapter still completes the
+same conformance, replay, reducer, and finalization path.
+
+Remediation verification:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec tsc -p tsconfig.json --noEmit
+pnpm --filter @paperclipai/paperclip-runner exec tsc -p tsconfig.browser.json --noEmit
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/standalone/phase6-demo.test.ts src/conformance/control-plane-port.test.ts
+pnpm --filter @paperclipai/paperclip-runner check:forbidden-imports
+pnpm --filter @paperclipai/paperclip-runner build:phase6
+pnpm --filter @paperclipai/paperclip-runner docs:validate
+pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- --feature-flag disabled --kill-switch disabled
+pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- --feature-flag enabled --kill-switch disabled
+pnpm --filter @paperclipai/paperclip-runner trace:phase6 -- --feature-flag enabled --kill-switch enabled
+git diff --check
+```
+
+Result: both typechecks passed; 2 files and 5 tests passed; the standalone
+boundary check passed; Vite built 209 modules; documentation validation passed
+58 links and 25 OKF concepts across 4 indexes; all three traces reported only
+the selected adapter with one invocation; and `git diff --check` passed.
+
+## Screenshot handoff
+
+The standalone page production build passed. Automated screenshot capture was
+attempted twice but Chromium could not start in this runner because the host is
+missing `libatk-1.0.so.0`. No screenshot is claimed. QA must open the documented
+loopback page in a browser-capable environment and attach native-demo and
+kill-switch screenshots during review.

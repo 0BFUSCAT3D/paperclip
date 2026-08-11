@@ -9,19 +9,16 @@ import { Button } from "./components/button.js";
 import { Composer } from "./components/composer.js";
 import { Conversation } from "./components/conversation.js";
 import { Dialog } from "./components/dialog.js";
-import { Tabs } from "./components/tabs.js";
+import { Menu } from "./components/menu.js";
 import { ConnectionBanner } from "./connection-banner.js";
 import { Inspector } from "./inspector.js";
 import { ReplayControls } from "./replay-controls.js";
 import { ConnectionBlock, GoalBlock, LineageTree, ManifestList } from "./session-timeline.js";
 import { useRunnerConsole } from "./use-runner-console.js";
 
-const MOBILE_SEGMENTS = [
-  { id: "chat", label: "Chat" },
-  { id: "session", label: "Session" },
-  { id: "inspector", label: "Inspector" },
-];
 const COMPACT_QUERY = "(max-width: 56.25rem)";
+const CONSOLE_VERSION = "0.1.2";
+const CONSOLE_VERSION_EMOJI = "🖇️";
 
 function useCompactLayout(): boolean {
   const [compact, setCompact] = React.useState(
@@ -53,7 +50,7 @@ export function RunnerConsoleApp({
   const console_ = useRunnerConsole({ baseUrl, fetchImpl, eventSourceFactory });
   const [draft, setDraft] = React.useState("");
   const [inspectorOpen, setInspectorOpen] = React.useState(false);
-  const [segment, setSegment] = React.useState("chat");
+  const [mobilePanel, setMobilePanel] = React.useState<"session" | "inspector" | null>(null);
   const [resetOpen, setResetOpen] = React.useState(false);
   const [highlightItemId, setHighlightItemId] = React.useState<string | null>(null);
   const [outcomes, setOutcomes] = React.useState<Record<string, string>>({});
@@ -78,6 +75,10 @@ export function RunnerConsoleApp({
   }, [inspectorOpen]);
 
   React.useEffect(() => {
+    if (!compact) setMobilePanel(null);
+  }, [compact]);
+
+  React.useEffect(() => {
     const snapshot = console_.snapshot;
     if (snapshot === null || console_.state === null) return;
     if (!["completed", "failed", "interrupted", "cancelled"].includes(snapshot.turnState)) return;
@@ -91,7 +92,9 @@ export function RunnerConsoleApp({
     const text = draft.trim();
     if (text.length === 0) return;
     setDraft("");
-    if (console_.composer === "active-turn") void console_.steer(text);
+    if (console_.state === null) {
+      void console_.start({ manifestId: "chat", message: text });
+    } else if (console_.composer === "active-turn") void console_.steer(text);
     else void console_.send(text);
   }
 
@@ -177,13 +180,24 @@ export function RunnerConsoleApp({
   const inspector = (
     <Inspector events={console_.events} snapshot={console_.snapshot} state={console_.state} connection={console_.connection} reconnectAttempt={console_.reconnectAttempt} replayParity={console_.replayParity} highlightItemId={highlightItemId} onHighlightItem={setHighlightItemId} />
   );
+  const mobileMenuItems = [
+    { id: "session", label: "Session controls", enabled: true, reason: null },
+    { id: "inspector", label: "Protocol inspector", enabled: true, reason: null },
+    {
+      id: "replay",
+      label: console_.replay.active ? "Exit replay" : "Enter replay",
+      enabled: console_.events.length > 0,
+      reason: console_.events.length > 0 ? null : "Replay is available after the session receives events.",
+    },
+  ] as const;
 
   return (
-    <div className="pcr-root pcr-console" data-slot="runner-console-app" data-inspector={inspectorOpen}>
+    <div className="pcr-root pcr-console" data-slot="runner-console-app" data-inspector={inspectorOpen} data-mode={manifestId === "chat" ? "chat" : "fixture"}>
       <header className="pcr-console-header">
         <div className="pcr-console-title">
+          <span className="pcr-console-version" data-testid="console-version">{CONSOLE_VERSION_EMOJI} v{CONSOLE_VERSION}</span>
           {console_.replay.active ? <Badge tone="warning" data-testid="replay-badge">REPLAY</Badge> : null}
-          <h1>{activeManifest?.name ?? "Runner reference console"}</h1>
+          <h1>{manifestId === "chat" ? "Codex protocol chat" : activeManifest?.name ?? "Runner reference console"}</h1>
           {viewingChild ? (
             <p className="pcr-breadcrumb" data-testid="breadcrumb">
               root ▸ {console_.selectedThreadId}
@@ -191,8 +205,26 @@ export function RunnerConsoleApp({
           ) : null}
         </div>
         <div className="pcr-console-header-actions">
-          <Button type="button" variant="ghost" data-testid="toggle-inspector" aria-pressed={inspectorOpen} onClick={() => setInspectorOpen((current) => !current)}>Protocol inspector</Button>
-          <Button type="button" variant="ghost" data-testid="toggle-replay" aria-pressed={console_.replay.active} disabled={console_.events.length === 0} onClick={() => console_.replay.active ? console_.replay.exit() : console_.replay.enter()}>{console_.replay.active ? "Exit replay" : "Replay"}</Button>
+          {compact ? (
+            <Menu
+              label="Menu"
+              triggerId="mobile-console-menu"
+              items={mobileMenuItems}
+              onSelect={(id) => {
+                if (id === "replay") {
+                  if (console_.replay.active) console_.replay.exit();
+                  else console_.replay.enter();
+                  return;
+                }
+                if (id === "session" || id === "inspector") setMobilePanel(id);
+              }}
+            />
+          ) : (
+            <>
+              <Button type="button" variant="ghost" data-testid="toggle-inspector" aria-pressed={inspectorOpen} onClick={() => setInspectorOpen((current) => !current)}>Protocol inspector</Button>
+              <Button type="button" variant="ghost" data-testid="toggle-replay" aria-pressed={console_.replay.active} disabled={console_.events.length === 0} onClick={() => console_.replay.active ? console_.replay.exit() : console_.replay.enter()}>{console_.replay.active ? "Exit replay" : "Replay"}</Button>
+            </>
+          )}
         </div>
       </header>
       <p className="pcr-visually-hidden" aria-live="polite" data-testid="runner-announcement">{console_.announcement}</p>
@@ -200,11 +232,7 @@ export function RunnerConsoleApp({
       {console_.replay.active ? <ReplayControls replay={console_.replay} /> : null}
       {compact ? (
         <div className="pcr-console-mobile">
-          <Tabs items={MOBILE_SEGMENTS} selected={segment} onSelect={setSegment} label="Console sections">
-            {segment === "chat" ? <>{transcript}{composer}</> : null}
-            {segment === "session" ? sessionRail : null}
-            {segment === "inspector" ? inspector : null}
-          </Tabs>
+          <main className="pcr-console-center">{transcript}{composer}</main>
         </div>
       ) : (
         <div className="pcr-console-desktop">
@@ -213,6 +241,21 @@ export function RunnerConsoleApp({
           {inspectorOpen ? <aside className="pcr-console-inspector" aria-label="Protocol inspector">{inspector}</aside> : null}
         </div>
       )}
+      <Dialog
+        open={compact && mobilePanel !== null}
+        onClose={() => setMobilePanel(null)}
+        title={mobilePanel === "inspector" ? "Protocol inspector" : "Session controls"}
+        description={mobilePanel === "inspector"
+          ? "Inspect protocol state without replacing the primary chat surface."
+          : "Run manifests and manage the current session. Close this panel to return to chat."}
+        footer={<Button type="button" onClick={() => setMobilePanel(null)}>Back to chat</Button>}
+      >
+        {compact && mobilePanel !== null ? (
+          <div className="pcr-mobile-panel-content">
+            {mobilePanel === "inspector" ? inspector : sessionRail}
+          </div>
+        ) : null}
+      </Dialog>
       <Dialog open={resetOpen} onClose={() => setResetOpen(false)} title="Reset demo state" description="Discards the current live session transcript. Recorded evidence files are not touched." footer={<><Button type="button" variant="ghost" onClick={() => setResetOpen(false)}>Keep the session</Button><Button type="button" variant="danger" data-testid="reset-confirm" onClick={() => { setResetOpen(false); setDraft(""); void console_.reset(); }}>Reset demo state</Button></>} />
     </div>
   );

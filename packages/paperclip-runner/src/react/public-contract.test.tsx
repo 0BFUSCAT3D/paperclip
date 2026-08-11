@@ -6,6 +6,7 @@ import type { SessionItemSnapshot } from "../reducer/session-reducer.js";
 import type { TranscriptEntry } from "../browser/transcript-model.js";
 import { Composer } from "./components/composer.js";
 import { Conversation } from "./components/conversation.js";
+import { parseStructuredResponse } from "./components/message.js";
 import { RequestCard } from "./request-card.js";
 import { SessionTimeline } from "./session-timeline.js";
 
@@ -29,8 +30,33 @@ const entries: TranscriptEntry[] = [
     input: null,
     output: null,
     failure: null,
+    debugEvents: [],
   },
 ];
+
+const toolEntry: TranscriptEntry = {
+  kind: "item",
+  key: "item:command-1",
+  position: 2,
+  role: "tool",
+  item: { itemId: "command-1", kind: "commandExecution", status: "completed", text: "hello" },
+  interrupted: false,
+  streaming: false,
+  toolName: "printf hello",
+  input: "printf hello",
+  output: "hello",
+  failure: null,
+  debugEvents: [{
+    source: "codex-app-server",
+    sourceSeq: 3,
+    sourceEventId: "event-3",
+    eventType: "item.completed",
+    emittedAt: "2026-08-09T00:00:00.000Z",
+    turnId: "turn-1",
+    itemId: "command-1",
+    payload: { item: { type: "commandExecution", command: "printf hello", aggregatedOutput: "hello" } },
+  }],
+};
 
 describe("public React contracts", () => {
   it("renders reducer-backed transcript semantics and the item renderer seam", () => {
@@ -68,6 +94,15 @@ describe("public React contracts", () => {
     expect(html).toContain("Reject");
   });
 
+  it("renders Terminal diagnostics inside folded debug details", () => {
+    const html = renderToStaticMarkup(<Conversation entries={[toolEntry]} />);
+    expect(html).toContain("Terminal");
+    expect(html).toContain("printf hello");
+    expect(html).toContain("Debug details (1 event)");
+    expect(html).toContain("codex-app-server");
+    expect(html).toContain("aggregatedOutput");
+  });
+
   it("exposes composer slots and canonical session timeline without a parallel model", () => {
     const composer = renderToStaticMarkup(
       <Composer state="idle" value="hello" onValueChange={() => undefined} onSubmit={() => undefined} onStop={() => undefined} leadingActions={<span>leading</span>} trailingActions={<span>trailing</span>} />,
@@ -88,5 +123,28 @@ describe("public React contracts", () => {
     const html = renderToStaticMarkup(<Conversation entries={failedEntries} />);
     expect(html).toContain('data-testid="item-failure"');
     expect(html).toContain("exact upstream diagnostic");
+  });
+
+  it("renders structured Codex completion as a response-first card with optional protocol details", () => {
+    const response = JSON.stringify({
+      schema: "paperclip.run_result.v1",
+      summary: "Created the requested file and verified its contents.",
+      completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      verification: [{ commandOrCheck: "cat result.txt", status: "passed" }],
+      reportedWorkDisposition: "done",
+    });
+    const html = renderToStaticMarkup(
+      <Conversation entries={[{
+        ...entries[0]!,
+        item: { ...item, text: response },
+      }]} />,
+    );
+    expect(parseStructuredResponse(response)?.summary).toBe("Created the requested file and verified its contents.");
+    expect(html).toContain('data-testid="structured-response"');
+    expect(html).toContain("Agent response");
+    expect(html).toContain("Created the requested file and verified its contents.");
+    expect(html).toContain("Completion details");
+    expect(html).toContain("Raw protocol payload");
+    expect(html).toContain("cat result.txt");
   });
 });

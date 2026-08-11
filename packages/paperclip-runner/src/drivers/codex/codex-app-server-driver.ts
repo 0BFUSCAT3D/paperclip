@@ -89,6 +89,7 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 
 export interface CodexAppServerDriverOptions {
   taskEnvelope: Phase4TaskEnvelope;
+  conversationMode?: "task" | "direct";
   transportFactory?: () => CodexAppServerTransport;
   environment?: NodeJS.ProcessEnv;
   now?: () => Date;
@@ -309,6 +310,10 @@ export class CodexAppServerDriver implements HarnessDriver {
     if (!this.#caps.read) this.#caps.reconciliation = false;
   }
 
+  #direct(): boolean {
+    return this.#options.conversationMode === "direct";
+  }
+
   async descriptor(): Promise<HarnessDriverDescriptor> {
     const unsupported = Object.entries(this.#caps)
       .filter(([, supported]) => !supported)
@@ -344,8 +349,10 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/start", {
         ...securedThreadParams(workingDirectory, this.#options.environment),
         approvalPolicy: "never",
-        baseInstructions: PHASE4_SKILLLESS_BASE_INSTRUCTIONS,
-        dynamicTools: this.#caps.dynamicTools ? [finishToolSpec(), blockToolSpec()] : [],
+        ...(this.#direct() ? {} : { baseInstructions: PHASE4_SKILLLESS_BASE_INSTRUCTIONS }),
+        dynamicTools: this.#direct()
+          ? []
+          : this.#caps.dynamicTools ? [finishToolSpec(), blockToolSpec()] : [],
         experimentalRawEvents: false,
         persistExtendedHistory: false,
       });
@@ -398,7 +405,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/resume", {
         threadId: snapshot.driverSessionId,
         ...securedThreadParams(workingDirectory, this.#options.environment),
-        baseInstructions: PHASE4_SKILLLESS_BASE_INSTRUCTIONS,
+        baseInstructions: this.#direct() ? "" : PHASE4_SKILLLESS_BASE_INSTRUCTIONS,
         persistExtendedHistory: false,
       });
       const opened = this.#openedThread(response, initialize, workingDirectory);
@@ -548,9 +555,12 @@ export class CodexAppServerDriver implements HarnessDriver {
         environmentKeys: Object.keys(
           commandEnvironment(this.#options.environment),
         ).sort(),
-        dynamicToolNames: this.#caps.dynamicTools ? [...PHASE4_SEMANTIC_TOOL_NAMES] : [],
+        dynamicToolNames: this.#direct()
+          ? []
+          : this.#caps.dynamicTools ? [...PHASE4_SEMANTIC_TOOL_NAMES] : [],
         modelInputKinds: ["text"],
         phase4b: {
+          conversationMode: this.#direct() ? "direct" : "task",
           runtimeRequestResolution: this.#caps.runtimeRequestResolution,
           goals: this.#caps.goals,
           threadLineage: this.#caps.threadLineage,
@@ -578,6 +588,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     return new CodexHarnessSession({
       ...input,
       taskEnvelope: this.#options.taskEnvelope,
+      conversationMode: this.#direct() ? "direct" : "task",
       now: this.#options.now ?? (() => new Date()),
       runnerInstanceId: this.#options.runnerInstanceId ?? "runner-phase4",
       capabilities: this.#caps,
@@ -591,6 +602,7 @@ class CodexHarnessSession implements HarnessSession {
   readonly #normalizedSessionId: string;
   readonly #opened: OpenedCodexThread;
   readonly #taskEnvelope: Phase4TaskEnvelope;
+  readonly #conversationMode: "task" | "direct";
   readonly #now: () => Date;
   readonly #runnerInstanceId: string;
   readonly #capabilities: CodexCapabilities;
@@ -622,6 +634,7 @@ class CodexHarnessSession implements HarnessSession {
     normalizedSessionId: string;
     opened: OpenedCodexThread;
     taskEnvelope: Phase4TaskEnvelope;
+    conversationMode: "task" | "direct";
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
@@ -639,6 +652,7 @@ class CodexHarnessSession implements HarnessSession {
     this.#normalizedSessionId = input.normalizedSessionId;
     this.#opened = input.opened;
     this.#taskEnvelope = input.taskEnvelope;
+    this.#conversationMode = input.conversationMode;
     this.#activeTurnId = input.activeTurnId ?? null;
     this.#sourceSequence = input.sourceSequence;
     this.#now = input.now;
@@ -667,7 +681,7 @@ class CodexHarnessSession implements HarnessSession {
       }
       this.#terminalTurns.set(terminal.turnId, terminal.fingerprint);
     }
-    this.#terminal = this.#terminalTurns.size > 0;
+    this.#terminal = this.#conversationMode === "task" && this.#terminalTurns.size > 0;
     this.#transport.setServerRequestHandler((request) => this.#handleServerRequest(request));
     this.#emit(input.resumed ? "session.resumed" : "session.started", {
       driverSessionId: input.opened.threadId,
@@ -723,7 +737,9 @@ class CodexHarnessSession implements HarnessSession {
           : `session failed protocol validation: ${this.#protocolFailureCode} (${this.#protocolFailureMessage ?? "no detail"})`,
       );
     }
-    const taskText = JSON.stringify({ task: this.#taskEnvelope, message: input.message.text });
+    const taskText = this.#conversationMode === "direct"
+      ? input.message.text
+      : JSON.stringify({ task: this.#taskEnvelope, message: input.message.text });
     // The submitted text is part of the canonical record so a tracer can show
     // the operator's own message without keeping shadow state next to the
     // reducer.
@@ -740,7 +756,7 @@ class CodexHarnessSession implements HarnessSession {
         permissions: SKILLLESS_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#opened.context.workingDirectory],
         input: [userInput({ role: "user", text: taskText })],
-        outputSchema: PHASE4_RESULT_OUTPUT_SCHEMA,
+        ...(this.#conversationMode === "direct" ? {} : { outputSchema: PHASE4_RESULT_OUTPUT_SCHEMA }),
       });
     } finally {
       this.#turnStartPending = false;
@@ -1318,6 +1334,7 @@ class CodexHarnessSession implements HarnessSession {
   }
 
   #captureResultFromItem(item: Record<string, unknown>, turnId: string): boolean {
+    if (this.#conversationMode === "direct") return true;
     if (text(item.type) !== "agentMessage" || !isRetainableCodexPayload(item.text)) return true;
     const result = tryParseResult(item.text);
     if (result !== null && isRetainableCodexPayload(result)) {
@@ -1364,6 +1381,7 @@ class CodexHarnessSession implements HarnessSession {
   }
 
   #finalize(turnStatus: string): void {
+    if (this.#conversationMode === "direct") return;
     if (this.#terminal) return;
     if (this.#result === null) {
       this.#emit("harness.diagnostic", {
@@ -1429,6 +1447,7 @@ class CodexHarnessSession implements HarnessSession {
       error: turn.error ?? null,
     }), { turnId });
     this.#activeTurnId = null;
+    this.#turnStarted = false;
     this.#finalize(status);
   }
 

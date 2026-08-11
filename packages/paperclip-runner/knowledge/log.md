@@ -41,9 +41,9 @@
   runtime producing tool exposure, control-plane actions, authorization records,
   a ten-domain immutable state diff, and a parity verdict that carries Phase 7E
   output through without re-judging it; the read-only explorer over the frozen
-  SDK with hash routing, both transcript channels, and four inspector tabs; 45
-  unit and 19 browser tests; and the twenty-four-image screenshot acceptance
-  set.
+  0.1.2 SDK with hash routing, both transcript channels, and four inspector
+  tabs; 45 unit and 19 browser tests; and the twenty-four-image screenshot
+  acceptance set.
 
 * **Phase 6 integration design**: Specified the default-off thin Paperclip
   adapter seam, public port reconciliation, first-class persisted mode/result
@@ -60,6 +60,12 @@
   switch path.
 
 ## 2026-08-10
+
+* **Phase 6 scope correction**: Superseded live-instance installation and
+  rollout work. Added a package-local native/legacy simulator, standalone demo
+  page, default-legacy selection, kill-switch rollback, shared public-port
+  conformance, reducer/replay/finalization inspection, and a no-instance
+  tutorial under `packages/paperclip-runner/`.
 
 * **Phase 7M clean-room live chat**: Added a second primary path beside the
   preset scenario explorer: a blank `#/chat` surface that mints a fresh mock

@@ -2,17 +2,34 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "rootDir": ".",
-    "types": ["vite/client"],
+    "types": [
+      "vite/client"
+    ],
     "baseUrl": ".",
     "paths": {
-      "@paperclipai/paperclip-runner/browser": ["src/browser/index.ts"],
-      "@paperclipai/paperclip-runner/react": ["src/react/index.ts"],
-      "@paperclipai/paperclip-runner/styles.css": ["styles.css"],
-      "@paperclip-runner-local/phase7": ["src/phase7/browser-index.ts"]
+      "@paperclipai/paperclip-runner/browser": [
+        "src/browser/index.ts"
+      ],
+      "@paperclipai/paperclip-runner/react": [
+        "src/react/index.ts"
+      ],
+      "@paperclipai/paperclip-runner/standalone": [
+        "src/standalone/index.ts"
+      ],
+      "@paperclipai/paperclip-runner/styles.css": [
+        "styles.css"
+      ],
+      "@paperclip-runner-local/phase7": [
+        "src/phase7/browser-index.ts"
+      ]
     }
   },
   "include": [
@@ -21,7 +38,11 @@
     "devtools/issue-thread/src/**/*.ts",
     "devtools/issue-thread/src/**/*.tsx",
     "examples/*/src/**/*.ts",
-    "examples/*/src/**/*.tsx"
+    "examples/*/src/**/*.tsx",
+    "src/standalone/**/*.ts"
   ],
-  "exclude": ["**/*.test.ts", "**/*.test.tsx"]
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx"
+  ]
 }

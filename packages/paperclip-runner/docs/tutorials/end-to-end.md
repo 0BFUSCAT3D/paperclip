@@ -3,7 +3,7 @@
 ## What this tutorial is
 
 This tutorial combines each implemented Native Runner phase into one procedure.
-It currently includes Phase 0 through the Phase 5 browser SDK layer.
+It currently includes Phase 0 through the Phase 6 Paperclip adapter tracer.
 
 ## What this tutorial proves
 
@@ -20,6 +20,8 @@ The final phase adds a skillless task envelope, direct app-server driver,
 semantic completion tools, and the same reducer/replay proof used by fixtures.
 Phase 5 freezes that browser transport and reducer projection as public SDK
 subpaths, then proves them with a reference console and a second consumer.
+Phase 6 consumes the public runner contract from Paperclip behind a default-off
+flag while preserving server-owned workspace, governance, and status authority.
 
 ## Current end-to-end path
 
@@ -62,6 +64,13 @@ subpaths, then proves them with a reference console and a second consumer.
 27. Run the safe real-Codex browser smoke and inspect the Phase 5 screenshots.
 28. Open the [Phase 5 journal](../../knowledge/journal/2026-08-08-phase-05-sdk.md)
     and its linked package-acceptance evidence.
+29. Follow [Phase 6: Run the Thin Paperclip Adapter](phase-06-thin-paperclip-adapter.md).
+30. Run the unchanged port conformance suite against mock and database-backed
+    Paperclip ports, then inspect one local feature-flagged task.
+31. Disable the flag and confirm a fresh task selects legacy while persisted
+    native finalization remains native.
+32. Open the [Phase 6 implementation journal](../../knowledge/journal/2026-08-09-phase-06-implementation.md)
+    and its linked verification evidence.
 
 The one-command form after installation is:
 

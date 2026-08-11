@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import type { SessionItemSnapshot } from "../../reducer/session-reducer.js";
+import type { TranscriptDebugEvent } from "../../browser/transcript-model.js";
 import { Badge } from "./badge.js";
 
 export type ToolStatus = "running" | "completed" | "failed" | "interrupted";
@@ -33,6 +34,7 @@ export function ToolItem({
   input,
   output,
   failure,
+  debugEvents = [],
   renderItemBody,
 }: {
   item: SessionItemSnapshot;
@@ -41,6 +43,7 @@ export function ToolItem({
   input: string | null;
   output: string | null;
   failure: string | null;
+  debugEvents?: readonly TranscriptDebugEvent[];
   renderItemBody?: (item: SessionItemSnapshot) => React.ReactNode;
 }) {
   const view = toolView(item.kind);
@@ -72,6 +75,12 @@ export function ToolItem({
       )}
       {failure === null ? null : (
         <><p className="pcr-disclosure-label">Diagnostic</p><pre className="pcr-payload pcr-payload--danger" data-testid="tool-failure">{failure}</pre></>
+      )}
+      {debugEvents.length === 0 ? null : (
+        <details className="pcr-tool-debug" data-testid="tool-debug-details">
+          <summary>Debug details ({debugEvents.length} {debugEvents.length === 1 ? "event" : "events"})</summary>
+          <pre className="pcr-payload">{JSON.stringify(debugEvents, null, 2)}</pre>
+        </details>
       )}
       {status === "interrupted" ? (
         <p className="pcr-message-divider" data-testid="interrupted-divider">

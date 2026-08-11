@@ -9,13 +9,15 @@ const DESKTOP = { width: 1440, height: 900 };
 const MOBILE = { width: 390, height: 844 };
 mkdirSync(evidenceRoot, { recursive: true });
 
-async function screenshotPair(page: Page, name: string, mobileSegment = "chat") {
+async function screenshotPair(page: Page, name: string, mobilePanel = "chat") {
   await page.setViewportSize(DESKTOP);
   await page.screenshot({ path: resolve(evidenceRoot, `reference-${name}-1440x900.png`) });
   await page.setViewportSize(MOBILE);
-  await expect(page.getByRole("tab", { name: "Chat" })).toBeVisible();
-  const segment = page.getByRole("tab", { name: new RegExp(`^${mobileSegment}$`, "i") });
-  await segment.click();
+  await expect(page.getByTestId("composer-input")).toBeVisible();
+  if (mobilePanel !== "chat") {
+    await page.getByRole("button", { name: "Menu" }).click();
+    await page.getByRole("menuitem", { name: mobilePanel === "session" ? "Session controls" : "Protocol inspector" }).click();
+  }
   await expect(page.locator('[data-slot="runner-console-app"]')).toBeVisible();
   await page.screenshot({ path: resolve(evidenceRoot, `reference-${name}-390x844.png`) });
   await page.setViewportSize(DESKTOP);
@@ -33,8 +35,23 @@ async function openReference(page: Page) {
   await page.setViewportSize(DESKTOP);
   await page.goto("/reference-console/");
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByTestId("console-version")).toHaveText("🖇️ v0.1.2");
   await expect(page.getByTestId("manifest-list")).toBeVisible();
 }
+
+test("starts as a regular chat while keeping protocol debug available", async ({ page }) => {
+  await openReference(page);
+  await expect(page.getByRole("heading", { name: "Codex protocol chat" })).toBeVisible();
+  await page.getByTestId("composer-input").fill("Hello through the protocol");
+  await page.getByTestId("composer-send").click();
+  await expect(page.getByTestId("runner-transcript")).toContainText(
+    "normal chat carried through the runner protocol",
+    { timeout: 15_000 },
+  );
+  await expect(page.locator("body")).not.toContainText("Phase 4b boundary: operate only");
+  await page.getByTestId("toggle-inspector").click();
+  await expect(page.getByRole("complementary", { name: "Protocol inspector" })).toBeVisible();
+});
 
 async function runManifest(page: Page, id: string) {
   await page.getByTestId(`manifest-${id}`).click();
@@ -51,10 +68,32 @@ test.describe("Phase 5 reference console evidence", () => {
     await runManifest(page, "completion");
     await expect(page.getByTestId("reasoning-item")).toBeVisible();
     await expect(page.getByTestId("composer-send")).toHaveText("Steer");
+    const streamingAnswer = page.locator('.pcr-message[data-role="assistant"] .pcr-message-text');
+    await expect(streamingAnswer).toBeVisible({ timeout: 15_000 });
+    const firstFrame = await streamingAnswer.innerText();
+    await expect.poll(async () => (await streamingAnswer.innerText()).length).toBeGreaterThan(firstFrame.length);
+    await expect(page.locator('.pcr-message[data-role="assistant"]')).toHaveAttribute("data-state", /streaming|settled/);
     await screenshotPair(page, "streaming-turn");
     await expect(page.getByTestId("turn-completed")).toBeVisible({ timeout: 20_000 });
+    const responseVisibility = await page.locator('.pcr-message[data-role="assistant"]').last().evaluate((response) => {
+      const viewport = response.closest('[data-testid="runner-transcript"]');
+      if (!(viewport instanceof HTMLElement)) return false;
+      const responseBox = response.getBoundingClientRect();
+      const viewportBox = viewport.getBoundingClientRect();
+      return responseBox.top >= viewportBox.top && responseBox.top < viewportBox.bottom;
+    });
+    expect(responseVisibility).toBe(true);
     expect(await page.locator("body").innerText()).not.toContain("Bearer ");
     expect(await page.locator("body").innerText()).not.toContain("auth.json");
+    const terminal = page.locator('[data-testid="tool-item"][data-view="terminal"]').first();
+    await terminal.locator(":scope > summary").click();
+    await expect(terminal).toContainText("Input");
+    await expect(terminal).toContainText("Output");
+    const debugDetails = terminal.getByTestId("tool-debug-details");
+    await debugDetails.locator("summary").click();
+    await expect(debugDetails).toContainText("sourceEventId");
+    await expect(debugDetails).toContainText("item.completed");
+    await screenshotPair(page, "terminal-debug");
   });
 
   test("captures steering and interrupt states", async ({ page }) => {
@@ -199,6 +238,10 @@ test("meets keyboard, accessibility, responsive, and grid contracts", async ({ p
   await expect(page.getByTestId("replay-position")).toHaveValue("1");
   await page.keyboard.press("Space");
   await expect(page.getByTestId("replay-controls").getByRole("button", { name: "Pause", exact: true })).toBeVisible();
+  await page.getByTestId("toggle-replay").click();
+  const terminal = page.locator('[data-testid="tool-item"][data-view="terminal"]').first();
+  await terminal.locator(":scope > summary").click();
+  await terminal.getByTestId("tool-debug-details").locator("summary").click();
 
   expect(await page.getByRole("log").count()).toBe(1);
   expect(await page.locator('[aria-live="polite"]').count()).toBe(1);
@@ -215,8 +258,14 @@ test("meets keyboard, accessibility, responsive, and grid contracts", async ({ p
   expect(boxes.center.right).toBeLessThanOrEqual(boxes.root.right);
 
   await page.setViewportSize(MOBILE);
-  await expect(page.getByRole("tab", { name: "Chat" })).toBeVisible();
+  await expect(page.getByTestId("composer-input")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Menu" })).toBeVisible();
+  await page.getByRole("button", { name: "Menu" }).click();
+  await expect(page.getByRole("menuitem", { name: "Session controls" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Protocol inspector" })).toBeVisible();
+  await page.keyboard.press("Escape");
   expect(await page.getByRole("log").count()).toBe(1);
+  await expect(terminal.getByTestId("tool-debug-details")).toContainText("sourceEventId");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 });

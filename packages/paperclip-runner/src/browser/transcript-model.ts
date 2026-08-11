@@ -33,6 +33,18 @@ export interface TranscriptItemEntry {
   input: string | null;
   output: string | null;
   failure: string | null;
+  debugEvents?: readonly TranscriptDebugEvent[];
+}
+
+export interface TranscriptDebugEvent {
+  source: string;
+  sourceSeq: number;
+  sourceEventId: string;
+  eventType: string;
+  emittedAt: string;
+  turnId: string | null;
+  itemId: string | null;
+  payload: unknown;
 }
 
 export interface TranscriptUserEntry {
@@ -127,6 +139,14 @@ interface ItemFacts {
   output: string | null;
   failure: string | null;
   terminal: boolean;
+  debugEvents: TranscriptDebugEvent[];
+}
+
+function displayValue(value: unknown): string | null {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (Array.isArray(value) && value.length > 0) return value.map(String).join(" ");
+  if (value !== null && typeof value === "object") return JSON.stringify(value, null, 2);
+  return null;
 }
 
 function collectItemFacts(events: readonly PrpEvent[]): Map<string, ItemFacts> {
@@ -141,19 +161,41 @@ function collectItemFacts(events: readonly PrpEvent[]): Map<string, ItemFacts> {
       output: null,
       failure: null,
       terminal: false,
+      debugEvents: [],
     };
+    const providerItem = payloadRecord(payload.item);
+    const providerUpdate = payloadRecord(payload.update);
     if (payload.interrupted === true || payload.status === "interrupted") {
       current.interrupted = true;
     }
-    current.toolName = payloadText(payload.toolName) ?? current.toolName;
-    current.input = payloadText(payload.input) ?? current.input;
-    current.output = payloadText(payload.output) ?? current.output;
+    current.toolName = payloadText(payload.toolName)
+      ?? displayValue(providerItem.command)
+      ?? payloadText(providerItem.name)
+      ?? current.toolName;
+    current.input = payloadText(payload.input)
+      ?? displayValue(providerItem.command)
+      ?? displayValue(providerItem.arguments)
+      ?? current.input;
+    current.output = payloadText(payload.output)
+      ?? payloadText(providerItem.aggregatedOutput)
+      ?? payloadText(providerUpdate.output)
+      ?? current.output;
     if (event.eventType === "item.failed") {
       current.failure = payloadText(payload.message) ?? "The item failed.";
     }
     if (event.eventType === "item.completed" || event.eventType === "item.failed") {
       current.terminal = true;
     }
+    current.debugEvents.push({
+      source: typeof event.source === "string" ? event.source : "unknown",
+      sourceSeq: event.sourceSeq,
+      sourceEventId: event.sourceEventId,
+      eventType: event.eventType,
+      emittedAt: event.emittedAt,
+      turnId: event.turnId ?? null,
+      itemId: event.itemId ?? null,
+      payload: event.payload,
+    });
     facts.set(event.itemId, current);
   }
   return facts;
@@ -294,6 +336,7 @@ export function buildTranscript(
       input: itemFacts?.input ?? null,
       output: itemFacts?.output ?? null,
       failure: itemFacts?.failure ?? null,
+      debugEvents: itemFacts?.debugEvents ?? [],
     });
   }
 

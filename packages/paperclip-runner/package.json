@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/paperclip-runner",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -17,6 +17,10 @@
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
     },
+    "./standalone": {
+      "types": "./dist/standalone/index.d.ts",
+      "import": "./dist/standalone/index.js"
+    },
     "./styles.css": "./styles.css"
   },
   "files": [
@@ -26,11 +30,12 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm run build:typescript && pnpm run build:rust && pnpm run build:browser && pnpm run build:phase5 && pnpm run build:phase7 && pnpm run build:issue-thread",
+    "build": "pnpm run build:typescript && pnpm run build:rust && pnpm run build:browser && pnpm run build:phase5 && pnpm run build:phase6 && pnpm run build:phase7 && pnpm run build:issue-thread",
     "build:typescript": "pnpm run generate:protocol-types && tsc -p tsconfig.json",
     "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace",
     "build:browser": "vite build --config vite.config.ts",
     "build:phase5": "vite build --config vite.phase5.config.ts",
+    "build:phase6": "vite build --config vite.phase6.config.ts",
     "build:phase7": "vite build --config vite.phase7.config.ts && node scripts/check-phase7-csp-bundle.mjs",
     "build:issue-thread": "vite build --config vite.issue-thread.config.ts",
     "generate:phase-07-contract": "node scripts/generate-phase-07-contract.mjs",
@@ -78,6 +83,8 @@
     "trace:phase4": "pnpm run build:typescript && node dist/cli/phase4-codex.js",
     "trace:phase6": "pnpm run build:typescript && node dist/cli/phase6-paperclip.js",
     "trace:phase7": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node dist/cli/phase7-live.js",
+    "demo:phase6": "pnpm run build:typescript && vite --config vite.phase6.config.ts --host 127.0.0.1 --port 4182",
+    "demo:phase7": "pnpm run build:typescript && vite --config vite.phase7.config.ts --host 127.0.0.1 --port 4183",
     "console:issue-thread": "pnpm run build:typescript && vite --config vite.issue-thread.config.ts --host 127.0.0.1 --port 4184",
     "demo:phase4b": "pnpm run build:typescript && node scripts/phase4b-demo-server.mjs",
     "record:phase4b": "pnpm run build:typescript && node scripts/record-phase4b-evidence.mjs",
@@ -95,7 +102,6 @@
     "record:phase3:lost-ack": "pnpm run trace:phase3 -- --fault lost-ack --output knowledge/evidence/phase-03-lost-ack.json",
     "console:phase4b": "pnpm run build:typescript && vite --config vite.config.ts --host 127.0.0.1 --port 4180",
     "console:phase5": "pnpm run build:typescript && vite --config vite.phase5.config.ts --host 127.0.0.1 --port 4181",
-    "demo:phase7": "pnpm run build:typescript && vite --config vite.phase7.config.ts --host 127.0.0.1 --port 4183",
     "browser:dev": "pnpm run build:typescript && pnpm run build:phase2-binaries && vite --config vite.config.ts",
     "browser:preview": "vite preview --config vite.config.ts",
     "verify": "pnpm run build && pnpm run typecheck && pnpm run check:phase1-goldens && pnpm run test && pnpm run test:phase5 && pnpm run test:phase7 && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:phase5 && pnpm run test:browser:phase7 && pnpm run check:forbidden-imports && pnpm run check:tracked-imports && pnpm run docs:validate && pnpm run check:phase0-parity && pnpm run check:phase1-parity && pnpm run trace:phase0 && pnpm run replay:phase1 && pnpm run trace:phase2 -- --quiet && pnpm run trace:phase3",

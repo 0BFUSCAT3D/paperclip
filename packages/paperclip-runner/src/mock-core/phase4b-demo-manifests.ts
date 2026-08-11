@@ -88,6 +88,36 @@ const SHORT_ANSWER: readonly string[] = [
 
 export const PHASE4B_DEMO_MANIFESTS: readonly Phase4bDemoManifest[] = [
   {
+    id: "chat",
+    name: "Regular chat",
+    purpose: "Send normal chat messages while the protocol inspector shows the raw lifecycle.",
+    scenarios: ["direct-chat", "transcript", "debug"],
+    objective: "Run a normal Codex conversation through the browser protocol.",
+    prompt: "Say hello and explain that this is a normal chat through the runner protocol.",
+    capabilities: capabilities({ structuredResult: false }),
+    startDelayMs: 0,
+    beats: [
+      {
+        kind: "assistant",
+        itemId: "assistant-chat-1",
+        chunks: ["Hello. This is a normal chat carried through the runner protocol."],
+      },
+    ],
+    followUpBeats: [
+      {
+        kind: "assistant",
+        itemId: "assistant-chat-follow-up",
+        chunks: ["I received your follow-up message through the same session."],
+      },
+    ],
+    expectedObservations: [
+      "The prompt reaches the driver as plain text without a Phase 4 task envelope.",
+      "The answer appears as a normal assistant message.",
+      "The protocol inspector still shows the event stream and reducer state.",
+    ],
+    disposition: "completed",
+  },
+  {
     id: "completion",
     name: "Completion",
     purpose: "One clean turn: reasoning, a tool call, an answer, and a terminal result.",

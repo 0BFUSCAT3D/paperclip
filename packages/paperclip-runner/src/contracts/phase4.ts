@@ -40,7 +40,7 @@ export interface Phase4ModelContextSnapshot {
   workingDirectory: string;
   sandbox: unknown;
   approvalPolicy: unknown;
-  baseInstructions: typeof PHASE4_SKILLLESS_BASE_INSTRUCTIONS;
+  baseInstructions: string;
   instructionSources: string[];
   instructionPolicy: {
     skillInstructions: false;
@@ -51,6 +51,7 @@ export interface Phase4ModelContextSnapshot {
   dynamicToolNames: string[];
   modelInputKinds: ["text"];
   phase4b?: {
+    conversationMode?: "task" | "direct";
     runtimeRequestResolution: boolean;
     goals: boolean;
     threadLineage: boolean;

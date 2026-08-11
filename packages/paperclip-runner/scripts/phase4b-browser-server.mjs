@@ -55,6 +55,7 @@ export function createPhase4bBrowserMiddleware(options = {}) {
           driverMode === "codex"
             ? new runner.CodexAppServerDriver({
                 taskEnvelope,
+                conversationMode: manifestId === "chat" ? "direct" : "task",
                 onDiagnostic: (message) => process.stderr.write(`[phase4b] ${message}\n`),
               })
             : new runner.Phase4bScriptedDriver({

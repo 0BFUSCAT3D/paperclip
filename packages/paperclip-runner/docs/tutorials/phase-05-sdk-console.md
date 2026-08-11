@@ -9,6 +9,11 @@ consumer.
 The two apps use public package imports. They do not import the old demo UI.
 Provider credentials stay in the local server.
 
+The reference console starts in **Regular chat** mode. Type a message in the
+composer to create a direct Codex session. Open **Protocol inspector** to see
+the event stream and reducer state. Select another flow only when you want a
+deterministic protocol fixture.
+
 ## What this phase proves
 
 This tutorial proves that a second app can use the SDK without a private
@@ -39,6 +44,8 @@ Open these pages:
 - `http://127.0.0.1:4181/reference-console/`
 - `http://127.0.0.1:4181/mini-consumer/`
 
+The page header shows `🖇️ v0.1.2`. Use this marker to confirm this iteration.
+
 The fake driver is the default. It does not need a provider login.
 
 ## 3. Check the reference console
@@ -46,21 +53,32 @@ The fake driver is the default. It does not need a provider login.
 Use the manifest list. Run these flows:
 
 1. Run **Completion**. Read the streaming and terminal messages.
-2. Run **Same-turn steering**. Type a new message while the turn is active.
+2. Expand a **Terminal** row, then expand **Debug details**. Confirm the folded
+   section contains canonical event metadata and provider payloads for the
+   command without leaving the chat transcript.
+   Assistant text should reveal progressively. For a real Codex semantic
+   completion, read the clear summary first and expand **Debug payload** to
+   inspect the exact structured JSON.
+3. Run **Same-turn steering**. Type a new message while the turn is active.
    The button says **Steer**. Check the acknowledgement.
-3. Run each interrupt flow. Confirm that the visible outcome names the race.
-4. Run **Command and file approvals**. Resolve one request. Confirm that the
+4. Run each interrupt flow. Confirm that the visible outcome names the race.
+5. Run **Command and file approvals**. Resolve one request. Confirm that the
    card locks after the first click and later shows the canonical result.
-5. Run **Goal lifecycle**. Set and clear the goal from the Goal menu.
-6. Press **Drop connection**. Watch reconnect and gap recovery use the same
+6. Run **Goal lifecycle**. Set and clear the goal from the Goal menu.
+7. Press **Drop connection**. Watch reconnect and gap recovery use the same
    session.
-7. Enter replay. Step with Left and Right. Confirm the inspector says the
+8. Enter replay. Step with Left and Right. Confirm the inspector says the
    replay matches live state.
-8. Run **Item and turn failure**. Confirm that the exact server diagnostic is
+9. Run **Item and turn failure**. Confirm that the exact server diagnostic is
    part of the transcript.
 
-Resize the browser to 390 by 844. The app must show one pane at a time. It must
-not create a second hidden transcript or a horizontal page scrollbar.
+The clear response is a presentation of canonical provider output, not a
+second result model. The raw event stream remains in **Protocol inspector**.
+
+Resize the browser to 390 by 844. Chat and the composer must remain the primary
+view. Open **Menu** to reach session controls, the protocol inspector, and
+replay. The app must not create a second hidden transcript or a horizontal page
+scrollbar.
 
 ## 4. Check the mini consumer
 
