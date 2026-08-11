@@ -373,7 +373,11 @@ function renderRecoveryChip(
         // a ceiling, not a truncation the operator will normally see.
         "ml-1.5 max-w-(--sz-12rem) gap-0.5 text-(length:--text-nano)",
         tone.className,
-        selected ? "!border-muted-foreground !text-muted-foreground" : null,
+        // Multi-select desaturates the row to neutral grey. It must desaturate to
+        // the AA-safe neutral: the chip keeps its own `bg-muted` surface here, and
+        // `!text-muted-foreground` on that surface is the 4.34:1 failure this chip
+        // was just fixed for (PAP-17083).
+        selected ? "!border-recessed-foreground !text-recessed-foreground" : null,
       )}
       title={`${label} — open the source task to act.`}
     >

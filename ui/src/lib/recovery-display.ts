@@ -22,9 +22,12 @@ export const RECOVERY_CHIP_DEFAULT_TONE: Record<
   ActiveRecoveryDisplayState,
   { className: string; icon: typeof TriangleAlert; label: string; recessed: boolean }
 > = {
+  // `amber-800`, not `amber-700`: every chip renders at --text-nano (10px), so
+  // 4.5:1 is the bar. amber-700 on `bg-amber-500/15` measures 4.49:1 and fails;
+  // amber-800 measures 6.34:1 and keeps the same warning hue (PAP-17083).
   needed: {
     className:
-      "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+      "border-amber-500/60 bg-amber-500/15 text-amber-800 dark:text-amber-300",
     icon: TriangleAlert,
     label: "Recovery needed",
     recessed: false,
@@ -32,20 +35,25 @@ export const RECOVERY_CHIP_DEFAULT_TONE: Record<
   // Recessed on purpose: a recovery owner is already live or queued, so this is
   // progress reporting, not a call to action. Prominent amber/red is reserved
   // for `needed` (no owner/path) and `escalated` (a decision is truly required).
+  //
+  // Recession is carried by the NEUTRAL hue, never by low contrast:
+  // `text-muted-foreground` on solid `bg-muted` measured 4.34:1 at 10px and
+  // failed WCAG AA (PAP-17061 finding 3). `--recessed-foreground` is the
+  // AA-tuned neutral for exactly this pairing — 5.99:1, same quiet grey read.
   in_progress: {
-    className: "border-border bg-muted text-muted-foreground",
+    className: "border-border bg-muted text-recessed-foreground",
     icon: RefreshCw,
     label: "Recovery in progress",
     recessed: true,
   },
   observe_only: {
-    className: "border-border bg-muted text-muted-foreground",
+    className: "border-border bg-muted text-recessed-foreground",
     icon: Eye,
     label: "Observing active run",
     recessed: true,
   },
   escalated: {
-    className: "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
+    className: "border-red-500/60 bg-red-500/15 text-red-800 dark:text-red-300",
     icon: OctagonAlert,
     label: "Recovery escalated",
     recessed: false,

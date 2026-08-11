@@ -1,11 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
 import type { IssueRecoveryAction, IssueRelationIssueSummary } from "@paperclipai/shared";
-import { Eye, ExternalLink, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { IssueRecoveryActionCard } from "@/components/IssueRecoveryActionCard";
 import { RecoveryProgressLine } from "@/components/RecoveryProgressLine";
 import { IssueRow } from "@/components/IssueRow";
 import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
+import {
+  RECOVERY_CHIP_DEFAULT_TONE,
+  type ActiveRecoveryDisplayState,
+} from "@/lib/recovery-display";
+import { cn } from "@/lib/utils";
 import { storybookAgentMap, storybookAgents, createIssue } from "../fixtures/paperclipData";
 
 const claudeAgent = storybookAgents.find((agent) => agent.name.toLowerCase().startsWith("claude")) ?? storybookAgents[0]!;
@@ -251,38 +256,26 @@ function BlockerNoticePanel() {
   );
 }
 
-type RunCardRecoveryState = "needed" | "in_progress" | "observe_only" | "escalated";
+type RunCardRecoveryState = ActiveRecoveryDisplayState;
 
-const RUN_CARD_RECOVERY_TONE: Record<RunCardRecoveryState, { icon: typeof TriangleAlert; label: string; className: string }> = {
-  needed: {
-    icon: TriangleAlert,
-    label: "Recovery needed",
-    className: "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300",
-  },
-  in_progress: {
-    icon: RefreshCw,
-    label: "Recovery in progress",
-    // Recessed: a live/queued recovery owner is progress, not a call to action.
-    className: "border-border bg-muted text-muted-foreground",
-  },
-  observe_only: {
-    icon: Eye,
-    label: "Observing active run",
-    className: "border-border bg-muted text-muted-foreground",
-  },
-  escalated: {
-    icon: OctagonAlert,
-    label: "Recovery escalated",
-    className: "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
-  },
-};
-
+// This mock deliberately holds NO tone table of its own. It used to keep a
+// hand-copied one, which silently drifted off `RECOVERY_CHIP_DEFAULT_TONE`:
+// when PAP-17083 moved the recessed chip onto the AA-safe neutral, this story
+// kept rendering the old `text-muted-foreground` on `bg-muted` and axe still
+// measured 4.34:1 here (and 4.41:1 on the amber `needed` chip) after the real
+// components were fixed. Reading the shared table is what makes this story
+// evidence rather than decoration.
 function ActiveRunRecoveryChip({ state }: { state: RunCardRecoveryState }) {
-  const tone = RUN_CARD_RECOVERY_TONE[state];
+  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone.className}`}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 font-medium",
+        // Token type scale, not an arbitrary `text-[10px]`.
+        "text-(length:--text-nano)",
+        tone.className,
+      )}
       role="status"
       aria-label={tone.label}
     >

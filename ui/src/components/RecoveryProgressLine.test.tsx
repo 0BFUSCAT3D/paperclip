@@ -194,7 +194,7 @@ describe("RecoveryProgressLine", () => {
       />,
     );
     const toggle = host.querySelector('[data-testid="recovery-progress-line-toggle"]');
-    expect(toggle?.className).toContain("text-muted-foreground");
+    expect(toggle?.className).toContain("text-recessed-foreground");
     expect(toggle?.className).not.toMatch(/amber|red|sky/);
     const card = host.querySelector("[data-recovery-state][role='status']");
     // Light and dark both resolve from the muted token pair — no per-theme literals.
@@ -219,9 +219,12 @@ describe("RecoveryProgressLine", () => {
 
   // PAP-17070: `text-muted-foreground/70` measured 2.71:1 (light) and 4.20:1
   // (dark) against the surfaces this line renders on — a serious axe
-  // `color-contrast` violation at 12px. The undiluted token measures 4.73:1 and
-  // 7.63:1, and 4.53:1 against the `hover:bg-muted/50` wash, so the hint must
-  // inherit the button's colour rather than fade it further.
+  // `color-contrast` violation at 12px.
+  //
+  // PAP-17083 then retired `--muted-foreground` here entirely. It is only just
+  // AA on paper (4.73:1) and drops to 4.53:1 under this button's own
+  // `hover:bg-muted/50` wash — a 0.03 margin at 12px. `--recessed-foreground`
+  // holds 6.54:1 resting / 6.40:1 hovered.
   it("does not dilute the disclosure hint below WCAG AA contrast", () => {
     for (const open of [false, true]) {
       const host = render(
@@ -235,11 +238,11 @@ describe("RecoveryProgressLine", () => {
       const hint = host.querySelector('[data-testid="recovery-progress-line-hint"]');
       expect(hint?.textContent).toContain(open ? "Hide details" : "Details");
       // No opacity-diluted foreground token anywhere on the hint...
-      expect(hint?.className).not.toMatch(/text-(muted-)?foreground\/\d+/);
+      expect(hint?.className).not.toMatch(/text-(muted-|recessed-)?foreground\/\d+/);
       // ...and no diluted token on the button it inherits from either.
       const toggle = host.querySelector('[data-testid="recovery-progress-line-toggle"]');
-      expect(toggle?.className).toContain("text-muted-foreground");
-      expect(toggle?.className).not.toMatch(/text-(muted-)?foreground\/\d+/);
+      expect(toggle?.className).toContain("text-recessed-foreground");
+      expect(toggle?.className).not.toMatch(/text-(muted-|recessed-)?foreground\/\d+/);
       // Hierarchy is carried by weight: the label is medium, the hint is not.
       expect(host.querySelector(".truncate")?.className).toContain("font-medium");
       expect(hint?.className).toContain("font-normal");

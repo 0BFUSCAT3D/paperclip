@@ -141,12 +141,36 @@ const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
     "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
 };
 
+/**
+ * Neutral subordinate text in this file uses `text-recessed-foreground`, never
+ * `text-muted-foreground` (PAP-17083).
+ *
+ * `--muted-foreground` is tuned against `--background` (4.73:1). Nothing in this
+ * card is on `--background`: every surface is a tint (`bg-amber-50/85`,
+ * `bg-red-50/85`, `bg-emerald-50/80`, `bg-muted/40`) or a wash layered on one
+ * (`bg-background/40|60|70`, `bg-muted/30`). Across those 20 composited
+ * surfaces `--muted-foreground` outright FAILS AA on three of them
+ * (`bg-red-50/85` 4.39:1 — the regression PAP-17061 measured, `bg-muted/30` over
+ * red 4.37:1, `bg-muted/30` over emerald 4.48:1) and clears the other seventeen
+ * by only 0.01–0.19. Since the card renders at --text-micro/--text-nano, the bar
+ * is 4.5:1, so that is no margin at all. `--recessed-foreground` clears every
+ * one of the 20 at >=6.04:1 and is identical in dark mode.
+ */
 const STATE_TONE: Record<RecoveryCardCardState, {
   label: string;
   containerClass: string;
   iconWrapClass: string;
   iconClass: string;
   labelClass: string;
+  /**
+   * Subordinate microcopy on the card's OWN tinted surface (the footer hint at
+   * --text-micro). A neutral `text-muted-foreground` here measured 4.39:1 on
+   * `bg-red-50/85` and failed WCAG AA (PAP-17061 finding 3) — a tinted card
+   * needs a foreground from its own ramp, not the paper-tuned neutral. The
+   * microcopy stays subordinate through weight and normal case, never through
+   * contrast (the PAP-17070 lesson).
+   */
+  metaClass: string;
   Icon: typeof TriangleAlert;
   divider: string;
 }> = {
@@ -157,6 +181,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     iconWrapClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200",
     iconClass: "text-amber-700 dark:text-amber-300",
     labelClass: "text-amber-900 dark:text-amber-200",
+    metaClass: "text-amber-900 dark:text-amber-200",
     Icon: TriangleAlert,
     divider: "border-amber-300/60 dark:border-amber-500/30",
   },
@@ -167,8 +192,9 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     containerClass:
       "border-border bg-muted/40 text-foreground dark:bg-muted/20",
     iconWrapClass: "bg-muted text-foreground/70",
-    iconClass: "text-muted-foreground",
-    labelClass: "text-muted-foreground",
+    iconClass: "text-recessed-foreground",
+    labelClass: "text-recessed-foreground",
+    metaClass: "text-recessed-foreground",
     Icon: RefreshCw,
     divider: "border-border/70",
   },
@@ -177,8 +203,9 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     containerClass:
       "border-border bg-muted/40 text-foreground dark:bg-muted/20",
     iconWrapClass: "bg-muted text-foreground/70",
-    iconClass: "text-muted-foreground",
-    labelClass: "text-muted-foreground",
+    iconClass: "text-recessed-foreground",
+    labelClass: "text-recessed-foreground",
+    metaClass: "text-recessed-foreground",
     Icon: Eye,
     divider: "border-border/70",
   },
@@ -189,6 +216,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     iconWrapClass: "bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200",
     iconClass: "text-red-700 dark:text-red-300",
     labelClass: "text-red-900 dark:text-red-200",
+    metaClass: "text-red-900 dark:text-red-200",
     Icon: OctagonAlert,
     divider: "border-red-400/50 dark:border-red-500/30",
   },
@@ -199,6 +227,7 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     iconWrapClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
     iconClass: "text-emerald-700 dark:text-emerald-300",
     labelClass: "text-emerald-900 dark:text-emerald-200",
+    metaClass: "text-emerald-900 dark:text-emerald-200",
     Icon: Sparkles,
     divider: "border-emerald-300/60 dark:border-emerald-500/30",
   },
@@ -388,7 +417,7 @@ const ANCESTRY_BADGE: Record<
   },
   unknown: {
     label: "Ancestry unknown",
-    className: "border-border bg-muted/60 text-muted-foreground",
+    className: "border-border bg-muted/60 text-recessed-foreground",
   },
 };
 
@@ -404,18 +433,18 @@ function BranchFacet({
   const shortSha = formatShortSha(sha);
   return (
     <div className="min-w-0 rounded-md border border-border/70 bg-background/60 px-2.5 py-2">
-      <div className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+      <div className="text-(length:--text-nano) font-medium uppercase tracking-(--tracking-label) text-recessed-foreground">
         {label}
       </div>
       <div className="mt-1 flex items-center gap-1.5">
-        <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        <GitBranch className="h-3.5 w-3.5 shrink-0 text-recessed-foreground" aria-hidden />
         {branch ? (
           <code className="truncate font-mono text-xs text-foreground/90">{branch}</code>
         ) : (
-          <span className="text-xs italic text-muted-foreground">detached / unknown</span>
+          <span className="text-xs italic text-recessed-foreground">detached / unknown</span>
         )}
       </div>
-      <div className="mt-0.5 pl-5 font-mono text-(length:--text-micro) text-muted-foreground">
+      <div className="mt-0.5 pl-5 font-mono text-(length:--text-micro) text-recessed-foreground">
         {shortSha ? `@ ${shortSha}` : "@ —"}
       </div>
     </div>
@@ -439,7 +468,7 @@ function DivergenceDiagnosis({
       )}
     >
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+        <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-recessed-foreground">
           Divergence diagnosis
         </span>
         <Badge variant="outline"
@@ -543,7 +572,7 @@ function BreakGlassOverride({
             <OctagonAlert className="h-3.5 w-3.5" aria-hidden />
             Break-glass reconciliation
           </div>
-          <p className="text-xs leading-5 text-muted-foreground">
+          <p className="text-xs leading-5 text-recessed-foreground">
             This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
             branch{" "}
             <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
@@ -555,26 +584,26 @@ function BreakGlassOverride({
           className="space-y-1.5 rounded-md border border-red-400/40 bg-red-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Recorded · expected</dt>
+            <dt className="shrink-0 text-recessed-foreground">Recorded · expected</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
               {divergence.expectedBranch ?? "detached"}
               {expectedSha ? ` @ ${expectedSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live · checked out</dt>
+            <dt className="shrink-0 text-recessed-foreground">Live · checked out</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
               {divergence.liveBranch ?? "detached"}
               {liveSha ? ` @ ${liveSha}` : ""}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Ancestry verdict</dt>
+            <dt className="shrink-0 text-recessed-foreground">Ancestry verdict</dt>
             <dd className="font-medium">{verdictBadge.label}</dd>
           </div>
         </dl>
         <div className="space-y-1">
-          <Label htmlFor="recovery-breakglass-reason" className="text-(length:--text-micro) text-muted-foreground">
+          <Label htmlFor="recovery-breakglass-reason" className="text-(length:--text-micro) text-recessed-foreground">
             Reason <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
           </Label>
           <Textarea
@@ -656,7 +685,7 @@ function RepairWorkspace({
       <div className="flex flex-col gap-1" data-testid="recovery-action-repair-disabled">
         {trigger}
         {disabledReason ? (
-          <span className="text-(length:--text-nano) leading-4 text-muted-foreground">
+          <span className="text-(length:--text-nano) leading-4 text-recessed-foreground">
             {disabledReason}
           </span>
         ) : null}
@@ -680,7 +709,7 @@ function RepairWorkspace({
             <Wrench className="h-3.5 w-3.5" aria-hidden />
             Repair workspace
           </div>
-          <p className="text-xs leading-5 text-muted-foreground">
+          <p className="text-xs leading-5 text-recessed-foreground">
             This is lossless — no reason required. Your uncommitted changes are committed onto a fresh
             rescue branch, then the recorded branch is restored so the task can resume. The live branch
             is left exactly as it is.
@@ -691,30 +720,30 @@ function RepairWorkspace({
           className="space-y-1.5 rounded-md border border-sky-400/30 bg-sky-500/5 px-2.5 py-2 text-(length:--text-micro)"
         >
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Dirty changes</dt>
+            <dt className="shrink-0 text-recessed-foreground">Dirty changes</dt>
             <dd data-testid="recovery-repair-dirty-count" className="font-medium text-foreground/90">
               {dirtyLabel}
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Live branch</dt>
+            <dt className="shrink-0 text-recessed-foreground">Live branch</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
               {divergence.liveBranch ?? "detached"}
-              <span className="ml-1 font-sans text-muted-foreground">(left untouched)</span>
+              <span className="ml-1 font-sans text-recessed-foreground">(left untouched)</span>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Rescue branch</dt>
+            <dt className="shrink-0 text-recessed-foreground">Rescue branch</dt>
             <dd
               data-testid="recovery-repair-rescue-branch"
               className="min-w-0 truncate font-mono text-foreground/90"
             >
               {divergence.rescueBranchPreview}
-              <span className="text-muted-foreground">&lt;timestamp&gt;</span>
+              <span className="text-recessed-foreground">&lt;timestamp&gt;</span>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-2">
-            <dt className="shrink-0 text-muted-foreground">Restore to</dt>
+            <dt className="shrink-0 text-recessed-foreground">Restore to</dt>
             <dd className="min-w-0 truncate font-mono text-foreground/90">
               {divergence.expectedBranch ?? "recorded branch"}
             </dd>
@@ -791,7 +820,7 @@ function MetadataRow({
 }) {
   return (
     <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
-      <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+      <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-recessed-foreground">
         {label}
       </dt>
       <dd className="min-w-0 break-words text-foreground/90">{children}</dd>
@@ -800,7 +829,7 @@ function MetadataRow({
 }
 
 function MissingValue() {
-  return <span className="text-muted-foreground">—</span>;
+  return <span className="text-recessed-foreground">—</span>;
 }
 
 function AgentLink({
@@ -847,7 +876,7 @@ function RunChip({
         run {short}
       </code>
       {status ? (
-        <span className="font-sans text-(length:--text-micro) text-muted-foreground">{status}</span>
+        <span className="font-sans text-(length:--text-micro) text-recessed-foreground">{status}</span>
       ) : null}
     </>
   );
@@ -1045,13 +1074,13 @@ export function IssueRecoveryActionCard({
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)">
             <span className={tone.labelClass}>{tone.label}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
-            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) tracking-normal text-muted-foreground">
+            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) tracking-normal text-recessed-foreground">
               {KIND_LABEL[action.kind] ?? action.kind}
             </code>
             {updatedAtLabel ? (
               <>
                 <span className="text-muted-foreground/60" aria-hidden>·</span>
-                <span className="font-medium normal-case tracking-normal text-muted-foreground">
+                <span className="font-medium normal-case tracking-normal text-recessed-foreground">
                   {updatedAtLabel}
                 </span>
               </>
@@ -1066,7 +1095,7 @@ export function IssueRecoveryActionCard({
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
               <>
-                <span className="text-muted-foreground">Recovery:</span>
+                <span className="text-recessed-foreground">Recovery:</span>
                 <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
               </>
             ) : action.ownerType === "board" ? (
@@ -1076,11 +1105,11 @@ export function IssueRecoveryActionCard({
             ) : action.ownerType === "system" ? (
               <span className="font-medium">System</span>
             ) : (
-              <span className="text-muted-foreground">unassigned — pick one to wake them</span>
+              <span className="text-recessed-foreground">unassigned — pick one to wake them</span>
             )}
             {action.returnOwnerAgentId ? (
               <>
-                <span className="text-muted-foreground">→ Returns to:</span>
+                <span className="text-recessed-foreground">→ Returns to:</span>
                 <AgentLink agentId={action.returnOwnerAgentId} agentMap={agentMap} />
               </>
             ) : null}
@@ -1114,12 +1143,12 @@ export function IssueRecoveryActionCard({
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-recessed-foreground">
                 attempt {action.attemptCount} of {action.maxAttempts}
               </span>
             ) : null}
             {showTimeoutInline ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-recessed-foreground">
                 Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
               </span>
             ) : null}
@@ -1156,7 +1185,7 @@ export function IssueRecoveryActionCard({
                 sideOffset={6}
                 className="w-72 p-1.5"
               >
-                <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                <div className="px-2 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-recessed-foreground">
                   Resolve recovery
                 </div>
                 <div className="flex flex-col">
@@ -1172,7 +1201,7 @@ export function IssueRecoveryActionCard({
                       )}
                     >
                       <span className="font-medium leading-5">{option.label}</span>
-                      <span className="text-(length:--text-micro) leading-4 text-muted-foreground">{option.description}</span>
+                      <span className="text-(length:--text-micro) leading-4 text-recessed-foreground">{option.description}</span>
                     </button>
                   ))}
                 </div>
@@ -1234,28 +1263,28 @@ export function IssueRecoveryActionCard({
               </PopoverTrigger>
               <PopoverContent align="start" sideOffset={6} className="w-80 space-y-3 p-3">
                 <div className="space-y-1">
-                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-recessed-foreground">
                     Re-issue on isolated workspace
                   </div>
-                  <p className="text-xs leading-5 text-muted-foreground">
+                  <p className="text-xs leading-5 text-recessed-foreground">
                     Creates a fresh copy of this task on an isolated git worktree based on the live
                     branch. Your current workspace and its commits are left untouched.
                   </p>
                 </div>
                 <dl className="space-y-1 rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-(length:--text-micro)">
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Base ref</dt>
+                    <dt className="text-recessed-foreground">Base ref</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/90">{reissueBaseRef}</dd>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <dt className="text-muted-foreground">Recorded</dt>
+                    <dt className="text-recessed-foreground">Recorded</dt>
                     <dd className="min-w-0 truncate font-mono text-foreground/80">
                       {divergence.expectedBranch ?? "—"}
                     </dd>
                   </div>
                   {reissueVerdictBadge ? (
                     <div className="flex items-center justify-between gap-2">
-                      <dt className="text-muted-foreground">Ancestry</dt>
+                      <dt className="text-recessed-foreground">Ancestry</dt>
                       <dd className="font-medium">{reissueVerdictBadge.label}</dd>
                     </div>
                   ) : null}
@@ -1289,16 +1318,25 @@ export function IssueRecoveryActionCard({
           ) : null}
           {showResolveActions ? (
             cardState === "observe_only" ? (
-              <span className="text-(length:--text-micro) text-muted-foreground">
+              <span
+                data-testid="recovery-card-meta"
+                className={cn("text-(length:--text-micro)", tone.metaClass)}
+              >
                 Recovery is observing without interrupting the live run.
               </span>
             ) : cardState === "in_progress" ? (
-              <span className="text-(length:--text-micro) text-muted-foreground">
+              <span
+                data-testid="recovery-card-meta"
+                className={cn("text-(length:--text-micro)", tone.metaClass)}
+              >
                 {ownerName ? `${ownerName} is on it` : "An owner is on it"} — resolve only to
                 override the in-flight recovery.
               </span>
             ) : (
-              <span className="text-(length:--text-micro) text-muted-foreground">
+              <span
+                data-testid="recovery-card-meta"
+                className={cn("text-(length:--text-micro)", tone.metaClass)}
+              >
                 The card stays open until an explicit decision is recorded.
               </span>
             )

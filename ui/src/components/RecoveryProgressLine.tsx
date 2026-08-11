@@ -60,17 +60,21 @@ export function RecoveryProgressLine({
         aria-controls={detailsId}
         data-testid="recovery-progress-line-toggle"
         className={cn(
-          "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-muted-foreground",
+          // `text-recessed-foreground`, not `text-muted-foreground`: the resting
+          // state is on paper (4.73:1) but the `hover:bg-muted/50` wash drops
+          // `--muted-foreground` to 4.53:1 at 12px — a 0.03 margin. The recessed
+          // token holds 6.54:1 resting and 6.40:1 hovered (PAP-17083).
+          "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-recessed-foreground",
           "hover:bg-muted/50 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
         )}
       >
         <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate font-medium">{label}</span>
-        {/* Inherits the button's `text-muted-foreground`; the hint must NOT be
-            diluted further (`text-muted-foreground/70` measured 2.71:1 light /
-            4.20:1 dark and failed WCAG AA — PAP-17070). Weight, not contrast,
-            is what keeps this subordinate to the label. */}
+        {/* Inherits the button's `text-recessed-foreground`; the hint must NOT be
+            diluted (`text-muted-foreground/70` measured 2.71:1 light / 4.20:1
+            dark and failed WCAG AA — PAP-17070). Weight, not contrast, is what
+            keeps this subordinate to the label. */}
         <span data-testid="recovery-progress-line-hint" className="hidden shrink-0 font-normal sm:inline">
           · {open ? "Hide details" : "Details"}
         </span>
