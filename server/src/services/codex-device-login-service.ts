@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type {
@@ -36,6 +36,13 @@ import { environmentService } from "./environments.js";
 
 /** The host timeout for the sandbox login command. It is exactly five minutes. */
 export const CODEX_DEVICE_LOGIN_TIMEOUT_MS = 300_000;
+
+/**
+ * The lease-metadata key that tags a login sandbox lease with its session
+ * identifier. The runtime stamps it at acquisition. The reaper reads it to find
+ * an orphan lease that no live session references. It is not a public field.
+ */
+export const LOGIN_LEASE_SESSION_TAG_KEY = "adapterLoginSessionId";
 
 /** The default Codex adapter type for a login session. */
 export const CODEX_DEVICE_LOGIN_ADAPTER_TYPE: AgentAdapterType = "codex_local";
@@ -236,6 +243,31 @@ export interface AdapterAuthSessionStore {
   get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
 }
 
+/** The three active statuses. A row in one of these states holds the company
+ *  credential slot, so it is non-terminal and can time out. */
+export const ADAPTER_AUTH_ACTIVE_STATUSES: readonly AdapterAuthSessionInternalStatus[] = [
+  "starting",
+  "waiting_for_user",
+  "promoting",
+];
+
+/**
+ * The read side the reaper needs. The reaper sweeps three sets: the expired
+ * non-terminal sessions, the terminal `cleanup_pending` sessions, and the
+ * provider leases that no live session references. The db-backed store
+ * implements this next to {@link AdapterAuthSessionStore}.
+ */
+export interface AdapterAuthReaperStore {
+  /** The non-terminal sessions with an `expiresAt` at or before `now`. */
+  listExpiredActiveSessions(now: Date): Promise<AdapterAuthSessionRow[]>;
+  /** The terminal sessions left in the internal `cleanup_pending` state. */
+  listCleanupPendingSessions(): Promise<AdapterAuthSessionRow[]>;
+  /** Every provider lease reference a session row still holds. */
+  listLeaseReferences(): Promise<string[]>;
+  setStatus(input: SetAdapterAuthSessionStatusInput): Promise<void>;
+  get(sessionId: string): Promise<AdapterAuthSessionRow | null>;
+}
+
 // The Postgres unique-violation code. The database driver sets it on the error,
 // and the query builder can wrap that error, so read the code from the error and
 // from its cause chain.
@@ -273,7 +305,9 @@ function toRow(row: typeof adapterAuthSessions.$inferSelect): AdapterAuthSession
 /** Build the Postgres-backed store. The partial unique index on the active
  *  statuses serializes the company credential slot; the insert maps its conflict
  *  to {@link AdapterAuthSessionConflictError}. */
-export function createDbAdapterAuthSessionStore(db: Db): AdapterAuthSessionStore {
+export function createDbAdapterAuthSessionStore(
+  db: Db,
+): AdapterAuthSessionStore & AdapterAuthReaperStore {
   return {
     async insert(input) {
       try {
@@ -323,6 +357,38 @@ export function createDbAdapterAuthSessionStore(db: Db): AdapterAuthSessionStore
       const row = rows[0];
       return row ? toRow(row) : null;
     },
+    async listExpiredActiveSessions(nowAt) {
+      // The partial index on the active statuses and the index on `expiresAt`
+      // both support this scan. The scan is bounded by the active-status set, so
+      // it never reads a terminal row.
+      const rows = await db
+        .select()
+        .from(adapterAuthSessions)
+        .where(
+          and(
+            inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_ACTIVE_STATUSES]),
+            isNotNull(adapterAuthSessions.expiresAt),
+            lte(adapterAuthSessions.expiresAt, nowAt),
+          ),
+        );
+      return rows.map(toRow);
+    },
+    async listCleanupPendingSessions() {
+      const rows = await db
+        .select()
+        .from(adapterAuthSessions)
+        .where(eq(adapterAuthSessions.status, "cleanup_pending"));
+      return rows.map(toRow);
+    },
+    async listLeaseReferences() {
+      const rows = await db
+        .select({ providerLeaseId: adapterAuthSessions.providerLeaseId })
+        .from(adapterAuthSessions)
+        .where(isNotNull(adapterAuthSessions.providerLeaseId));
+      return rows
+        .map((row) => row.providerLeaseId)
+        .filter((value): value is string => value != null);
+    },
   };
 }
 
@@ -343,7 +409,7 @@ function encodePendingTerminal(
   return reason ? `${terminal}|${reason}` : terminal;
 }
 
-function decodePendingTerminal(value: string | null): {
+export function decodePendingTerminal(value: string | null): {
   terminal: AdapterAuthSessionStatus;
   reason: string | null;
 } {
@@ -358,6 +424,65 @@ function decodePendingTerminal(value: string | null): {
     terminal: value.slice(0, separatorIndex) as AdapterAuthSessionStatus,
     reason: value.slice(separatorIndex + 1) || null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The shared terminal-cleanup transition. The timer path and the reaper path
+// both delete the sandbox and then choose one durable write. This keeps one term
+// for a confirmed delete and one encoding for a failed delete.
+// ---------------------------------------------------------------------------
+
+/**
+ * A confirmed delete. The service treats `deleted` and `not_found` as confirmed.
+ * `not_found` is the idempotent confirmation: the sandbox is already gone, so a
+ * repeated delete is safe. A rejected delete (a thrown error) is not confirmed.
+ */
+export function isConfirmedDelete(result: SandboxDeleteResult): boolean {
+  return result.outcome === "deleted" || result.outcome === "not_found";
+}
+
+/** The result of one sandbox delete attempt. */
+export interface SandboxDeleteObservation {
+  /** True when the delete seam ran, whether or not it confirmed. */
+  observed: boolean;
+  /** True when the provider confirmed the delete. */
+  confirmed: boolean;
+}
+
+/**
+ * Run the delete seam once and observe the result. A rejection is an observed
+ * but unconfirmed delete; the caller records `cleanup_pending`.
+ */
+export async function observeSandboxDelete(
+  deleteSandbox: () => Promise<SandboxDeleteResult>,
+): Promise<SandboxDeleteObservation> {
+  try {
+    const result = await deleteSandbox();
+    return { observed: true, confirmed: isConfirmedDelete(result) };
+  } catch {
+    return { observed: true, confirmed: false };
+  }
+}
+
+/** One durable status write for a terminal cleanup. */
+export interface TerminalCleanupWrite {
+  status: AdapterAuthSessionInternalStatus;
+  failureReason: string | null;
+}
+
+/**
+ * Choose the durable write after a delete attempt. A confirmed delete writes the
+ * terminal public status. An unconfirmed delete writes the internal
+ * `cleanup_pending` state that keeps the terminal for a later reaper retry.
+ */
+export function terminalCleanupWrite(
+  confirmed: boolean,
+  terminal: AdapterAuthSessionStatus,
+  reason: string | null,
+): TerminalCleanupWrite {
+  return confirmed
+    ? { status: terminal, failureReason: reason }
+    : { status: "cleanup_pending", failureReason: encodePendingTerminal(terminal, reason) };
 }
 
 // ---------------------------------------------------------------------------
@@ -589,59 +714,26 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     const { sessionId, lease, terminal, reason, transition, activity } = ctx;
 
     // The cleanup-state handoff. The service owns and observes the provider
-    // delete on every terminal path.
-    const del = await observeDelete(lease, activity);
-    const finishedAt = now();
-
-    if (!del.confirmed) {
-      // The delete failed or returned an unknown result. Record the durable
-      // internal `cleanup_pending` state before the terminal outcome, so a
-      // reaper retries the delete. Keep the resolved terminal and the failure
-      // code in the row, so the reaper finalizes the public status.
-      await transition("cleanup_pending", {
-        finishedAt,
-        failureReason: encodePendingTerminal(terminal, reason),
-      });
-      activity("cleanup_pending");
-      return {
-        sessionId,
-        status: terminal,
-        cleanupPending: true,
-        sandboxDeleteObserved: del.observed,
-      };
+    // delete on every terminal path. The reaper path shares the same delete
+    // observation and the same durable-write choice.
+    const observation = await observeSandboxDelete(() => lease.deleteSandbox());
+    if (observation.confirmed) {
+      activity("sandbox_deleted");
     }
+    const finishedAt = now();
+    const write = terminalCleanupWrite(observation.confirmed, terminal, reason);
 
-    // The delete is confirmed. Record the terminal public status and release the
-    // active claim.
-    await transition(terminal, { finishedAt, failureReason: reason });
-    activity(terminal as LoginSessionActivityPhase);
+    // A failed delete records the durable internal `cleanup_pending` state before
+    // the terminal outcome, so a reaper retries the delete. A confirmed delete
+    // records the terminal public status and releases the active claim.
+    await transition(write.status, { finishedAt, failureReason: write.failureReason });
+    activity(observation.confirmed ? (terminal as LoginSessionActivityPhase) : "cleanup_pending");
     return {
       sessionId,
       status: terminal,
-      cleanupPending: false,
-      sandboxDeleteObserved: del.observed,
+      cleanupPending: !observation.confirmed,
+      sandboxDeleteObserved: observation.observed,
     };
-  }
-
-  async function observeDelete(
-    lease: LoginSessionLease,
-    activity: (phase: LoginSessionActivityPhase) => void,
-  ): Promise<{ observed: boolean; confirmed: boolean }> {
-    try {
-      const result = await lease.deleteSandbox();
-      // Only `deleted` and `not_found` are confirmed deletes. `not_found` is an
-      // idempotent confirmation. Any other or unknown value is not a confirmed
-      // delete.
-      const confirmed = result.outcome === "deleted" || result.outcome === "not_found";
-      if (confirmed) {
-        activity("sandbox_deleted");
-      }
-      return { observed: true, confirmed };
-    } catch {
-      // The provider delete rejected. The service observed a delete attempt, but
-      // the delete is not confirmed. The caller records `cleanup_pending`.
-      return { observed: true, confirmed: false };
-    }
   }
 
   async function readOwnerSession(
@@ -791,6 +883,12 @@ export function createProductionLoginSessionRuntime(
         // Apply the active custom-image template, so the sandbox binds to the
         // trusted image and runtime identity.
         applyCustomImageTemplate: true,
+      });
+      // Tag the lease with the session identifier, so the reaper resolves an
+      // orphan lease that no live session references. The tag carries no secret.
+      await environmentsSvc.updateLeaseMetadata(record.lease.id, {
+        ...(record.lease.metadata ?? {}),
+        [LOGIN_LEASE_SESSION_TAG_KEY]: input.sessionId,
       });
       const sessionHome = sessionCodexHomePath(input.sessionId);
       const authPath = sessionCredentialPath(input.sessionId);
