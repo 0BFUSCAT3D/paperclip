@@ -1807,6 +1807,20 @@ export function AdapterLoginPanel({
     },
   });
 
+  const cancelLogin = useMutation({
+    mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
+    onSuccess: () => {
+      // Reset local state, so the panel returns to its idle start state and the
+      // Log in button is available again.
+      setSessionId(null);
+      setLatchedPrompt(null);
+      setStartError(null);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+    },
+  });
+
   const statusQuery = useQuery({
     queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
     queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
@@ -1837,34 +1851,53 @@ export function AdapterLoginPanel({
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-foreground">Sign in to the sandbox</span>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-7 px-2.5 text-xs"
-          disabled={startDisabled}
-          onClick={() => startLogin.mutate()}
-        >
-          Log in
-        </Button>
+        <div className="flex items-center gap-1.5">
+          {isActive && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+              disabled={cancelLogin.isPending}
+              onClick={() => cancelLogin.mutate()}
+            >
+              Cancel
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={startDisabled}
+            onClick={() => startLogin.mutate()}
+          >
+            Log in
+          </Button>
+        </div>
       </div>
 
       {startError && (
-        <div className="text-(length:--text-micro) text-destructive">{startError}</div>
-      )}
-
-      {isActive && !prompt && (
-        <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
-          <Loader2 className="size-3 animate-spin shrink-0" />
-          <span>Preparing the login…</span>
+        <div role="alert" className="text-(length:--text-micro) text-destructive">
+          {startError}
         </div>
       )}
 
-      {isActive && prompt && (
-        <div className="space-y-2">
-          <div className="text-(length:--text-micro) text-muted-foreground">
-            Open the authentication page and enter the code.
+      {/* One live region announces the loading, prompt, and terminal states, so a
+          screen reader reports each transition without a re-navigation. */}
+      <div role="status" aria-live="polite" className="space-y-2 empty:hidden">
+        {isActive && !prompt && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Preparing the login…</span>
           </div>
+        )}
+
+        {isActive && prompt && (
+          <div className="space-y-2">
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              Open the authentication page and enter the code.
+            </div>
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
@@ -1899,11 +1932,12 @@ export function AdapterLoginPanel({
             </div>
           </div>
         </div>
-      )}
+        )}
 
-      {isTerminal && status && (
-        <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
-      )}
+        {isTerminal && status && (
+          <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
+        )}
+      </div>
     </div>
   );
 }

@@ -835,6 +835,45 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("https://auth.example.test/device");
   });
 
+  it("shows a Cancel affordance while a login is active and cancels the session", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    // The Cancel button appears while the session is active.
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    await clickByText(result.container, "Cancel");
+    await flushReact();
+
+    expect(mockAgentsApi.cancelAdapterAuthLogin).toHaveBeenCalledWith(
+      "company-1",
+      "codex_local",
+      "session-1",
+    );
+    // The panel resets: the Log in button is available again and the code is gone.
+    const login = findButton(result.container, "Log in");
+    expect(login?.disabled).toBe(false);
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(result.container.textContent).not.toContain("WXYZ-1234");
+  });
+
+  it("announces the login state through a polite live region", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    const live = result.container.querySelector('[role="status"][aria-live="polite"]');
+    expect(live).toBeTruthy();
+    expect(live?.textContent).toContain("WXYZ-1234");
+  });
+
   it("opens the authentication URL in a new tab with a safe rel", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     const result = await renderCodexSandbox();
