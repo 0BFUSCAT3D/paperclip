@@ -33,6 +33,13 @@ export {
   type RunDeviceLoginOptions,
 } from "./device-login-runner.js";
 export { DEVICE_LOGIN_URL, type DeviceLoginPrompt } from "./device-login-parse.js";
+export {
+  promoteDeviceLoginCredential,
+  DeviceLoginReadinessError,
+  type CredentialReadinessResult,
+  type PromoteDeviceLoginCredentialInput,
+  type PromoteDeviceLoginCredentialOutcome,
+} from "./adapter-auth-promotion.js";
 export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
