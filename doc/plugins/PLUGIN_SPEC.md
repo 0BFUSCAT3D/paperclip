@@ -642,11 +642,16 @@ Serves a first-class repository provider contributed by a trusted extension
 package. Requires the `repository.providers.register` capability and a matching
 `repositoryProviders[]` manifest declaration.
 
-Methods: `repositoryProviderBeginInstallation`,
+Required methods: `repositoryProviderBeginInstallation`,
 `repositoryProviderCompleteInstallation`, `repositoryProviderDiscover`,
-`repositoryProviderRefreshMetadata`, `repositoryProviderSync`,
-`repositoryProviderDisconnect`, and
-`repositoryProviderResolveCloneCredential`.
+`repositoryProviderRefreshMetadata`, `repositoryProviderSync`, and
+`repositoryProviderResolveCloneCredential`. Registration is refused when the
+worker implements only some of them.
+
+Optional method: `repositoryProviderDisconnect`. Implement it to revoke an
+installation on the provider side. A provider with nothing to revoke may omit
+it — the host then skips the call and still tears the connection down locally,
+so an operator can always disconnect.
 
 Connector identity is `providerKey` plus a normalized `host`, so the same
 provider key can serve github.com and an enterprise install without either

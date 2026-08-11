@@ -2,6 +2,7 @@ import type {
   PluginRepositoryConnectionSnapshot,
   PluginRepositoryProviderBaseParams,
 } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type { RepositoryConnection, PluginRepositoryProviderDeclaration } from "@paperclipai/shared";
 import { normalizeRepositoryProviderHost } from "@paperclipai/shared";
 import { unprocessable } from "../../errors.js";
@@ -58,6 +59,14 @@ export const REQUIRED_REPOSITORY_PROVIDER_METHODS = [
 ] as const;
 
 /**
+ * Hooks a repository provider may leave unimplemented. Disconnect is advisory —
+ * it lets a provider revoke an installation on its side — so a provider that has
+ * nothing to revoke is allowed to omit it, and the host still tears the
+ * connection down locally.
+ */
+export const OPTIONAL_REPOSITORY_PROVIDER_METHODS = ["repositoryProviderDisconnect"] as const;
+
+/**
  * Methods a running worker declared at initialization but does not implement.
  * Returns an empty list when the worker manager cannot report them, since an
  * older worker handle predates the advertisement and is checked at call time.
@@ -69,6 +78,29 @@ export function missingRepositoryProviderMethods(
   const supported = workerManager.getWorker?.(pluginId)?.supportedMethods;
   if (!supported) return [];
   return REQUIRED_REPOSITORY_PROVIDER_METHODS.filter((method) => !supported.includes(method));
+}
+
+/**
+ * Whether a worker advertises an optional method.
+ *
+ * A worker that reports no method list at all predates the advertisement, so it
+ * is given the benefit of the doubt and the call is attempted — a worker that
+ * turns out not to implement it answers `METHOD_NOT_IMPLEMENTED`, which the
+ * caller treats as "nothing to do".
+ */
+function workerAdvertisesMethod(
+  workerManager: RepositoryProviderWorkerHost,
+  pluginId: string,
+  method: string,
+): boolean {
+  const supported = workerManager.getWorker?.(pluginId)?.supportedMethods;
+  if (!supported) return true;
+  return supported.includes(method);
+}
+
+/** True when an RPC failure means "the worker does not implement this method". */
+function isMethodNotImplemented(error: unknown): boolean {
+  return error instanceof JsonRpcCallError && error.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED;
 }
 
 export interface PluginRepositoryProviderConnectorOptions {
@@ -246,17 +278,30 @@ export function createPluginRepositoryProviderConnector(
       };
     },
 
+    /**
+     * Disconnect is optional for a provider. When the worker does not advertise
+     * the hook — or answers `METHOD_NOT_IMPLEMENTED` because it predates the
+     * advertisement — the host still tears the connection down locally instead
+     * of failing the disconnect and stranding the connection in `error`.
+     */
     async disconnect(input) {
       assertOwnedConnection(input.connection);
-      await options.workerManager.call(
-        options.pluginId,
-        "repositoryProviderDisconnect",
-        {
-          ...baseParams(input.connection.companyId),
-          connection: toSnapshot(input.connection),
-        },
-        timeoutMs,
-      );
+      if (!workerAdvertisesMethod(options.workerManager, options.pluginId, "repositoryProviderDisconnect")) {
+        return;
+      }
+      try {
+        await options.workerManager.call(
+          options.pluginId,
+          "repositoryProviderDisconnect",
+          {
+            ...baseParams(input.connection.companyId),
+            connection: toSnapshot(input.connection),
+          },
+          timeoutMs,
+        );
+      } catch (error) {
+        if (!isMethodNotImplemented(error)) throw error;
+      }
     },
 
     async resolveCloneCredential(input: ResolveCloneCredentialInput) {
