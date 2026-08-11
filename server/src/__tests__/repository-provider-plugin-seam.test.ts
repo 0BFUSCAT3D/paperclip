@@ -518,6 +518,34 @@ describe("bridge connector", () => {
     });
   });
 
+  it("sanitizes HTTP-shaped provider errors while preserving their status", async () => {
+    const connector = createPluginRepositoryProviderConnector({
+      pluginId: PLUGIN_ID,
+      pluginKey: PLUGIN_KEY,
+      declaration,
+      workerManager: fakeWorkerManager({
+        handlers: {
+          repositoryProviderSync: () => {
+            const error = new Error("provider failed token=ghs_supersecret at https://user:pw@github.example.com/x") as Error & {
+              status: number;
+              details: unknown;
+            };
+            error.status = 409;
+            error.details = { access_token: "ghs_supersecret" };
+            throw error;
+          },
+        },
+      }),
+    });
+
+    await connector.sync({ connection: connection(), cursor: null }).catch((error: Error & { status?: number; details?: unknown }) => {
+      expect(error.status).toBe(409);
+      expect(error.message).not.toContain("ghs_supersecret");
+      expect(error.message).not.toContain("user:pw@");
+      expect(error.details).toBeUndefined();
+    });
+  });
+
   it("rebuilds the credential audit from host-known values and marks it no-store", async () => {
     const conn = connection();
     const connector = createPluginRepositoryProviderConnector({

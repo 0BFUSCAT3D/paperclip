@@ -2,7 +2,7 @@ import {
   REPOSITORY_PROVIDER_ANY_HOST,
   normalizeRepositoryProviderHost,
 } from "@paperclipai/shared";
-import { unprocessable } from "../../errors.js";
+import { HttpError, unprocessable } from "../../errors.js";
 import {
   sanitizeRepositoryProviderError,
   sanitizeRepositoryProviderMetadata,
@@ -160,11 +160,11 @@ async function guarded<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     // Providers surface HTTP-shaped errors deliberately (422 for bad state,
-    // 409 for conflicts); those pass through with their status intact. Anything
-    // else becomes a sanitized 422 so a raw provider message — which may embed a
-    // token or an internal URL — never reaches a caller or a log line.
+    // 409 for conflicts). Preserve only their status; their message and details
+    // are still untrusted provider output and must not bypass sanitization.
     if (error && typeof error === "object" && typeof (error as { status?: unknown }).status === "number") {
-      throw error;
+      const status = (error as { status: number }).status;
+      throw new HttpError(status, sanitizeRepositoryProviderError(error));
     }
     throw unprocessable(sanitizeRepositoryProviderError(error));
   }
