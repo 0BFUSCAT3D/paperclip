@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -120,8 +120,12 @@ function scratchRoot() {
   return process.env.PAPERCLIP_RUN_SCRATCH_DIR ?? process.env.PAPERCLIP_SCRATCH_DIR ?? tmpdir();
 }
 
-async function createWorkingDirectory(prefix = "phase7-issue-thread-") {
-  return mkdtemp(resolve(scratchRoot(), prefix));
+async function createWorkingDirectory(root, prefix = "phase7-issue-thread-") {
+  // Managed previews can outlive the heartbeat that launched them. Paperclip
+  // removes that heartbeat's scratch directory when the run ends, so ensure
+  // the inherited parent still exists before every later session is minted.
+  await mkdir(root, { recursive: true });
+  return mkdtemp(resolve(root, prefix));
 }
 
 /** Mock-only fixture seed. Identifiers use the reserved `MCK-` prefix (§1.3). */
@@ -171,6 +175,7 @@ class RouteError extends Error {
 
 export function createPhase7IssueThreadMiddleware(options = {}) {
   const load = options.loadRunner ?? loadRunner;
+  const workingDirectoryRoot = options.scratchRoot ?? scratchRoot();
   let bootstrap = null;
   let bindHost = options.bindHost ?? "127.0.0.1";
   /**
@@ -195,7 +200,8 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     bootstrap = (async () => {
       const runner = await load();
       runner.assertPhase4bLoopbackBindHost(bindHost);
-      const workingDirectory = options.workingDirectory ?? (await createWorkingDirectory());
+      const workingDirectory =
+        options.workingDirectory ?? (await createWorkingDirectory(workingDirectoryRoot));
       const service = new runner.Phase7LiveSessionService({
         store: new runner.InMemoryPhase7LiveSessionStore(),
         ...(options.transportFactory === undefined
@@ -322,7 +328,10 @@ export function createPhase7IssueThreadMiddleware(options = {}) {
     for (const stale of open.slice(0, Math.max(0, open.length - (MAX_CLEAN_ROOM_SESSIONS - 1)))) {
       await retire(service, stale.session.id, "clean-room capacity");
     }
-    const workingDirectory = await createWorkingDirectory("phase7-clean-room-");
+    const workingDirectory = await createWorkingDirectory(
+      workingDirectoryRoot,
+      "phase7-clean-room-",
+    );
     const { identity, input } = runner.createPhase7CleanRoomSessionInput({ workingDirectory });
     let session;
     try {

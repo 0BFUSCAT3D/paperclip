@@ -1,6 +1,9 @@
 import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -468,13 +471,16 @@ let server: Server;
 let origin: string;
 let middleware: Awaited<ReturnType<typeof createMiddleware>>;
 let providerState: FakeProviderState;
+let scratchParent: string;
+let scratchRoot: string;
 const requestedUrls: string[] = [];
 
-async function createMiddleware(state: FakeProviderState) {
+async function createMiddleware(state: FakeProviderState, root: string) {
   const module = await import("../../scripts/phase7-issue-thread-server.mjs");
   return module.createPhase7IssueThreadMiddleware({
     bindHost: "127.0.0.1",
     loadRunner: async () => await import("../index.js"),
+    scratchRoot: root,
     transportFactory: fakeTransportFactory(state),
   });
 }
@@ -520,6 +526,10 @@ async function status(path: string, body?: unknown, browser: Jar = jar): Promise
 
 beforeEach(async () => {
   requestedUrls.length = 0;
+  scratchParent = await mkdtemp(resolve(tmpdir(), "phase7-clean-room-server-test-"));
+  // Start with a missing child so the normal open path also proves that the
+  // middleware creates its configured scratch root.
+  scratchRoot = resolve(scratchParent, "run-scratch");
   jar = new Jar();
   providerState = {
     threadId: "codex-thread-clean-room",
@@ -529,7 +539,7 @@ beforeEach(async () => {
     gate: new Gate(),
     diagnostic: null,
   };
-  middleware = await createMiddleware(providerState);
+  middleware = await createMiddleware(providerState, scratchRoot);
   server = createServer((request, response) => {
     void middleware(request, response, () => {
       response.statusCode = 404;
@@ -545,6 +555,7 @@ afterEach(async () => {
   await middleware.close();
   server.close();
   await once(server, "close");
+  await rm(scratchParent, { recursive: true, force: true });
 });
 
 describe("Phase 7 clean-room chat server", () => {
@@ -568,6 +579,21 @@ describe("Phase 7 clean-room chat server", () => {
     expect(opened.view.evidence.calls).toEqual([]);
     expect(opened.view.evidence.parity).toEqual([]);
     expect(opened.view.evidence.traceability).toEqual([]);
+  });
+
+  it("recreates a removed run scratch root before starting a later chat", async () => {
+    const opened = await call("/api/phase7/ui/cleanroom/session");
+
+    // Managed services survive the heartbeat that launched them, while the
+    // harness removes this run-owned parent as soon as that heartbeat exits.
+    await rm(scratchRoot, { recursive: true, force: true });
+
+    const fresh = await call("/api/phase7/ui/cleanroom/session", {
+      sessionId: opened.sessionId,
+    });
+    expect(fresh.sessionId).not.toBe(opened.sessionId);
+    expect(fresh.identity.token).not.toBe(opened.identity.token);
+    expect(fresh.view.composer.state).toBe("ready");
   });
 
   it("publishes the real-API block as an inspectable record", async () => {
