@@ -11,6 +11,7 @@ import type {
   RepositoryCatalogItem,
   RepositoryConnection,
   RepositoryDiscoveryPage,
+  RepositoryRelationships,
   UpdateRepository,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -69,6 +70,8 @@ export const repositoriesApi = {
       `/companies/${encodeURIComponent(companyId)}/repositories${opts.includeArchived ? "?includeArchived=true" : ""}`,
     ),
   get: (repositoryId: string) => api.get<Repository>(`/repositories/${encodeURIComponent(repositoryId)}`),
+  getRelationships: (repositoryId: string) =>
+    api.get<RepositoryRelationships>(`/repositories/${encodeURIComponent(repositoryId)}/relationships`),
   createManual: (companyId: string, input: CreateManualRepository) =>
     api.post<Repository>(`/companies/${encodeURIComponent(companyId)}/repositories`, input),
   update: (repositoryId: string, input: UpdateRepository) =>

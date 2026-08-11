@@ -295,11 +295,13 @@ export const queryKeys = {
     detail: (id: string) => ["projects", "detail", id] as const,
   },
   repositories: {
+    all: (companyId: string) => ["repositories", companyId] as const,
     list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
       ["repositories", companyId, { includeArchived: opts.includeArchived === true }] as const,
     connections: (companyId: string) => ["repositories", companyId, "connections"] as const,
     providers: (companyId: string) => ["repositories", companyId, "providers"] as const,
-    detail: (id: string) => ["repositories", "detail", id] as const,
+    detail: (repositoryId: string) => ["repositories", "detail", repositoryId] as const,
+    relationships: (repositoryId: string) => ["repositories", "relationships", repositoryId] as const,
   },
   cases: {
     list: (companyId: string) => ["cases", companyId] as const,
