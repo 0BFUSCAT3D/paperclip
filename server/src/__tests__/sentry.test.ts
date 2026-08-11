@@ -334,13 +334,7 @@ function buildRichEvent(): Record<string, unknown> {
       // credentials. The low-trust level drops this context in full.
       Error: { details: { dbUrl: SECRET_URL }, cause: SECRET_URL },
       paperclip_capture: {
-        source: "http-500",
-        taskName: undefined,
-        httpMethod: "POST",
-        route: "/api/adapters/:id",
-        statusCode: 500,
-        requestId: "req-1",
-        resourcePath: "@scope/pkg",
+        source: "startup-fatal",
       },
     },
     extra: { connString: SECRET_URL },
@@ -396,17 +390,12 @@ describe("scrubber — low-trust strategy (default)", () => {
     expect(serialized).not.toContain(USER_ID);
   });
 
-  it("keeps the typed CaptureContext fields and a scrubbed, vars-free exception", async () => {
+  it("keeps the typed CaptureContext source and a scrubbed, vars-free exception", async () => {
     const { fake } = await loadGateAtLevel("low");
     const out = fake.runBeforeSend(buildRichEvent());
     const capture = ((out!.contexts as Record<string, unknown>).paperclip_capture ??
       {}) as Record<string, unknown>;
-    expect(capture.source).toBe("http-500");
-    expect(capture.httpMethod).toBe("POST");
-    expect(capture.route).toBe("/api/adapters/:id");
-    expect(capture.statusCode).toBe(500);
-    expect(capture.requestId).toBe("req-1");
-    expect(capture.resourcePath).toBe("@scope/pkg");
+    expect(capture.source).toBe("startup-fatal");
     // The exception survives but its message is secret-scrubbed and its frame
     // local variables are removed.
     const frame = (out!.exception as any).values[0].stacktrace.frames[0];
@@ -417,14 +406,18 @@ describe("scrubber — low-trust strategy (default)", () => {
     expect(message).toContain("db.internal");
   });
 
-  it("redacts a secret pattern inside route, resourcePath, or requestId", async () => {
+  it("drops a non-allowlisted key from the capture context and scrubs its secret", async () => {
     const { fake } = await loadGateAtLevel("low");
     const event = buildRichEvent();
-    const capture = (event.contexts as any).paperclip_capture;
-    capture.route = "/api/x";
-    capture.resourcePath = SECRET_URL;
-    capture.requestId = `id-${SECRET_URL}`;
+    // A caller cannot add this key through the typed `CaptureContext`, but the
+    // allowlist is the runtime guard. A non-allowlisted key never survives, and
+    // the secret pass scrubs the whole event as a second line of defense.
+    (event.contexts as any).paperclip_capture.rogueKey = SECRET_URL;
     const out = fake.runBeforeSend(event);
+    const capture = ((out!.contexts as Record<string, unknown>).paperclip_capture ??
+      {}) as Record<string, unknown>;
+    expect(capture.source).toBe("startup-fatal");
+    expect(capture.rogueKey).toBeUndefined();
     const serialized = JSON.stringify(out);
     expect(serialized).not.toContain("dbuser");
     expect(serialized).not.toContain("dbpass");
@@ -551,47 +544,36 @@ describe("scrubber — high-trust credential headers", () => {
 });
 
 describe("CaptureContext type", () => {
-  it("allows the seven typed keys and rejects a raw request object and a free-form key", () => {
+  it("allows the source field and rejects a raw request object and a free-form key", () => {
     // A compile-time contract. `pnpm --dir server typecheck` enforces it: an
     // over-broad type would make each `@ts-expect-error` unused and fail the
     // build. The runtime body only anchors the test.
-    const ok: CaptureContext = {
-      source: "http-500",
-      taskName: "sync-projects",
-      httpMethod: "POST",
-      route: "/api/adapters/:id",
-      statusCode: 500,
-      requestId: "req-1",
-      resourcePath: "@scope/pkg",
-    };
-    expect(ok.source).toBe("http-500");
-
-    const minimal: CaptureContext = { source: "startup-fatal" };
-    expect(minimal.source).toBe("startup-fatal");
+    const ok: CaptureContext = { source: "startup-fatal" };
+    expect(ok.source).toBe("startup-fatal");
 
     // @ts-expect-error — `source` is required.
-    const missingSource: CaptureContext = { route: "/x" };
+    const missingSource: CaptureContext = {};
     void missingSource;
 
+    // @ts-expect-error — an unknown source value is rejected.
+    const badSource: CaptureContext = { source: "http-500" };
+    void badSource;
+
     // @ts-expect-error — a raw request object is not a valid key.
-    const withRequest: CaptureContext = { source: "http-500", request: {} };
+    const withRequest: CaptureContext = { source: "startup-fatal", request: {} };
     void withRequest;
 
     // @ts-expect-error — a free-form key is rejected.
-    const freeForm: CaptureContext = { source: "http-500", anythingElse: "nope" };
+    const freeForm: CaptureContext = { source: "startup-fatal", anythingElse: "nope" };
     void freeForm;
 
     // @ts-expect-error — the request body is not a valid key.
-    const withBody: CaptureContext = { source: "http-500", body: { a: 1 } };
+    const withBody: CaptureContext = { source: "startup-fatal", body: { a: 1 } };
     void withBody;
 
     // @ts-expect-error — headers are not a valid key.
-    const withHeaders: CaptureContext = { source: "http-500", headers: {} };
+    const withHeaders: CaptureContext = { source: "startup-fatal", headers: {} };
     void withHeaders;
-
-    // @ts-expect-error — an unknown HTTP method is rejected.
-    const badMethod: CaptureContext = { source: "http-500", httpMethod: "TRACE" };
-    void badMethod;
   });
 });
 

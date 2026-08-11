@@ -28,57 +28,23 @@
 
 export type SentryTrustLevel = "high" | "low";
 
-/** The fixed set of capture-site sources. Each capture call names one. */
-export type CaptureSource =
-  | "startup-fatal"
-  | "http-500"
-  | "adapter-500"
-  | "plugin-static-500"
-  | "scheduler"
-  | "verification-endpoint";
-
 /**
- * The fixed set of background scheduler task names. The capture sites in the
- * scheduler add this tag so repeated failures group. This union grows as the
- * scheduler capture sites land.
+ * The fixed set of capture-site sources. Each capture call names one. This PR
+ * captures the fatal startup error only, so the union has one member. The union
+ * grows as later capture sites land.
  */
-export type SchedulerTaskName =
-  | "sync-projects"
-  | "sync-mentioned-projects"
-  | "reconcile-runs"
-  | "attention-sweep"
-  | "productivity-sweep";
-
-/** The fixed set of captured HTTP methods. */
-export type CaptureHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type CaptureSource = "startup-fatal";
 
 /**
- * The narrow, typed capture context. A capture call passes only these bounded
- * fields. The type rejects a raw request object, a request body, a headers
+ * The narrow, typed capture context. A capture call passes only this bounded
+ * field. The type rejects a raw request object, a request body, a headers
  * object, and every free-form key, so no unbounded personal data or secret can
- * reach a capture call by mistake. The `beforeSend` scrubber allowlists these
- * fields onto the outbound event in the low-trust level.
- *
- * `route` is the parameterized Express route template, for example
- * `/api/adapters/:id`, never the concrete URL with path-parameter values.
- * `resourcePath` is a server-side identifier such as an adapter package name or
- * a static file path.
+ * reach a capture call by mistake. The `beforeSend` scrubber allowlists this
+ * field onto the outbound event in the low-trust level.
  */
 export type CaptureContext = {
   /** The capture site. Required. */
   source: CaptureSource;
-  /** The scheduler task name. Optional. */
-  taskName?: SchedulerTaskName;
-  /** The HTTP method. Optional. */
-  httpMethod?: CaptureHttpMethod;
-  /** The parameterized Express route template. Optional. */
-  route?: string;
-  /** The numeric HTTP status code. Optional. */
-  statusCode?: number;
-  /** The server-generated request correlation id. Optional. */
-  requestId?: string;
-  /** A server-side resource identifier. Optional. */
-  resourcePath?: string;
 };
 
 // The event context key that carries the typed `CaptureContext`. `captureException`
@@ -87,16 +53,8 @@ export type CaptureContext = {
 const CAPTURE_CONTEXT_KEY = "paperclip_capture";
 
 // The `CaptureContext` fields the low-trust allowlist keeps. It never keeps any
-// other key.
-const CAPTURE_CONTEXT_FIELDS = [
-  "source",
-  "taskName",
-  "httpMethod",
-  "route",
-  "statusCode",
-  "requestId",
-  "resourcePath",
-] as const;
+// other key. This list grows with `CaptureContext` as later capture sites land.
+const CAPTURE_CONTEXT_FIELDS = ["source"] as const;
 
 /**
  * The subset of the `@sentry/node` surface this module calls. The real package
