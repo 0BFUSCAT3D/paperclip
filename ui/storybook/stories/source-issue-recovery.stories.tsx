@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { IssueRecoveryAction, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { Eye, ExternalLink, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
 import { IssueRecoveryActionCard } from "@/components/IssueRecoveryActionCard";
+import { RecoveryProgressLine } from "@/components/RecoveryProgressLine";
 import { IssueRow } from "@/components/IssueRow";
 import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
 import { storybookAgentMap, storybookAgents, createIssue } from "../fixtures/paperclipData";
@@ -261,7 +262,8 @@ const RUN_CARD_RECOVERY_TONE: Record<RunCardRecoveryState, { icon: typeof Triang
   in_progress: {
     icon: RefreshCw,
     label: "Recovery in progress",
-    className: "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300",
+    // Recessed: a live/queued recovery owner is progress, not a call to action.
+    className: "border-border bg-muted text-muted-foreground",
   },
   observe_only: {
     icon: Eye,
@@ -464,6 +466,76 @@ export const ActiveRunPanelRecoveryChips: Story = {
       description="Active run cards on the dashboard expose recovery state on the linked source issue."
     >
       <ActiveRunPanel />
+    </StoryFrame>
+  ),
+};
+
+function LivenessAwarePanel() {
+  return (
+    <div className="space-y-6">
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">Recovery owner is live or queued</h2>
+        <p className="text-sm text-muted-foreground">
+          The recessed line replaces the prominent card. It names the owner, folds all evidence
+          behind one disclosure, and never claims recovery is “needed” while someone is on it.
+        </p>
+        <div className="rounded-lg border border-border/60 bg-background p-2">
+          <RecoveryProgressLine
+            state="in_progress"
+            ownerName={claudeAgent.name}
+            action={buildAction({ kind: "stranded_assigned_issue" })}
+            agentMap={storybookAgentMap}
+            onResolve={() => undefined}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">Expanded — evidence stays inspectable</h2>
+        <div className="rounded-lg border border-border/60 bg-background p-2">
+          <RecoveryProgressLine
+            state="in_progress"
+            ownerName={claudeAgent.name}
+            defaultOpen
+            action={buildAction({ kind: "stranded_assigned_issue" })}
+            agentMap={storybookAgentMap}
+            onResolve={() => undefined}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">A newer owner took the task over</h2>
+        <div className="rounded-lg border border-border/60 bg-background p-2">
+          <RecoveryProgressLine
+            state="observe_only"
+            action={buildAction()}
+            agentMap={storybookAgentMap}
+            onResolve={() => undefined}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">No owner, no path — prominence is earned</h2>
+        <IssueRecoveryActionCard
+          action={buildAction({ ownerType: "system", ownerAgentId: null })}
+          agentMap={storybookAgentMap}
+          forcedState="needed"
+          onResolve={() => undefined}
+        />
+      </section>
+    </div>
+  );
+}
+
+export const LivenessAwareRecovery: Story = {
+  render: () => (
+    <StoryFrame
+      title="Liveness-aware recovery"
+      description="A live or queued recovery owner renders as a recessed, expandable line — prominent amber/red is reserved for an ownerless action or a true escalation."
+    >
+      <LivenessAwarePanel />
     </StoryFrame>
   ),
 };

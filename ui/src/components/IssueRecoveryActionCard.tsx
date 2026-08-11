@@ -157,15 +157,17 @@ const STATE_TONE: Record<RecoveryCardCardState, {
     Icon: TriangleAlert,
     divider: "border-amber-300/60 dark:border-amber-500/30",
   },
+  // Recessed like `observe_only`: an owner is already live or queued, so the card
+  // reports progress rather than demanding a decision.
   in_progress: {
     label: "RECOVERY IN PROGRESS",
     containerClass:
-      "border-sky-300/70 bg-sky-50/80 text-sky-950 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-100",
-    iconWrapClass: "bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
-    iconClass: "text-sky-700 dark:text-sky-300",
-    labelClass: "text-sky-900 dark:text-sky-200",
+      "border-border bg-muted/40 text-foreground dark:bg-muted/20",
+    iconWrapClass: "bg-muted text-foreground/70",
+    iconClass: "text-muted-foreground",
+    labelClass: "text-muted-foreground",
     Icon: RefreshCw,
-    divider: "border-sky-300/60 dark:border-sky-500/30",
+    divider: "border-border/70",
   },
   observe_only: {
     label: "OBSERVING ACTIVE RUN",
@@ -919,12 +921,25 @@ export function IssueRecoveryActionCard({
   const ToneIcon = tone.Icon;
   const divergence = useMemo(() => readWorkspaceDivergence(action), [action]);
 
+  const ownerName = action.ownerAgentId ? agentMap?.get(action.ownerAgentId)?.name ?? null : null;
+
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
       return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
     }
+    // The kind headlines all read as calls to action ("choose what happens
+    // next"). Once an owner is live or a newer run took over, that framing is
+    // wrong — report what is happening instead.
+    if (cardState === "in_progress") {
+      return ownerName
+        ? `Recovery is in progress — ${ownerName} is working this task's next step.`
+        : "Recovery is in progress — an owner is already working this task's next step.";
+    }
+    if (cardState === "observe_only" && action.kind !== "active_run_watchdog") {
+      return "A newer run is live on this task. Recovery is observing without interrupting it.";
+    }
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, cardState]);
+  }, [action.kind, action.outcome, cardState, ownerName]);
 
   const wakeSummary = readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
@@ -1273,6 +1288,11 @@ export function IssueRecoveryActionCard({
             cardState === "observe_only" ? (
               <span className="text-(length:--text-micro) text-muted-foreground">
                 Recovery is observing without interrupting the live run.
+              </span>
+            ) : cardState === "in_progress" ? (
+              <span className="text-(length:--text-micro) text-muted-foreground">
+                {ownerName ? `${ownerName} is on it` : "An owner is on it"} — resolve only to
+                override the in-flight recovery.
               </span>
             ) : (
               <span className="text-(length:--text-micro) text-muted-foreground">

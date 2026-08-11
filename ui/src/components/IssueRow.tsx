@@ -10,8 +10,10 @@ import {
 import { cn } from "../lib/utils";
 import {
   deriveActiveRecoveryDisplayState,
+  recoveryLivenessFromIssue,
   RECOVERY_CHIP_DEFAULT_TONE,
   recoveryChipLabel,
+  type RecoveryLivenessSignals,
 } from "../lib/recovery-display";
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
@@ -149,7 +151,9 @@ export function IssueRow({
     </span>
   ) : null;
   const recoveryAction = issue.activeRecoveryAction ?? null;
-  const recoveryIndicator = recoveryAction ? renderRecoveryChip(recoveryAction, selected) : null;
+  const recoveryIndicator = recoveryAction
+    ? renderRecoveryChip(recoveryAction, selected, recoveryLivenessFromIssue(issue))
+    : null;
   const parkedBlockerIndicator = hasAssignedBacklogBlocker(issue.blockedBy) ? (
     <Badge variant="outline"
       data-testid="issue-row-parked-blocker"
@@ -335,8 +339,12 @@ export function IssueRow({
   );
 }
 
-function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): ReactNode {
-  const state = deriveActiveRecoveryDisplayState(action);
+function renderRecoveryChip(
+  action: IssueRecoveryAction,
+  selected: boolean,
+  signals: RecoveryLivenessSignals,
+): ReactNode {
+  const state = deriveActiveRecoveryDisplayState(action, signals);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
