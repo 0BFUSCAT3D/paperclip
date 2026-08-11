@@ -559,6 +559,37 @@ textarea {
   min-width: 0;
 }
 
+/*
+ * Chat messages follow the familiar assistant flow: the board's message is a
+ * compact bubble, while the assistant answer sits directly on the page. The
+ * heavier card remains available for durable control-plane records below.
+ */
+.pit-message {
+  min-width: 0;
+}
+
+.pit-message[data-role="user"] {
+  align-self: flex-end;
+  width: fit-content;
+  max-width: 85%;
+  padding: var(--pit-space-3) var(--pit-space-4);
+  border-radius: var(--pit-radius-lg);
+  background: var(--pit-surface-raised);
+}
+
+.pit-message[data-role="assistant"] {
+  padding: var(--pit-space-2) 0;
+}
+
+.pit-message .pit-card-head {
+  color: var(--pit-muted-foreground);
+}
+
+.pit-app[data-surface="chat"] .pit-turn-label,
+.pit-app[data-surface="chat"] .pit-turn-header::after {
+  display: none;
+}
+
 .pit-card-head {
   display: flex;
   align-items: baseline;
@@ -662,6 +693,100 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: var(--pit-space-2);
+}
+
+/* Lightweight assistant-style reasoning/tool disclosures. */
+.pit-activity-item {
+  min-width: 0;
+  color: var(--pit-muted-foreground);
+}
+
+.pit-activity-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-1) 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pit-activity-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pit-activity-glyph {
+  flex: none;
+  width: var(--pit-space-5);
+  color: var(--pit-muted-foreground);
+  font-family: var(--pit-font-mono);
+  text-align: center;
+}
+
+.pit-activity-item[data-status="ok"] .pit-activity-glyph,
+.pit-activity-item[data-status="complete"] .pit-activity-glyph {
+  color: var(--pit-success);
+}
+
+.pit-activity-item[data-status="denied"] .pit-activity-glyph {
+  color: var(--pit-danger);
+}
+
+.pit-activity-item[data-status="running"] .pit-activity-glyph {
+  color: var(--pit-live);
+  animation: pit-pulse 1.6s ease-in-out infinite;
+}
+
+.pit-activity-operation {
+  flex: none;
+  color: var(--pit-foreground);
+  font-family: var(--pit-font-mono);
+  font-size: var(--pit-text-xs);
+  font-weight: 600;
+}
+
+.pit-progress-activity .pit-activity-operation {
+  font-family: var(--pit-font-sans);
+}
+
+.pit-activity-description {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pit-activity-caret {
+  flex: none;
+  color: var(--pit-faint-foreground);
+  transition: transform var(--pit-motion) ease-out;
+}
+
+.pit-activity-item[open] > .pit-activity-summary .pit-activity-caret {
+  transform: rotate(90deg);
+}
+
+.pit-activity-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-2);
+  margin-left: calc(var(--pit-space-5) + var(--pit-space-2));
+  padding: 0 0 var(--pit-space-3) var(--pit-space-3);
+  border-left: 1px solid var(--pit-border);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-activity-detail p {
+  margin: 0;
+}
+
+.pit-activity-payloads {
+  display: grid;
+  gap: var(--pit-space-2);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .pit-code {
@@ -1058,6 +1183,81 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.pit-runner-event,
+.pit-runner-group {
+  min-width: 0;
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-surface);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-runner-event-summary,
+.pit-runner-group-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-2);
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+
+.pit-runner-event-summary::-webkit-details-marker,
+.pit-runner-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pit-runner-event-summary .pit-record-detail,
+.pit-runner-group-summary .pit-record-detail {
+  flex: 1;
+  min-width: 0;
+}
+
+.pit-runner-event[open] > .pit-runner-event-summary .pit-activity-caret,
+.pit-runner-group[open] > .pit-runner-group-summary .pit-activity-caret {
+  transform: rotate(90deg);
+}
+
+.pit-runner-event-details {
+  display: grid;
+  gap: var(--pit-space-2);
+  margin: 0;
+  padding: 0 var(--pit-space-2) var(--pit-space-2);
+}
+
+.pit-runner-event-details > div {
+  display: grid;
+  grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
+  gap: var(--pit-space-2);
+}
+
+.pit-runner-event-details dt,
+.pit-runner-event-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pit-runner-event-details dt {
+  color: var(--pit-faint-foreground);
+}
+
+.pit-runner-event-details dd {
+  color: var(--pit-muted-foreground);
+  font-family: var(--pit-font-mono);
+}
+
+.pit-runner-group-events {
+  display: grid;
+  gap: var(--pit-space-2);
+  padding: 0 var(--pit-space-2) var(--pit-space-2);
+}
+
+.pit-runner-group-events .pit-runner-event {
+  background: var(--pit-surface-sunken);
+}
+
 .pit-tool-group-label {
   font-size: var(--pit-text-xs);
   font-weight: 600;
@@ -1298,6 +1498,18 @@ textarea {
 
   .pit-thread-scroll {
     padding: var(--pit-space-4) var(--pit-space-3);
+  }
+
+  .pit-message[data-role="user"] {
+    max-width: 92%;
+  }
+
+  .pit-activity-payloads {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pit-activity-description {
+    white-space: normal;
   }
 
   /*

@@ -197,6 +197,16 @@ export type Phase7ThreadItem =
       result: Phase7JsonValue;
       evidenceRef: Phase7EvidenceRef;
     }
+  | {
+      kind: "progress_activity";
+      id: string;
+      at: string;
+      activity: "thinking" | "planning" | "command" | "file_change";
+      status: "running" | "complete";
+      label: string;
+      summary: string;
+      eventCount: number;
+    }
   | ({ kind: "interaction"; id: string; at: string } & Phase7ThreadInteractionCard)
   | {
       kind: "document";
@@ -348,6 +358,8 @@ export interface Phase7EvidenceRunnerRecord {
   kind: string;
   ordinal: number;
   detail: string;
+  /** Complete allowlisted detail; raw provider payloads never enter this DTO. */
+  details: Array<{ label: string; value: string }>;
 }
 
 export interface Phase7EvidenceStateDiffRow {

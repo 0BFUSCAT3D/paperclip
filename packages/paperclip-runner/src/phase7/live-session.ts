@@ -24,6 +24,7 @@ import type {
   Phase7SemanticToolResult,
 } from "../semantic-tools/types.js";
 import {
+  phase7ProviderEventCategory,
   redactPhase7EvidenceData,
   type Phase7EvidenceKind,
 } from "./evidence-redaction.js";
@@ -945,6 +946,7 @@ export class Phase7LiveSession {
     const turn = record(params.turn);
     const item = record(params.item);
     const turnId = text(params.turnId, text(turn.id));
+    const providerEvent = phase7ProviderEventCategory(notification.method);
     this.#appendEvidence("provider_event", turnId || null, {
       method: notification.method,
       params: jsonValue(params),
@@ -957,6 +959,16 @@ export class Phase7LiveSession {
         this.#turnWaiter.assistantText += text(params.delta);
         this.#publishAssistantProgress(turnId || this.#activeTurnId);
       }
+    } else if (providerEvent.endsWith("_delta")) {
+      // Reasoning, planning, command-output, and file-change progress used to
+      // be retained only for diagnostics. Emitting an activity frame here lets
+      // the thread acknowledge that work immediately, while the redaction gate
+      // still withholds provider text and chain-of-thought content.
+      this.#emit({
+        turnId: turnId || this.#activeTurnId,
+        kind: "activity",
+        reason: providerEvent,
+      });
     } else if (notification.method === "item/completed" && text(item.type) === "agentMessage") {
       const assistantText = text(item.text);
       if (assistantText.length > 0 && this.#turnWaiter !== null) {

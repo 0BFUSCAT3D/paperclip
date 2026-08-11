@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   phase7AllowlistedInputFields,
   phase7EvidenceDetail,
+  phase7EvidenceDetails,
   redactPhase7EvidenceData,
   redactPhase7ToolResult,
 } from "../phase7/evidence-redaction.js";
@@ -96,6 +97,10 @@ function projectedView(): Phase7IssueThreadSnapshot {
           kind: "provider_event",
           ordinal: 1,
           detail: `provider event · assistant_delta (${PROVIDER_THREAD})`,
+          details: [
+            { label: "Event", value: "assistant_delta" },
+            { label: "Provider", value: PROVIDER_THREAD },
+          ],
         },
       ],
       state: [],
@@ -177,6 +182,25 @@ describe("Phase 7 evidence redaction", () => {
     expect(redacted).toEqual({ event: "assistant_delta" });
     expect(JSON.stringify(redacted)).not.toContain(CANARY);
     expect(phase7EvidenceDetail("provider_event", redacted)).toBe("provider event · assistant_delta");
+  });
+
+  it("recognizes progress notifications without retaining their text", () => {
+    for (const method of [
+      "item/reasoning/summaryTextDelta",
+      "item/plan/delta",
+      "item/commandExecution/outputDelta",
+      "item/fileChange/outputDelta",
+    ]) {
+      const redacted = redactPhase7EvidenceData("provider_event", {
+        method,
+        params: { delta: CANARY },
+      });
+      expect(String(redacted.event)).toMatch(/_delta$/);
+      expect(JSON.stringify(redacted)).not.toContain(CANARY);
+      expect(phase7EvidenceDetails("provider_event", redacted)).toEqual([
+        { label: "Event", value: redacted.event },
+      ]);
+    }
   });
 
   it("collapses an unknown provider method rather than echoing it", () => {

@@ -244,6 +244,8 @@ export function App() {
     // faces before measuring: a host fallback can otherwise move the retained
     // scroll position by a pixel even after the final webfonts replace it.
     if (route.panel === null || snapshot === null) return;
+    const panel = route.panel;
+    const record = route.record;
     let cancelled = false;
     void (async () => {
       if (typeof document.fonts?.ready?.then === "function") {
@@ -251,11 +253,11 @@ export function App() {
       }
       if (cancelled) return;
       const target =
-        route.record === null
-          ? document.querySelector(`[data-evidence-section="${CSS.escape(route.panel)}"]`)
-          : document.querySelector(`[data-record-id="${CSS.escape(route.record)}"]`);
+        record === null
+          ? document.querySelector(`[data-evidence-section="${CSS.escape(panel)}"]`)
+          : document.querySelector(`[data-record-id="${CSS.escape(record)}"]`);
       if (target !== null) {
-        scrollEvidenceIntoView(target, route.record === null ? "start" : "center");
+        scrollEvidenceIntoView(target, record === null ? "start" : "center");
       }
     })();
     return () => {

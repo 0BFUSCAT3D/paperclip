@@ -15,6 +15,8 @@
  */
 
 const DELTA_INTERVAL_MS = 220;
+export const PHASE7_STREAM_FIXTURE_PRIVATE_REASONING =
+  "PRIVATE reasoning text must never reach the browser.";
 
 /** Four deltas: enough for a browser to observe growth twice over, and short. */
 export const PHASE7_STREAM_FIXTURE_DELTAS = [
@@ -112,6 +114,16 @@ class StreamFixtureTransport {
     this.#queue.push({
       method: "turn/started",
       params: { threadId: "stream-fixture-thread", turn: { id: turnId, status: "inProgress" } },
+    });
+    await sleep(Math.floor(DELTA_INTERVAL_MS / 2));
+    if (this.#closed || this.#interrupted.has(turnId)) return;
+    this.#queue.push({
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "stream-fixture-thread",
+        turnId,
+        delta: PHASE7_STREAM_FIXTURE_PRIVATE_REASONING,
+      },
     });
     for (const delta of PHASE7_STREAM_FIXTURE_DELTAS) {
       await sleep(DELTA_INTERVAL_MS);

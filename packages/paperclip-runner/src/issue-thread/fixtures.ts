@@ -246,6 +246,10 @@ function baseEvidence(): Phase7EvidenceModel {
         kind: "session.started",
         ordinal: 1,
         detail: "runnerd pid 4101 · process group 4101 · thread thr-mock-7g",
+        details: [
+          { label: "Runner", value: "runnerd" },
+          { label: "State", value: "started" },
+        ],
       },
       {
         id: "ev-2",
@@ -253,6 +257,10 @@ function baseEvidence(): Phase7EvidenceModel {
         kind: "turn.started",
         ordinal: 2,
         detail: "turn-1 · dynamic tools 8 exposed / 3 withheld",
+        details: [
+          { label: "State", value: "started" },
+          { label: "Tools", value: "8 exposed, 3 withheld" },
+        ],
       },
       {
         id: "ev-3",
@@ -260,6 +268,10 @@ function baseEvidence(): Phase7EvidenceModel {
         kind: "tool.dispatched",
         ordinal: 5,
         detail: "write_document → typed result revision 4",
+        details: [
+          { label: "Operation", value: "write_document" },
+          { label: "Result", value: "typed result revision 4" },
+        ],
       },
       {
         id: "ev-4",
@@ -267,6 +279,10 @@ function baseEvidence(): Phase7EvidenceModel {
         kind: "turn.completed",
         ordinal: 9,
         detail: "turn-3 · status completed · 1 tool call",
+        details: [
+          { label: "State", value: "completed" },
+          { label: "Tool calls", value: "1" },
+        ],
       },
     ],
     state: [

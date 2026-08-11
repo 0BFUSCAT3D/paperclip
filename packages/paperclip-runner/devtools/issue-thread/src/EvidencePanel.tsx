@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 
 import type {
   Phase7EvidenceModel,
+  Phase7EvidenceRunnerRecord,
   Phase7EvidenceSectionId,
   Phase7IssueThreadSnapshot,
   Phase7ToolDisposition,
@@ -22,6 +23,86 @@ const DISPOSITION_ORDER: Phase7ToolDisposition[] = [
   "optional_agent_tool",
   "control_plane_owned",
 ];
+
+export interface Phase7RunnerEventGroup {
+  id: string;
+  event: string | null;
+  records: Phase7EvidenceRunnerRecord[];
+}
+
+/**
+ * Stream deltas are useful evidence but terrible default reading material.
+ * Aggregate each sanitized delta category within a turn at its first position;
+ * expanding the group still exposes every individual event in ordinal order.
+ */
+export function groupPhase7RunnerEvents(
+  records: readonly Phase7EvidenceRunnerRecord[],
+): Phase7RunnerEventGroup[] {
+  const groups: Phase7RunnerEventGroup[] = [];
+  const deltaGroups = new Map<string, Phase7RunnerEventGroup>();
+  for (const record of records) {
+    const event = record.details.find((entry) => entry.label === "Event")?.value ?? null;
+    if (event === null || !event.endsWith("_delta")) {
+      groups.push({ id: record.id, event: null, records: [record] });
+      continue;
+    }
+    const key = `${record.turnId}:${event}`;
+    const existing = deltaGroups.get(key);
+    if (existing !== undefined) {
+      existing.records.push(record);
+      continue;
+    }
+    const group = { id: `delta:${key}`, event, records: [record] };
+    deltaGroups.set(key, group);
+    groups.push(group);
+  }
+  return groups;
+}
+
+function RunnerEvent({ record }: { record: Phase7EvidenceRunnerRecord }) {
+  return (
+    <details className="pit-runner-event" data-record-id={record.id}>
+      <summary className="pit-runner-event-summary">
+        <span className="pit-record-title">#{record.ordinal} {record.kind}</span>
+        <span className="pit-record-detail">{record.detail}</span>
+        <span className="pit-activity-caret" aria-hidden="true">›</span>
+      </summary>
+      <dl className="pit-runner-event-details">
+        {record.details.length === 0 ? (
+          <>
+            <dt>Detail</dt>
+            <dd>No additional sanitized fields were retained.</dd>
+          </>
+        ) : (
+          record.details.map((entry, index) => (
+            <div key={`${entry.label}:${index}`}>
+              <dt>{entry.label}</dt>
+              <dd>{entry.value}</dd>
+            </div>
+          ))
+        )}
+      </dl>
+    </details>
+  );
+}
+
+function RunnerEventGroup({ group }: { group: Phase7RunnerEventGroup }) {
+  if (group.event === null) return <RunnerEvent record={group.records[0]!} />;
+  return (
+    <details className="pit-runner-group" data-runner-delta-group={group.event}>
+      <summary className="pit-runner-group-summary">
+        <span className="pit-activity-caret" aria-hidden="true">›</span>
+        <span className="pit-record-title">{group.event}</span>
+        <span className="pit-record-detail">
+          {group.records.length} streamed update{group.records.length === 1 ? "" : "s"}
+        </span>
+      </summary>
+      <div className="pit-runner-group-events">
+        {group.records.map((record) => <RunnerEvent key={record.id} record={record} />)}
+      </div>
+    </details>
+  );
+}
 
 export interface EvidencePanelProps {
   snapshot: Phase7IssueThreadSnapshot;
@@ -317,13 +398,8 @@ export function EvidencePanel(props: EvidencePanelProps) {
         open={isOpen("runner")}
         onToggle={() => onToggleSection("runner")}
       >
-        {filterByTurn(evidence.runner, selectedTurnId).map((record) => (
-          <div className="pit-record" key={record.id} data-record-id={record.id}>
-            <span className="pit-record-title">
-              #{record.ordinal} {record.kind}
-            </span>
-            <span className="pit-record-detail">{record.detail}</span>
-          </div>
+        {groupPhase7RunnerEvents(filterByTurn(evidence.runner, selectedTurnId)).map((group) => (
+          <RunnerEventGroup key={group.id} group={group} />
         ))}
       </Section>
 

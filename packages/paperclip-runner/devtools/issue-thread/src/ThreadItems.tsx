@@ -26,47 +26,72 @@ function ToolStrip({
   item: Extract<Phase7ThreadItem, { kind: "tool_activity" }>;
   callbacks: ThreadCallbacks;
 }) {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <div
+    <details
       id={item.id}
-      className="pit-strip"
+      className="pit-activity-item"
       data-thread-item="tool_activity"
       data-status={item.status}
       data-tool-strip={item.operationId}
     >
-      <button
-        type="button"
-        className="pit-strip-button"
-        aria-expanded={expanded}
-        onClick={() => setExpanded((current) => !current)}
-      >
-        <span className="pit-strip-glyph" aria-hidden="true">
+      <summary className="pit-activity-summary">
+        <span className="pit-activity-glyph" aria-hidden="true">
           {STATUS_GLYPH[item.status]}
         </span>
         <span className="pit-visually-hidden">{item.status}</span>
-        <span className="pit-strip-operation">{item.operationId}</span>
-        <span className="pit-strip-summary">{item.summary}</span>
-        <span className="pit-strip-caret" aria-hidden="true">
-          {expanded ? "⌄" : "›"}
-        </span>
-      </button>
-      {expanded ? (
-        <div className="pit-strip-detail">
+        <span className="pit-activity-operation">{item.operationId}</span>
+        <span className="pit-activity-description">{item.summary}</span>
+        <span className="pit-activity-caret" aria-hidden="true">›</span>
+      </summary>
+      <div className="pit-activity-detail">
+        <p className="pit-card-meta">Sanitized tool input and result</p>
+        <div className="pit-activity-payloads">
           <pre className="pit-code">{JSON.stringify(item.input, null, 2)}</pre>
           <pre className="pit-code">{JSON.stringify(item.result, null, 2)}</pre>
-          <button
-            type="button"
-            className="pit-link-button"
-            onClick={() =>
-              callbacks.onOpenEvidence(item.evidenceRef.section, item.evidenceRef.recordId)
-            }
-          >
-            View in Evidence
-          </button>
         </div>
-      ) : null}
-    </div>
+        <button
+          type="button"
+          className="pit-link-button"
+          onClick={() =>
+            callbacks.onOpenEvidence(item.evidenceRef.section, item.evidenceRef.recordId)
+          }
+        >
+          View in Evidence
+        </button>
+      </div>
+    </details>
+  );
+}
+
+function ProgressItem({
+  item,
+}: {
+  item: Extract<Phase7ThreadItem, { kind: "progress_activity" }>;
+}) {
+  return (
+    <details
+      id={item.id}
+      className="pit-activity-item pit-progress-activity"
+      data-thread-item="progress_activity"
+      data-activity={item.activity}
+      data-status={item.status}
+      open={item.status === "running"}
+    >
+      <summary className="pit-activity-summary">
+        <span className="pit-activity-glyph" aria-hidden="true">
+          {item.status === "running" ? "⏳" : "✓"}
+        </span>
+        <span className="pit-activity-operation">{item.label}</span>
+        <span className="pit-activity-description">{item.summary}</span>
+        <span className="pit-activity-caret" aria-hidden="true">›</span>
+      </summary>
+      <div className="pit-activity-detail">
+        <p>
+          {item.eventCount} sanitized progress update{item.eventCount === 1 ? "" : "s"} observed.
+          Raw chain-of-thought and provider text are not exposed.
+        </p>
+      </div>
+    </details>
   );
 }
 
@@ -80,7 +105,12 @@ function ThreadItemView({
   switch (item.kind) {
     case "user_message":
       return (
-        <article id={item.id} className="pit-card" data-thread-item="user_message">
+        <article
+          id={item.id}
+          className="pit-message"
+          data-role="user"
+          data-thread-item="user_message"
+        >
           <div className="pit-card-head">
             <span className="pit-card-author">{item.author}</span>
             <Timestamp value={item.at} />
@@ -93,7 +123,8 @@ function ThreadItemView({
       return (
         <article
           id={item.id}
-          className="pit-card"
+          className="pit-message"
+          data-role="assistant"
           data-thread-item="agent_message"
           data-streaming={item.streaming}
         >
@@ -140,6 +171,9 @@ function ThreadItemView({
 
     case "tool_activity":
       return <ToolStrip item={item} callbacks={callbacks} />;
+
+    case "progress_activity":
+      return <ProgressItem item={item} />;
 
     case "denial":
       return (
@@ -311,7 +345,7 @@ export function TurnGroup({
   return (
     <section className="pit-turn" data-turn-id={turn.id} aria-label={`Turn ${turn.ordinal}`}>
       <h2 className="pit-turn-header">
-        <span>
+        <span className="pit-turn-label">
           Turn {turn.ordinal} · {turn.mode} · {turn.toolCallCount} tool call
           {turn.toolCallCount === 1 ? "" : "s"} ·{" "}
           {new Date(turn.at).toISOString().slice(11, 19)}

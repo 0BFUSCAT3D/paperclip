@@ -276,6 +276,20 @@ describe("Phase 7 live projection", () => {
         },
         {
           id: "evidence-000002",
+          kind: "provider_event",
+          at: "2026-08-09T09:00:10.000Z",
+          turnId: "turn-1",
+          data: { event: "reasoning_delta" },
+        },
+        {
+          id: "evidence-000003",
+          kind: "provider_event",
+          at: "2026-08-09T09:00:11.000Z",
+          turnId: "turn-1",
+          data: { event: "reasoning_delta" },
+        },
+        {
+          id: "evidence-000004",
           kind: "tool_call",
           at: "2026-08-09T09:00:30.000Z",
           turnId: "turn-1",
@@ -287,7 +301,7 @@ describe("Phase 7 live projection", () => {
           },
         },
         {
-          id: "evidence-000003",
+          id: "evidence-000005",
           kind: "tool_result",
           at: "2026-08-09T09:00:31.000Z",
           turnId: "turn-1",
@@ -343,6 +357,18 @@ describe("Phase 7 live projection", () => {
     expect(items.filter((item) => item.kind === "user_message")).toHaveLength(1);
     expect(items.some((item) => item.kind === "agent_message")).toBe(true);
     expect(items.some((item) => item.kind === "tool_activity")).toBe(true);
+
+    const progress = items.find((item) => item.kind === "progress_activity");
+    expect(progress).toMatchObject({
+      kind: "progress_activity",
+      activity: "thinking",
+      status: "complete",
+      label: "Thinking",
+      eventCount: 2,
+    });
+    expect(view.evidence.runner.filter(
+      (record) => record.details.some((entry) => entry.value === "reasoning_delta"),
+    )).toHaveLength(2);
 
     // The durable comment comes from the mock record the command created,
     // not from the model's prose.

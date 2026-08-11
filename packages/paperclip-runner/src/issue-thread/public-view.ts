@@ -286,6 +286,17 @@ function publicItem(item: Phase7ThreadItem, aliases: Aliases): Phase7ThreadItem 
         result: publicToolResult(item.result),
         evidenceRef: publicRef(item.evidenceRef, aliases),
       };
+    case "progress_activity":
+      return {
+        kind: "progress_activity",
+        id,
+        at: item.at,
+        activity: item.activity,
+        status: item.status,
+        label: clamp(item.label),
+        summary: clamp(item.summary),
+        eventCount: item.eventCount,
+      };
     case "interaction":
       return {
         kind: "interaction",
@@ -446,6 +457,10 @@ function publicRunner(
     kind: record.kind,
     ordinal: record.ordinal,
     detail: clamp(aliases.text(record.detail)),
+    details: record.details.map((entry) => ({
+      label: clamp(entry.label),
+      value: clamp(aliases.text(entry.value), MAX_BODY_CHARS),
+    })),
   };
 }
 

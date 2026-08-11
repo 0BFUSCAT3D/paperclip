@@ -57,7 +57,22 @@ const PROVIDER_EVENT_CATEGORIES: Readonly<Record<string, string>> = Object.freez
   "item/completed": "item_completed",
   "item/agentMessage/delta": "assistant_delta",
   "item/reasoning/delta": "reasoning_delta",
+  "item/reasoning/summaryTextDelta": "reasoning_delta",
+  "item/reasoning/textDelta": "reasoning_delta",
+  "item/plan/delta": "plan_delta",
+  "item/commandExecution/outputDelta": "command_output_delta",
+  "item/fileChange/outputDelta": "file_change_delta",
 });
+
+/**
+ * Provider notifications are reduced to this fixed vocabulary at ingestion.
+ * Exporting the classifier lets the live turn pump decide which sanitized
+ * progress events deserve an immediate browser frame without duplicating the
+ * protocol-method allowlist.
+ */
+export function phase7ProviderEventCategory(method: string): string {
+  return PROVIDER_EVENT_CATEGORIES[method] ?? "other";
+}
 
 /** Operations whose input summary is the rendered disposition body (§9). */
 const DISPOSITION_OPERATIONS: ReadonlySet<string> = new Set([
@@ -179,7 +194,7 @@ export function redactPhase7EvidenceData(
 ): Record<string, Phase7JsonValue> {
   switch (kind) {
     case "provider_event":
-      return { event: PROVIDER_EVENT_CATEGORIES[asString(data.method)] ?? "other" };
+      return { event: phase7ProviderEventCategory(asString(data.method)) };
     case "diagnostic":
       // A provider diagnostic is operator surface, not board surface. Only the
       // fact that one was recorded survives.
@@ -275,4 +290,96 @@ export function phase7EvidenceDetail(
     default:
       return kind;
   }
+}
+
+export interface Phase7EvidenceDetailRow {
+  label: string;
+  value: string;
+}
+
+/**
+ * Complete browser-safe detail for one retained event.
+ *
+ * This intentionally enumerates each field rather than stringifying `data`.
+ * The retained record is already redacted, but the public diagnostics surface
+ * remains fail-closed when a future ingestion field is added.
+ */
+export function phase7EvidenceDetails(
+  kind: Phase7EvidenceKind,
+  data: Record<string, Phase7JsonValue>,
+): Phase7EvidenceDetailRow[] {
+  const rows: Phase7EvidenceDetailRow[] = [];
+  const add = (label: string, value: Phase7JsonValue | undefined): void => {
+    if (typeof value === "string" && value.length > 0) rows.push({ label, value });
+    else if (typeof value === "number" || typeof value === "boolean") {
+      rows.push({ label, value: String(value) });
+    }
+  };
+  const addList = (label: string, value: Phase7JsonValue | undefined): void => {
+    if (!Array.isArray(value)) return;
+    const entries = value.filter((entry): entry is string => typeof entry === "string");
+    rows.push({ label, value: entries.length === 0 ? "none" : entries.join(", ") });
+  };
+
+  switch (kind) {
+    case "provider_event":
+      add("Event", data.event);
+      break;
+    case "diagnostic":
+      add("Visibility", data.diagnostic);
+      break;
+    case "session":
+      add("Action", data.action);
+      add("Session", data.sessionId);
+      add("Mode", data.mode);
+      add("Runner", data.runner);
+      add("Control plane", data.controlPlane);
+      add("Reason", data.reason);
+      break;
+    case "process":
+      add("Action", data.action);
+      add("Reason", data.reason);
+      add("Runner exited", data.runnerExited);
+      break;
+    case "cleanup":
+      add("Reason", data.reason);
+      add("Authority cleared", data.authorityCleared);
+      add("Mock stopped", data.mockStopped);
+      add("Process exited", data.processExited);
+      break;
+    case "tool_exposure":
+      add("Scenario", data.scenarioId);
+      addList("Operations", data.operationIds);
+      break;
+    case "tool_call": {
+      const input = asRecord(data.input);
+      add("Call", data.callId);
+      add("Operation", data.operationId);
+      add("Before revision", data.beforeRevision);
+      addList("Input fields", input.fields as Phase7JsonValue | undefined);
+      add("Disposition summary", input.dispositionSummary as Phase7JsonValue | undefined);
+      break;
+    }
+    case "tool_result": {
+      const result = asRecord(data.result);
+      const value = asRecord(result.result);
+      add("Call", data.callId);
+      add("Operation", data.operationId);
+      add("Before revision", data.beforeRevision);
+      add("After revision", data.afterRevision);
+      add("Outcome", result.ok === true ? "ok" : "denied");
+      add("State revision", result.stateRevision as Phase7JsonValue | undefined);
+      add("Command", value.commandId as Phase7JsonValue | undefined);
+      add("Command kind", value.commandKind as Phase7JsonValue | undefined);
+      add("Disposition", value.disposition as Phase7JsonValue | undefined);
+      add("Result revision", value.revision as Phase7JsonValue | undefined);
+      break;
+    }
+    case "interaction":
+      add("Kind", data.interactionKind);
+      add("Outcome", data.outcome);
+      add("State revision", data.stateRevision);
+      break;
+  }
+  return rows;
 }

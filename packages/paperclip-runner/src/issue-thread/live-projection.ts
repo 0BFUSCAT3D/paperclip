@@ -15,6 +15,7 @@ import type {
 } from "../mock-core/phase7-control-plane-types.js";
 import {
   phase7EvidenceDetail,
+  phase7EvidenceDetails,
   redactPhase7ToolResult,
 } from "../phase7/evidence-redaction.js";
 import type {
@@ -53,6 +54,33 @@ const DISPOSITION_OPERATIONS = new Set<Phase7SemanticOperationId>([
   "block_task",
   "request_review",
 ]);
+
+const PROGRESS_EVENTS = {
+  reasoning_delta: {
+    activity: "thinking",
+    label: "Thinking",
+    running: "Reasoning activity is arriving from Codex.",
+    complete: "Reasoning activity completed.",
+  },
+  plan_delta: {
+    activity: "planning",
+    label: "Planning",
+    running: "Codex is updating its plan.",
+    complete: "Plan activity completed.",
+  },
+  command_output_delta: {
+    activity: "command",
+    label: "Running a command",
+    running: "Command progress is arriving from Codex.",
+    complete: "Command activity completed.",
+  },
+  file_change_delta: {
+    activity: "file_change",
+    label: "Reviewing a file change",
+    running: "File-change progress is arriving from Codex.",
+    complete: "File-change activity completed.",
+  },
+} as const;
 
 export interface Phase7LiveProjectionInput {
   snapshot: Phase7LiveSessionSnapshot;
@@ -629,6 +657,7 @@ function evidenceModel(
       kind: entry.kind,
       ordinal: index + 1,
       detail: phase7EvidenceDetail(entry.kind, entry.data),
+      details: phase7EvidenceDetails(entry.kind, entry.data),
     })),
     state: calls
       .filter((pair) => pair.afterRevision !== null && pair.afterRevision !== pair.beforeRevision)
@@ -723,6 +752,49 @@ export function projectPhase7IssueThread(
     turn.toolCallCount += 1;
     turn.items.push(toolActivityItem(pair));
     turn.items.push(...derivedRecordItems(pair, state));
+  }
+
+  const progressGroups = new Map<
+    string,
+    {
+      turnId: string;
+      event: keyof typeof PROGRESS_EVENTS;
+      at: string;
+      count: number;
+    }
+  >();
+  for (const entry of snapshot.evidence) {
+    if (entry.kind !== "provider_event" || entry.turnId === null) continue;
+    const event = readString(entry.data.event) as keyof typeof PROGRESS_EVENTS;
+    if (!(event in PROGRESS_EVENTS)) continue;
+    const key = `${entry.turnId}:${event}`;
+    const group = progressGroups.get(key);
+    if (group === undefined) {
+      progressGroups.set(key, { turnId: entry.turnId, event, at: entry.at, count: 1 });
+    } else {
+      group.count += 1;
+    }
+  }
+  for (const group of progressGroups.values()) {
+    const copy = PROGRESS_EVENTS[group.event];
+    const running = snapshot.activeTurnId === group.turnId;
+    turnFor(group.turnId, group.at).items.push({
+      kind: "progress_activity",
+      id: `item-progress-${group.turnId}-${group.event}`,
+      at: group.at,
+      activity: copy.activity,
+      status: running ? "running" : "complete",
+      label: copy.label,
+      summary: running ? copy.running : copy.complete,
+      eventCount: group.count,
+    });
+  }
+
+  // The transcript, provider progress, and semantic calls are collected from
+  // separate durable record sets. Put them back into time order for a chat-like
+  // flow while relying on stable sort order for records sharing a timestamp.
+  for (const turn of turns.values()) {
+    turn.items.sort((left, right) => left.at.localeCompare(right.at));
   }
 
   const stopRequested = snapshot.evidence.some(

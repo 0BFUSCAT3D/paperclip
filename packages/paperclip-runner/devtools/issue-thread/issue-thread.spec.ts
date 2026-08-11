@@ -125,10 +125,10 @@ test.describe("Phase 7G issue thread", () => {
 
   test("tool strips are collapsed disclosures that deep-link into Evidence", async ({ page }) => {
     await open(page, "thread-baseline");
-    const strip = page.locator('[data-tool-strip="get_task_context"] button').first();
-    await expect(strip).toHaveAttribute("aria-expanded", "false");
-    await strip.click();
-    await expect(strip).toHaveAttribute("aria-expanded", "true");
+    const strip = page.locator('[data-tool-strip="get_task_context"]').first();
+    await expect(strip).not.toHaveAttribute("open", "");
+    await strip.locator("summary").click();
+    await expect(strip).toHaveAttribute("open", "");
 
     await page.getByRole("button", { name: "View in Evidence" }).first().click();
     const panel = page.getByTestId("evidence-panel");
@@ -629,6 +629,7 @@ test.describe("Phase 7M clean-room chat", () => {
   test("a new chat opens a blank live thread with no scenario controls", async ({ page }) => {
     await openCleanRoom(page);
 
+    await expect(page).toHaveTitle("🫧 Mock Paperclip · Issue thread");
     await expect(page.locator('[data-surface="chat"]')).toBeVisible();
     await expect(page.getByTestId("clean-room-empty")).toBeVisible();
     await expect(page.locator("[data-turn-id]")).toHaveCount(0);
@@ -653,6 +654,56 @@ test.describe("Phase 7M clean-room chat", () => {
     await expect(page.locator(".pit-panel")).toBeVisible();
     await page.getByRole("button", { name: /Control plane/ }).click();
     await expect(page.getByText("Real Paperclip API requests: 0")).toBeVisible();
+  });
+
+  test("Runner events expand completely while stream deltas stay grouped", async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.clear());
+    await page.route(CLEAN_ROOM_API, async (route) => {
+      const payload = cleanRoomPayload("MCK-1000");
+      const view = payload.view as Phase7IssueThreadSnapshot;
+      view.evidence.runner = [
+        {
+          id: "session-1",
+          turnId: "turn-0",
+          kind: "session",
+          ordinal: 1,
+          detail: "session · started",
+          details: [
+            { label: "Action", value: "started" },
+            { label: "Runner", value: "paperclip-runnerd" },
+          ],
+        },
+        ...[2, 3].map((ordinal) => ({
+          id: `delta-${ordinal}`,
+          turnId: "turn-1",
+          kind: "provider_event",
+          ordinal,
+          detail: "provider event · assistant_delta",
+          details: [{ label: "Event", value: "assistant_delta" }],
+        })),
+      ];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(payload),
+      });
+    });
+    await page.goto("/#/chat");
+    await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
+
+    await page.getByTestId("evidence-toggle").click();
+    await page.getByRole("button", { name: /Runner & events/ }).click();
+
+    const session = page.locator('[data-record-id="session-1"]');
+    await session.locator("summary").click();
+    await expect(session).toContainText("paperclip-runnerd");
+
+    const group = page.locator('[data-runner-delta-group="assistant_delta"]');
+    await expect(group).toContainText("2 streamed updates");
+    await group.locator(":scope > summary").click();
+    await expect(group.locator(".pit-runner-event")).toHaveCount(2);
+    await group.locator(".pit-runner-event").first().locator("summary").click();
+    await expect(group.locator(".pit-runner-event").first()).toContainText("assistant_delta");
   });
 
   test("a sent message renders the live turn it produced", async ({ page }) => {
@@ -962,6 +1013,27 @@ async function openStreamingCleanRoom(page: Page): Promise<void> {
 }
 
 test.describe("Phase 7Q streamed live turn", () => {
+  test("shows sanitized thinking progress before assistant text arrives", async ({ page }) => {
+    await openStreamingCleanRoom(page);
+
+    await page.locator("#composer-input").fill("Show progress while you inspect this issue.");
+    await page.getByTestId("composer-send").click();
+
+    const progress = page.locator('[data-thread-item="progress_activity"][data-activity="thinking"]');
+    await expect(progress).toBeVisible({ timeout: 30_000 });
+    await expect(progress).toHaveAttribute("data-status", "running");
+    await expect(progress).toContainText("Thinking");
+    await expect(page.locator('[data-thread-item="agent_message"]')).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText(
+      "PRIVATE reasoning text must never reach the browser.",
+    );
+
+    await expect(page.locator('[data-thread-item="agent_message"]')).toContainText(STREAM_REPLY, {
+      timeout: 60_000,
+    });
+    await expect(progress).toHaveAttribute("data-status", "complete");
+  });
+
   test("one assistant card grows while the turn POST is still open", async ({ page }) => {
     await openStreamingCleanRoom(page);
 
