@@ -15,12 +15,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Separator } from "@/components/ui/separator";
+import { Input } from "@/components/ui/input";
 
 function MetadataRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="flex items-start justify-between gap-4 py-2">
-      <span className="text-sm text-muted-foreground">{label}</span>
-      <span className="text-right text-sm text-foreground">{value}</span>
+    <div className="flex flex-col gap-1 py-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <span className="shrink-0 text-sm text-muted-foreground">{label}</span>
+      <span className="min-w-0 break-all text-left text-sm text-foreground sm:text-right">{value}</span>
     </div>
   );
 }
@@ -37,24 +38,42 @@ function SectionPicker({ label, options, onSelect }: {
   onSelect: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const filtered = options.filter((option) => option.label.toLowerCase().includes(search.trim().toLowerCase()));
+  function handleOpenChange(next: boolean) {
+    setOpen(next);
+    if (!next) setSearch("");
+  }
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button type="button" variant="outline" size="xs" disabled={options.length === 0}>
           <Plus className="mr-1 h-3 w-3" />{label}
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 p-1" align="end">
-        {options.map((option) => (
-          <button
-            key={option.id}
-            type="button"
-            className="w-full truncate rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
-            onClick={() => { onSelect(option.id); setOpen(false); }}
-          >
-            {option.label}
-          </button>
-        ))}
+      <PopoverContent className="w-64 space-y-2 p-2" align="end">
+        <Input
+          aria-label={`Search ${label.toLowerCase()} options`}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search"
+        />
+        <div className="max-h-56 overflow-y-auto">
+          {filtered.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              title={option.label}
+              className="w-full break-words rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+              onClick={() => { onSelect(option.id); handleOpenChange(false); }}
+            >
+              {option.label}
+            </button>
+          ))}
+          {filtered.length === 0 ? (
+            <p className="px-2 py-3 text-center text-xs text-muted-foreground">No options match.</p>
+          ) : null}
+        </div>
       </PopoverContent>
     </Popover>
   );
@@ -128,6 +147,8 @@ export function RepositoryDetail() {
   const agentOptions = (agentsQuery.data ?? [])
     .filter((agent) => !directAgentIds.has(agent.id))
     .map((agent) => ({ id: agent.id, label: agent.name }));
+  const directAgents = relationships?.agents.filter((agent) => agent.sources.direct) ?? [];
+  const inheritedAgents = relationships?.agents.filter((agent) => !agent.sources.direct) ?? [];
 
   if (repositoryQuery.isLoading || relationshipsQuery.isLoading) return <PageSkeleton />;
   if (repositoryQuery.isError || relationshipsQuery.isError || !repository || !relationships) {
@@ -142,10 +163,10 @@ export function RepositoryDetail() {
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 p-6">
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-start gap-3">
         <GitBranch className="h-5 w-5 text-muted-foreground" aria-hidden />
-        <div>
-          <h1 className="text-lg font-semibold text-foreground">
+        <div className="min-w-0">
+          <h1 className="break-words text-lg font-semibold text-foreground">
             {repository.owner}/{repository.name}
           </h1>
           <p className="text-sm text-muted-foreground">{repository.host}</p>
@@ -173,8 +194,8 @@ export function RepositoryDetail() {
       <Separator />
 
       <section className="space-y-3">
-        <div className="flex items-start justify-between gap-4">
-          <div>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-4">
+          <div className="min-w-0">
             <h2 className="text-sm font-medium">Project hints</h2>
             <p className="text-xs text-muted-foreground">
               Attach this repository to every project likely to touch it. This is guidance, not a boundary.
@@ -185,8 +206,8 @@ export function RepositoryDetail() {
         {relationships.projects.length === 0 ? (
           <p className="text-xs text-muted-foreground">No projects currently hint at this repository.</p>
         ) : relationships.projects.map((project) => (
-          <div key={project.id} className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
-            <Link to={`/projects/${project.id}/configuration`} className="text-sm hover:underline">{project.name}</Link>
+          <div key={project.id} className="flex flex-col items-start gap-2 border-b border-border py-2 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+            <Link to={`/projects/${project.id}/configuration`} className="break-words text-sm hover:underline">{project.name}</Link>
             <Button type="button" variant="ghost" size="xs" onClick={() => detachProject.mutate(project.id)}>
               Remove project hint
             </Button>
@@ -197,34 +218,47 @@ export function RepositoryDetail() {
       <Separator />
 
       <section className="space-y-3">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-sm font-medium">Direct agent access</h2>
-            <p className="text-xs text-muted-foreground">These grants are in addition to access inherited through projects.</p>
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-4">
+          <div className="min-w-0">
+            <h2 className="text-sm font-medium">Direct agent access ({directAgents.length})</h2>
+            <p className="text-xs text-muted-foreground">Explicit grants managed on this repository.</p>
           </div>
           <SectionPicker label="Grant agent" options={agentOptions} onSelect={(id) => grantAgent.mutate(id)} />
         </div>
-        {relationships.agents.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No agents currently have effective access.</p>
-        ) : relationships.agents.map((agent) => (
-          <div key={agent.id} className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
+        {directAgents.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No agents have a direct grant.</p>
+        ) : directAgents.map((agent) => (
+          <div key={agent.id} className="flex flex-col items-start gap-2 border-b border-border py-2 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
             <div className="min-w-0">
               <Link to={`/agents/${agent.id}`} className="text-sm hover:underline">{agent.name}</Link>
               <p className="text-(length:--text-micro) text-muted-foreground">
                 {agent.sources.projects.length > 0
-                  ? `Inherited through ${agent.sources.projects.map((project) => project.name).join(", ")} · managed on those projects`
+                  ? `Direct grant · Also inherited through ${agent.sources.projects.map((project) => project.name).join(", ")}`
                   : "Direct grant"}
               </p>
             </div>
-            {agent.sources.direct ? (
-              <Button type="button" variant="ghost" size="xs" onClick={() => revokeAgent.mutate(agent.id)}>
-                Revoke direct grant
-              </Button>
-            ) : (
-              <span className="text-(length:--text-micro) text-muted-foreground">Inherited access</span>
-            )}
+            <Button type="button" variant="ghost" size="xs" onClick={() => revokeAgent.mutate(agent.id)}>
+              Revoke direct grant
+            </Button>
           </div>
         ))}
+        {inheritedAgents.length > 0 ? (
+          <details className="border-t border-border pt-3">
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+              Inherited through projects ({inheritedAgents.length})
+            </summary>
+            <div className="mt-2">
+              {inheritedAgents.map((agent) => (
+                <div key={agent.id} className="flex flex-col gap-1 border-b border-border py-2 last:border-b-0">
+                  <Link to={`/agents/${agent.id}`} className="text-sm hover:underline">{agent.name}</Link>
+                  <p className="text-(length:--text-micro) text-muted-foreground">
+                    Inherited through {agent.sources.projects.map((project) => project.name).join(", ")} · managed on those projects
+                  </p>
+                </div>
+              ))}
+            </div>
+          </details>
+        ) : null}
       </section>
     </div>
   );

@@ -156,7 +156,6 @@ describe("GitHubConnectionDialog", () => {
     repositoriesApiMock.discoverConnectionRepositories.mockResolvedValue(discoveryPage({ items: [], total: 0 }));
 
     setInputValue(document.querySelector<HTMLInputElement>('input[aria-label="Search repositories"]')!, "zzz");
-    clickByText("Search");
     await waitFor(() => {
       expect(repositoriesApiMock.discoverConnectionRepositories).toHaveBeenCalledWith("conn-1", {
         query: "zzz",

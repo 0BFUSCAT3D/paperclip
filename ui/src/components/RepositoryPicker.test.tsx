@@ -89,7 +89,7 @@ describe("RepositoryPicker", () => {
     ]);
     const onChange = await render(["repo-app"]);
     expect(container.textContent).toContain("1 project");
-    const docs = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("github.com/acme/docs"));
+    const docs = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("acme/docs"));
     await act(() => docs!.click());
     expect(onChange).toHaveBeenCalledWith(["repo-app", "repo-docs"]);
   });

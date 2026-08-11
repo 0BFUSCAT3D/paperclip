@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   RepositoryConnection,
   RepositoryDiscoveryItem,
   RepositoryDiscoveryPage,
 } from "@paperclipai/shared";
-import { AlertCircle, ExternalLink, Github, Loader2 } from "lucide-react";
+import { AlertCircle, ExternalLink, Github, Loader2, X } from "lucide-react";
 import { repositoriesApi } from "../../api/repositories";
 import { queryKeys } from "../../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -63,6 +63,8 @@ export function GitHubConnectionDialog({
   const [items, setItems] = useState<RepositoryDiscoveryItem[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const lastSearchRef = useRef("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importedCount, setImportedCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
@@ -75,6 +77,7 @@ export function GitHubConnectionDialog({
     setItems([]);
     setNextCursor(null);
     setSearch("");
+    lastSearchRef.current = "";
     setSelected(new Set());
     setImportedCount(0);
     setSkippedCount(0);
@@ -124,6 +127,7 @@ export function GitHubConnectionDialog({
     onSuccess: async (result) => {
       setConnection(result.connection);
       setStep("select");
+      lastSearchRef.current = "";
       queryClient.invalidateQueries({ queryKey: queryKeys.repositories.connections(companyId) });
       await discoverMutation.mutateAsync({ connectionId: result.connection.id, cursor: null, query: "" });
     },
@@ -151,11 +155,14 @@ export function GitHubConnectionDialog({
     });
   };
 
-  const runSearch = () => {
-    if (!connection) return;
+  useEffect(() => {
+    if (!open || step !== "select" || !connection) return;
+    const query = deferredSearch.trim();
+    if (query === lastSearchRef.current) return;
+    lastSearchRef.current = query;
     setSelected(new Set());
-    discoverMutation.mutate({ connectionId: connection.id, cursor: null, query: search });
-  };
+    discoverMutation.mutate({ connectionId: connection.id, cursor: null, query });
+  }, [connection, deferredSearch, open, step]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -220,19 +227,26 @@ export function GitHubConnectionDialog({
 
         {step === "select" ? (
           <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2">
+            <div className="relative">
               <Input
                 aria-label="Search repositories"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") runSearch();
-                }}
                 placeholder="Search repositories"
+                className={search ? "pr-8" : undefined}
               />
-              <Button type="button" variant="outline" onClick={runSearch} disabled={discoverMutation.isPending}>
-                Search
-              </Button>
+              {search ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="absolute right-1 top-1/2 -translate-y-1/2"
+                  onClick={() => setSearch("")}
+                  aria-label="Clear repository search"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
             </div>
 
             {discoverMutation.isError ? (
@@ -272,7 +286,11 @@ export function GitHubConnectionDialog({
                 type="button"
                 variant="ghost"
                 onClick={() =>
-                  connection && discoverMutation.mutate({ connectionId: connection.id, cursor: nextCursor, query: search })
+                  connection && discoverMutation.mutate({
+                    connectionId: connection.id,
+                    cursor: nextCursor,
+                    query: lastSearchRef.current,
+                  })
                 }
                 disabled={discoverMutation.isPending}
               >

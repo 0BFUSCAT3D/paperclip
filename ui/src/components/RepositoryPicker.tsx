@@ -13,6 +13,10 @@ function repositoryLabel(repository: Pick<RepositoryCatalogItem, "host" | "owner
   return `${repository.host}/${repository.owner}/${repository.name}`;
 }
 
+function repositoryName(repository: Pick<RepositoryCatalogItem, "owner" | "name">) {
+  return `${repository.owner}/${repository.name}`;
+}
+
 export function RepositoryPicker({
   companyId,
   value,
@@ -74,9 +78,12 @@ export function RepositoryPicker({
         <div className="space-y-1">
           {selected.map((repository) => (
             <div key={repository.id} className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5">
-              <div className="flex min-w-0 items-center gap-2">
+              <div className="flex min-w-0 items-center gap-2" title={repositoryLabel(repository)}>
                 <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate text-xs">{repositoryLabel(repository)}</span>
+                <span className="min-w-0">
+                  <span className="block truncate text-xs">{repositoryName(repository)}</span>
+                  <span className="block truncate text-(length:--text-micro) text-muted-foreground">{repository.host}</span>
+                </span>
                 {repository.state !== "active" ? (
                   <span className="text-(length:--text-micro) text-muted-foreground">{repository.state}</span>
                 ) : null}
@@ -147,7 +154,10 @@ export function RepositoryPicker({
                       <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-border">
                         {checked ? <Check className="h-3 w-3" /> : null}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-xs">{repositoryLabel(repository)}</span>
+                      <span className="min-w-0 flex-1" title={repositoryLabel(repository)}>
+                        <span className="block truncate text-xs">{repositoryName(repository)}</span>
+                        <span className="block truncate text-(length:--text-micro) text-muted-foreground">{repository.host}</span>
+                      </span>
                       {repository.projectCount > 0 ? (
                         <span className="text-(length:--text-micro) text-muted-foreground">
                           {repository.projectCount} {repository.projectCount === 1 ? "project" : "projects"}

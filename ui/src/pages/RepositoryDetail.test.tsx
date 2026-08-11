@@ -88,8 +88,9 @@ describe("RepositoryDetail", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
 
     expect(container.textContent).toContain("This is guidance, not a boundary");
+    expect(container.textContent).toContain("Direct grant · Also inherited through Project One");
+    expect(container.textContent).toContain("Inherited through projects (1)");
     expect(container.textContent).toContain("Inherited through Project One · managed on those projects");
-    expect(container.textContent).toContain("Inherited access");
     const revoke = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Revoke direct grant"));
     await act(() => revoke!.click());
     await act(() => new Promise((resolve) => setTimeout(resolve, 0)));

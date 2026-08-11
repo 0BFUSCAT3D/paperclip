@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { RepositoryCatalogItem, RepositoryConnection } from "@paperclipai/shared";
 import { AlertCircle, GitBranch, Github, Loader2, Plus, RefreshCw } from "lucide-react";
 import { repositoriesApi } from "../api/repositories";
+import { ApiError } from "../api/client";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -52,6 +53,24 @@ function toneClass(tone: "success" | "warning" | "danger" | "neutral"): string {
   }
 }
 
+function apiErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError && error.body && typeof error.body === "object") {
+    const details = (error.body as { details?: unknown }).details;
+    if (Array.isArray(details)) {
+      const message = details.find(
+        (detail): detail is { message: string } =>
+          Boolean(detail && typeof detail === "object" && typeof (detail as { message?: unknown }).message === "string"),
+      )?.message;
+      if (message) return message;
+    }
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string" && message && message !== "Validation error") return message;
+  }
+  return fallback;
+}
+
 export function Repositories() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -61,6 +80,9 @@ export function Repositories() {
   const [githubHost, setGithubHost] = useState<string | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualUrl, setManualUrl] = useState("");
+  const [catalogNotice, setCatalogNotice] = useState<string | null>(null);
+  const githubTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const manualTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Repositories" }]);
@@ -88,26 +110,53 @@ export function Repositories() {
   const githubProviders = (providersQuery.data ?? []).filter((entry) => entry.provider === "github");
   const defaultGithubHost = githubProviders.length === 1 ? githubProviders[0]!.host : null;
 
-  function openGithubDialog(host: string | null) {
+  function restoreTrigger(ref: React.RefObject<HTMLButtonElement | null>) {
+    queueMicrotask(() => ref.current?.focus());
+  }
+
+  function openGithubDialog(host: string | null, trigger: HTMLButtonElement) {
+    githubTriggerRef.current = trigger;
     setGithubHost(host);
     setGithubOpen(true);
+  }
+
+  function handleGithubOpenChange(next: boolean) {
+    setGithubOpen(next);
+    if (!next) restoreTrigger(githubTriggerRef);
+  }
+
+  function openManualDialog(trigger: HTMLButtonElement) {
+    manualTriggerRef.current = trigger;
+    setManualOpen(true);
+  }
+
+  function handleManualOpenChange(next: boolean) {
+    setManualOpen(next);
+    if (!next) restoreTrigger(manualTriggerRef);
   }
 
   const manualMutation = useMutation({
     mutationFn: (cloneUrl: string) =>
       repositoriesApi.createManual(selectedCompanyId!, { cloneUrl, visibility: "unknown" }),
-    onSuccess: () => {
+    onSuccess: (repository) => {
+      const alreadyPresent = repositories.some((entry) => entry.id === repository.id);
+      setCatalogNotice(alreadyPresent
+        ? `${repository.owner}/${repository.name} is already in the catalog.`
+        : `Added ${repository.owner}/${repository.name} to the catalog.`);
       setManualOpen(false);
       setManualUrl("");
       queryClient.invalidateQueries({ queryKey: queryKeys.repositories.list(selectedCompanyId!) });
+      restoreTrigger(manualTriggerRef);
     },
   });
 
   const syncMutation = useMutation({
     mutationFn: (connectionId: string) => repositoriesApi.syncConnection(connectionId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.repositories.list(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.repositories.connections(selectedCompanyId!) });
+    onSettled: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.repositories.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.repositories.connections(selectedCompanyId!) }),
+      ]);
     },
   });
 
@@ -145,28 +194,28 @@ export function Repositories() {
   }
 
   const actions = (
-    <div className="flex items-center gap-2">
-      <Button variant="outline" onClick={() => setManualOpen(true)}>
+    <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
+      <Button variant="outline" onClick={(event) => openManualDialog(event.currentTarget)}>
         <Plus className="h-4 w-4" /> Add manually
       </Button>
       {githubProviders.length > 1 ? (
         githubProviders.map((entry) => (
-          <Button key={entry.host} onClick={() => openGithubDialog(entry.host)}>
+          <Button key={entry.host} onClick={(event) => openGithubDialog(entry.host, event.currentTarget)}>
             <Github className="h-4 w-4" /> Connect {entry.host}
           </Button>
         ))
-      ) : (
-        <Button onClick={() => openGithubDialog(defaultGithubHost)}>
+      ) : githubProviders.length === 1 ? (
+        <Button onClick={(event) => openGithubDialog(defaultGithubHost, event.currentTarget)}>
           <Github className="h-4 w-4" /> Connect GitHub
         </Button>
-      )}
+      ) : null}
     </div>
   );
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between gap-4">
-        <div>
+      <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold text-foreground">Repositories</h1>
           <p className="text-sm text-muted-foreground">
             Reusable git repositories available to projects and agents in this company.
@@ -182,16 +231,23 @@ export function Repositories() {
             {connections.map((connection) => {
               const tone = connectionHealthTone(connection);
               return (
-                <Card key={connection.id} className="flex items-center justify-between gap-3 px-4 py-3">
-                  <div className="flex items-center gap-3">
+                <Card key={connection.id} className="flex flex-row items-start justify-between gap-3 px-4 py-3 sm:items-center">
+                  <div className="flex min-w-0 items-center gap-3">
                     <Github className="h-4 w-4 text-muted-foreground" aria-hidden />
-                    <div>
-                      <p className="text-sm font-medium text-foreground">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium text-foreground">
                         {connection.accountName ?? connection.host}
                       </p>
-                      <p className={`text-xs ${toneClass(tone)}`}>
-                        {connectionHealthLabel(connection)}
-                        {connection.syncError ? ` — ${connection.syncError}` : ""}
+                      <p
+                        role={syncMutation.isError && syncMutation.variables === connection.id ? "alert" : undefined}
+                        className={`text-xs ${toneClass(tone)}`}
+                      >
+                        {syncMutation.isError && syncMutation.variables === connection.id
+                          ? "Sync failed — status refreshed; try again"
+                          : connectionHealthLabel(connection)}
+                        {connection.syncError && !(syncMutation.isError && syncMutation.variables === connection.id)
+                          ? ` — ${connection.syncError}`
+                          : ""}
                       </p>
                     </div>
                   </div>
@@ -201,7 +257,7 @@ export function Repositories() {
                     onClick={() => syncMutation.mutate(connection.id)}
                     disabled={connection.status === "disconnected" || syncMutation.isPending}
                   >
-                    {syncMutation.isPending ? (
+                    {syncMutation.isPending && syncMutation.variables === connection.id ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <RefreshCw className="h-4 w-4" />
@@ -215,14 +271,19 @@ export function Repositories() {
         </div>
       ) : null}
 
+      {catalogNotice ? <p role="status" className="text-sm text-muted-foreground">{catalogNotice}</p> : null}
+
       {repositories.length === 0 ? (
         <EmptyState
           icon={GitBranch}
           title="No repositories yet"
-          message="Connect GitHub to import repositories, or add one manually by its clone URL."
-          action="Connect GitHub"
+          message={githubProviders.length > 0
+            ? "Add a repository by clone URL, or connect GitHub to import from a provider."
+            : "Add a repository by clone URL. Provider connections appear here when configured."}
+          action="Add manually"
+          actionRef={manualTriggerRef}
           hideActionIcon
-          onAction={() => openGithubDialog(defaultGithubHost)}
+          onAction={() => setManualOpen(true)}
         />
       ) : (
         <div className="flex flex-col gap-3">
@@ -243,7 +304,7 @@ export function Repositories() {
                 <li key={repo.id}>
                   <Link
                     to={repo.id}
-                    className="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-muted/50"
+                    className="flex flex-col items-start gap-2 px-3 py-2.5 hover:bg-muted/50 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                   >
                     <div className="flex min-w-0 items-center gap-3">
                       <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -254,7 +315,7 @@ export function Repositories() {
                         <p className="truncate text-xs text-muted-foreground">{repo.host}</p>
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pl-7 sm:shrink-0 sm:pl-0">
                       {repo.state !== "active" ? (
                         <Badge variant="outline" className="text-warning">{repo.state}</Badge>
                       ) : null}
@@ -278,11 +339,11 @@ export function Repositories() {
         companyId={selectedCompanyId!}
         open={githubOpen}
         host={githubHost}
-        onOpenChange={setGithubOpen}
+        onOpenChange={handleGithubOpenChange}
         onImported={() => refresh()}
       />
 
-      <Dialog open={manualOpen} onOpenChange={setManualOpen}>
+      <Dialog open={manualOpen} onOpenChange={handleManualOpenChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add a repository manually</DialogTitle>
@@ -294,14 +355,19 @@ export function Repositories() {
             <Label htmlFor="manual-clone-url">Clone URL</Label>
             <Input
               id="manual-clone-url"
+              aria-invalid={manualMutation.isError}
+              aria-describedby={manualMutation.isError ? "manual-clone-url-error" : undefined}
               value={manualUrl}
-              onChange={(event) => setManualUrl(event.target.value)}
+              onChange={(event) => {
+                setManualUrl(event.target.value);
+                if (manualMutation.isError) manualMutation.reset();
+              }}
               placeholder="https://github.com/owner/repo.git"
             />
             {manualMutation.isError ? (
-              <p role="alert" className="flex items-center gap-2 text-sm text-destructive">
+              <p id="manual-clone-url-error" role="alert" className="flex items-center gap-2 text-sm text-destructive">
                 <AlertCircle className="h-4 w-4" />
-                {(manualMutation.error as { message?: string } | null)?.message ?? "Failed to add repository."}
+                {apiErrorMessage(manualMutation.error, "Failed to add repository.")}
               </p>
             ) : null}
           </div>

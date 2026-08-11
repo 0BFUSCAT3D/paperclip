@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Repositories } from "./Repositories";
+import { ApiError } from "../api/client";
 
 const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" }));
 const breadcrumbState = vi.hoisted(() => ({ setBreadcrumbs: vi.fn() }));
@@ -121,12 +122,14 @@ describe("Repositories catalog", () => {
     container.remove();
   });
 
-  it("shows an empty state with a connect action", async () => {
+  it("keeps manual entry usable when no repository provider is configured", async () => {
     repositoriesApiMock.list.mockResolvedValue([]);
+    repositoriesApiMock.listProviders.mockResolvedValue([]);
     render();
     await waitFor(() => {
       expect(document.body.textContent).toContain("No repositories yet");
-      expect(document.body.textContent).toContain("Connect GitHub");
+      expect(document.body.textContent).toContain("Add manually");
+      expect(document.body.textContent).not.toContain("Connect GitHub");
     });
   });
 
@@ -189,6 +192,72 @@ describe("Repositories catalog", () => {
         cloneUrl: "https://github.com/acme/manual.git",
         visibility: "unknown",
       });
+      expect(document.body.textContent).toContain("Added acme/manual to the catalog");
+      expect((document.activeElement as HTMLButtonElement | null)?.textContent).toContain("Add manually");
+    });
+  });
+
+  it("reports an idempotent manual add instead of silently closing", async () => {
+    repositoriesApiMock.list.mockResolvedValue([makeRepo()]);
+    repositoriesApiMock.createManual.mockResolvedValue(makeRepo());
+    render();
+    await waitFor(() => expect(document.body.textContent).toContain("acme/alpha"));
+    [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Add manually"))!.click();
+    await waitFor(() => expect(document.body.textContent).toContain("Add a repository manually"));
+    const urlInput = document.querySelector<HTMLInputElement>("#manual-clone-url")!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(urlInput, "https://github.com/acme/alpha.git");
+    urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+    [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Add repository"))!.click();
+
+    await waitFor(() => expect(document.body.textContent).toContain("acme/alpha is already in the catalog"));
+  });
+
+  it("shows a specific validation error and marks the manual URL invalid", async () => {
+    repositoriesApiMock.list.mockResolvedValue([]);
+    repositoriesApiMock.createManual.mockRejectedValue(new ApiError("Validation error", 422, {
+      error: "Validation error",
+      details: [{ path: ["cloneUrl"], message: "Clone URL must use HTTPS or SSH" }],
+    }));
+    render();
+    await waitFor(() => expect(document.body.textContent).toContain("No repositories yet"));
+    [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Add manually"))!.click();
+    await waitFor(() => expect(document.body.textContent).toContain("Add a repository manually"));
+    const urlInput = document.querySelector<HTMLInputElement>("#manual-clone-url")!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(urlInput, "file:///local/repo");
+    urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+    [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Add repository"))!.click();
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Clone URL must use HTTPS or SSH");
+      expect(urlInput.getAttribute("aria-invalid")).toBe("true");
+      expect(urlInput.getAttribute("aria-describedby")).toBe("manual-clone-url-error");
+    });
+  });
+
+  it("surfaces a failed sync and refreshes connection health", async () => {
+    const connection = {
+      id: "connection-1",
+      provider: "github",
+      host: "github.com",
+      accountName: "acme",
+      status: "active",
+      syncStatus: "idle",
+      syncError: null,
+    };
+    repositoriesApiMock.list.mockResolvedValue([makeRepo()]);
+    repositoriesApiMock.listConnections
+      .mockResolvedValueOnce([connection])
+      .mockResolvedValue([{ ...connection, status: "error", syncStatus: "failed", syncError: "Provider unavailable" }]);
+    repositoriesApiMock.syncConnection.mockRejectedValue(new Error("request failed"));
+    render();
+    await waitFor(() => expect(document.body.textContent).toContain("Idle"));
+    [...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Sync"))!.click();
+
+    await waitFor(() => {
+      expect(repositoriesApiMock.listConnections.mock.calls.length).toBeGreaterThan(1);
+      expect(document.body.textContent).toContain("Sync failed");
     });
   });
 
