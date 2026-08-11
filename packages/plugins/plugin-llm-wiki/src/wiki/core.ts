@@ -261,6 +261,8 @@ type OperationInput = {
   title?: string | null;
   prompt?: string | null;
   useCheapModelProfile?: boolean;
+  assignTrackingIssue?: boolean;
+  metadata?: Record<string, unknown> | null;
 };
 
 type OperationSpaceContext = {
@@ -277,6 +279,7 @@ type QuerySessionInput = {
   spaceSlug?: string | null;
   question: string;
   title?: string | null;
+  clientSubmissionId?: string | null;
 };
 
 type CaptureSourceInput = {
@@ -2341,6 +2344,7 @@ export async function createOperationIssue(ctx: PluginContext, input: OperationI
   const originId = operationIssueOriginId({ wikiId, space, operationId });
   const operationContext = { wikiId, space, operationType: input.operationType, operationId, prompt: input.prompt };
   const assignableAgentId =
+    input.assignTrackingIssue !== false &&
     managedAgent.agent &&
     managedAgent.agent.status !== "pending_approval" &&
     managedAgent.agent.status !== "terminated"
@@ -2376,6 +2380,7 @@ export async function createOperationIssue(ctx: PluginContext, input: OperationI
       space.id,
       jsonParam({
         ...operationMetadata(operationContext),
+        ...(input.metadata ?? {}),
         issueOriginId: originId,
         billingCode: operationBillingCode(wikiId, space),
       }),
@@ -3835,10 +3840,75 @@ function isTerminalSessionEvent(event: AgentSessionEvent): boolean {
   return event.eventType === "done" || event.eventType === "error";
 }
 
+async function findActiveQuerySubmission(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId: string;
+  space: WikiSpace;
+  clientSubmissionId: string;
+}) {
+  const rows = await ctx.db.query<{
+    id: string;
+    hidden_issue_id: string | null;
+    agent_session_id: string | null;
+    run_ids: unknown;
+  }>(
+    `SELECT operations.id,
+            operations.hidden_issue_id,
+            operations.run_ids,
+            sessions.agent_session_id
+       FROM ${tableName(ctx.db.namespace, "wiki_operations")} operations
+       LEFT JOIN ${tableName(ctx.db.namespace, "wiki_query_sessions")} sessions
+         ON sessions.id = operations.id AND sessions.company_id = operations.company_id
+      WHERE operations.company_id = $1
+        AND operations.wiki_id = $2
+        AND operations.space_id = $3
+        AND operations.operation_type = 'query'
+        AND operations.status IN ('queued', 'running')
+        AND operations.metadata->>'clientSubmissionId' = $4
+      ORDER BY operations.created_at DESC
+      LIMIT 1`,
+    [input.companyId, input.wikiId, input.space.id, input.clientSubmissionId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const issue = row.hidden_issue_id ? await ctx.issues.get(row.hidden_issue_id, input.companyId) : null;
+  const runIds = Array.isArray(row.run_ids)
+    ? row.run_ids.filter((value): value is string => typeof value === "string")
+    : [];
+  const managedAgent = await resolveWikiAgentResource(ctx, input.companyId);
+  const agent = managedAgent.agentId ? await ctx.agents.get(managedAgent.agentId, input.companyId) : null;
+  return {
+    status: "running",
+    deduplicated: true,
+    wikiId: input.wikiId,
+    spaceSlug: input.space.slug,
+    operationId: row.id,
+    querySessionId: row.id,
+    issue,
+    sessionId: row.agent_session_id,
+    runId: runIds.at(-1) ?? null,
+    channel: queryStreamChannel(row.id),
+    agent: agent ? { id: agent.id, name: agent.name, status: agent.status } : null,
+  };
+}
+
 export async function startWikiQuerySession(ctx: PluginContext, input: QuerySessionInput) {
   const question = requireString(input.question, "question");
   const wikiId = normalizeWikiId(input.wikiId);
+  const clientSubmissionId = stringField(input.clientSubmissionId);
+  if (clientSubmissionId && clientSubmissionId.length > 128) {
+    throw new Error("clientSubmissionId must be 128 characters or fewer");
+  }
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  if (clientSubmissionId) {
+    const existing = await findActiveQuerySubmission(ctx, {
+      companyId: input.companyId,
+      wikiId,
+      space,
+      clientSubmissionId,
+    });
+    if (existing) return existing;
+  }
   const operation = await createOperationIssue(ctx, {
     companyId: input.companyId,
     wikiId,
@@ -3846,12 +3916,18 @@ export async function startWikiQuerySession(ctx: PluginContext, input: QuerySess
     operationType: "query",
     title: input.title ?? `Query LLM Wiki: ${question.slice(0, 72)}`,
     prompt: question,
+    // Query execution already runs through the direct agent-session path below.
+    // Keep the hidden issue as an inspectable tracking record without assigning
+    // it, otherwise normal issue assignment dispatches the same prompt twice.
+    assignTrackingIssue: false,
+    metadata: clientSubmissionId ? { clientSubmissionId } : null,
   });
-  const agentId = operation.issue.assigneeAgentId;
+  const managedAgent = await resolveWikiAgentResource(ctx, input.companyId, { reconcileMissing: true });
+  const agentId = managedAgent.agentId;
   const channel = queryStreamChannel(operation.operationId);
 
   if (!agentId) {
-    const warning = "No configured Wiki Maintainer agent is available for this company.";
+    const warning = "No configured wiki maintainer agent is available for this company.";
     await markOperation(ctx, {
       companyId: input.companyId,
       operationId: operation.operationId,
@@ -3866,8 +3942,8 @@ export async function startWikiQuerySession(ctx: PluginContext, input: QuerySess
   const agent = await ctx.agents.get(agentId, input.companyId);
   if (!agent || agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     const warning = agent
-      ? `Wiki Maintainer agent is not invokable while status is ${agent.status}.`
-      : "Wiki Maintainer agent could not be loaded.";
+      ? `${agent.name} is not invokable while status is ${agent.status}.`
+      : "The configured wiki maintainer agent could not be loaded.";
     await markOperation(ctx, {
       companyId: input.companyId,
       operationId: operation.operationId,
@@ -3982,6 +4058,11 @@ export async function startWikiQuerySession(ctx: PluginContext, input: QuerySess
     sessionId: session.sessionId,
     runId: sendResult.runId,
     channel,
+    agent: {
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+    },
   };
 }
 

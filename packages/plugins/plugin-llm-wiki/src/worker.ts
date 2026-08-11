@@ -743,6 +743,7 @@ const plugin = definePlugin({
         spaceSlug: stringField(params.spaceSlug),
         question: stringField(params.question) ?? "",
         title: stringField(params.title),
+        clientSubmissionId: stringField(params.clientSubmissionId),
       });
     });
 
@@ -1040,6 +1041,7 @@ const plugin = definePlugin({
           spaceSlug: stringField(body?.spaceSlug),
           question: stringField(body?.question) ?? "",
           title: stringField(body?.title),
+          clientSubmissionId: stringField(body?.clientSubmissionId),
         }),
       };
     }

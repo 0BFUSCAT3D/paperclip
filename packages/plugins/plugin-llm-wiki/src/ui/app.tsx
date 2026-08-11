@@ -4325,6 +4325,7 @@ function statusTone(status: string): Tone {
 type QueryThreadEntry = {
   id: string;
   prompt: string;
+  agentName: string;
   operationId: string | null;
   querySessionId: string | null;
   hiddenIssueIdentifier: string | null;
@@ -4334,6 +4335,23 @@ type QueryThreadEntry = {
   answer: string;
   errorMessage?: string;
 };
+
+export function queryErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    for (const key of ["message", "error", "detail"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value;
+      if (value && typeof value === "object") {
+        const nestedMessage = (value as Record<string, unknown>).message;
+        if (typeof nestedMessage === "string" && nestedMessage.trim()) return nestedMessage;
+      }
+    }
+  }
+  return "The wiki query failed without a readable error message.";
+}
 
 type QueryStreamEvent = {
   type: string;
@@ -4356,6 +4374,7 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
   const [thread, setThread] = useState<QueryThreadEntry[]>([]);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
+  const submitInFlightRef = useRef(false);
   const [filePath, setFilePath] = useState("wiki/concepts/new-page.md");
   const [fileBody, setFileBody] = useState("");
   const [filing, setFiling] = useState<string | null>(null);
@@ -4374,6 +4393,7 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
     }
     return null;
   }, [thread]);
+  const queryAgentName = overview.managedAgent.details?.name ?? "Wiki Maintainer";
 
   const stream = usePluginStream<QueryStreamEvent>(activeEntry?.channel ?? "llm-wiki:idle", {
     companyId: context.companyId ?? undefined,
@@ -4401,12 +4421,14 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
   }, [fileBody, stream.lastEvent, activeEntry?.id]);
 
   async function send() {
-    if (!context.companyId || !prompt.trim()) return;
+    if (!context.companyId || !prompt.trim() || activeEntry || submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
     setBusy(true);
     const entryId = `q-${Date.now()}`;
     setThread((prev) => [...prev, {
       id: entryId,
       prompt: prompt.trim(),
+      agentName: queryAgentName,
       operationId: null,
       querySessionId: null,
       hiddenIssueIdentifier: null,
@@ -4416,12 +4438,13 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
       answer: "",
     }]);
     try {
-      const res = await startQuery({ companyId: context.companyId, spaceSlug: activeSpaceSlug, question: prompt.trim() });
+      const res = await startQuery({ companyId: context.companyId, spaceSlug: activeSpaceSlug, question: prompt.trim(), clientSubmissionId: entryId });
       const result = res as {
         operationId: string;
         querySessionId?: string;
         channel?: string;
         issue?: { identifier?: string | null };
+        agent?: { name?: string | null };
       };
       setThread((prev) => prev.map((entry) =>
         entry.id === entryId ? {
@@ -4431,16 +4454,18 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
           hiddenIssueIdentifier: result.issue?.identifier ?? null,
           channel: result.channel ?? `llm-wiki:query:${result.operationId}`,
           status: "running",
+          agentName: result.agent?.name?.trim() || entry.agentName,
         } : entry,
       ));
       setPrompt("");
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = queryErrorMessage(err);
       setThread((prev) => prev.map((entry) =>
         entry.id === entryId ? { ...entry, status: "error", errorMessage: message } : entry,
       ));
       toast({ tone: "error", title: "Ask failed", body: message });
     } finally {
+      submitInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -4475,7 +4500,7 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
       <div style={{ flex: 1, padding: isMobile ? "16px" : "24px 28px", overflow: isMobile ? "visible" : "auto", minWidth: 0 }}>
         {thread.length === 0 ? (
           <Callout>
-            Ask the wiki anything. Each question initiates a task assigned to the Wiki Maintainer. The answer streams below; you can promote useful answers into a wiki page.
+            Ask the wiki anything. Each question starts a session with {queryAgentName} and records an inspectable tracking task. The answer streams below; you can promote useful answers into a wiki page.
           </Callout>
         ) : null}
         <div style={{ display: "grid", gap: 22, marginTop: 18 }}>
@@ -4484,7 +4509,7 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
               <Tiny style={{ marginBottom: 4 }}>You · {formatTime(entry.createdAt)}</Tiny>
               <div style={{ background: tokens.card, border: `1px solid ${tokens.border}`, padding: "10px 12px", borderRadius: 8, fontSize: 13 }}>{entry.prompt}</div>
               <Tiny style={{ marginTop: 8 }}>
-                Wiki Maintainer · {entry.status}
+                {entry.agentName} · {entry.status}
                 {entry.hiddenIssueIdentifier ? <> · <Mono>{entry.hiddenIssueIdentifier}</Mono></> : null}
               </Tiny>
               {entry.status === "error" ? (
@@ -4518,10 +4543,10 @@ function QueryTab({ context, overview }: { context: { companyId: string | null }
         <div style={{ borderTop: `1px solid ${tokens.border}`, paddingTop: 14, marginTop: 22 }}>
           <TextArea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Ask the wiki…" rows={3} />
           <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <Button variant="primary" size="sm" onClick={send} disabled={!prompt.trim()} loading={busy}>Send (⌘↵)</Button>
+            <Button variant="primary" size="sm" onClick={send} disabled={!prompt.trim() || Boolean(activeEntry)} loading={busy}>Send (⌘↵)</Button>
             <Badge>Cite: wiki + raw</Badge>
             <Badge>Max steps: 6</Badge>
-            <Tiny style={{ marginLeft: "auto" }}>Streamed via agent session · maintainer task</Tiny>
+            <Tiny style={{ marginLeft: "auto" }}>Streamed via {queryAgentName} · tracking task</Tiny>
           </div>
         </div>
       </div>

@@ -29,6 +29,7 @@ import {
   QUERY_PROMPT,
 } from "../src/templates.js";
 import { SettingsPage, SidebarLink, WikiPage, WikiRouteSidebar } from "../src/ui/index.js";
+import { queryErrorMessage } from "../src/ui/app.js";
 import plugin from "../src/worker.js";
 import { OPERATION_ORIGIN_KIND, type WikiSkillResource } from "../src/wiki.js";
 
@@ -88,6 +89,7 @@ let mockSearch = "";
 let mockAutoSelectFile: string | null = null;
 let mockNavigatedTo: string | null = null;
 let mockOverviewFolder: Record<string, unknown> | null = null;
+let mockOverviewManagedAgent: Record<string, unknown> | null = null;
 let mockSettingsFolder: Record<string, unknown> | null = null;
 let mockSettingsManagedAgent: Record<string, unknown> | null = null;
 let mockSettingsManagedRoutines: Array<Record<string, unknown>> = [];
@@ -115,6 +117,7 @@ beforeEach(() => {
   mockAutoSelectFile = null;
   mockNavigatedTo = null;
   mockOverviewFolder = null;
+  mockOverviewManagedAgent = null;
   mockSettingsFolder = null;
   mockSettingsManagedAgent = null;
   mockSettingsManagedRoutines = [];
@@ -146,7 +149,7 @@ beforeEach(() => {
                 problems: [],
                 checkedAt: new Date().toISOString(),
               },
-              managedAgent: { status: "resolved", source: "managed", agentId: "agent-1", resourceKey: "wiki-maintainer", details: { name: "Wiki Maintainer", status: "idle", adapterType: "claude_local", icon: "book-open", urlKey: "wiki-maintainer" } },
+              managedAgent: mockOverviewManagedAgent ?? { status: "resolved", source: "managed", agentId: "agent-1", resourceKey: "wiki-maintainer", details: { name: "Wiki Maintainer", status: "idle", adapterType: "claude_local", icon: "book-open", urlKey: "wiki-maintainer" } },
               managedProject: { status: "resolved", projectId: "project-1", details: { name: "LLM Wiki", status: "in_progress" } },
               managedSkills: DEFAULT_MANAGED_SKILLS,
               operationCount: 0,
@@ -344,6 +347,14 @@ beforeEach(() => {
         return { data: null, loading: false, error: null, refresh: () => undefined };
       },
       usePluginAction: () => async () => ({}),
+      usePluginStream: () => ({
+        events: [],
+        lastEvent: null,
+        connecting: false,
+        connected: false,
+        error: null,
+        close: () => undefined,
+      }),
       usePluginToast: () => () => null,
       useHostNavigation: () => ({
         resolveHref: (to: string) => `/PAP${to.startsWith("/") ? to : `/${to}`}`,
@@ -750,6 +761,37 @@ describe("LLM Wiki plugin scaffold", () => {
     expect(markup).not.toContain("Wiki plugin");
     expect(markup).not.toContain("border-radius:999");
     expect(markup).not.toContain("📖");
+  });
+
+  it("labels Ask with the selected wiki agent instead of the managed default", () => {
+    mockPathname = "/PAP/wiki/query";
+    mockOverviewManagedAgent = {
+      status: "resolved",
+      source: "selected",
+      agentId: "knowledge-agent-1",
+      resourceKey: "wiki-maintainer",
+      details: {
+        name: "Head of Knowledge & Operations",
+        status: "idle",
+        adapterType: "codex_local",
+        icon: "brain",
+        urlKey: "head-of-knowledge-operations",
+      },
+    };
+
+    const markup = renderToStaticMarkup(createElement(WikiPage, {
+      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
+    } as never));
+
+    expect(markup).toContain("starts a session with Head of Knowledge &amp; Operations");
+    expect(markup).toContain("Streamed via Head of Knowledge &amp; Operations");
+    expect(markup).not.toContain("Each question initiates a task assigned to the Wiki Maintainer");
+  });
+
+  it("extracts readable messages from structured Ask errors", () => {
+    expect(queryErrorMessage({ message: "Selected agent is paused." })).toBe("Selected agent is paused.");
+    expect(queryErrorMessage({ error: { message: "Session dispatch failed." } })).toBe("Session dispatch failed.");
+    expect(queryErrorMessage({ code: "UNKNOWN" })).toBe("The wiki query failed without a readable error message.");
   });
 
   it("ships Karpathy-pattern schema and workflow prompts by default", () => {
@@ -3682,6 +3724,8 @@ Duplicate headings receive stable suffixes.
       sessionId: string;
       runId: string;
       channel: string;
+      issue: { assigneeAgentId: string | null };
+      agent: { id: string; name: string; status: string };
     }>("start-query", {
       companyId: COMPANY_ID,
       question: "Which files own wiki behavior?",
@@ -3689,6 +3733,13 @@ Duplicate headings receive stable suffixes.
 
     expect(result.querySessionId).toBe(result.operationId);
     expect(result.channel).toBe(`llm-wiki:query:${result.operationId}`);
+    expect(result.issue.assigneeAgentId).toBeNull();
+    expect(result.agent).toMatchObject({
+      id: wikiMaintainerAgent().id,
+      name: wikiMaintainerAgent().name,
+      status: "idle",
+    });
+    expect(await harness.ctx.agents.sessions.list(wikiMaintainerAgent().id, COMPANY_ID)).toHaveLength(1);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_query_sessions"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("run_ids"))).toBe(true);
 
@@ -3718,6 +3769,69 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) =>
       execute.sql.includes("wiki_query_sessions") && execute.params?.includes("completed"),
     )).toBe(true);
+  });
+
+  it("returns the existing active session instead of dispatching again for a repeated client submission", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({ agents: [wikiMaintainerAgent()] });
+    await plugin.definition.setup(harness.ctx);
+
+    const first = await harness.performAction<{
+      operationId: string;
+      sessionId: string;
+      runId: string;
+      channel: string;
+      issue: { id: string };
+    }>("start-query", {
+      companyId: COMPANY_ID,
+      question: "Which files own wiki behavior?",
+      clientSubmissionId: "submission-abc-1",
+    });
+
+    const dedupeLookups: Array<unknown[] | undefined> = [];
+    const defaultQuery = harness.ctx.db.query;
+    harness.ctx.db.query = async <T = Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      if (sql.includes("clientSubmissionId")) {
+        dedupeLookups.push(params);
+        return [{
+          id: first.operationId,
+          hidden_issue_id: first.issue.id,
+          agent_session_id: first.sessionId,
+          run_ids: [first.runId],
+        }] as T[];
+      }
+      return defaultQuery<T>(sql, params);
+    };
+
+    const second = await harness.performAction<{
+      deduplicated?: boolean;
+      operationId: string;
+      querySessionId: string;
+      sessionId: string | null;
+      runId: string | null;
+      channel: string;
+      agent: { id: string; name: string } | null;
+    }>("start-query", {
+      companyId: COMPANY_ID,
+      question: "Which files own wiki behavior?",
+      clientSubmissionId: "submission-abc-1",
+    });
+
+    expect(dedupeLookups).toHaveLength(1);
+    expect(dedupeLookups[0]).toContain("submission-abc-1");
+    expect(second.deduplicated).toBe(true);
+    expect(second.operationId).toBe(first.operationId);
+    expect(second.querySessionId).toBe(first.operationId);
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.runId).toBe(first.runId);
+    expect(second.channel).toBe(first.channel);
+    expect(second.agent).toMatchObject({ id: wikiMaintainerAgent().id, name: wikiMaintainerAgent().name });
+    expect(await harness.ctx.agents.sessions.list(wikiMaintainerAgent().id, COMPANY_ID)).toHaveLength(1);
+    const operationInserts = harness.dbExecutes.filter((execute) =>
+      execute.sql.includes("INSERT INTO") && execute.sql.includes("wiki_operations"));
+    expect(operationInserts).toHaveLength(1);
+    const operationMetadata = JSON.parse(String(operationInserts[0]?.params?.[8]));
+    expect(operationMetadata.clientSubmissionId).toBe("submission-abc-1");
   });
 
   it("files a streamed query answer as a page through a hidden file-as-page operation", async () => {
