@@ -2393,6 +2393,11 @@ export type {
   AgentRepositoryGrantEntry,
   EffectiveRepositoryProjectSource,
   EffectiveRepositoryAccess,
+  RepositoryDiscoveryItem,
+  RepositoryDiscoveryPage,
+  BeginRepositoryConnectionResult,
+  CompleteRepositoryConnectionResult,
+  ImportRepositoriesResult,
 } from "./types/repository.js";
 export {
   FEATURE_TIERS,

@@ -4,10 +4,14 @@ import type { Db } from "@paperclipai/db";
 import { agents, projects } from "@paperclipai/db";
 import {
   attachProjectRepositorySchema,
+  beginRepositoryConnectionSchema,
+  completeRepositoryConnectionSchema,
   createManualRepositorySchema,
   createRepositoryConnectionSchema,
   grantAgentRepositorySchema,
+  importRepositoriesSchema,
   updateRepositorySchema,
+  type RepositoryDiscoveryItem,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
@@ -17,6 +21,8 @@ import {
   repositoryConnectionService,
   repositoryService,
 } from "../services/index.js";
+import { getRepositoryProviderConnector } from "../services/repository-providers/registry.js";
+import { forbidden, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 function activityActor(req: Request) {
@@ -237,6 +243,246 @@ export function repositoryRoutes(db: Db) {
       });
       throw error;
     }
+  });
+
+  // ---- Provider connection flow (GitHub.com + other discovery providers) ----
+
+  router.post(
+    "/companies/:companyId/repository-connections/:provider/install",
+    validate(beginRepositoryConnectionSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const providerKey = (req.params.provider as string).toLowerCase();
+      const connector = getRepositoryProviderConnector(providerKey);
+      if (!connector) throw unprocessable(`Repository provider '${providerKey}' is not available`);
+      const { actor } = activityActor(req);
+      const userId = actor.actorType === "user" ? actor.actorId : actor.agentId;
+      if (!userId) throw forbidden("A user or agent identity is required to begin a connection");
+      const begin = await connector.beginInstallation({
+        companyId,
+        userId,
+        redirectPath: req.body.redirectPath ?? null,
+      });
+      res.status(201).json({
+        provider: connector.provider,
+        installUrl: begin.installUrl,
+        state: begin.state,
+        expiresAt: begin.expiresAt.toISOString(),
+      });
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/repository-connections/:provider/callback",
+    validate(completeRepositoryConnectionSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const providerKey = (req.params.provider as string).toLowerCase();
+      const connector = getRepositoryProviderConnector(providerKey);
+      if (!connector) throw unprocessable(`Repository provider '${providerKey}' is not available`);
+      const meta = await connector.completeInstallation({
+        state: req.body.state,
+        installationId: req.body.installationId,
+        companyId,
+      });
+      // Create the connection only. Repositories are imported explicitly via
+      // the multi-select import flow so nothing is silently attached.
+      const result = await connections.create(companyId, {
+        provider: connector.provider,
+        host: meta.host,
+        installationId: meta.installationId,
+        accountId: meta.accountId,
+        accountName: meta.accountName,
+      });
+      const { attribution } = activityActor(req);
+      if (result.created) {
+        await logActivity(db, {
+          companyId,
+          ...attribution,
+          action: "repository_connection.created",
+          entityType: "repository_connection",
+          entityId: result.connection.id,
+          details: { provider: result.connection.provider, host: result.connection.host, via: "callback" },
+        });
+      }
+      res
+        .status(result.created ? 201 : 200)
+        .json({ connection: result.connection, created: result.created, repositories: [] });
+    },
+  );
+
+  router.get("/repository-connections/:connectionId/discover", async (req, res) => {
+    assertBoard(req);
+    const connectionId = req.params.connectionId as string;
+    const connection = await getAccessibleResource(
+      req,
+      res,
+      connections.getById(connectionId),
+      "Repository connection not found",
+    );
+    if (!connection) return;
+    const connector = getRepositoryProviderConnector(connection.provider);
+    if (!connector) throw unprocessable(`Repository provider '${connection.provider}' does not support discovery`);
+    if (connection.status === "disconnected") throw unprocessable("Disconnected repository connection cannot be discovered");
+
+    const pageSizeRaw = Number.parseInt(String(req.query.pageSize ?? ""), 10);
+    const page = await connector.discover({
+      connection,
+      query: typeof req.query.query === "string" ? req.query.query : null,
+      cursor: typeof req.query.cursor === "string" ? req.query.cursor : null,
+      pageSize: Number.isFinite(pageSizeRaw) ? pageSizeRaw : undefined,
+    });
+    const imported = await repositories.findImportedProviderRepositories(
+      connection.companyId,
+      connectionId,
+      page.items.map((item) => item.providerRepositoryId),
+    );
+    const importedById = new Map(imported.map((repo) => [repo.providerRepositoryId, repo]));
+    const items: RepositoryDiscoveryItem[] = page.items.map((item) => {
+      const existing = importedById.get(item.providerRepositoryId);
+      return {
+        providerRepositoryId: item.providerRepositoryId,
+        owner: item.owner,
+        name: item.name,
+        cloneUrl: item.cloneUrl,
+        webUrl: item.webUrl ?? null,
+        defaultBranch: item.defaultBranch ?? null,
+        visibility: item.visibility ?? "unknown",
+        archived: item.archived ?? false,
+        imported: Boolean(existing),
+        importedRepositoryId: existing?.id ?? null,
+        metadata: item.metadata ?? null,
+      };
+    });
+    res.json({ connectionId, items, nextCursor: page.nextCursor, total: page.total });
+  });
+
+  router.post(
+    "/repository-connections/:connectionId/import",
+    validate(importRepositoriesSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const connectionId = req.params.connectionId as string;
+      const connection = await getAccessibleResource(
+        req,
+        res,
+        connections.getById(connectionId),
+        "Repository connection not found",
+      );
+      if (!connection) return;
+      const connector = getRepositoryProviderConnector(connection.provider);
+      if (!connector) throw unprocessable(`Repository provider '${connection.provider}' does not support import`);
+      if (connection.status === "disconnected") throw unprocessable("Disconnected repository connection cannot import repositories");
+
+      const providerRepositoryIds: string[] = req.body.providerRepositoryIds;
+      const importedRepositories = [];
+      const skipped: string[] = [];
+      for (const providerRepositoryId of providerRepositoryIds) {
+        const snapshot = await connector.refreshMetadata({ connection, providerRepositoryId });
+        if (!snapshot) {
+          skipped.push(providerRepositoryId);
+          continue;
+        }
+        importedRepositories.push(
+          await repositories.upsertProviderRepository(connection.companyId, connectionId, connection.provider, snapshot),
+        );
+      }
+      const { attribution } = activityActor(req);
+      if (importedRepositories.length > 0) {
+        await logActivity(db, {
+          companyId: connection.companyId,
+          ...attribution,
+          action: "repository.imported",
+          entityType: "repository_connection",
+          entityId: connectionId,
+          details: {
+            provider: connection.provider,
+            importedCount: importedRepositories.length,
+            skippedCount: skipped.length,
+          },
+        });
+      }
+      res
+        .status(importedRepositories.length > 0 ? 201 : 200)
+        .json({ repositories: importedRepositories, imported: importedRepositories.length, skipped });
+    },
+  );
+
+  router.post("/repositories/:repositoryId/clone-credential", async (req, res) => {
+    const repositoryId = req.params.repositoryId as string;
+    const repository = await getAccessibleResource(
+      req,
+      res,
+      repositories.getById(repositoryId),
+      "Repository not found",
+    );
+    if (!repository) return;
+    if (repository.state !== "active") throw unprocessable("Archived or unavailable repository cannot resolve clone credentials");
+    if (!repository.connectionId) throw unprocessable("Repository is not backed by a provider connection");
+
+    // Authorize through the effective-access resolver: company/board actors are
+    // allowed within their company; agents must hold effective access (a direct
+    // grant or an accessible project source) to the repository.
+    const reqActor = req.actor;
+    let authorized = false;
+    if (reqActor.type === "board") {
+      authorized = reqActor.isInstanceAdmin === true || (reqActor.companyIds?.includes(repository.companyId) ?? false);
+    } else if (reqActor.type === "agent" && reqActor.agentId) {
+      const effective = await repositoryAccess.listEffectiveRepositories({
+        companyId: repository.companyId,
+        agentId: reqActor.agentId,
+        canAccessProject: async (project) => (await access.decide({
+          actor: reqActor,
+          action: "project:read",
+          resource: { type: "project", companyId: project.companyId, projectId: project.id },
+        })).allowed,
+      });
+      authorized = (effective ?? []).some((entry) => entry.repository.id === repository.id);
+    }
+    if (!authorized) throw forbidden("Repository is outside this actor's effective access");
+
+    const connection = await connections.getById(repository.connectionId);
+    if (!connection || connection.status === "disconnected") throw unprocessable("Repository connection is unavailable");
+    const connector = getRepositoryProviderConnector(connection.provider);
+    if (!connector) throw unprocessable(`Repository provider '${connection.provider}' cannot resolve clone credentials`);
+
+    const resolved = await connector.resolveCloneCredential({
+      connection,
+      repository: {
+        id: repository.id,
+        providerRepositoryId: repository.providerRepositoryId,
+        owner: repository.owner,
+        name: repository.name,
+        host: repository.host,
+        cloneUrl: repository.cloneUrl,
+      },
+    });
+    const { attribution } = activityActor(req);
+    await logActivity(db, {
+      companyId: repository.companyId,
+      ...attribution,
+      action: "repository.clone_credential_resolved",
+      entityType: "repository",
+      entityId: repository.id,
+      details: {
+        provider: resolved.audit.provider,
+        host: resolved.audit.host,
+        connectionId: resolved.audit.connectionId,
+        installationId: resolved.audit.installationId,
+        expiresAt: resolved.audit.expiresAt.toISOString(),
+      },
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      username: resolved.username,
+      token: resolved.token,
+      authenticatedCloneUrl: resolved.authenticatedCloneUrl,
+      expiresAt: resolved.expiresAt.toISOString(),
+    });
   });
 
   router.get("/projects/:projectId/repositories", async (req, res) => {
