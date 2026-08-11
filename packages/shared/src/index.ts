@@ -237,6 +237,7 @@ export {
   credentialConfigPath,
   getAppDefinitionForUrl,
   getAvailableConnectionMethod,
+  getAvailableConnectionMethods,
   getConnectableAppDefinition,
   recommendedDefaultsForApp,
 } from "./app-definitions.js";
