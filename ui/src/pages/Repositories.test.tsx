@@ -156,6 +156,21 @@ describe("Repositories catalog", () => {
     });
   });
 
+  it("constrains long repository names on mobile and exposes the full name", async () => {
+    const longName = "wizards-warriors-souls-marketplace";
+    repositoriesApiMock.list.mockResolvedValue([makeRepo({ name: longName })]);
+    render();
+
+    await waitFor(() => {
+      const name = container.querySelector<HTMLElement>(`[title="acme/${longName}"]`);
+      expect(name?.className).toContain("truncate");
+      const content = name?.parentElement?.parentElement;
+      expect(content?.className).toContain("w-full");
+      expect(content?.className).toContain("max-w-full");
+      expect(content?.className).toContain("min-w-0");
+    });
+  });
+
   it("shows an error state with retry", async () => {
     repositoriesApiMock.list.mockRejectedValue(new Error("boom"));
     render();

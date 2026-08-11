@@ -306,10 +306,13 @@ export function Repositories() {
                     to={repo.id}
                     className="flex flex-col items-start gap-2 px-3 py-2.5 hover:bg-muted/50 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
                   >
-                    <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex w-full max-w-full min-w-0 items-center gap-3">
                       <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-foreground">
+                        <p
+                          className="truncate text-sm font-medium text-foreground"
+                          title={`${repo.owner}/${repo.name}`}
+                        >
                           {repo.owner}/{repo.name}
                         </p>
                         <p className="truncate text-xs text-muted-foreground">{repo.host}</p>

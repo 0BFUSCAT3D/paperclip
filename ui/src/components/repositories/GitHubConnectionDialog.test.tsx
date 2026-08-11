@@ -166,6 +166,46 @@ describe("GitHubConnectionDialog", () => {
     });
   });
 
+  it("preserves selected repositories while the search query changes", async () => {
+    repositoriesApiMock.importConnectionRepositories.mockResolvedValue({
+      repositories: [{ id: "repo-1" }, { id: "repo-3" }],
+      imported: 2,
+      skipped: [],
+    });
+    await reachSelectStep();
+
+    document.querySelector<HTMLButtonElement>('[aria-label="Select acme/alpha"]')!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await waitFor(() => expect(document.body.textContent).toContain("Import 1 selected"));
+
+    repositoriesApiMock.discoverConnectionRepositories.mockResolvedValue(discoveryPage({
+      items: [
+        { providerRepositoryId: "3", owner: "acme", name: "gamma", cloneUrl: "https://github.com/acme/gamma.git", webUrl: null, defaultBranch: "main", visibility: "private", archived: false, imported: false, importedRepositoryId: null, metadata: null },
+      ],
+      total: 1,
+    }));
+    setInputValue(document.querySelector<HTMLInputElement>('input[aria-label="Search repositories"]')!, "gamma");
+
+    await waitFor(() => {
+      expect(repositoriesApiMock.discoverConnectionRepositories).toHaveBeenCalledWith("conn-1", {
+        query: "gamma",
+        cursor: null,
+        pageSize: 20,
+      });
+      expect(document.body.textContent).toContain("acme/gamma");
+      expect(document.body.textContent).toContain("Import 1 selected");
+    });
+
+    document.querySelector<HTMLButtonElement>('[aria-label="Select acme/gamma"]')!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await waitFor(() => expect(document.body.textContent).toContain("Import 2 selected"));
+    clickByText("Import");
+
+    await waitFor(() => {
+      expect(repositoriesApiMock.importConnectionRepositories).toHaveBeenCalledWith("conn-1", ["1", "3"]);
+    });
+  });
+
   it("shows an error and allows retry when authorization fails", async () => {
     repositoriesApiMock.beginConnection.mockRejectedValueOnce(new Error("network down"));
     render();

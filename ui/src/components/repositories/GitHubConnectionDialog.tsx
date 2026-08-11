@@ -160,7 +160,6 @@ export function GitHubConnectionDialog({
     const query = deferredSearch.trim();
     if (query === lastSearchRef.current) return;
     lastSearchRef.current = query;
-    setSelected(new Set());
     discoverMutation.mutate({ connectionId: connection.id, cursor: null, query });
   }, [connection, deferredSearch, open, step]);
 
