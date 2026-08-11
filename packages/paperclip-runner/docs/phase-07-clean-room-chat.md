@@ -106,6 +106,20 @@ The child environment is allowlisted by `createSanitizedCodexEnvironment`, so no
 `PAPERCLIP_*` value reaches runnerd or Codex, and the browser receives no
 provider, runner, or control-plane credential.
 
+## Remote preview gateway
+
+The tailnet preview keeps the package server on loopback and exposes it through
+`dist/phase7/tailnet-gateway.js`. Every API call requires the gateway's
+high-entropy HttpOnly capability cookie. Mutations additionally require the
+exact configured `Origin` and `application/json`.
+
+Fetch Metadata is checked as defense in depth: any supplied `Sec-Fetch-Site`,
+`Sec-Fetch-Mode`, or `Sec-Fetch-Dest` value must describe the expected
+same-origin `fetch()` request. Browsers that omit one or all of those optional
+headers are still accepted after the capability, Origin, and content-type
+checks pass. This keeps Safari and embedded/private browser clients working
+without weakening the explicit cross-site denial.
+
 ## Verification
 
 | Surface | Command |
