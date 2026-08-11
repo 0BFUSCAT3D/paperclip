@@ -125,6 +125,23 @@ export function repositoryService(db: Db) {
       return row ? toRepository(row) : null;
     },
 
+    findImportedProviderRepositories: async (
+      companyId: string,
+      connectionId: string,
+      providerRepositoryIds: string[],
+    ): Promise<Repository[]> => {
+      if (providerRepositoryIds.length === 0) return [];
+      const rows = await db
+        .select()
+        .from(repositories)
+        .where(and(
+          eq(repositories.companyId, companyId),
+          eq(repositories.connectionId, connectionId),
+          inArray(repositories.providerRepositoryId, providerRepositoryIds),
+        ));
+      return rows.map(toRepository);
+    },
+
     createManual: async (companyId: string, input: CreateManualRepository) => {
       const normalized = normalizeRepositoryLocator(input.cloneUrl);
       const identityKey = manualRepositoryIdentityKey(normalized);

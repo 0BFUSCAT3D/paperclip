@@ -97,3 +97,45 @@ export interface EffectiveRepositoryAccess {
     projects: EffectiveRepositoryProjectSource[];
   };
 }
+
+/** A provider repository surfaced by discovery, before it is imported. */
+export interface RepositoryDiscoveryItem {
+  providerRepositoryId: string;
+  owner: string;
+  name: string;
+  cloneUrl: string;
+  webUrl: string | null;
+  defaultBranch: string | null;
+  visibility: RepositoryVisibility;
+  archived: boolean;
+  /** True when this provider repository is already imported into the catalog. */
+  imported: boolean;
+  importedRepositoryId: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface RepositoryDiscoveryPage {
+  connectionId: string;
+  items: RepositoryDiscoveryItem[];
+  nextCursor: string | null;
+  total: number | null;
+}
+
+export interface BeginRepositoryConnectionResult {
+  provider: RepositoryProvider;
+  installUrl: string;
+  state: string;
+  expiresAt: string;
+}
+
+export interface CompleteRepositoryConnectionResult {
+  connection: RepositoryConnection;
+  created: boolean;
+  repositories: Repository[];
+}
+
+export interface ImportRepositoriesResult {
+  repositories: Repository[];
+  imported: number;
+  skipped: string[];
+}
