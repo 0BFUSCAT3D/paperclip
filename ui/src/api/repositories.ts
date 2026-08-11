@@ -1,15 +1,41 @@
 import type {
   AgentRepositoryGrantEntry,
+  BeginRepositoryConnectionResult,
+  CompleteRepositoryConnectionResult,
   CreateManualRepository,
   CreateRepositoryConnection,
   EffectiveRepositoryAccess,
+  ImportRepositoriesResult,
   ProjectRepositoryEntry,
   Repository,
   RepositoryCatalogItem,
   RepositoryConnection,
+  RepositoryDiscoveryPage,
   UpdateRepository,
 } from "@paperclipai/shared";
 import { api } from "./client";
+
+export interface RepositoryCloneCredential {
+  username: string;
+  token: string;
+  authenticatedCloneUrl: string;
+  expiresAt: string;
+}
+
+export interface RepositoryDiscoveryQuery {
+  query?: string | null;
+  cursor?: string | null;
+  pageSize?: number;
+}
+
+function discoveryQueryString(opts: RepositoryDiscoveryQuery = {}): string {
+  const params = new URLSearchParams();
+  if (opts.query) params.set("query", opts.query);
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (typeof opts.pageSize === "number") params.set("pageSize", String(opts.pageSize));
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
 
 export const repositoriesApi = {
   list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
@@ -41,6 +67,36 @@ export const repositoriesApi = {
   disconnectConnection: (connectionId: string) =>
     api.delete<{ connection: RepositoryConnection; repositories: Repository[] }>(
       `/repository-connections/${encodeURIComponent(connectionId)}`,
+    ),
+
+  // ---- Guided provider connection flow (GitHub.com + other providers) ----
+  beginConnection: (companyId: string, provider: string, input: { redirectPath?: string | null } = {}) =>
+    api.post<BeginRepositoryConnectionResult>(
+      `/companies/${encodeURIComponent(companyId)}/repository-connections/${encodeURIComponent(provider)}/install`,
+      input,
+    ),
+  completeConnection: (
+    companyId: string,
+    provider: string,
+    input: { state: string; installationId: string },
+  ) =>
+    api.post<CompleteRepositoryConnectionResult>(
+      `/companies/${encodeURIComponent(companyId)}/repository-connections/${encodeURIComponent(provider)}/callback`,
+      input,
+    ),
+  discoverConnectionRepositories: (connectionId: string, opts: RepositoryDiscoveryQuery = {}) =>
+    api.get<RepositoryDiscoveryPage>(
+      `/repository-connections/${encodeURIComponent(connectionId)}/discover${discoveryQueryString(opts)}`,
+    ),
+  importConnectionRepositories: (connectionId: string, providerRepositoryIds: string[]) =>
+    api.post<ImportRepositoriesResult>(
+      `/repository-connections/${encodeURIComponent(connectionId)}/import`,
+      { providerRepositoryIds },
+    ),
+  resolveCloneCredential: (repositoryId: string) =>
+    api.post<RepositoryCloneCredential>(
+      `/repositories/${encodeURIComponent(repositoryId)}/clone-credential`,
+      {},
     ),
 
   listProjectRepositories: (projectId: string) =>
