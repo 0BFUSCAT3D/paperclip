@@ -10,13 +10,21 @@ import {
 import type {
   AgentRepositoryGrantEntry,
   EffectiveRepositoryAccess,
+  EffectiveRepositoryContext,
   ProjectRepositoryEntry,
   Repository,
 } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
-import { toRepository } from "./repositories.js";
+import { toRepository, toRepositoryContext } from "./repositories.js";
 
 type ProjectAccessCandidate = { id: string; name: string; companyId: string };
+
+export function toEffectiveRepositoryContext(entry: EffectiveRepositoryAccess): EffectiveRepositoryContext {
+  return {
+    ...toRepositoryContext(entry.repository),
+    sources: entry.sources,
+  };
+}
 
 function toProjectEntry(row: {
   link: typeof projectRepositories.$inferSelect;
@@ -301,4 +309,21 @@ export function repositoryAccessService(db: Db) {
         });
     },
   };
+}
+
+/**
+ * Re-resolve access at the moment a clone credential is requested. Callers
+ * must never treat repository IDs cached in adapter context as authorization.
+ */
+export async function authorizeRepositoryCloneCredentialRequest(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    repositoryId: string;
+    canAccessProject: (project: ProjectAccessCandidate) => Promise<boolean>;
+  },
+): Promise<EffectiveRepositoryAccess | null> {
+  const effective = await repositoryAccessService(db).listEffectiveRepositories(input);
+  return effective?.find((entry) => entry.repository.id === input.repositoryId) ?? null;
 }

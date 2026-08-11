@@ -40,7 +40,11 @@ export {
   toRepositoryConnection,
   type RepositoryProviderAdapter,
 } from "./repository-connections.js";
-export { repositoryAccessService } from "./repository-access.js";
+export {
+  authorizeRepositoryCloneCredentialRequest,
+  repositoryAccessService,
+  toEffectiveRepositoryContext,
+} from "./repository-access.js";
 export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,

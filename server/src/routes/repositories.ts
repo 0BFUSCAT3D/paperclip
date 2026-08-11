@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, projects } from "@paperclipai/db";
+import { agentRepositoryGrants, agents, projectRepositories, projects } from "@paperclipai/db";
 import {
   attachProjectRepositorySchema,
   beginRepositoryConnectionSchema,
@@ -105,6 +105,71 @@ export function repositoryRoutes(db: Db) {
     );
     if (!repository) return;
     res.json(repository);
+  });
+
+  router.get("/repositories/:repositoryId/relationships", async (req, res) => {
+    assertBoard(req);
+    const repositoryId = req.params.repositoryId as string;
+    const repository = await getAccessibleResource(
+      req,
+      res,
+      repositories.getById(repositoryId),
+      "Repository not found",
+    );
+    if (!repository) return;
+
+    const [projectRows, agentRows, directGrantRows] = await Promise.all([
+      db
+        .select({ id: projects.id, name: projects.name, displayOrder: projectRepositories.displayOrder })
+        .from(projectRepositories)
+        .innerJoin(projects, eq(projectRepositories.projectId, projects.id))
+        .where(and(
+          eq(projectRepositories.companyId, repository.companyId),
+          eq(projectRepositories.repositoryId, repositoryId),
+          eq(projects.companyId, repository.companyId),
+        ))
+        .orderBy(asc(projectRepositories.displayOrder), asc(projects.name), asc(projects.id)),
+      db
+        .select({ id: agents.id, name: agents.name, title: agents.title })
+        .from(agents)
+        .where(eq(agents.companyId, repository.companyId))
+        .orderBy(asc(agents.name), asc(agents.id)),
+      db
+        .select({ agentId: agentRepositoryGrants.agentId })
+        .from(agentRepositoryGrants)
+        .where(and(
+          eq(agentRepositoryGrants.companyId, repository.companyId),
+          eq(agentRepositoryGrants.repositoryId, repositoryId),
+        )),
+    ]);
+
+    const directAgentIds = new Set(directGrantRows.map((grant) => grant.agentId));
+    const relationshipAgents = (
+      await Promise.all(agentRows.map(async (agent) => {
+        const projectAccess = await Promise.all(projectRows.map(async (project) => ({
+          project,
+          allowed: (await access.decide({
+            actor: {
+              type: "agent",
+              agentId: agent.id,
+              companyId: repository.companyId,
+              source: "agent_key",
+            },
+            action: "project:read",
+            resource: { type: "project", companyId: repository.companyId, projectId: project.id },
+          })).allowed,
+        })));
+        const projectSources = projectAccess
+          .filter((entry) => entry.allowed)
+          .map((entry) => ({ id: entry.project.id, name: entry.project.name }));
+        const direct = directAgentIds.has(agent.id);
+        return direct || projectSources.length > 0
+          ? { ...agent, sources: { direct, projects: projectSources } }
+          : null;
+      }))
+    ).filter((agent): agent is NonNullable<typeof agent> => Boolean(agent));
+
+    res.json({ projects: projectRows, agents: relationshipAgents });
   });
 
   router.patch("/repositories/:repositoryId", validate(updateRepositorySchema), async (req, res) => {

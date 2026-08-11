@@ -139,3 +139,49 @@ export interface ImportRepositoriesResult {
   imported: number;
   skipped: string[];
 }
+
+/** Secret-free repository identity sent to agents and embedded in project payloads. */
+export interface RepositoryContext {
+  id: string;
+  provider: RepositoryProvider;
+  host: string;
+  owner: string;
+  name: string;
+  state: RepositoryState;
+  unavailableReason: string | null;
+  cloneUrl: string | null;
+  webUrl: string | null;
+  defaultBranch: string | null;
+}
+
+export interface ProjectRepositoryHint extends RepositoryContext {
+  displayOrder: number;
+}
+
+export interface EffectiveRepositoryContext extends RepositoryContext {
+  sources: {
+    direct: boolean;
+    projects: EffectiveRepositoryProjectSource[];
+  };
+}
+
+export interface RepositoryRelationshipProject {
+  id: string;
+  name: string;
+  displayOrder: number;
+}
+
+export interface RepositoryRelationshipAgent {
+  id: string;
+  name: string;
+  title: string | null;
+  sources: {
+    direct: boolean;
+    projects: EffectiveRepositoryProjectSource[];
+  };
+}
+
+export interface RepositoryRelationships {
+  projects: RepositoryRelationshipProject[];
+  agents: RepositoryRelationshipAgent[];
+}

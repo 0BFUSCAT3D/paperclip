@@ -27,7 +27,10 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { repositoryRoutes } from "../routes/repositories.js";
 import { projectService } from "../services/projects.js";
-import { repositoryAccessService } from "../services/repository-access.js";
+import {
+  authorizeRepositoryCloneCredentialRequest,
+  repositoryAccessService,
+} from "../services/repository-access.js";
 import {
   repositoryConnectionService,
   repositoryProviderRegistry,
@@ -38,7 +41,7 @@ import {
   sanitizeRepositoryProviderError,
   sanitizeRepositoryProviderMetadata,
 } from "../services/repository-normalization.js";
-import { repositoryService } from "../services/repositories.js";
+import { repositoryService, toRepositoryContext } from "../services/repositories.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -96,6 +99,21 @@ describe("repository normalization", () => {
     })).toEqual({ account: { login: "acme" }, installationId: "123" });
     expect(sanitizeRepositoryProviderError("Authorization: Bearer super-secret"))
       .toBe("Authorization: [redacted]");
+  });
+
+  it("omits credential-bearing legacy locators from agent context", () => {
+    expect(toRepositoryContext({
+      id: "legacy-repository",
+      provider: "manual",
+      host: "github.com",
+      owner: "acme",
+      name: "legacy",
+      state: "active",
+      unavailableReason: null,
+      cloneUrl: "https://user:secret@github.com/acme/legacy.git",
+      webUrl: "https://user:secret@github.com/acme/legacy",
+      defaultBranch: "main",
+    })).toMatchObject({ cloneUrl: null, webUrl: null });
   });
 
   it("accepts repository ids as project hints and repository-backed workspace inputs", () => {
@@ -251,6 +269,30 @@ describeEmbeddedPostgres("repository services and routes", () => {
     })).toEqual([]);
   });
 
+  it("re-authorizes clone credential requests after access is revoked", async () => {
+    const seeded = await seed();
+    const access = repositoryAccessService(db);
+    await access.grantAgentRepository({
+      companyId: seeded.companyA.id,
+      agentId: seeded.agent.id,
+      repositoryId: seeded.repository.id,
+    });
+    expect(await authorizeRepositoryCloneCredentialRequest(db, {
+      companyId: seeded.companyA.id,
+      agentId: seeded.agent.id,
+      repositoryId: seeded.repository.id,
+      canAccessProject: async () => true,
+    })).toMatchObject({ repository: { id: seeded.repository.id } });
+
+    await access.revokeAgentRepository(seeded.companyA.id, seeded.agent.id, seeded.repository.id);
+    expect(await authorizeRepositoryCloneCredentialRequest(db, {
+      companyId: seeded.companyA.id,
+      agentId: seeded.agent.id,
+      repositoryId: seeded.repository.id,
+      canAccessProject: async () => true,
+    })).toBeNull();
+  });
+
   it("uses the authoritative project resolver for effective-access routes", async () => {
     const seeded = await seed();
     await repositoryAccessService(db).attachProjectRepository({
@@ -309,6 +351,10 @@ describeEmbeddedPostgres("repository services and routes", () => {
       repositoryIds: [seeded.repository.id, secondRepository.id, seeded.repository.id],
       repositoryAttribution: { createdByUserId: "creator" },
     });
+    expect(project.repositoryHints.map((repository) => repository.id)).toEqual([
+      seeded.repository.id,
+      secondRepository.id,
+    ]);
     const initialLinks = await db
       .select()
       .from(projectRepositories)
@@ -337,6 +383,38 @@ describeEmbeddedPostgres("repository services and routes", () => {
     expect(await service.getById(project.id)).toMatchObject({ name: "Transactional hints" });
     expect(await repositoryAccessService(db).listProjectRepositories(seeded.companyA.id, project.id))
       .toHaveLength(2);
+  });
+
+  it("returns source-aware project hints and agent grants for repository detail", async () => {
+    const seeded = await seed();
+    const access = repositoryAccessService(db);
+    await access.attachProjectRepository({
+      companyId: seeded.companyA.id,
+      projectId: seeded.projectOne.id,
+      repositoryId: seeded.repository.id,
+      displayOrder: 0,
+    });
+    await access.grantAgentRepository({
+      companyId: seeded.companyA.id,
+      agentId: seeded.agent.id,
+      repositoryId: seeded.repository.id,
+    });
+
+    const response = await request(createApp(db, seeded.companyA.id))
+      .get(`/api/repositories/${seeded.repository.id}/relationships`);
+    expect(response.status).toBe(200);
+    expect(response.body.projects).toEqual([
+      { id: seeded.projectOne.id, name: "One", displayOrder: 0 },
+    ]);
+    expect(response.body.agents).toEqual([
+      expect.objectContaining({
+        id: seeded.agent.id,
+        sources: {
+          direct: true,
+          projects: [{ id: seeded.projectOne.id, name: "One" }],
+        },
+      }),
+    ]);
   });
 
   it("fails closed for cross-company UUIDs and archived repositories", async () => {

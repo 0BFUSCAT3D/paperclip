@@ -24,6 +24,7 @@ import {
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
   type ProjectManagedByPlugin,
+  type ProjectRepositoryHint,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
@@ -35,6 +36,7 @@ import { unprocessable } from "../errors.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { toRepository, toRepositoryContext } from "./repositories.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -65,6 +67,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   goalIds: string[];
   goals: ProjectGoalRef[];
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  repositoryHints: ProjectRepositoryHint[];
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
@@ -89,15 +92,29 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
   const projectIds = rows.map((r) => r.id);
 
   // Fetch join rows + goal titles in one query
-  const links = await db
-    .select({
-      projectId: projectGoals.projectId,
-      goalId: projectGoals.goalId,
-      goalTitle: goals.title,
-    })
-    .from(projectGoals)
-    .innerJoin(goals, eq(projectGoals.goalId, goals.id))
-    .where(inArray(projectGoals.projectId, projectIds));
+  const [links, repositoryLinks] = await Promise.all([
+    db
+      .select({
+        projectId: projectGoals.projectId,
+        goalId: projectGoals.goalId,
+        goalTitle: goals.title,
+      })
+      .from(projectGoals)
+      .innerJoin(goals, eq(projectGoals.goalId, goals.id))
+      .where(inArray(projectGoals.projectId, projectIds)),
+    db
+      .select({ link: projectRepositories, repository: repositories })
+      .from(projectRepositories)
+      .innerJoin(repositories, eq(projectRepositories.repositoryId, repositories.id))
+      .where(inArray(projectRepositories.projectId, projectIds))
+      .orderBy(
+        asc(projectRepositories.displayOrder),
+        asc(repositories.host),
+        asc(repositories.owner),
+        asc(repositories.name),
+        asc(repositories.id),
+      ),
+  ]);
 
   const map = new Map<string, ProjectGoalRef[]>();
   for (const link of links) {
@@ -108,6 +125,15 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
     }
     arr.push({ id: link.goalId, title: link.goalTitle });
   }
+  const repositoriesByProjectId = new Map<string, ProjectRepositoryHint[]>();
+  for (const row of repositoryLinks) {
+    const hints = repositoriesByProjectId.get(row.link.projectId) ?? [];
+    hints.push({
+      ...toRepositoryContext(toRepository(row.repository)),
+      displayOrder: row.link.displayOrder,
+    });
+    repositoriesByProjectId.set(row.link.projectId, hints);
+  }
 
   return rows.map((r) => {
     const g = map.get(r.id) ?? [];
@@ -116,6 +142,7 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
+      repositoryHints: repositoriesByProjectId.get(r.id) ?? [],
       executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(r.executionWorkspacePolicy),
     } as ProjectWithGoals;
   });

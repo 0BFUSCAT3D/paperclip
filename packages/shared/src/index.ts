@@ -2407,6 +2407,12 @@ export type {
   BeginRepositoryConnectionResult,
   CompleteRepositoryConnectionResult,
   ImportRepositoriesResult,
+  RepositoryContext,
+  ProjectRepositoryHint,
+  EffectiveRepositoryContext,
+  RepositoryRelationshipProject,
+  RepositoryRelationshipAgent,
+  RepositoryRelationships,
 } from "./types/repository.js";
 export {
   FEATURE_TIERS,

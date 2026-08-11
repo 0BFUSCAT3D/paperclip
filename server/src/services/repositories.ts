@@ -11,6 +11,7 @@ import type {
   CreateManualRepository,
   Repository,
   RepositoryCatalogItem,
+  RepositoryContext,
   RepositoryVisibility,
   UpdateRepository,
 } from "@paperclipai/shared";
@@ -56,6 +57,42 @@ export function toRepository(row: RepositoryRow): Repository {
     archivedAt: row.archivedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+/**
+ * Reduce a repository to the stable, secret-free shape that is safe to place in
+ * project payloads and agent prompts. Legacy rows may predate URL validation,
+ * so invalid or credential-bearing URLs are omitted instead of echoed.
+ */
+export function toRepositoryContext(
+  repository: Pick<Repository, "id" | "provider" | "host" | "owner" | "name" | "state" | "unavailableReason" | "cloneUrl" | "webUrl" | "defaultBranch">,
+): RepositoryContext {
+  let cloneUrl: string | null = null;
+  let webUrl: string | null = null;
+  try {
+    cloneUrl = normalizeRepositoryLocator(repository.cloneUrl).cloneUrl;
+  } catch {
+    // Fail closed for pre-normalization rows.
+  }
+  if (repository.webUrl) {
+    try {
+      webUrl = normalizeRepositoryWebUrl(repository.webUrl);
+    } catch {
+      // Fail closed for pre-normalization rows.
+    }
+  }
+  return {
+    id: repository.id,
+    provider: repository.provider,
+    host: repository.host,
+    owner: repository.owner,
+    name: repository.name,
+    state: repository.state,
+    unavailableReason: repository.unavailableReason,
+    cloneUrl,
+    webUrl,
+    defaultBranch: repository.defaultBranch,
   };
 }
 
