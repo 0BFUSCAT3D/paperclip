@@ -103,17 +103,26 @@ export interface LoginSessionRuntime {
   acquireLoginLease(input: AcquireLoginLeaseInput): Promise<LoginSessionLease>;
 }
 
+/** The per-session context the promotion seam needs. The service knows the
+ *  session, the company, and the adapter, so the promotion resolves the company
+ *  scope and the sole-active-owner check for this exact session. */
+export interface CredentialPromotionContext {
+  sessionId: string;
+  companyId: string;
+  adapterType: AgentAdapterType;
+}
+
 /**
- * The readiness check and the promotion write for the credential. Both run
- * inside the internal `promoting` window on the success path. A throw from
- * either step turns the outcome into a failure, and the service still deletes
- * the sandbox.
+ * The mandatory promotion of the credential for a successful login. It runs
+ * inside the internal `promoting` window on the success path. It validates the
+ * credential, runs an independent readiness check, gates the write, and persists
+ * the credential to the company credential slot. It must throw on any credential
+ * that is empty, malformed, an API key, a non-subscription, oversized, unready,
+ * or not the sole active owner. A throw turns the outcome into a failure, and
+ * the service writes nothing and still deletes the sandbox.
  */
 export interface CredentialPromotion {
-  /** Check the credential bytes are usable before the promotion write. */
-  checkReadiness?(authBytes: Buffer): void | Promise<void>;
-  /** Persist the credential to the company credential slot. */
-  promote?(authBytes: Buffer): void | Promise<void>;
+  promote(authBytes: Buffer, context: CredentialPromotionContext): void | Promise<void>;
 }
 
 /** The redacted lifecycle phases. Each phase carries no secret data. */
@@ -492,16 +501,17 @@ export function terminalCleanupWrite(
 export interface CodexDeviceLoginServiceDeps {
   store: AdapterAuthSessionStore;
   runtime: LoginSessionRuntime;
-  promotion?: CredentialPromotion;
+  /** The mandatory credential promotion. A successful login authenticates only
+   *  after this promotion resolves; a throw fails the session and writes nothing. */
+  promotion: CredentialPromotion;
   recordActivity?: LoginSessionActivityRecorder;
   now?: () => Date;
 }
 
 export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps) {
-  const { store, runtime } = deps;
+  const { store, runtime, promotion } = deps;
   const now = deps.now ?? (() => new Date());
   const recordActivity = deps.recordActivity ?? (() => {});
-  const promotion = deps.promotion ?? {};
 
   // The one-time prompt per session. The service holds it in memory only. The
   // owner read path returns it; it never reaches the durable row or an activity
@@ -658,19 +668,29 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     }
 
     if (outcome === "success") {
-      // Hold the active claim through the readiness check and the promotion
-      // write. The internal `promoting` state keeps the slot held.
+      // Hold the active claim through the mandatory promotion. The internal
+      // `promoting` state keeps the slot held.
       await transition("promoting");
       activity("promoting");
       try {
-        if (authBytes) {
-          await promotion.checkReadiness?.(authBytes);
-          await promotion.promote?.(authBytes);
+        // Fail closed. A success outcome must carry a non-empty credential, and
+        // the mandatory promotion must accept it. Absent or empty bytes, or a
+        // rejected promotion, never authenticate.
+        // The `onCredential` callback assigns `authBytes`, so read it as the
+        // declared union. The cast keeps the null case, which the guard rejects.
+        const credential = authBytes as Buffer | null;
+        if (!credential || credential.length === 0) {
+          throw new Error("missing_credential");
         }
+        await promotion.promote(credential, {
+          sessionId,
+          companyId: input.companyId,
+          adapterType: input.adapterType,
+        });
       } catch {
-        // The readiness check or the promotion write failed. The login did not
-        // finish, so fall through to the failed terminal. The service still
-        // deletes the sandbox.
+        // The promotion failed. The login did not finish, so fall through to the
+        // failed terminal. The service writes nothing and still deletes the
+        // sandbox.
         return await terminate({
           sessionId,
           lease,
@@ -744,8 +764,15 @@ export function createCodexDeviceLoginService(deps: CodexDeviceLoginServiceDeps)
     if (!row) return null;
     const isOwner = row.startedByUserId === requestingUserId;
     const status = resolvePublicStatus(row);
-    // Return the one-time prompt only to the owner principal.
-    const prompt = isOwner ? (promptsBySession.get(sessionId) ?? null) : null;
+    // Deliver the one-time prompt to the owner principal exactly once. The read
+    // and the delete run with no await between them, so the first authorized
+    // owner read consumes the prompt and every later read returns null. This
+    // keeps the short-lived device code out of a repeated response.
+    let prompt: DeviceLoginPrompt | null = null;
+    if (isOwner) {
+      prompt = promptsBySession.get(sessionId) ?? null;
+      if (prompt) promptsBySession.delete(sessionId);
+    }
     return {
       sessionId: row.id,
       environmentId: row.environmentId,

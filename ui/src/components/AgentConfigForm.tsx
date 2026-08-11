@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
+  AdapterAuthSessionPrompt,
   AdapterAuthSessionStatus,
   AdapterEnvironmentTestResult,
   CompanySecret,
@@ -1789,11 +1790,16 @@ export function AdapterLoginPanel({
 }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  // The server delivers the one-time prompt on the first owner read only. Latch
+  // it so a later poll that returns a null prompt does not hide the code and the
+  // URL.
+  const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
 
   const startLogin = useMutation({
     mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
     onSuccess: (session) => {
       setStartError(null);
+      setLatchedPrompt(null);
       setSessionId(session.sessionId);
     },
     onError: (error) => {
@@ -1813,9 +1819,16 @@ export function AdapterLoginPanel({
     },
   });
 
+  // Latch the first non-null prompt for the current session. A later poll
+  // returns a null prompt after the one-time delivery, so keep the latched value.
+  useEffect(() => {
+    const next = statusQuery.data?.prompt ?? null;
+    if (next) setLatchedPrompt(next);
+  }, [statusQuery.data]);
+
   const session = statusQuery.data ?? startLogin.data ?? null;
   const status = session?.status ?? null;
-  const prompt = statusQuery.data?.prompt ?? null;
+  const prompt = latchedPrompt;
   const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
   const isActive = Boolean(sessionId) && !isTerminal;
   const startDisabled = startLogin.isPending || isActive;

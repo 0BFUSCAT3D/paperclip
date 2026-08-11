@@ -406,7 +406,7 @@ describe("adapter device-login routes", () => {
     expect(harness.acquisitions).toHaveLength(0);
   });
 
-  it("delivers the one-time prompt to the owner", async () => {
+  it("delivers the one-time prompt to the owner on the first read only", async () => {
     const app = await createApp();
 
     const start = await request(app)
@@ -415,9 +415,17 @@ describe("adapter device-login routes", () => {
     expect(start.status, JSON.stringify(start.body)).toBe(201);
     const sessionId = start.body.sessionId as string;
 
-    const status = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
-    expect(status.status, JSON.stringify(status.body)).toBe(200);
-    expect(status.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+    // The first authorized owner read receives the one-time prompt.
+    const first = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+
+    // A second authorized owner read no longer carries the prompt. The status
+    // stays available, so the owner still tracks the session.
+    const second = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body.prompt).toBeNull();
+    expect(second.body.status).toBe(first.body.status);
   });
 
   it("returns 404 for a wrong-user status, prompt, and cancel", async () => {

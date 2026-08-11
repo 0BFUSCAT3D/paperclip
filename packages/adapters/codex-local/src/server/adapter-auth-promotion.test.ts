@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  checkStagedCredentialReadiness,
   DeviceLoginReadinessError,
   promoteDeviceLoginCredential,
   type CredentialReadinessResult,
@@ -389,5 +390,46 @@ describe("device-login credential promotion", () => {
     await expect(
       lstat(path.join(resolveManagedCodexHomeDir(env), "auth.json")),
     ).rejects.toThrow();
+  });
+});
+
+// This suite proves the independent readiness check for a staged credential. It
+// answers whether a run launched now with the exact staged bytes would
+// authenticate. It writes the bytes to a throwaway home only, and it never reads
+// or writes any company scope.
+describe("staged credential readiness", () => {
+  it("returns ready for a usable subscription credential", async () => {
+    const bytes = Buffer.from(
+      JSON.stringify({
+        tokens: {
+          id_token: "id-token",
+          access_token: "access-token",
+          refresh_token: "refresh-token",
+          account_id: "acct-1",
+        },
+      }),
+    );
+    const result = await checkStagedCredentialReadiness(bytes);
+    expect(result.ready).toBe(true);
+  });
+
+  it("returns not ready for empty bytes", async () => {
+    const result = await checkStagedCredentialReadiness(Buffer.alloc(0));
+    expect(result.ready).toBe(false);
+    expect(result.reason).toBe("empty_credential");
+  });
+
+  it("returns not ready for a credential with no usable auth payload", async () => {
+    const result = await checkStagedCredentialReadiness(
+      Buffer.from(JSON.stringify({ tokens: { account_id: "acct-1" } })),
+    );
+    expect(result.ready).toBe(false);
+    expect(result.reason).toBe("no_usable_auth");
+  });
+
+  it("returns not ready for malformed bytes", async () => {
+    const result = await checkStagedCredentialReadiness(Buffer.from("not-json"));
+    expect(result.ready).toBe(false);
+    expect(result.reason).toBe("no_usable_auth");
   });
 });

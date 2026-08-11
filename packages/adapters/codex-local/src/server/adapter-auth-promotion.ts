@@ -1,4 +1,5 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import {
   ensureCodexAuthCacheEntryDir,
@@ -7,7 +8,7 @@ import {
   writeCodexAuthCacheEntry,
 } from "./codex-auth-cache.js";
 import { writeCredentialSeedOrNewer } from "./codex-auth-seed-write.js";
-import { resolveManagedCodexHomeDir } from "./codex-home.js";
+import { codexHomeHasUsableAuth, resolveManagedCodexHomeDir } from "./codex-home.js";
 import { assertUsableSubscriptionShape } from "./device-login-export.js";
 
 // The device-login credential promotion. It runs after a successful device
@@ -52,6 +53,40 @@ export class DeviceLoginReadinessError extends Error {
     super(`device-login promotion: the readiness check did not pass (${reason})`);
     this.name = "DeviceLoginReadinessError";
     this.reason = reason;
+  }
+}
+
+// A private directory (owner rwx only) for the throwaway readiness home.
+const READINESS_HOME_DIR_MODE = 0o700;
+// A private file (owner rw only) for the throwaway readiness credential.
+const READINESS_AUTH_FILE_MODE = 0o600;
+
+/**
+ * The independent readiness check for a staged device-login credential. It runs
+ * on the exact staged bytes, before any promotion write. It writes the bytes to
+ * a throwaway private home and runs the same usable-auth predicate the execute
+ * path uses. It always removes the throwaway home before it returns.
+ *
+ * A ready result means a run launched now with this exact credential would
+ * authenticate. A non-ready result rejects the promotion, and the caller writes
+ * nothing. The function reads and writes no company scope and logs no bytes.
+ */
+export async function checkStagedCredentialReadiness(
+  authBytes: Buffer,
+): Promise<CredentialReadinessResult> {
+  if (authBytes.length === 0) {
+    return { ready: false, reason: "empty_credential" };
+  }
+  const scratchHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-login-readiness-"));
+  try {
+    await mkdir(scratchHome, { recursive: true, mode: READINESS_HOME_DIR_MODE });
+    await writeFile(path.join(scratchHome, AUTH_FILE_NAME), authBytes, {
+      mode: READINESS_AUTH_FILE_MODE,
+    });
+    const ready = await codexHomeHasUsableAuth(scratchHome);
+    return ready ? { ready: true } : { ready: false, reason: "no_usable_auth" };
+  } finally {
+    await rm(scratchHome, { recursive: true, force: true }).catch(() => {});
   }
 }
 

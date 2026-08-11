@@ -35,6 +35,7 @@ export {
 export { DEVICE_LOGIN_URL, type DeviceLoginPrompt } from "./device-login-parse.js";
 export {
   promoteDeviceLoginCredential,
+  checkStagedCredentialReadiness,
   DeviceLoginReadinessError,
   type CredentialReadinessResult,
   type PromoteDeviceLoginCredentialInput,

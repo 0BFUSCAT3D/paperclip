@@ -96,6 +96,10 @@ import {
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import {
+  checkStagedCredentialReadiness,
+  promoteDeviceLoginCredential,
+} from "@paperclipai/adapter-codex-local/server";
+import {
   AdapterAuthSessionConflictError,
   CODEX_DEVICE_LOGIN_ADAPTER_TYPE,
   createCodexDeviceLoginService,
@@ -251,6 +255,33 @@ export function agentRoutes(
   const adapterLoginService = createCodexDeviceLoginService({
     store: adapterLoginStore,
     runtime: createProductionLoginSessionRuntime({ db, environmentRuntime }),
+    // The mandatory credential promotion. A successful login authenticates only
+    // after this promotion validates the exact staged credential, runs an
+    // independent readiness check, confirms the session still holds the sole
+    // active claim, and writes the credential into the company scope. A rejected
+    // or unready credential fails the session and writes nothing.
+    promotion: {
+      async promote(authBytes, context) {
+        await promoteDeviceLoginCredential({
+          authBytes,
+          companyId: context.companyId,
+          userInitiated: true,
+          checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
+          isSoleActiveOwner: async () => {
+            // The partial unique index allows one active row per company and
+            // adapter. So a `promoting` row for this session is the sole active
+            // owner of the company credential slot.
+            const row = await adapterLoginStore.get(context.sessionId);
+            return row?.status === "promoting" && row.companyId === context.companyId;
+          },
+          log: (line) => {
+            // The promotion lines carry no token bytes and no raw account id, so
+            // it is safe to log them with the session identifier.
+            logger.info({ sessionId: context.sessionId }, line);
+          },
+        });
+      },
+    },
     recordActivity: (event) => {
       // The event carries no URL, no code, no credential, no account identifier,
       // and no lease identifier, so it is safe to log.

@@ -793,6 +793,48 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("https://auth.example.test/device");
   });
 
+  it("keeps the code and URL visible after a later poll returns no prompt", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    // The server delivers the one-time prompt on the first owner read only. The
+    // first status poll carries the prompt; every later poll carries a null one.
+    mockAgentsApi.getAdapterAuthLoginStatus
+      .mockResolvedValueOnce({
+        sessionId: "session-1",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        prompt: { url: "https://auth.example.test/device", code: "WXYZ-1234" },
+      })
+      .mockResolvedValue({
+        sessionId: "session-1",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        prompt: null,
+      });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    expect(result.container.textContent).toContain("WXYZ-1234");
+
+    // Wait for the next status poll, which returns no prompt.
+    const start = Date.now();
+    while (mockAgentsApi.getAdapterAuthLoginStatus.mock.calls.length < 2) {
+      if (Date.now() - start > 6000) throw new Error("the status poll did not run a second time");
+      await flushReact();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await flushReact();
+
+    // The panel latched the prompt, so the code and the URL stay visible.
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.textContent).toContain("https://auth.example.test/device");
+  });
+
   it("opens the authentication URL in a new tab with a safe rel", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     const result = await renderCodexSandbox();

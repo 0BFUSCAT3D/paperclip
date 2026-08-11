@@ -19,11 +19,24 @@ import {
   type AcquireLoginLeaseInput,
   type AdapterAuthSessionRow,
   type AdapterAuthSessionStore,
+  type CredentialPromotion,
   type LoginSessionActivityEvent,
   type LoginSessionLease,
   type LoginSessionRuntime,
   type SandboxDeleteResult,
 } from "../services/codex-device-login-service.ts";
+
+// A passing promotion for the lifecycle tests. The mandatory promotion is a
+// required dependency, so a test that does not exercise the credential write
+// still supplies a promotion that accepts the credential.
+const passingPromotion: CredentialPromotion = { promote: () => {} };
+
+// Build the service with the passing promotion by default. A test that checks
+// the promotion path passes its own `promotion` to override the default.
+type ServiceDeps = Parameters<typeof createCodexDeviceLoginService>[0];
+function makeService(deps: Omit<ServiceDeps, "promotion"> & { promotion?: CredentialPromotion }) {
+  return createCodexDeviceLoginService({ promotion: passingPromotion, ...deps });
+}
 
 const ADAPTER_TYPE: AgentAdapterType = "codex_local";
 const OWNER_A = "user-a";
@@ -165,7 +178,7 @@ describe("codex device login service", () => {
         };
       },
     };
-    const service = createCodexDeviceLoginService({ store, runtime });
+    const service = makeService({ store, runtime });
     const { session, completed } = await service.start({
       companyId: randomUUID(),
       environmentId: randomUUID(),
@@ -181,27 +194,26 @@ describe("codex device login service", () => {
   it("delivers the prompt to the owner, promotes, deletes the sandbox, and authenticates", async () => {
     const store = createMemoryStore();
     const activity: LoginSessionActivityEvent[] = [];
-    const readiness: Buffer[] = [];
     const promoted: Buffer[] = [];
+    const promotionContexts: { sessionId: string; companyId: string }[] = [];
     const { runtime, deleteCalls } = createFakeRuntime({
       exec: execSuccess,
       authBytes: Buffer.from('{"token":"secret"}'),
     });
-    const service = createCodexDeviceLoginService({
+    const companyId = randomUUID();
+    const service = makeService({
       store,
       runtime,
       recordActivity: (event) => activity.push(event),
       promotion: {
-        checkReadiness: (bytes) => {
-          readiness.push(bytes);
-        },
-        promote: (bytes) => {
+        promote: (bytes, context) => {
           promoted.push(bytes);
+          promotionContexts.push({ sessionId: context.sessionId, companyId: context.companyId });
         },
       },
     });
     const { session, completed } = await service.start({
-      companyId: randomUUID(),
+      companyId,
       environmentId: randomUUID(),
       adapterType: ADAPTER_TYPE,
       startedByUserId: OWNER_A,
@@ -220,8 +232,14 @@ describe("codex device login service", () => {
     expect(outcome.cleanupPending).toBe(false);
     expect(outcome.sandboxDeleteObserved).toBe(true);
     expect(deleteCalls).toHaveLength(1);
-    expect(readiness).toHaveLength(1);
     expect(promoted).toHaveLength(1);
+    // The promotion runs with the session and company context, so it resolves the
+    // company scope and the sole-active-owner check for this exact session.
+    expect(promotionContexts).toEqual([{ sessionId: session.sessionId, companyId }]);
+
+    // The prompt is one-time: a second owner read returns null.
+    const secondRead = await service.readOwnerSession(session.sessionId, OWNER_A);
+    expect(secondRead?.prompt).toBeNull();
 
     const row = await store.get(session.sessionId);
     expect(row?.status).toBe("authenticated");
@@ -244,10 +262,45 @@ describe("codex device login service", () => {
     expect(JSON.stringify(activity)).not.toContain(PROMPT_CODE);
   });
 
+  it("fails closed and never promotes when a success outcome carries no credential", async () => {
+    const store = createMemoryStore();
+    let promoteCalls = 0;
+    const { runtime, deleteCalls } = createFakeRuntime({
+      // The login command exits 0, but the sandbox produced no credential bytes.
+      exec: execSuccess,
+      authBytes: Buffer.alloc(0),
+    });
+    const service = makeService({
+      store,
+      runtime,
+      promotion: {
+        promote: () => {
+          promoteCalls += 1;
+        },
+      },
+    });
+    const { session, completed } = await service.start({
+      companyId: randomUUID(),
+      environmentId: randomUUID(),
+      adapterType: ADAPTER_TYPE,
+      startedByUserId: OWNER_A,
+    });
+    const outcome = await completed;
+    // A success outcome with no credential never authenticates and never runs
+    // the promotion write. The service still deletes the sandbox.
+    expect(outcome.status).toBe("failed");
+    expect(promoteCalls).toBe(0);
+    expect(deleteCalls).toHaveLength(1);
+    const row = await store.get(session.sessionId);
+    expect(row?.status).toBe("failed");
+    const failed = await service.readOwnerSession(session.sessionId, OWNER_A);
+    expect(failed?.failure?.reason).toBe("promotion_failed");
+  });
+
   it("deletes the sandbox and records a failed terminal on a non-zero exit", async () => {
     const store = createMemoryStore();
     const { runtime, deleteCalls } = createFakeRuntime({ exec: execFailure });
-    const service = createCodexDeviceLoginService({ store, runtime });
+    const service = makeService({ store, runtime });
     const { session, completed } = await service.start({
       companyId: randomUUID(),
       environmentId: randomUUID(),
@@ -266,7 +319,7 @@ describe("codex device login service", () => {
   it("deletes the sandbox and records a failed terminal on a driver error", async () => {
     const store = createMemoryStore();
     const { runtime, deleteCalls } = createFakeRuntime({ exec: execDriverError });
-    const service = createCodexDeviceLoginService({ store, runtime });
+    const service = makeService({ store, runtime });
     const { completed } = await service.start({
       companyId: randomUUID(),
       environmentId: randomUUID(),
@@ -281,7 +334,7 @@ describe("codex device login service", () => {
   it("deletes the sandbox and records a cancelled terminal on a cancellation", async () => {
     const store = createMemoryStore();
     const { runtime, deleteCalls } = createFakeRuntime({ exec: execHang });
-    const service = createCodexDeviceLoginService({ store, runtime });
+    const service = makeService({ store, runtime });
     const controller = new AbortController();
     const { session, completed } = await service.start({
       companyId: randomUUID(),
@@ -310,7 +363,7 @@ describe("codex device login service", () => {
       },
     };
     const { runtime, releaseCalls, deleteCalls } = createFakeRuntime({ exec: execSuccess });
-    const service = createCodexDeviceLoginService({ store: failingStore, runtime });
+    const service = makeService({ store: failingStore, runtime });
     const companyId = randomUUID();
     await expect(
       service.start({
@@ -348,7 +401,7 @@ describe("codex device login service", () => {
         authBytes: Buffer.from("{}"),
         delete: rejectingDelete,
       });
-      const service = createCodexDeviceLoginService({ store, runtime });
+      const service = makeService({ store, runtime });
       const controller = new AbortController();
       const { session, completed } = await service.start({
         companyId: randomUUID(),
@@ -378,7 +431,7 @@ describe("codex device login service", () => {
       authBytes: Buffer.from("{}"),
       delete: rejectingDelete,
     });
-    const service = createCodexDeviceLoginService({
+    const service = makeService({
       store,
       runtime,
       promotion: {
@@ -414,7 +467,7 @@ describe("codex device login service", () => {
       authBytes: Buffer.from("{}"),
       delete: async () => ({ outcome: "not_found" }),
     });
-    const service = createCodexDeviceLoginService({ store, runtime });
+    const service = makeService({ store, runtime });
     const { session, completed } = await service.start({
       companyId: randomUUID(),
       environmentId: randomUUID(),
@@ -435,7 +488,7 @@ describe("codex device login service", () => {
       try {
         const store = createMemoryStore();
         const { runtime, deleteCalls } = createFakeRuntime({ exec: execHang });
-        const service = createCodexDeviceLoginService({ store, runtime });
+        const service = makeService({ store, runtime });
         const { session, completed } = await service.start({
           companyId: randomUUID(),
           environmentId: randomUUID(),
@@ -477,7 +530,7 @@ describe("codex device login service", () => {
             throw new Error("provider delete rejected");
           },
         });
-        const service = createCodexDeviceLoginService({ store, runtime });
+        const service = makeService({ store, runtime });
         const { session, completed } = await service.start({
           companyId: randomUUID(),
           environmentId: randomUUID(),
@@ -619,7 +672,7 @@ describeEmbeddedPostgres("codex device login service concurrency (embedded postg
 
       const store = createDbAdapterAuthSessionStore(db);
       const { runtime, acquisitions } = createFakeRuntime({ exec: execHang });
-      const service = createCodexDeviceLoginService({ store, runtime });
+      const service = makeService({ store, runtime });
       const controller = new AbortController();
 
       const results = await Promise.allSettled([
