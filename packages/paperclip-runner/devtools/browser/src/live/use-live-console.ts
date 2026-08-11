@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { PrpEvent } from "../../../../src/protocol/phase1-contract";
+import type { PrpEvent } from "../../../../src/protocol/replay-contract";
 import {
   applyPrpEvent,
   createSessionSnapshotFromMetadata,
@@ -20,7 +20,7 @@ import {
   type TranscriptEntry,
 } from "./transcript-model";
 
-const SESSION_STORAGE_KEY = "paperclip-runner.phase4b.session";
+const SESSION_STORAGE_KEY = "paperclip-runner.live-console.session";
 const RECONNECT_DELAY_MS = 900;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
@@ -338,7 +338,7 @@ export function useLiveConsole(): LiveConsole {
         try {
           const created = await client.createSession({
             manifest: input.manifestId,
-            objective: manifest?.objective ?? "Run the Phase 4b demo.",
+            objective: manifest?.objective ?? "Run the Live console demo.",
             message: input.message,
           });
           sessionIdRef.current = created.sessionId;

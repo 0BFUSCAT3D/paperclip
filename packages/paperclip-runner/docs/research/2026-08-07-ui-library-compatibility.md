@@ -2,7 +2,7 @@
 
 ## Decision
 
-Phase 0 adds no UI runtime and no shadcn/ui, AI Elements, React, Tailwind, Next.js,
+Conformance adds no UI runtime and no shadcn/ui, AI Elements, React, Tailwind, Next.js,
 or AI SDK dependency to `@paperclipai/paperclip-runner`. A later browser phase
 should adapt source components selectively after protocol and reducer contracts
 exist.
@@ -15,7 +15,7 @@ Sources were checked on 2026-08-07.
 |---|---|---|
 | shadcn/ui | Official documentation describes open-code component distribution and provides first-class Vite and monorepo setup paths. | Compatible with Paperclip's Vite UI model. Reuse or adapt checked-in source while keeping Paperclip tokens and accessibility rules authoritative. |
 | AI Elements | Official documentation describes a registry built on shadcn/ui, targets React 19 and Tailwind CSS 4, and lists Next.js plus AI SDK as prerequisites. | Source shapes are promising, but the documented turnkey setup does not match a standalone Vite runner console. Evaluate individual source components; do not adopt the Next.js/AI SDK runtime stack by default. |
-| Phase 0 package | This phase has no browser surface. | Keep the dependency graph empty at runtime and defer all component selection. |
+| Conformance package | This phase has no browser surface. | Keep the dependency graph empty at runtime and defer all component selection. |
 
 ## Candidate later evaluation
 
@@ -38,4 +38,4 @@ against these gates:
 - [Vercel AI Elements introduction and prerequisites](https://elements.ai-sdk.dev/docs)
 
 This note is a compatibility record, not authorization to add a UI surface in
-Phase 0.
+Conformance.

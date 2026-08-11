@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { Phase7EvidenceRunnerRecord } from "../../../src/issue-thread/types.js";
-import { groupPhase7RunnerEvents } from "./EvidencePanel.js";
+import type { CapabilityEvidenceRunnerRecord } from "../../../src/issue-thread/types.js";
+import { groupCapabilityRunnerEvents } from "./EvidencePanel.js";
 
 function record(
   ordinal: number,
   event: string,
   turnId = "turn-1",
-): Phase7EvidenceRunnerRecord {
+): CapabilityEvidenceRunnerRecord {
   return {
     id: `event-${ordinal}`,
     turnId,
@@ -20,7 +20,7 @@ function record(
 
 describe("Runner event grouping", () => {
   it("aggregates each delta category per turn at its first position", () => {
-    const session: Phase7EvidenceRunnerRecord = {
+    const session: CapabilityEvidenceRunnerRecord = {
       id: "event-1",
       turnId: "turn-0",
       kind: "session",
@@ -28,7 +28,7 @@ describe("Runner event grouping", () => {
       detail: "session · started",
       details: [{ label: "Action", value: "started" }],
     };
-    const groups = groupPhase7RunnerEvents([
+    const groups = groupCapabilityRunnerEvents([
       session,
       record(2, "assistant_delta"),
       record(3, "reasoning_delta"),
@@ -45,7 +45,7 @@ describe("Runner event grouping", () => {
   });
 
   it("leaves non-delta events individually expandable", () => {
-    const groups = groupPhase7RunnerEvents([
+    const groups = groupCapabilityRunnerEvents([
       record(1, "turn_started"),
       record(2, "tool_result"),
     ]);

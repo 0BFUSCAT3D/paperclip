@@ -25,21 +25,21 @@ import {
   parseHarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import {
-  PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
-  PHASE4_BLOCK_TOOL_NAME,
-  PHASE4_CODEX_PROTOCOL_VERSION,
-  PHASE4_COMPLETION_TOOL_NAME,
-  PHASE4_RESULT_OUTPUT_SCHEMA,
-  PHASE4_SEMANTIC_TOOL_NAMES,
-  PHASE4_SKILLLESS_BASE_INSTRUCTIONS,
-  type Phase4ModelContextSnapshot,
-  type Phase4TaskEnvelope,
-} from "../../contracts/phase4.js";
+  CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
+  CODEX_BLOCK_TOOL_NAME,
+  CODEX_CODEX_PROTOCOL_VERSION,
+  CODEX_COMPLETION_TOOL_NAME,
+  CODEX_RESULT_OUTPUT_SCHEMA,
+  CODEX_SEMANTIC_TOOL_NAMES,
+  CODEX_SKILLLESS_BASE_INSTRUCTIONS,
+  type CodexModelContextSnapshot,
+  type CodexTaskEnvelope,
+} from "../../contracts/codex.js";
 import {
   validatePrpStructuredRunResult,
   type PrpEvent,
   type PrpStructuredRunResult,
-} from "../../protocol/phase1-contract.js";
+} from "../../protocol/replay-contract.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
 import {
   ProcessCodexAppServerTransport,
@@ -52,7 +52,7 @@ import {
 } from "./app-server-transport.js";
 
 const DRIVER_KIND = "codex_app_server";
-const DRIVER_VERSION = "phase4-v2";
+const DRIVER_VERSION = "codex-v2";
 const SKILLLESS_PERMISSION_PROFILE = "paperclip-runner-workspace-only";
 const MAX_RETAINED_CODEX_PAYLOAD_BYTES = 64 * 1024;
 const MAX_RETAINED_CODEX_STRING_CHARS = 32 * 1024;
@@ -88,7 +88,7 @@ class AsyncQueue<T> implements AsyncIterable<T> {
 }
 
 export interface CodexAppServerDriverOptions {
-  taskEnvelope: Phase4TaskEnvelope;
+  taskEnvelope: CodexTaskEnvelope;
   conversationMode?: "task" | "direct";
   transportFactory?: () => CodexAppServerTransport;
   environment?: NodeJS.ProcessEnv;
@@ -123,7 +123,7 @@ interface TerminalReplayConflict {
 interface OpenedCodexThread {
   threadId: string;
   providerSessionId: string | null;
-  context: Phase4ModelContextSnapshot;
+  context: CodexModelContextSnapshot;
   lineage: HarnessThreadLineageEntry;
 }
 
@@ -198,17 +198,17 @@ function canonicalJson(value: unknown): string {
 
 function finishToolSpec(): Record<string, unknown> {
   return {
-    name: PHASE4_COMPLETION_TOOL_NAME,
+    name: CODEX_COMPLETION_TOOL_NAME,
     description: "Return the one semantic completion result for this task.",
-    inputSchema: PHASE4_RESULT_OUTPUT_SCHEMA,
+    inputSchema: CODEX_RESULT_OUTPUT_SCHEMA,
   };
 }
 
 function blockToolSpec(): Record<string, unknown> {
   return {
-    name: PHASE4_BLOCK_TOOL_NAME,
+    name: CODEX_BLOCK_TOOL_NAME,
     description: "Return the one semantic result when the task cannot continue.",
-    inputSchema: PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
+    inputSchema: CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
   };
 }
 
@@ -322,7 +322,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       kind: DRIVER_KIND,
       displayName: "Codex app-server",
       version: DRIVER_VERSION,
-      protocolVersion: PHASE4_CODEX_PROTOCOL_VERSION,
+      protocolVersion: CODEX_CODEX_PROTOCOL_VERSION,
       capabilities: {
         resume: this.#caps.resume,
         typedEvents: true,
@@ -349,7 +349,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/start", {
         ...securedThreadParams(workingDirectory, this.#options.environment),
         approvalPolicy: "never",
-        ...(this.#direct() ? {} : { baseInstructions: PHASE4_SKILLLESS_BASE_INSTRUCTIONS }),
+        ...(this.#direct() ? {} : { baseInstructions: CODEX_SKILLLESS_BASE_INSTRUCTIONS }),
         dynamicTools: this.#direct()
           ? []
           : this.#caps.dynamicTools ? [finishToolSpec(), blockToolSpec()] : [],
@@ -358,7 +358,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       });
       const opened = this.#openedThread(response, initialize, workingDirectory);
       const goal = await this.#discoverGoal(transport, opened.threadId);
-      if (opened.context.phase4b) opened.context.phase4b.goals = this.#caps.goals;
+      if (opened.context.liveConsole) opened.context.liveConsole.goals = this.#caps.goals;
       return this.#session({
         transport,
         runId: input.runId,
@@ -405,7 +405,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await transport.request("thread/resume", {
         threadId: snapshot.driverSessionId,
         ...securedThreadParams(workingDirectory, this.#options.environment),
-        baseInstructions: this.#direct() ? "" : PHASE4_SKILLLESS_BASE_INSTRUCTIONS,
+        baseInstructions: this.#direct() ? "" : CODEX_SKILLLESS_BASE_INSTRUCTIONS,
         persistExtendedHistory: false,
       });
       const opened = this.#openedThread(response, initialize, workingDirectory);
@@ -421,7 +421,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         return { recovered: false, reason: "provider resumed a different provider session" };
       }
       const goal = await this.#discoverGoal(transport, opened.threadId);
-      if (opened.context.phase4b) opened.context.phase4b.goals = this.#caps.goals;
+      if (opened.context.liveConsole) opened.context.liveConsole.goals = this.#caps.goals;
       return {
         recovered: true,
         session: this.#session({
@@ -521,7 +521,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       threadId,
       providerSessionId: text(thread.sessionId) || null,
       context: {
-        protocolVersion: PHASE4_CODEX_PROTOCOL_VERSION,
+        protocolVersion: CODEX_CODEX_PROTOCOL_VERSION,
         codexVersion: boundedText(initialize.userAgent),
         clientInfo: {
           name: "paperclip-runner",
@@ -540,7 +540,7 @@ export class CodexAppServerDriver implements HarnessDriver {
           networkAccess: false,
         },
         approvalPolicy: boundedCodexValue(response.approvalPolicy ?? "never"),
-        baseInstructions: PHASE4_SKILLLESS_BASE_INSTRUCTIONS,
+        baseInstructions: CODEX_SKILLLESS_BASE_INSTRUCTIONS,
         instructionSources: Array.isArray(response.instructionSources)
           ? response.instructionSources
               .filter((value): value is string => typeof value === "string")
@@ -557,9 +557,9 @@ export class CodexAppServerDriver implements HarnessDriver {
         ).sort(),
         dynamicToolNames: this.#direct()
           ? []
-          : this.#caps.dynamicTools ? [...PHASE4_SEMANTIC_TOOL_NAMES] : [],
+          : this.#caps.dynamicTools ? [...CODEX_SEMANTIC_TOOL_NAMES] : [],
         modelInputKinds: ["text"],
-        phase4b: {
+        liveConsole: {
           conversationMode: this.#direct() ? "direct" : "task",
           runtimeRequestResolution: this.#caps.runtimeRequestResolution,
           goals: this.#caps.goals,
@@ -590,7 +590,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       taskEnvelope: this.#options.taskEnvelope,
       conversationMode: this.#direct() ? "direct" : "task",
       now: this.#options.now ?? (() => new Date()),
-      runnerInstanceId: this.#options.runnerInstanceId ?? "runner-phase4",
+      runnerInstanceId: this.#options.runnerInstanceId ?? "runner-codex",
       capabilities: this.#caps,
     });
   }
@@ -601,7 +601,7 @@ class CodexHarnessSession implements HarnessSession {
   readonly #runId: string;
   readonly #normalizedSessionId: string;
   readonly #opened: OpenedCodexThread;
-  readonly #taskEnvelope: Phase4TaskEnvelope;
+  readonly #taskEnvelope: CodexTaskEnvelope;
   readonly #conversationMode: "task" | "direct";
   readonly #now: () => Date;
   readonly #runnerInstanceId: string;
@@ -633,7 +633,7 @@ class CodexHarnessSession implements HarnessSession {
     runId: string;
     normalizedSessionId: string;
     opened: OpenedCodexThread;
-    taskEnvelope: Phase4TaskEnvelope;
+    taskEnvelope: CodexTaskEnvelope;
     conversationMode: "task" | "direct";
     resumed: boolean;
     activeTurnId?: string | null;
@@ -720,7 +720,7 @@ class CodexHarnessSession implements HarnessSession {
     };
   }
 
-  contextSnapshot(): Phase4ModelContextSnapshot {
+  contextSnapshot(): CodexModelContextSnapshot {
     return structuredClone(this.#opened.context);
   }
 
@@ -756,7 +756,7 @@ class CodexHarnessSession implements HarnessSession {
         permissions: SKILLLESS_PERMISSION_PROFILE,
         runtimeWorkspaceRoots: [this.#opened.context.workingDirectory],
         input: [userInput({ role: "user", text: taskText })],
-        ...(this.#conversationMode === "direct" ? {} : { outputSchema: PHASE4_RESULT_OUTPUT_SCHEMA }),
+        ...(this.#conversationMode === "direct" ? {} : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
       });
     } finally {
       this.#turnStartPending = false;
@@ -1281,7 +1281,7 @@ class CodexHarnessSession implements HarnessSession {
           contentItems: [{
             type: "inputText",
             text:
-              tool === PHASE4_BLOCK_TOOL_NAME
+              tool === CODEX_BLOCK_TOOL_NAME
                 ? "paperclip_block requires reportedWorkDisposition=blocked."
                 : "paperclip_finish accepts only done or needs_review.",
           }],
@@ -1700,14 +1700,14 @@ function isRetainableCodexPayload(value: unknown): boolean {
 }
 
 function isSemanticTool(tool: string): boolean {
-  return tool === PHASE4_COMPLETION_TOOL_NAME || tool === PHASE4_BLOCK_TOOL_NAME;
+  return tool === CODEX_COMPLETION_TOOL_NAME || tool === CODEX_BLOCK_TOOL_NAME;
 }
 
 function toolAcceptsDisposition(
   tool: string,
   disposition: PrpStructuredRunResult["reportedWorkDisposition"],
 ): boolean {
-  if (tool === PHASE4_BLOCK_TOOL_NAME) {
+  if (tool === CODEX_BLOCK_TOOL_NAME) {
     return disposition === "blocked";
   }
   return disposition === "done" || disposition === "needs_review";

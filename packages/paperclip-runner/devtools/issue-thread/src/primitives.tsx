@@ -1,6 +1,6 @@
 import type { ReactNode, Ref } from "react";
 
-import type { Phase7TaskStatus } from "../../../src/mock-core/phase7-control-plane-types";
+import type { CapabilityTaskStatus } from "../../../src/mock-core/capability-control-plane-types";
 
 /**
  * Package-local equivalents of the product StatusBadge/chip anatomy. Every
@@ -8,7 +8,7 @@ import type { Phase7TaskStatus } from "../../../src/mock-core/phase7-control-pla
  * without color (contract §9.5).
  */
 
-const STATUS_COPY: Record<Phase7TaskStatus, { label: string; glyph: string }> = {
+const STATUS_COPY: Record<CapabilityTaskStatus, { label: string; glyph: string }> = {
   backlog: { label: "Backlog", glyph: "○" },
   todo: { label: "Todo", glyph: "○" },
   in_progress: { label: "In progress", glyph: "◐" },
@@ -25,7 +25,7 @@ const PRIORITY_GLYPH: Record<string, string> = {
   low: "▼",
 };
 
-export function StatusBadge({ status }: { status: Phase7TaskStatus }) {
+export function StatusBadge({ status }: { status: CapabilityTaskStatus }) {
   const copy = STATUS_COPY[status];
   return (
     <span className="pit-status-badge" data-status={status}>
@@ -88,4 +88,4 @@ export function Timestamp({ value }: { value: string }) {
 }
 
 /** Re-exported so the thread strip and the deliverable card share one unit. */
-export { phase7FormatBytes as formatBytes } from "../../../src/issue-thread/types";
+export { capabilityFormatBytes as formatBytes } from "../../../src/issue-thread/types";

@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import type {
-  Phase7ThreadInteractionCard,
-  Phase7ThreadInteractionState,
+  CapabilityThreadInteractionCard,
+  CapabilityThreadInteractionState,
 } from "../../../src/issue-thread/types";
 import { Chip } from "./primitives";
 
@@ -17,13 +17,13 @@ import { Chip } from "./primitives";
  * resolution here.
  */
 
-export interface Phase7InteractionResponse {
+export interface CapabilityInteractionResponse {
   interactionId: string;
   outcome: "answered" | "accepted" | "rejected";
   result: Record<string, unknown>;
 }
 
-const STATE_GLYPH: Record<Phase7ThreadInteractionState, string> = {
+const STATE_GLYPH: Record<CapabilityThreadInteractionState, string> = {
   pending: "⏳",
   submitting: "⏳",
   accepted: "✓",
@@ -36,7 +36,7 @@ const STATE_GLYPH: Record<Phase7ThreadInteractionState, string> = {
   issue_closed: "⌛",
 };
 
-const RESOLVED_STATES = new Set<Phase7ThreadInteractionState>([
+const RESOLVED_STATES = new Set<CapabilityThreadInteractionState>([
   "accepted",
   "answered",
   "rejected",
@@ -47,7 +47,7 @@ const RESOLVED_STATES = new Set<Phase7ThreadInteractionState>([
   "issue_closed",
 ]);
 
-function stateTone(state: Phase7ThreadInteractionState) {
+function stateTone(state: CapabilityThreadInteractionState) {
   if (state === "accepted" || state === "answered") return "success" as const;
   if (state === "rejected") return "danger" as const;
   if (state === "pending" || state === "submitting") return "accent" as const;
@@ -60,8 +60,8 @@ export function InteractionCard({
   onOpenEvidence,
   autoFocus,
 }: {
-  card: Phase7ThreadInteractionCard;
-  onRespond?: (response: Phase7InteractionResponse) => void;
+  card: CapabilityThreadInteractionCard;
+  onRespond?: (response: CapabilityInteractionResponse) => void;
   onOpenEvidence?: (section: string, recordId: string) => void;
   autoFocus?: boolean;
 }) {
@@ -80,7 +80,7 @@ export function InteractionCard({
   const [error, setError] = useState<string | null>(null);
   const firstControl = useRef<HTMLElement | null>(null);
   const stateChip = useRef<HTMLSpanElement | null>(null);
-  const previousState = useRef<Phase7ThreadInteractionState>(card.state);
+  const previousState = useRef<CapabilityThreadInteractionState>(card.state);
   const resolved = RESOLVED_STATES.has(card.state);
   const busy = card.state === "submitting";
 
@@ -96,7 +96,7 @@ export function InteractionCard({
     }
   }, [card.state]);
 
-  function respond(response: Phase7InteractionResponse) {
+  function respond(response: CapabilityInteractionResponse) {
     setError(null);
     onRespond?.(response);
   }

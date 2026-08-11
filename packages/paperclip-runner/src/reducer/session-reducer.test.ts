@@ -6,7 +6,7 @@ import {
   parsePrpFixtureText,
   type PrpEvent,
   type PrpFixture,
-} from "../protocol/phase1-contract.js";
+} from "../protocol/replay-contract.js";
 import {
   createSessionSnapshot,
   reducePrpFixture,
@@ -14,7 +14,7 @@ import {
   type SessionSnapshot,
 } from "./session-reducer.js";
 
-const fixtureDirectory = new URL("../../protocol/fixtures/phase-01/", import.meta.url);
+const fixtureDirectory = new URL("../../protocol/fixtures/replay/", import.meta.url);
 const fixtureNames = [
   "happy-path",
   "failed-run",
@@ -68,7 +68,7 @@ describe("deterministic PRP session reducer", () => {
     expect(snapshot.integrity).toBe("gap_detected");
     expect(snapshot.gaps).toEqual([
       {
-        sourceKey: "runner:runner_phase1",
+        sourceKey: "runner:runner_replay",
         expected: 3,
         received: 4,
         missing: [3],

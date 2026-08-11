@@ -4,11 +4,11 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-import { phase7StreamFixtureTransportFactory } from "./devtools/issue-thread/stream-fixture-transport.mjs";
-import { phase7IssueThreadServerPlugin } from "./scripts/phase7-issue-thread-server.mjs";
+import { capabilityStreamFixtureTransportFactory } from "./devtools/issue-thread/stream-fixture-transport.mjs";
+import { capabilityIssueThreadServerPlugin } from "./scripts/capability-issue-thread-server.mjs";
 
 /**
- * Test-only preview of the issue-thread app for the Phase 7Q streaming check.
+ * Test-only preview of the issue-thread app for the Capability streaming check.
  *
  * Identical to `vite.issue-thread.config.ts` — same root, same built bundle,
  * same package server middleware — except that the Codex provider is scripted
@@ -26,7 +26,7 @@ export default defineConfig({
   root: resolve(packageRoot, "devtools/issue-thread"),
   plugins: [
     react(),
-    phase7IssueThreadServerPlugin({ transportFactory: phase7StreamFixtureTransportFactory }),
+    capabilityIssueThreadServerPlugin({ transportFactory: capabilityStreamFixtureTransportFactory }),
   ],
   server: { host: "127.0.0.1" },
   preview: { host: "127.0.0.1" },

@@ -5,7 +5,7 @@ import type {
   PrpIdentity,
   PrpStructuredRunResult,
   PrpTerminalState,
-} from "../protocol/phase1-contract.js";
+} from "../protocol/replay-contract.js";
 
 export interface SessionTimelineEntry {
   position: number;
@@ -392,7 +392,7 @@ export function reducePrpFixture(fixture: PrpFixture): SessionSnapshot {
   return reduceSessionEvents(createSessionSnapshot(fixture), fixture.events);
 }
 
-export interface Phase1ParitySummary {
+export interface ReplayParitySummary {
   runId: string;
   integrity: SessionSnapshot["integrity"];
   timelineCount: number;
@@ -402,7 +402,7 @@ export interface Phase1ParitySummary {
   runTerminalState: string | null;
 }
 
-export function phase1ParitySummary(snapshot: SessionSnapshot): Phase1ParitySummary {
+export function replayParitySummary(snapshot: SessionSnapshot): ReplayParitySummary {
   return {
     runId: snapshot.identity.runId,
     integrity: snapshot.integrity,

@@ -1,8 +1,8 @@
 # Status and Attention Operator UX Reference
 
-**Document status:** Approved Phase 4 UX input (PAP-16712, approved by the board 2026-08-07)<br>
-**Relationship to the spike specification:** [`paperclip-native-runner-spike-spec.md`](./paperclip-native-runner-spike-spec.md) §18.3–§18.11 remains the normative status-authority, arbitration, and attention-resolution contract. This document is the normative operator-facing presentation of that contract: vocabulary, components, board flows, copy, and token mapping. Phase 4 data contracts (spec §18.11) MUST satisfy the read requirements here; UI implementation tasks consume this document directly.<br>
-**Phase 4 binding:** spec §18.12 (PAP-16713) is the contract that joins the two documents — view types, read routes, client derivation rules, component data contracts, and the `OPX-1…OPX-10` presentation invariants with their `OPX-F1…OPX-F11` release gates. Every requirement in this document appears as a row in the §18.12.11 coverage matrix with its backing field, component, and gate. Implementation reads both documents; a requirement here with no §18.12 field is a spec bug, not an implementation decision.<br>
+**Document status:** Approved Codex UX input (PAP-16712, approved by the board 2026-08-07)<br>
+**Relationship to the spike specification:** [`native-runner-contract.md`](./native-runner-contract.md) §18.3–§18.11 remains the normative status-authority, arbitration, and attention-resolution contract. This document is the normative operator-facing presentation of that contract: vocabulary, components, board flows, copy, and token mapping. Codex data contracts (spec §18.11) MUST satisfy the read requirements here; UI implementation tasks consume this document directly.<br>
+**Codex binding:** spec §18.12 (PAP-16713) is the contract that joins the two documents — view types, read routes, client derivation rules, component data contracts, and the `OPX-1…OPX-10` presentation invariants with their `OPX-F1…OPX-F11` release gates. Every requirement in this document appears as a row in the §18.12.11 coverage matrix with its backing field, component, and gate. Implementation reads both documents; a requirement here with no §18.12 field is a spec bug, not an implementation decision.<br>
 **Scope:** desktop board (1440×900) — task page, issues board, attention inbox. Mobile is deferred by the source ticket.<br>
 **Mockups:** six flow screenshots and one inspectable single-file HTML mockup (per-flow rendering via `?only=a|b|c|d|e|board`) are attached to PAP-16712.
 
@@ -10,7 +10,7 @@
 
 ## 1. The layered-outcome model (vocabulary system)
 
-The contract yields four independent facts. A single status badge collapses them into exactly the "agent succeeded" lie the parent issue names. Phase 4 renders them as four distinct visual layers with a strict vocabulary, so a stranger can tell in two seconds *what happened to the process* versus *what Paperclip decided about the work* (Mental Models; Nielsen #1 visibility of system status; #2 match to the real world).
+The contract yields four independent facts. A single status badge collapses them into exactly the "agent succeeded" lie the parent issue names. Codex renders them as four distinct visual layers with a strict vocabulary, so a stranger can tell in two seconds *what happened to the process* versus *what Paperclip decided about the work* (Mental Models; Nielsen #1 visibility of system status; #2 match to the real world).
 
 | Layer | Source of truth (spec §18.3 authority table) | Values | Vocabulary rule | Visual treatment |
 |---|---|---|---|---|
@@ -184,7 +184,7 @@ New reason codes added to the v1 enum after this document's approval MUST land w
 
 ---
 
-## 6. Phase 4 acceptance criteria (UX)
+## 6. Codex acceptance criteria (UX)
 
 1. On any finalized native run, a stranger can answer separately: did the turn finish, did the run succeed, what did the agent claim, what did Paperclip decide — without opening a drawer (spec §18.11 consistency gate, UI bullet).
 2. The strings "agent succeeded/failed/completed" appear nowhere; claims are attributed and quoted.

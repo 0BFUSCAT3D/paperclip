@@ -1,4 +1,4 @@
-import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/phase1-contract.js";
+import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 
 export const NATIVE_EXECUTION_INPUT_SCHEMA = "paperclip.native-execution-input.v1" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v1" as const;

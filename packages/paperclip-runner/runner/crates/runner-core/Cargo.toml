@@ -13,8 +13,8 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [[bin]]
-name = "phase0-tracer"
-path = "src/bin/phase0-tracer.rs"
+name = "conformance-tracer"
+path = "src/bin/conformance-tracer.rs"
 
 [[bin]]
 name = "paperclip-runnerd"

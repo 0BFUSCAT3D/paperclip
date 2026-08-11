@@ -1,7 +1,7 @@
 import type {
   PrpEvent,
   PrpStructuredRunResult,
-} from "../protocol/phase1-contract.js";
+} from "../protocol/replay-contract.js";
 import type { NativeSessionCapabilities, NativeUserMessage } from "./types.js";
 
 export interface HarnessDriverDescriptor {

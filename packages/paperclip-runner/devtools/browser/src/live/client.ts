@@ -1,11 +1,11 @@
-import type { PrpEvent } from "../../../../src/protocol/phase1-contract";
+import type { PrpEvent } from "../../../../src/protocol/replay-contract";
 import type {
   GoalOperation,
   LiveManifestSummary,
   LiveSessionState,
 } from "./protocol";
 
-const BASE = "/api/phase4b";
+const BASE = "/api/liveConsole";
 
 export class LiveConsoleError extends Error {
   readonly status: number;

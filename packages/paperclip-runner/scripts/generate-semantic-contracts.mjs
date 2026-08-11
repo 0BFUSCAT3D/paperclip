@@ -1,11 +1,11 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { serializePhase7GeneratedSemanticContracts } from "../dist/semantic-tools/provider-neutral.js";
+import { serializeCapabilityGeneratedSemanticContracts } from "../dist/semantic-tools/provider-neutral.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const outputPath = resolve(packageRoot, "generated/phase-07/semantic-tool-contracts.json");
-const generated = serializePhase7GeneratedSemanticContracts();
+const outputPath = resolve(packageRoot, "generated/capability/semantic-tool-contracts.json");
+const generated = serializeCapabilityGeneratedSemanticContracts();
 
 if (process.argv.includes("--check")) {
   const current = await readFile(outputPath, "utf8").catch(() => "");

@@ -3,7 +3,7 @@ import type {
   ControlPlanePort,
   OpenControlPlaneRunInput,
 } from "../contracts/control-plane-port.js";
-import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/phase1-contract.js";
+import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 
 export interface ControlPlanePortConformanceSnapshot {
   eventCount: number;
@@ -26,27 +26,27 @@ export interface ControlPlanePortConformanceHarness {
 export const CONTROL_PLANE_CONFORMANCE_OPEN: OpenControlPlaneRunInput = {
   identity: {
     runId: "00000000-0000-4000-8000-000000000006",
-    sessionId: "session-phase6-conformance",
+    sessionId: "session-standalone-conformance",
     companyId: "00000000-0000-4000-8000-000000000001",
     issueId: "00000000-0000-4000-8000-000000000003",
     agentId: "00000000-0000-4000-8000-000000000002",
   },
   backendKind: "mock",
-  sourceInstanceId: "runner-phase6-conformance",
+  sourceInstanceId: "runner-standalone-conformance",
 };
 
 export const CONTROL_PLANE_CONFORMANCE_RESULT: PrpStructuredRunResult = {
   schema: "paperclip.run_result.v1",
   reportedWorkDisposition: "done",
-  summary: "Phase 6 conformance task completed.",
+  summary: "Standalone conformance task completed.",
   completionClaim: {
-    contractRevision: "phase6-v1",
+    contractRevision: "standalone-v1",
     objectiveSatisfied: true,
     criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: ["event:2"] }],
     remainingWork: [],
   },
   evidence: [{ kind: "event", ref: "event:2" }],
-  verification: [{ commandOrCheck: "phase6-conformance", status: "passed", artifactRef: "event:2" }],
+  verification: [{ commandOrCheck: "standalone-conformance", status: "passed", artifactRef: "event:2" }],
   attentionRequests: [],
   artifacts: [],
 };
@@ -61,13 +61,13 @@ export const CONTROL_PLANE_CONFORMANCE_TERMINAL: PrpTerminalState = {
 function event(sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent {
   return {
     schema: "paperclip.prp.event.v1",
-    sourceEventId: `runner-phase6-conformance:event:${sourceSeq}`,
+    sourceEventId: `runner-standalone-conformance:event:${sourceSeq}`,
     sourceSeq,
-    sourceInstanceId: "runner-phase6-conformance",
+    sourceInstanceId: "runner-standalone-conformance",
     sourceKind: "runner",
     runId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId,
     normalizedSessionId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.sessionId,
-    turnId: "turn-phase6-conformance",
+    turnId: "turn-standalone-conformance",
     eventType,
     schemaVersion: 1,
     priority: eventType === "run.terminal" ? 0 : 1,
@@ -122,7 +122,7 @@ export async function runControlPlanePortConformance(
     try {
       await harness.port.appendEvent({
         ...CONTROL_PLANE_CONFORMANCE_EVENTS[1],
-        sourceEventId: "runner-phase6-conformance:mutated-sequence-two",
+        sourceEventId: "runner-standalone-conformance:mutated-sequence-two",
         payload: { mutated: true },
       });
     } catch {
@@ -132,7 +132,7 @@ export async function runControlPlanePortConformance(
 
     const replay = await harness.port.replayEvents({
       runId: CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId,
-      sourceInstanceId: "runner-phase6-conformance",
+      sourceInstanceId: "runner-standalone-conformance",
       afterSourceSeq: 1,
       limit: 10,
     });
@@ -143,7 +143,7 @@ export async function runControlPlanePortConformance(
     try {
       await harness.port.replayEvents({
         runId: "forged-run",
-        sourceInstanceId: "runner-phase6-conformance",
+        sourceInstanceId: "runner-standalone-conformance",
         afterSourceSeq: 0,
         limit: 10,
       });
@@ -155,9 +155,9 @@ export async function runControlPlanePortConformance(
     const completion: CompleteControlPlaneRunInput = {
       result: CONTROL_PLANE_CONFORMANCE_RESULT,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
-      turnId: "turn-phase6-conformance",
-      callerResultId: "result-phase6-conformance",
-      callerDedupeKey: "dedupe-phase6-conformance",
+      turnId: "turn-standalone-conformance",
+      callerResultId: "result-standalone-conformance",
+      callerDedupeKey: "dedupe-standalone-conformance",
     };
     await harness.port.completeRun(completion);
     await harness.port.completeRun(completion);

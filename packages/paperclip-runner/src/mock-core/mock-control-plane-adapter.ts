@@ -11,7 +11,7 @@ import {
   validatePrpEvent,
   validatePrpStructuredRunResult,
   type PrpEvent,
-} from "../protocol/phase1-contract.js";
+} from "../protocol/replay-contract.js";
 
 export interface MockControlPlaneSnapshot {
   lifecycle: "stopped" | "running";
@@ -41,7 +41,7 @@ export class MockControlPlaneAdapter implements ControlPlanePort {
   async openRun(input: OpenControlPlaneRunInput): Promise<void> {
     this.#assertRunning();
     if (this.#openedRun !== null) {
-      throw new Error("mock control plane accepts one Phase 0 run");
+      throw new Error("mock control plane accepts one Conformance run");
     }
     this.#openedRun = structuredClone(input);
   }
@@ -198,5 +198,5 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "undefined";
 }
 
-export * from "./phase7-control-plane-types.js";
-export * from "./phase7-mock-control-plane-adapter.js";
+export * from "./capability-control-plane-types.js";
+export * from "./capability-mock-control-plane-adapter.js";

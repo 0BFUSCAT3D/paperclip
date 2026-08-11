@@ -3,20 +3,20 @@
 ## Authority
 
 The JSON Schema files in [`protocol/schemas/`](../protocol/schemas/) are the
-language-neutral source of truth for the Phase 1 and Phase 2 executable contract. The
+language-neutral source of truth for the Replay and Local runner executable contract. The
 generated TypeScript schema module is checked against those files before every
 TypeScript typecheck. Rust consumes the same fixtures and must produce the same
 golden parity summaries.
 
 The broader normative protocol remains the
-[native-runner spike specification](../spec/paperclip-native-runner-spike-spec.md).
-Phase 2 reuses this contract for local live events. It adds package-local stdio
+[native-runner spike specification](../spec/native-runner-contract.md).
+Local runner reuses this contract for local live events. It adds package-local stdio
 and stream envelopes, but it does not add durable transport, persistence, or
 production control-plane behavior.
 
 ## Version fields
 
-| Field | Phase 1 support | Compatibility rule |
+| Field | Replay support | Compatibility rule |
 |---|---:|---|
 | `protocolVersion` | `1` | Required. Negotiate the highest overlapping version; no overlap fails closed. |
 | `fixtureVersion` | `1` | Required by the conformance corpus. Unknown values fail closed. |
@@ -56,11 +56,11 @@ required v2 protocol cannot be replayed by this consumer.
   out of order.
 - Replaying an already-applied batch leaves the snapshot unchanged.
 
-The CLI and browser import the same `replayPhase1FixtureText` function, so
+The CLI and browser import the same `replayReplayFixtureText` function, so
 validation, compatibility errors, and final snapshots cannot drift between the
 two surfaces.
 
-## Phase 2 local envelope rules
+## Local envelope rules
 
 - Mock-core commands use `paperclip.prp.command.v1` over stdin JSONL.
 - Runner output uses `paperclip.runner.stream.v1` over stdout JSONL.
@@ -75,9 +75,9 @@ two surfaces.
 - The live browser rejects an event with an invalid schema, run ID, or session
   ID before it reaches the reducer.
 
-These envelopes are local Phase 2 implementation contracts.
+These envelopes are local Local runner implementation contracts.
 
-## Phase 3 durable wire rules
+## Durable wire rules
 
 - The runner opens an outbound WebSocket and sends PRP v1 `hello` before any
   command result or event.
@@ -97,7 +97,7 @@ These envelopes are local Phase 2 implementation contracts.
 - Frames are bounded at 1 MiB and upgrade headers at 16 KiB. Unknown or invalid
   required protocol data fails closed; malformed JSON is a bounded diagnostic.
 
-These are package-local Phase 3 rules. Production TLS, control-plane admission,
+These are package-local Durable recovery rules. Production TLS, control-plane admission,
 and deployment policy remain separately reviewed work.
 
 ## Change policy

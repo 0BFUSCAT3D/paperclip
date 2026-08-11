@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { Phase7IssueThreadSnapshot } from "../../../src/issue-thread/types";
+import type { CapabilityIssueThreadSnapshot } from "../../../src/issue-thread/types";
 import { Chip, PriorityIcon, StatusBadge } from "./primitives";
 
 /**
@@ -10,7 +10,7 @@ import { Chip, PriorityIcon, StatusBadge } from "./primitives";
  */
 
 export interface IssueHeaderProps {
-  snapshot: Phase7IssueThreadSnapshot;
+  snapshot: CapabilityIssueThreadSnapshot;
   scenarios: string[];
   /** `chat` is the clean room: no preset scenario, no recording to replay. */
   surface?: "issue" | "chat";

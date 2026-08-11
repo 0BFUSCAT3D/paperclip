@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "phase5-real.spec.ts",
+  testMatch: "sdk-real.spec.ts",
   fullyParallel: false,
   workers: 1,
   timeout: 240_000,
@@ -12,10 +12,10 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
   },
   webServer: {
-    command: "pnpm exec vite --config vite.phase5.config.ts --host 127.0.0.1 --port 4193",
+    command: "pnpm exec vite --config vite.sdk.config.ts --host 127.0.0.1 --port 4193",
     env: {
-      PAPERCLIP_PHASE4B_DRIVER: "codex",
-      PAPERCLIP_PHASE4B_MAX_SESSIONS: "8",
+      PAPERCLIP_LIVE_CONSOLE_DRIVER: "codex",
+      PAPERCLIP_LIVE_CONSOLE_MAX_SESSIONS: "8",
       // The browser middleware creates its disposable working directory below
       // this run-owned root. Tell the nested Codex process about that exact
       // assignment so its workspace-boundary guard remains fail closed.

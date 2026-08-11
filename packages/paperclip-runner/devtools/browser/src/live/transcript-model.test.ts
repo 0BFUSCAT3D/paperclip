@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { Phase4bScriptedDriver } from "../../../../src/mock-core/phase4b-scripted-driver";
+import { LiveConsoleScriptedDriver } from "../../../../src/mock-core/live-console-scripted-driver";
 import {
   parseHarnessRuntimeRequestResolution,
   type HarnessSession,
 } from "../../../../src/contracts/harness-driver";
-import type { PrpEvent } from "../../../../src/protocol/phase1-contract";
+import type { PrpEvent } from "../../../../src/protocol/replay-contract";
 import {
   applyPrpEvent,
   createSessionSnapshotFromMetadata,
@@ -35,21 +35,21 @@ const FULL: LiveCapabilities = {
 
 function seed(runId: string, sessionId: string): SessionSnapshot {
   return createSessionSnapshotFromMetadata({
-    fixtureName: "phase4b-demo",
+    fixtureName: "live-console-demo",
     identity: {
       schema: "paperclip.prp.identity.v1",
       companyId: "package-local-demo",
-      issueId: "phase4b-demo",
+      issueId: "live-console-demo",
       runId,
       environmentLeaseId: "package-local",
-      runnerInstanceId: "phase4b-demo-server",
+      runnerInstanceId: "live-console-demo-server",
       normalizedSessionId: sessionId,
       driverSessionId: `thread-${sessionId}`,
     },
     capabilities: {
       schema: "paperclip.prp.capabilities.v1",
       sessionReusePolicy: "reuse_per_issue",
-      driver: { kind: "phase4b-demo", version: "1" },
+      driver: { kind: "live-console-demo", version: "1" },
       steer: true,
       interrupt: true,
       resume: true,
@@ -64,7 +64,7 @@ async function drive(
   manifestId: string,
   interact?: (session: HarnessSession, turnId: string) => Promise<void>,
 ): Promise<{ events: PrpEvent[]; snapshot: SessionSnapshot }> {
-  const driver = new Phase4bScriptedDriver({ manifestId, chunkDelayMs: 0 });
+  const driver = new LiveConsoleScriptedDriver({ manifestId, chunkDelayMs: 0 });
   const session = await driver.openSession({
     runId: `run-${manifestId}`,
     normalizedSessionId: `session-${manifestId}`,
@@ -114,7 +114,7 @@ describe("buildTranscript", () => {
     const user = entries[0];
     expect(user.kind === "user" && user.text).toBe("Go.");
     const tool = entries[2];
-    expect(tool.kind === "item" && tool.input).toBe("docs/phase-04b-protocol-server.md");
+    expect(tool.kind === "item" && tool.input).toBe("docs/live-console-protocol-server.md");
     expect(tool.kind === "item" && tool.output).toContain("server-sent events");
   });
 

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("validates and renders the shared Phase 1 fixture", async ({ page }, testInfo) => {
+test("validates and renders the shared Replay fixture", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Live runner diagnostics" })).toBeVisible();
   await page.getByRole("button", { name: "Static replay" }).click();
@@ -12,12 +12,12 @@ test("validates and renders the shared Phase 1 fixture", async ({ page }, testIn
     "The scripted run completed successfully.",
   );
   await page.screenshot({
-    path: testInfo.outputPath("phase-01-static-replay.png"),
+    path: testInfo.outputPath("replay-static-replay.png"),
     fullPage: true,
   });
 });
 
-test("shows Phase 3 recovery diagnostics without secrets", async ({ page }, testInfo) => {
+test("shows Durable recovery diagnostics without secrets", async ({ page }, testInfo) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Recovery", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Durable recovery diagnostics" })).toBeVisible();
@@ -37,20 +37,20 @@ test("shows Phase 3 recovery diagnostics without secrets", async ({ page }, test
     "Revoke",
   ]);
   await fault.selectOption("none");
-  await page.getByRole("button", { name: "Run Phase 3 recovery" }).click();
+  await page.getByRole("button", { name: "Run Durable recovery" }).click();
   await expect(fault).toBeDisabled();
   await expect(page.getByText("complete", { exact: true })).toBeVisible();
   await expect(fault).toBeEnabled();
-  await expect(page.getByTestId("phase3-connection-state")).toHaveText("Stopped");
-  await expect(page.getByTestId("phase3-connections")).toHaveText("1");
-  await expect(page.getByTestId("phase3-reconnects")).toHaveText("0");
-  await expect(page.getByTestId("phase3-runner-restarts")).toHaveText("0");
-  await expect(page.getByTestId("phase3-fresh-bootstraps")).toHaveText("1");
-  await expect(page.getByTestId("phase3-diagnostics")).toContainText("At-least-once redeliveries");
-  await expect(page.getByTestId("phase3-diagnostics")).toContainText("Duplicate commands");
-  await expect(page.getByTestId("phase3-storage")).toContainText("0 bytes of 65536 max");
-  await expect(page.getByTestId("phase3-outcome")).toHaveText("Recovered");
-  await expect(page.getByTestId("phase3-outcome")).toHaveAttribute("data-tone", "success");
+  await expect(page.getByTestId("durable-recovery-connection-state")).toHaveText("Stopped");
+  await expect(page.getByTestId("durable-recovery-connections")).toHaveText("1");
+  await expect(page.getByTestId("durable-recovery-reconnects")).toHaveText("0");
+  await expect(page.getByTestId("durable-recovery-runner-restarts")).toHaveText("0");
+  await expect(page.getByTestId("durable-recovery-fresh-bootstraps")).toHaveText("1");
+  await expect(page.getByTestId("durable-recovery-diagnostics")).toContainText("At-least-once redeliveries");
+  await expect(page.getByTestId("durable-recovery-diagnostics")).toContainText("Duplicate commands");
+  await expect(page.getByTestId("durable-recovery-storage")).toContainText("0 bytes of 65536 max");
+  await expect(page.getByTestId("durable-recovery-outcome")).toHaveText("Recovered");
+  await expect(page.getByTestId("durable-recovery-outcome")).toHaveAttribute("data-tone", "success");
   await expect(page.getByTestId("recovery-history").getByRole("listitem")).toHaveCount(9);
   const firstRecoveryEvent = page.getByTestId("recovery-history").getByRole("listitem").first();
   await expect(firstRecoveryEvent).toContainText("workspace.ready");
@@ -59,25 +59,25 @@ test("shows Phase 3 recovery diagnostics without secrets", async ({ page }, test
   await expect(page.getByText("Yes", { exact: true })).toBeVisible();
   await expect(page.locator("body")).not.toContainText("leaseToken");
   await expect(page.locator("body")).not.toContainText("bootstrapTicket");
-  await page.screenshot({ path: testInfo.outputPath("phase-03-recovery-diagnostics.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("durable-recovery-recovery-diagnostics.png"), fullPage: true });
 });
 
 test("tones failure outcomes and storage backpressure", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Recovery", exact: true }).click();
   const fault = page.getByLabel("Fault", { exact: true });
-  const run = page.getByRole("button", { name: "Run Phase 3 recovery" });
+  const run = page.getByRole("button", { name: "Run Durable recovery" });
 
   await fault.selectOption("revoke");
   await run.click();
-  await expect(page.getByTestId("phase3-outcome")).toHaveText("Revoked");
-  await expect(page.getByTestId("phase3-outcome")).toHaveAttribute("data-tone", "warning");
+  await expect(page.getByTestId("durable-recovery-outcome")).toHaveText("Revoked");
+  await expect(page.getByTestId("durable-recovery-outcome")).toHaveAttribute("data-tone", "warning");
   await expect(page.getByText("Revoke completed", { exact: true })).toBeVisible();
 
   await fault.selectOption("storage-pressure");
   await run.click();
-  await expect(page.getByTestId("phase3-storage")).toContainText("0 bytes of 16384 max");
-  await expect(page.getByTestId("phase3-storage").getByText("Backpressure")).toHaveAttribute(
+  await expect(page.getByTestId("durable-recovery-storage")).toContainText("0 bytes of 16384 max");
+  await expect(page.getByTestId("durable-recovery-storage").getByText("Backpressure")).toHaveAttribute(
     "data-tone",
     "warning",
   );
@@ -88,7 +88,7 @@ test("keeps recovery diagnostics within the narrow viewport", async ({ page }, t
   await page.goto("/");
   await page.getByRole("button", { name: "Recovery", exact: true }).click();
   await page.getByLabel("Fault", { exact: true }).selectOption("none");
-  await page.getByRole("button", { name: "Run Phase 3 recovery" }).click();
+  await page.getByRole("button", { name: "Run Durable recovery" }).click();
   await expect(page.getByTestId("recovery-history")).toBeVisible();
   expect(
     await page.evaluate(
@@ -96,7 +96,7 @@ test("keeps recovery diagnostics within the narrow viewport", async ({ page }, t
     ),
   ).toBe(true);
   await page.screenshot({
-    path: testInfo.outputPath("phase-03-recovery-diagnostics-mobile.png"),
+    path: testInfo.outputPath("durable-recovery-recovery-diagnostics-mobile.png"),
     fullPage: true,
   });
 });
@@ -122,7 +122,7 @@ test("streams a live run and proves replay parity", async ({ page }, testInfo) =
   await expect(page.getByTestId("process-facts")).toContainText("done");
   await expect(page.getByTestId("parity-result")).toContainText("Match");
   await page.screenshot({
-    path: testInfo.outputPath("phase-02-live-complete.png"),
+    path: testInfo.outputPath("local-runner-live-complete.png"),
     fullPage: true,
   });
 });
@@ -139,7 +139,7 @@ test("resolves live permission and input requests", async ({ page }, testInfo) =
     }).first(),
   ).toContainText("permission: Allow the fake driver to write its local fixture?");
   await page.screenshot({
-    path: testInfo.outputPath("phase-02-live-permission.png"),
+    path: testInfo.outputPath("local-runner-live-permission.png"),
     fullPage: true,
   });
   await page.getByRole("button", { name: "Allow" }).click();
@@ -150,7 +150,7 @@ test("resolves live permission and input requests", async ({ page }, testInfo) =
     }).first(),
   ).toContainText("Resolved permission: Allow the fake driver to write its local fixture?");
   await page.waitForTimeout(10_500);
-  await page.getByLabel("Response").fill("phase-02-browser-trace");
+  await page.getByLabel("Response").fill("local-runner-browser-trace");
   await page.getByRole("button", { name: "Send input" }).click();
   await expect(page.getByTestId("live-status")).toHaveText("Terminal");
   await expect(page.getByTestId("parity-result")).toContainText("Match");
@@ -169,7 +169,7 @@ test("interrupts a live turn without duplicating terminal state", async ({ page 
   await expect(page.getByTestId("terminal-badge")).toHaveAttribute("data-tone", "neutral");
   await expect(page.getByTestId("timeline").getByText("run.terminal")).toHaveCount(1);
   await page.screenshot({
-    path: testInfo.outputPath("phase-02-live-interrupted.png"),
+    path: testInfo.outputPath("local-runner-live-interrupted.png"),
     fullPage: true,
   });
 });

@@ -2,10 +2,10 @@ import { createRequire } from "node:module";
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { PHASE7_UI_SHOT_SLUGS } from "../../src/issue-thread/fixtures";
+import { CAPABILITY_UI_SHOT_SLUGS } from "../../src/issue-thread/fixtures";
 import type {
-  Phase7IssueThreadSnapshot,
-  Phase7ThreadItem,
+  CapabilityIssueThreadSnapshot,
+  CapabilityThreadItem,
 } from "../../src/issue-thread/types";
 
 const require = createRequire(import.meta.url);
@@ -50,7 +50,7 @@ async function seriousAxeViolations(page: Page): Promise<AxeViolation[]> {
   );
 }
 
-test.describe("Phase 7G issue thread", () => {
+test.describe("Capability issue thread", () => {
   test("loads the bundled sans and mono faces before the thread settles", async ({ page }) => {
     await open(page, "thread-baseline");
 
@@ -437,7 +437,7 @@ test.describe("Phase 7G issue thread", () => {
     await expect(page.locator('[data-interaction-id="ix-questions-01"]')).toBeInViewport();
   });
 
-  for (const slug of PHASE7_UI_SHOT_SLUGS) {
+  for (const slug of CAPABILITY_UI_SHOT_SLUGS) {
     test(`axe reports no serious or critical violation on ${slug} (desktop)`, async ({ page }) => {
       await page.setViewportSize(DESKTOP);
       await open(page, slug, slug === "debug-panel-open" ? { panel: "authorization" } : {});
@@ -452,17 +452,17 @@ test.describe("Phase 7G issue thread", () => {
   }
 });
 
-/* ------------------------------------------------------- Phase 7M clean room */
+/* ------------------------------------------------------- Capability clean room */
 
 /**
  * The clean room is live-only by construction, so these tests stub the package
  * session route rather than starting a real Codex process: what is under test
  * here is the surface — entry, blank state, evidence-on-demand, identity
  * rotation, failure honesty, and the narrow layout — not the tool loop, which
- * `smoke:phase7:cleanroom` and the server suite cover against the real thing.
+ * `smoke:capability:cleanroom` and the server suite cover against the real thing.
  */
 
-const CLEAN_ROOM_API = "**/api/phase7/ui/cleanroom/session*";
+const CLEAN_ROOM_API = "**/api/capability/ui/cleanroom/session*";
 
 function cleanRoomView(identifier: string, withTurn: boolean) {
   const guard = {
@@ -475,7 +475,7 @@ function cleanRoomView(identifier: string, withTurn: boolean) {
     threadAnchorId: null,
   };
   return {
-    schema: "paperclip.phase7.issue-thread-view.v1",
+    schema: "paperclip.capability.issue-thread-view.v1",
     sessionId: `session-${identifier}`,
     mode: "live",
     identity: {
@@ -493,7 +493,7 @@ function cleanRoomView(identifier: string, withTurn: boolean) {
       priority: "medium",
       assignee: "Mock Agent",
       runState: `run-${identifier} · idle`,
-      scenarioId: "phase7-clean-room",
+      scenarioId: "capability-clean-room",
       fixtureProfile: "clean-room",
     },
     turns: withTurn
@@ -577,7 +577,7 @@ function cleanRoomPayload(identifier: string, withTurn = false) {
  */
 function turnStreamBody(payload: unknown, interim: unknown[] = []): string {
   const frames = interim.map((view, index) => ({
-    schema: "paperclip.phase7.turn-stream.v1",
+    schema: "paperclip.capability.turn-stream.v1",
     type: "frame",
     seq: index + 1,
     reason: "delta",
@@ -587,7 +587,7 @@ function turnStreamBody(payload: unknown, interim: unknown[] = []): string {
   return [
     ...frames,
     {
-      schema: "paperclip.phase7.turn-stream.v1",
+      schema: "paperclip.capability.turn-stream.v1",
       type: "settled",
       seq: frames.length + 1,
       payload,
@@ -617,7 +617,7 @@ async function openCleanRoom(page: Page, identifiers: string[] = ["MCK-1000"]) {
   await expect(page.locator('[data-thread-state="settled"]')).toBeVisible();
 }
 
-test.describe("Phase 7M clean-room chat", () => {
+test.describe("Capability clean-room chat", () => {
   test("the landing surface offers a clean-room entry that needs no scenario", async ({ page }) => {
     await open(page, "thread-baseline");
     const entry = page.getByTestId("surface-chat-link");
@@ -660,7 +660,7 @@ test.describe("Phase 7M clean-room chat", () => {
     await page.addInitScript(() => window.localStorage.clear());
     await page.route(CLEAN_ROOM_API, async (route) => {
       const payload = cleanRoomPayload("MCK-1000");
-      const view = payload.view as Phase7IssueThreadSnapshot;
+      const view = payload.view as CapabilityIssueThreadSnapshot;
       view.evidence.runner = [
         {
           id: "session-1",
@@ -708,7 +708,7 @@ test.describe("Phase 7M clean-room chat", () => {
 
   test("a sent message renders the live turn it produced", async ({ page }) => {
     await openCleanRoom(page);
-    await page.route("**/api/phase7/ui/message", async (route) => {
+    await page.route("**/api/capability/ui/message", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/x-ndjson",
@@ -747,7 +747,7 @@ test.describe("Phase 7M clean-room chat", () => {
         status: 500,
         contentType: "application/json",
         body: JSON.stringify({
-          error: "phase7_issue_thread_unavailable",
+          error: "capability_issue_thread_unavailable",
           message: "paperclip-runnerd exited before the Codex app-server was ready",
         }),
       });
@@ -807,7 +807,7 @@ test.describe("Phase 7M clean-room chat", () => {
 
 const PENDING_ANNOUNCEMENT = "A request is waiting for your answer.";
 
-function questionsItem(state: "pending" | "answered" | "withdrawn"): Phase7ThreadItem {
+function questionsItem(state: "pending" | "answered" | "withdrawn"): CapabilityThreadItem {
   return {
     kind: "interaction",
     id: "item-ix-1",
@@ -846,10 +846,10 @@ function interactionView(
   identifier: string,
   state: "pending" | "answered",
   options: { withdrawn?: boolean; extraTurn?: boolean } = {},
-): Phase7IssueThreadSnapshot {
+): CapabilityIssueThreadSnapshot {
   const view = JSON.parse(
     JSON.stringify(cleanRoomView(identifier, true)),
-  ) as Phase7IssueThreadSnapshot;
+  ) as CapabilityIssueThreadSnapshot;
   view.turns[0].items.push(questionsItem(options.withdrawn === true ? "withdrawn" : state));
   if (options.extraTurn === true) {
     view.turns.push({
@@ -914,7 +914,7 @@ test.describe("pending-request live region", () => {
     await expect(live).toHaveText(PENDING_ANNOUNCEMENT);
     await expect(page.locator('[data-composer-state="waiting"]')).toBeVisible();
 
-    await page.route("**/api/phase7/ui/interaction", async (route) => {
+    await page.route("**/api/capability/ui/interaction", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -935,7 +935,7 @@ test.describe("pending-request live region", () => {
     await expect(live).toHaveText("Your answer was recorded.");
 
     // A later turn must not resurrect the pending guidance either.
-    await page.route("**/api/phase7/ui/message", async (route) => {
+    await page.route("**/api/capability/ui/message", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/x-ndjson",
@@ -972,7 +972,7 @@ test.describe("pending-request live region", () => {
     const live = page.getByTestId("thread-live-region");
     await expect(live).toHaveText(PENDING_ANNOUNCEMENT);
 
-    await page.route("**/api/phase7/ui/reconnect", async (route) => {
+    await page.route("**/api/capability/ui/reconnect", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -990,7 +990,7 @@ test.describe("pending-request live region", () => {
   });
 });
 
-/* -------------------------------------------- Phase 7Q streamed live turn */
+/* -------------------------------------------- Capability streamed live turn */
 
 /**
  * Streaming is proved against the real package server, not a stub: port 4185
@@ -1012,7 +1012,7 @@ async function openStreamingCleanRoom(page: Page): Promise<void> {
   await expect(page.locator('[data-thread-state="settled"]')).toBeVisible({ timeout: 60_000 });
 }
 
-test.describe("Phase 7Q streamed live turn", () => {
+test.describe("Capability streamed live turn", () => {
   test("shows sanitized thinking progress before assistant text arrives", async ({ page }) => {
     await openStreamingCleanRoom(page);
 

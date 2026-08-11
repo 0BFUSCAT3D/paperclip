@@ -15,7 +15,7 @@
   --warning-surface: #fff4dc;
   --danger: #a02f2f;
   --danger-surface: #fceaea;
-  /* Pending and streaming are not warnings; Phase 4b needs their own pair. */
+  /* Pending and streaming are not warnings; Live console needs their own pair. */
   --accent: #2f5fa8;
   --accent-surface: #e9f0fa;
   --surface-raised: #fcfcfa;
@@ -118,6 +118,7 @@ p {
 }
 
 .mode-switch {
+  flex-wrap: wrap;
   margin-bottom: var(--space-6);
 }
 
@@ -560,7 +561,7 @@ dd {
 }
 
 /* ---------------------------------------------------------------------------
-   Phase 4b live console
+   Live console
    Every value below comes from the token layer above. Adapted shadcn/ui and
    AI Elements components carry no visual values of their own.
    --------------------------------------------------------------------------- */

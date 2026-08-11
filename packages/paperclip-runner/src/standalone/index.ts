@@ -1,1 +1,1 @@
-export * from "./phase6-demo.js";
+export * from "./standalone-demo.js";

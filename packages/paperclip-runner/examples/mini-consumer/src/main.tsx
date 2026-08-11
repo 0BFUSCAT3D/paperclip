@@ -24,7 +24,7 @@ function MiniConsumer() {
   // fifth extension point without adding provider credentials to component
   // props or browser state.
   const console_ = useRunnerConsole({
-    baseUrl: "/api/phase4b",
+    baseUrl: "/api/liveConsole",
     fetchImpl: injectedFetch,
     eventSourceFactory: injectedEventSource,
   });

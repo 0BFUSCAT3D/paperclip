@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { fileURLToPath } from "node:url";
 
 import {
-  PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA,
-  PHASE4_RESULT_OUTPUT_SCHEMA,
-  createPhase4TaskEnvelope,
-  isSkilllessPhase4Context,
-} from "../../contracts/phase4.js";
+  CODEX_BLOCK_RESULT_OUTPUT_SCHEMA,
+  CODEX_RESULT_OUTPUT_SCHEMA,
+  createCodexTaskEnvelope,
+  isSkilllessCodexContext,
+} from "../../contracts/codex.js";
 import {
   HarnessCapabilityUnavailableError,
   HarnessOperationAlreadyTerminalError,
@@ -23,17 +23,17 @@ import {
   type PrpCapabilities,
   type PrpEvent,
   type PrpStructuredRunResult,
-} from "../../protocol/phase1-contract.js";
-import { loadPhase4bConformanceFixture } from "../../protocol/phase4b-fixture.js";
+} from "../../protocol/replay-contract.js";
+import { loadLiveConsoleConformanceFixture } from "../../protocol/live-console-fixture.js";
 import {
   CodexAppServerDriver,
   createIsolatedCodexAppServerArgs,
 } from "./codex-app-server-driver.js";
 import {
-  runPhase4CodexTracer,
-  replayPersistedPhase4Events,
-  validatePhase4ResultProposal,
-} from "../../mock-core/phase4-codex-runner.js";
+  runCodexCodexTracer,
+  replayPersistedCodexEvents,
+  validateCodexResultProposal,
+} from "../../mock-core/codex-runner.js";
 import {
   CODEX_INVALID_REQUEST,
   CODEX_METHOD_NOT_FOUND,
@@ -121,7 +121,7 @@ class FakeCodexTransport implements CodexAppServerTransport {
         threadId: this.threadId,
         objective: typeof params.objective === "string"
           ? params.objective
-          : String(this.goalState?.objective ?? "Ship the Phase 4b tracer"),
+          : String(this.goalState?.objective ?? "Ship the Live console tracer"),
         status: params.status ?? this.goalState?.status ?? "active",
         tokenBudget: params.tokenBudget ?? this.goalState?.tokenBudget ?? null,
         tokensUsed: 0,
@@ -166,13 +166,13 @@ class FakeCodexTransport implements CodexAppServerTransport {
   }
 }
 
-const envelope = createPhase4TaskEnvelope({
+const envelope = createCodexTaskEnvelope({
   objective: "Create hello.txt with the text hello.",
   criteria: [{ id: "file", requirement: "hello.txt contains hello" }],
 });
 
-const phase4bFixturePath = fileURLToPath(new URL(
-  "../../../protocol/fixtures/phase-04b/driver-conformance.json",
+const liveConsoleFixturePath = fileURLToPath(new URL(
+  "../../../protocol/fixtures/codex-driver/driver-conformance.json",
   import.meta.url,
 ));
 
@@ -181,7 +181,7 @@ const result: PrpStructuredRunResult = {
   reportedWorkDisposition: "done",
   summary: "Created hello.txt.",
   completionClaim: {
-    contractRevision: "phase4-demo-v1",
+    contractRevision: "codex-demo-v1",
     objectiveSatisfied: true,
     criteria: [{ criterionId: "file", status: "satisfied", evidenceRefs: ["hello.txt"] }],
     remainingWork: [],
@@ -241,7 +241,7 @@ async function traceCompletedProposal(
 ) {
   const transport = new FakeCodexTransport();
   const driver = makeDriver([transport], { capabilities: options.capabilities });
-  const traced = runPhase4CodexTracer({
+  const traced = runCodexCodexTracer({
     driver,
     taskEnvelope: envelope,
     workingDirectory: "/workspace",
@@ -271,7 +271,7 @@ async function traceCompletedProposal(
   return { trace: await traced, transport };
 }
 
-describe("Codex app-server Phase 4 driver", () => {
+describe("Codex app-server Codex driver", () => {
   it("sends direct chat as plain text and permits a follow-up turn", async () => {
     const transport = new FakeCodexTransport();
     const driver = makeDriver([transport], { conversationMode: "direct" });
@@ -359,8 +359,8 @@ describe("Codex app-server Phase 4 driver", () => {
       typedEvents: true,
     };
     const metadata = {
-      fixtureName: "phase4-conformance",
-      identity: { schema: "paperclip.prp.identity.v1" as const, companyId: "company-1", issueId: "issue-1", runId: "run-1", environmentLeaseId: "lease-1", runnerInstanceId: "runner-phase4", normalizedSessionId: "normalized-1" },
+      fixtureName: "codex-conformance",
+      identity: { schema: "paperclip.prp.identity.v1" as const, companyId: "company-1", issueId: "issue-1", runId: "run-1", environmentLeaseId: "lease-1", runnerInstanceId: "runner-codex", normalizedSessionId: "normalized-1" },
       capabilities,
     };
     const live = events.reduce(applyPrpEvent, createSessionSnapshotFromMetadata(metadata));
@@ -375,7 +375,7 @@ describe("Codex app-server Phase 4 driver", () => {
     const session = await makeDriver([transport]).openSession({ runId: "run-context", normalizedSessionId: "normalized-context", workingDirectory: "/workspace" });
     const iterator = session.events()[Symbol.asyncIterator]();
     const first = await iterator.next();
-    const context = first.value?.payload.context as Parameters<typeof isSkilllessPhase4Context>[0];
+    const context = first.value?.payload.context as Parameters<typeof isSkilllessCodexContext>[0];
     expect(context).toMatchObject({
       codexVersion: "codex-cli/0.132.0",
       model: "gpt-test",
@@ -391,7 +391,7 @@ describe("Codex app-server Phase 4 driver", () => {
       environmentKeys: ["LANG", "PATH"],
       envelope,
     });
-    expect(isSkilllessPhase4Context(context)).toBe(true);
+    expect(isSkilllessCodexContext(context)).toBe(true);
     expect(JSON.stringify(context)).not.toContain("must-not-pass");
     expect(JSON.stringify(transport.calls)).not.toContain("RANDOM_SKILL_PATH");
     expect(transport.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
@@ -430,11 +430,11 @@ describe("Codex app-server Phase 4 driver", () => {
       '"/isolated/codex"="none"',
     );
     expect(JSON.stringify(appServerArgs)).not.toContain("HOME=");
-    expect(PHASE4_RESULT_OUTPUT_SCHEMA.properties.schema).toEqual({
+    expect(CODEX_RESULT_OUTPUT_SCHEMA.properties.schema).toEqual({
       type: "string",
       const: "paperclip.run_result.v1",
     });
-    expect(PHASE4_BLOCK_RESULT_OUTPUT_SCHEMA.properties.reportedWorkDisposition).toEqual({
+    expect(CODEX_BLOCK_RESULT_OUTPUT_SCHEMA.properties.reportedWorkDisposition).toEqual({
       type: "string",
       const: "blocked",
     });
@@ -470,8 +470,8 @@ describe("Codex app-server Phase 4 driver", () => {
     expect(session.ids()).toEqual({ driverSessionId: "thread-1", providerSessionId: "provider-session-1", displayId: "thread-1" });
   });
 
-  it("loads the deterministic Phase 4b wire fixture", async () => {
-    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+  it("loads the deterministic Live console wire fixture", async () => {
+    const fixture = await loadLiveConsoleConformanceFixture(liveConsoleFixturePath);
     expect(fixture.runtimeRequests.map(({ requestKind }) => requestKind)).toEqual([
       "command_approval",
       "file_approval",
@@ -485,7 +485,7 @@ describe("Codex app-server Phase 4 driver", () => {
   });
 
   it("holds browser-resolved upstream requests and returns the exact fixture responses", async () => {
-    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    const fixture = await loadLiveConsoleConformanceFixture(liveConsoleFixturePath);
     for (const scenario of fixture.runtimeRequests) {
       const transport = new FakeCodexTransport();
       const session = await makeDriver([transport]).openSession({
@@ -536,11 +536,11 @@ describe("Codex app-server Phase 4 driver", () => {
   });
 
   it("acknowledges same-turn steering and rejects stale or child steering", async () => {
-    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    const fixture = await loadLiveConsoleConformanceFixture(liveConsoleFixturePath);
     const transport = new FakeCodexTransport("thread-root");
     const session = await makeDriver([transport]).openSession({
-      runId: "run-phase4b-controls",
-      normalizedSessionId: "normalized-phase4b-controls",
+      runId: "run-live-console-controls",
+      normalizedSessionId: "normalized-live-console-controls",
       workingDirectory: "/workspace",
     });
     const { turnId } = await session.startTurn({ message: { role: "user", text: "Start." } });
@@ -617,7 +617,7 @@ describe("Codex app-server Phase 4 driver", () => {
   });
 
   it("maps all goal operations and advertises an exact unsupported state", async () => {
-    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    const fixture = await loadLiveConsoleConformanceFixture(liveConsoleFixturePath);
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
       runId: "run-goals",
@@ -625,7 +625,7 @@ describe("Codex app-server Phase 4 driver", () => {
       workingDirectory: "/workspace",
     });
     await session.goal?.({ action: "get" });
-    await session.goal?.({ action: "set", objective: "Ship the Phase 4b tracer", tokenBudget: 4096 });
+    await session.goal?.({ action: "set", objective: "Ship the Live console tracer", tokenBudget: 4096 });
     await session.goal?.({ action: "pause" });
     await session.goal?.({ action: "resume" });
     await session.goal?.({ action: "clear" });
@@ -849,7 +849,7 @@ describe("Codex app-server Phase 4 driver", () => {
   });
 
   it("redacts browser-visible request details and diagnostics from the fixture markers", async () => {
-    const fixture = await loadPhase4bConformanceFixture(phase4bFixturePath);
+    const fixture = await loadLiveConsoleConformanceFixture(liveConsoleFixturePath);
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
       runId: "run-redaction",
@@ -1583,8 +1583,8 @@ describe("Codex app-server Phase 4 driver", () => {
 
   it("rejects proposals that do not match the exact task envelope", () => {
     const wrongRevision = structuredClone(result);
-    wrongRevision.completionClaim.contractRevision = "phase4-demo-v0";
-    expect(validatePhase4ResultProposal(wrongRevision, envelope)).toMatchObject({
+    wrongRevision.completionClaim.contractRevision = "codex-demo-v0";
+    expect(validateCodexResultProposal(wrongRevision, envelope)).toMatchObject({
       status: "rejected",
       issues: [{ code: "contract_revision_mismatch" }],
     });
@@ -1595,7 +1595,7 @@ describe("Codex app-server Phase 4 driver", () => {
       status: "satisfied",
       evidenceRefs: [],
     }];
-    const criterionDecision = validatePhase4ResultProposal(unknownCriterion, envelope);
+    const criterionDecision = validateCodexResultProposal(unknownCriterion, envelope);
     expect(criterionDecision).toMatchObject({ status: "rejected" });
     if (criterionDecision.status === "rejected") {
       expect(criterionDecision.issues.map((issue) => issue.code)).toEqual(
@@ -1605,7 +1605,7 @@ describe("Codex app-server Phase 4 driver", () => {
 
     const invalidDone = structuredClone(result);
     invalidDone.completionClaim.objectiveSatisfied = false;
-    expect(validatePhase4ResultProposal(invalidDone, envelope)).toMatchObject({
+    expect(validateCodexResultProposal(invalidDone, envelope)).toMatchObject({
       status: "rejected",
       issues: [{ code: "invalid_disposition" }],
     });
@@ -1692,27 +1692,27 @@ describe("Codex app-server Phase 4 driver", () => {
       normalizedSessionId: "controller-session-persisted",
     });
     const serialize = (events: PrpEvent[]) => `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
-    expect(replayPersistedPhase4Events(serialize(trace.events), trace.metadata))
+    expect(replayPersistedCodexEvents(serialize(trace.events), trace.metadata))
       .toEqual(trace.replaySnapshot);
 
     const mismatched = structuredClone(trace.events);
     mismatched[0]!.normalizedSessionId = "another-session";
-    expect(() => replayPersistedPhase4Events(serialize(mismatched), trace.metadata))
+    expect(() => replayPersistedCodexEvents(serialize(mismatched), trace.metadata))
       .toThrow("identity did not match");
 
     const terminalIndex = trace.events.findIndex((event) => event.eventType === "run.terminal");
     const duplicated = trace.events.toSpliced(terminalIndex, 0, structuredClone(trace.events[0]!));
-    expect(() => replayPersistedPhase4Events(serialize(duplicated), trace.metadata))
+    expect(() => replayPersistedCodexEvents(serialize(duplicated), trace.metadata))
       .toThrow("event id was duplicated");
 
     const terminal = structuredClone(trace.events[terminalIndex]!);
     terminal.sourceEventId = `${terminal.sourceEventId}:conflict`;
     terminal.sourceSeq += 1;
-    expect(() => replayPersistedPhase4Events(serialize([...trace.events, terminal]), trace.metadata))
+    expect(() => replayPersistedCodexEvents(serialize([...trace.events, terminal]), trace.metadata))
       .toThrow("after the run terminal");
-    expect(() => replayPersistedPhase4Events(`{\"payload\":\"${"x".repeat(300 * 1024)}\"}\n`, trace.metadata))
+    expect(() => replayPersistedCodexEvents(`{\"payload\":\"${"x".repeat(300 * 1024)}\"}\n`, trace.metadata))
       .toThrow("line was empty or oversized");
-    expect(() => replayPersistedPhase4Events("{not-json}\n", trace.metadata))
+    expect(() => replayPersistedCodexEvents("{not-json}\n", trace.metadata))
       .toThrow("malformed JSON");
   });
 

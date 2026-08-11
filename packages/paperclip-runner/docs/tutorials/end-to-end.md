@@ -3,13 +3,13 @@
 ## What this tutorial is
 
 This tutorial combines each implemented Native Runner phase into one procedure.
-It currently includes Phase 0 through the Phase 6 Paperclip adapter tracer.
+It currently includes Conformance through the Standalone Paperclip adapter tracer.
 
 ## What this tutorial proves
 
 This tutorial proves that the standalone package boundary, static replay path,
 local live-run path, durable recovery path, and direct Codex driver work
-together. It does not use the Paperclip control plane. Phase 4 uses a real
+together. It does not use the Paperclip control plane. Codex uses a real
 local Codex session through the mock core.
 
 The current system includes the Rust mock-core tracer, shared protocol fixtures,
@@ -18,59 +18,44 @@ replay modes. It also includes the Rust outbound WebSocket client, durable
 outbox, package-local mock core, recovery CLI, and recovery browser view.
 The final phase adds a skillless task envelope, direct app-server driver,
 semantic completion tools, and the same reducer/replay proof used by fixtures.
-Phase 5 freezes that browser transport and reducer projection as public SDK
+SDK freezes that browser transport and reducer projection as public SDK
 subpaths, then proves them with a reference console and a second consumer.
-Phase 6 consumes the public runner contract from Paperclip behind a default-off
+Standalone consumes the public runner contract from Paperclip behind a default-off
 flag while preserving server-owned workspace, governance, and status authority.
 
 ## Current end-to-end path
 
-1. Follow [Phase 0: Run the Standalone Tracer](phase-00-standalone-tracer.md).
-2. Confirm the final JSON contains `run_phase0_0001`,
-   `session_phase0_0001`, and `succeeded`.
+1. Follow [Conformance: Run the Standalone Tracer](conformance-standalone-tracer.md).
+2. Confirm the final JSON contains `run_conformance_0001`,
+   `session_conformance_0001`, and `succeeded`.
 3. Confirm the cross-language parity check passes.
 4. Confirm the shell prompt returns and no Paperclip service was started.
-5. Open the [Phase 0 journal entry](../../knowledge/journal/2026-08-07-phase-00.md)
-   and its linked verification evidence.
-6. Follow [Phase 1: Validate and Replay a PRP Fixture](phase-01-static-replay.md).
-7. Compare the happy-path CLI snapshot with the browser page.
-8. Exercise the duplicate, gap, unknown-field, and unsupported-version fixtures.
-9. Open the [Phase 1 journal entry](../../knowledge/journal/2026-08-07-phase-01.md)
-   and its linked verification evidence.
-10. Follow [Phase 2: Run the Local Runner and Fake Harness](phase-02-local-runner.md).
-11. Run the happy, permission/input, interruption, error, and duplicate-terminal scenarios.
-12. Open the browser live mode and confirm the completed run says `Match` for live and replay output.
-13. Open the [Phase 2 journal entry](../../knowledge/journal/2026-08-07-phase-02.md)
-    and its linked verification evidence and screenshots.
-14. Follow [Phase 3: Break Recovery on Purpose](phase-03-break-recovery.md).
-15. Confirm that the recovered runner and session IDs stay the same.
-16. Confirm that the outbox is empty after replay and cumulative acknowledgement.
-17. Open the [Phase 3 journal entry](../../knowledge/journal/2026-08-07-phase-03.md).
-18. Follow [Phase 4: Run the Skillless Codex Driver](phase-04-skillless-codex.md).
-19. Inspect the exact model-context snapshot and confirm that it has no
+5. Follow [Replay: Validate and Replay a PRP Fixture](replay.md).
+6. Compare the happy-path CLI snapshot with the browser page and exercise the
+   duplicate, gap, unknown-field, and unsupported-version fixtures.
+7. Follow [Local runner: Run the Local Runner and Fake Harness](local-runner.md).
+8. Run the happy, permission/input, interruption, error, and duplicate-terminal scenarios.
+9. Open the browser live mode and confirm the completed run says `Match` for live and replay output.
+10. Follow [Durable recovery: Break Recovery on Purpose](durable-recovery.md).
+11. Confirm that the recovered runner and session IDs stay the same and that
+    the outbox is empty after replay and cumulative acknowledgement.
+12. Follow [Codex: Run the Skillless Codex Driver](codex.md).
+13. Inspect the exact model-context snapshot and confirm that it has no
     Paperclip instructions, bearer credentials, or unrelated skills.
-20. Run the safe task, then steer and interrupt separate sessions. Confirm
+14. Run the safe task, then steer and interrupt separate sessions. Confirm
     stable session identities and exactly one result and terminal event.
-21. Open the [Phase 4 journal entry](../../knowledge/journal/2026-08-08-phase-04.md)
-    and its linked real-session trace and verification evidence.
-22. Follow [Phase 4b: Run the Protocol Demo Server](phase-04b-protocol-server.md).
-23. Confirm requests stay pending for a typed browser decision, stale steering
+15. Follow [Live console: Run the Protocol Demo Server](live-console-protocol-server.md).
+16. Confirm requests stay pending for a typed browser decision, stale steering
     is rejected, and reconnect keeps the same run and session identities.
-24. Open the [Phase 4b protocol/server journal](../../knowledge/journal/2026-08-08-phase-04b-protocol-server.md)
-    and its linked deterministic and real-Codex evidence.
-25. Follow [Phase 5: Run the SDK Console and Mini Consumer](phase-05-sdk-console.md).
-26. Run the fake lifecycle in both consumers, then confirm the mini consumer
+17. Follow [SDK: Run the SDK Console and Mini Consumer](sdk-console.md).
+18. Run the fake lifecycle in both consumers, then confirm the mini consumer
     reaches `Replay parity: match` after reconnect and replay.
-27. Run the safe real-Codex browser smoke and inspect the Phase 5 screenshots.
-28. Open the [Phase 5 journal](../../knowledge/journal/2026-08-08-phase-05-sdk.md)
-    and its linked package-acceptance evidence.
-29. Follow [Phase 6: Run the Thin Paperclip Adapter](phase-06-thin-paperclip-adapter.md).
-30. Run the unchanged port conformance suite against mock and database-backed
+19. Run the safe real-Codex browser smoke.
+20. Follow [Standalone: Run the Thin Paperclip Adapter](standalone-thin-paperclip-adapter.md).
+21. Run the unchanged port conformance suite against mock and database-backed
     Paperclip ports, then inspect one local feature-flagged task.
-31. Disable the flag and confirm a fresh task selects legacy while persisted
+22. Disable the flag and confirm a fresh task selects legacy while persisted
     native finalization remains native.
-32. Open the [Phase 6 implementation journal](../../knowledge/journal/2026-08-09-phase-06-implementation.md)
-    and its linked verification evidence.
 
 The one-command form after installation is:
 
@@ -104,7 +89,7 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
 - process exit is recorded separately from the structured semantic result;
 - bounded logs retain only their configured tail;
 - exactly one terminal event closes every completed local trace;
-- every live browser event passes the Phase 1 validator and reducer before display;
+- every live browser event passes the Replay validator and reducer before display;
 - replaying the completed live event list produces the same final snapshot.
 - a lost cumulative ACK replays the same durable event ID without a second
   logical event;
@@ -163,22 +148,22 @@ pnpm --filter @paperclipai/paperclip-runner verify:rootless
 ## Step 6: Chat with a live session in the browser
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner console:phase4b
+pnpm --filter @paperclipai/paperclip-runner console:live-console
 ```
 
 Open `http://127.0.0.1:4180/` and press **Live console**. Work through the
-[Phase 4b live console tutorial](phase-04b-live-console.md) to reach every
+[Live console tutorial](live-console.md) to reach every
 state above from the eleven deterministic demo chats. Add
-`PAPERCLIP_PHASE4B_DRIVER=codex` to run the identical screens against a real
+`PAPERCLIP_LIVE_CONSOLE_DRIVER=codex` to run the identical screens against a real
 Codex session.
 
 ## Step 7: Run the reusable SDK consumers
 
 ```sh
-pnpm --filter @paperclipai/paperclip-runner console:phase5
+pnpm --filter @paperclipai/paperclip-runner console:sdk
 ```
 
 Open `http://127.0.0.1:4181/reference-console/` and
 `http://127.0.0.1:4181/mini-consumer/`. Follow the
-[Phase 5 tutorial](phase-05-sdk-console.md) for the deterministic lifecycle,
+[SDK tutorial](sdk-console.md) for the deterministic lifecycle,
 real-Codex smoke, keyboard checks, and package acceptance command.

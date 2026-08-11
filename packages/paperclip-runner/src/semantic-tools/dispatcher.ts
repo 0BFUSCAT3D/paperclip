@@ -1,55 +1,55 @@
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import type {
-  Phase7CommandOutcome,
-  Phase7JsonValue,
-  Phase7MockControlPlanePort,
-  Phase7RunContext,
-  Phase7SemanticCommand,
-} from "../mock-core/phase7-control-plane-types.js";
+  CapabilityCommandOutcome,
+  CapabilityJsonValue,
+  CapabilityMockControlPlanePort,
+  CapabilityRunContext,
+  CapabilitySemanticCommand,
+} from "../mock-core/capability-control-plane-types.js";
 import {
-  PHASE7_SEMANTIC_TOOL_CATALOG,
-  phase7SemanticToolDescriptor,
+  CAPABILITY_SEMANTIC_TOOL_CATALOG,
+  capabilitySemanticToolDescriptor,
 } from "./catalog.js";
 import {
-  createPhase7SemanticPolicyContext,
-  decidePhase7SemanticAuthorization,
-  DEFAULT_PHASE7_SCENARIO_POLICY,
+  createCapabilitySemanticPolicyContext,
+  decideCapabilitySemanticAuthorization,
+  DEFAULT_CAPABILITY_SCENARIO_POLICY,
 } from "./policy.js";
 import {
   containsProtectedSemanticData,
   redactSemanticValue,
 } from "./redaction.js";
 import type {
-  Phase7SemanticAuthorizationDecision,
-  Phase7SemanticAuthorizationRecord,
-  Phase7SemanticDenialCode,
-  Phase7SemanticOperationId,
-  Phase7SemanticPolicyContext,
-  Phase7SemanticScenarioPolicy,
-  Phase7SemanticToolCall,
-  Phase7SemanticToolDefinition,
-  Phase7SemanticToolDescriptor,
-  Phase7SemanticToolResult,
+  CapabilitySemanticAuthorizationDecision,
+  CapabilitySemanticAuthorizationRecord,
+  CapabilitySemanticDenialCode,
+  CapabilitySemanticOperationId,
+  CapabilitySemanticPolicyContext,
+  CapabilitySemanticScenarioPolicy,
+  CapabilitySemanticToolCall,
+  CapabilitySemanticToolDefinition,
+  CapabilitySemanticToolDescriptor,
+  CapabilitySemanticToolResult,
 } from "./types.js";
 
-export type Phase7SemanticControlPlane = Pick<
-  Phase7MockControlPlanePort,
+export type CapabilitySemanticControlPlane = Pick<
+  CapabilityMockControlPlanePort,
   "context" | "snapshot" | "tryApplyCommand"
 >;
 
-export interface Phase7SemanticDispatcherOptions {
-  readonly scenario?: Phase7SemanticScenarioPolicy;
+export interface CapabilitySemanticDispatcherOptions {
+  readonly scenario?: CapabilitySemanticScenarioPolicy;
   readonly explicitClaims?: readonly string[];
 }
 
 interface OperationSuccess {
-  result: Phase7JsonValue;
+  result: CapabilityJsonValue;
   stateRevision: number;
 }
 
 class SemanticDispatchFailure extends Error {
   constructor(
-    readonly code: Phase7SemanticDenialCode,
+    readonly code: CapabilitySemanticDenialCode,
     message: string,
     readonly retryable = false,
   ) {
@@ -58,26 +58,26 @@ class SemanticDispatchFailure extends Error {
   }
 }
 
-export class Phase7SemanticDispatcher {
-  readonly #validators = new Map<Phase7SemanticOperationId, ValidateFunction>();
-  readonly #records: Phase7SemanticAuthorizationRecord[] = [];
+export class CapabilitySemanticDispatcher {
+  readonly #validators = new Map<CapabilitySemanticOperationId, ValidateFunction>();
+  readonly #records: CapabilitySemanticAuthorizationRecord[] = [];
   #recordCounter = 0;
 
   constructor(
-    readonly port: Phase7SemanticControlPlane,
-    readonly options: Phase7SemanticDispatcherOptions = {},
+    readonly port: CapabilitySemanticControlPlane,
+    readonly options: CapabilitySemanticDispatcherOptions = {},
   ) {
     const ajv = new Ajv2020({ allErrors: true, strict: false });
-    for (const descriptor of PHASE7_SEMANTIC_TOOL_CATALOG) {
+    for (const descriptor of CAPABILITY_SEMANTIC_TOOL_CATALOG) {
       this.#validators.set(descriptor.operationId, ajv.compile(descriptor.inputSchema));
     }
   }
 
-  listTools(runId: string): readonly Phase7SemanticToolDefinition[] {
+  listTools(runId: string): readonly CapabilitySemanticToolDefinition[] {
     const policyContext = this.#policyContext(runId);
-    const definitions: Phase7SemanticToolDefinition[] = [];
-    for (const descriptor of PHASE7_SEMANTIC_TOOL_CATALOG) {
-      const decision = decidePhase7SemanticAuthorization(
+    const definitions: CapabilitySemanticToolDefinition[] = [];
+    for (const descriptor of CAPABILITY_SEMANTIC_TOOL_CATALOG) {
+      const decision = decideCapabilitySemanticAuthorization(
         descriptor,
         policyContext,
         "exposure",
@@ -88,18 +88,18 @@ export class Phase7SemanticDispatcher {
     return deepFreeze(definitions);
   }
 
-  authorizationRecords(): readonly Phase7SemanticAuthorizationRecord[] {
+  authorizationRecords(): readonly CapabilitySemanticAuthorizationRecord[] {
     return deepFreeze(structuredClone(this.#records));
   }
 
-  async dispatch(call: Phase7SemanticToolCall): Promise<Phase7SemanticToolResult> {
-    const descriptor = phase7SemanticToolDescriptor(call.operationId);
+  async dispatch(call: CapabilitySemanticToolCall): Promise<CapabilitySemanticToolResult> {
+    const descriptor = capabilitySemanticToolDescriptor(call.operationId);
     if (descriptor === undefined) {
       return this.#unknownToolDenial(call);
     }
 
     const policyContext = this.#policyContext(call.runId);
-    const invocation = decidePhase7SemanticAuthorization(
+    const invocation = decideCapabilitySemanticAuthorization(
       descriptor,
       policyContext,
       "invocation",
@@ -164,11 +164,11 @@ export class Phase7SemanticDispatcher {
     }
   }
 
-  #policyContext(runId: string): Phase7SemanticPolicyContext {
+  #policyContext(runId: string): CapabilitySemanticPolicyContext {
     const context = this.port.context(runId);
-    const scenario = this.options.scenario ?? DEFAULT_PHASE7_SCENARIO_POLICY;
+    const scenario = this.options.scenario ?? DEFAULT_CAPABILITY_SCENARIO_POLICY;
     return {
-      ...createPhase7SemanticPolicyContext(
+      ...createCapabilitySemanticPolicyContext(
         context,
         scenario,
         this.options.explicitClaims ?? context.capabilities,
@@ -178,7 +178,7 @@ export class Phase7SemanticDispatcher {
   }
 
   async #execute(
-    operationId: Phase7SemanticOperationId,
+    operationId: CapabilitySemanticOperationId,
     runId: string,
     input: Record<string, unknown>,
   ): Promise<OperationSuccess> {
@@ -275,7 +275,7 @@ export class Phase7SemanticDispatcher {
 
   #genericApiRead(
     revision: number,
-    context: Phase7RunContext,
+    context: CapabilityRunContext,
     input: Record<string, unknown>,
   ): OperationSuccess {
     if (input.method === "GET" && input.path === "/mock/state/revision") {
@@ -291,14 +291,14 @@ export class Phase7SemanticDispatcher {
   }
 
   async #applyMutation(
-    operationId: Phase7SemanticOperationId,
+    operationId: CapabilitySemanticOperationId,
     runId: string,
-    context: Phase7RunContext,
+    context: CapabilityRunContext,
     input: Record<string, unknown>,
   ): Promise<OperationSuccess> {
     const idempotencyKey = requiredString(input.idempotencyKey);
     const taskId = context.activeTask.id;
-    let command: Phase7SemanticCommand;
+    let command: CapabilitySemanticCommand;
     switch (operationId) {
       case "report_progress":
       case "answer_status_question":
@@ -319,12 +319,12 @@ export class Phase7SemanticDispatcher {
         command = {
           kind: "request_human_input",
           taskId,
-          interactionKind: requiredString(input.interactionKind) as Extract<Phase7SemanticCommand, { kind: "request_human_input" }>["interactionKind"],
+          interactionKind: requiredString(input.interactionKind) as Extract<CapabilitySemanticCommand, { kind: "request_human_input" }>["interactionKind"],
           title: requiredString(input.title),
           prompt: requiredString(input.prompt),
           payload: optionalJson(input.payload),
           targetRevisionId: nullableOptionalString(input.targetRevisionId),
-          continuationPolicy: requiredString(input.continuationPolicy) as Extract<Phase7SemanticCommand, { kind: "request_human_input" }>["continuationPolicy"],
+          continuationPolicy: requiredString(input.continuationPolicy) as Extract<CapabilitySemanticCommand, { kind: "request_human_input" }>["continuationPolicy"],
         };
         break;
       case "register_deliverable":
@@ -358,7 +358,7 @@ export class Phase7SemanticDispatcher {
           title: requiredString(input.title),
           description: nullableOptionalString(input.description),
           assigneeActorId: nullableOptionalString(input.assigneeActorId),
-          priority: optionalString(input.priority) as Extract<Phase7SemanticCommand, { kind: "create_task" }>["priority"],
+          priority: optionalString(input.priority) as Extract<CapabilitySemanticCommand, { kind: "create_task" }>["priority"],
           blockedByTaskIds: optionalStringArray(input.blockedByTaskIds),
         };
         break;
@@ -366,16 +366,16 @@ export class Phase7SemanticDispatcher {
         command = { kind: "request_approval", taskId, approvalType: requiredString(input.approvalType), payload: optionalJson(input.payload) };
         break;
       case "decide_approval":
-        command = { kind: "decide_approval", taskId, approvalId: requiredString(input.approvalId), decision: requiredString(input.decision) as Extract<Phase7SemanticCommand, { kind: "decide_approval" }>["decision"], note: requiredString(input.note) };
+        command = { kind: "decide_approval", taskId, approvalId: requiredString(input.approvalId), decision: requiredString(input.decision) as Extract<CapabilitySemanticCommand, { kind: "decide_approval" }>["decision"], note: requiredString(input.note) };
         break;
       case "comment_on_approval":
         command = { kind: "comment_on_approval", taskId, approvalId: requiredString(input.approvalId), body: requiredString(input.body) };
         break;
       case "control_workspace_service":
-        command = { kind: "control_workspace_service", taskId, serviceId: requiredString(input.serviceId), action: requiredString(input.action) as Extract<Phase7SemanticCommand, { kind: "control_workspace_service" }>["action"], url: nullableOptionalString(input.url) };
+        command = { kind: "control_workspace_service", taskId, serviceId: requiredString(input.serviceId), action: requiredString(input.action) as Extract<CapabilitySemanticCommand, { kind: "control_workspace_service" }>["action"], url: nullableOptionalString(input.url) };
         break;
       case "schedule_wake":
-        command = { kind: "schedule_wake", taskId, reason: requiredString(input.reason) as Extract<Phase7SemanticCommand, { kind: "schedule_wake" }>["reason"], payload: optionalJson(input.payload), delayTicks: requiredNumber(input.delayTicks) };
+        command = { kind: "schedule_wake", taskId, reason: requiredString(input.reason) as Extract<CapabilitySemanticCommand, { kind: "schedule_wake" }>["reason"], payload: optionalJson(input.payload), delayTicks: requiredNumber(input.delayTicks) };
         break;
       default:
         throw new SemanticDispatchFailure("operation_unavailable", "No mock operation is bound to this descriptor.");
@@ -385,8 +385,8 @@ export class Phase7SemanticDispatcher {
   }
 
   #record(
-    context: Phase7SemanticPolicyContext,
-    decision: Phase7SemanticAuthorizationDecision,
+    context: CapabilitySemanticPolicyContext,
+    decision: CapabilitySemanticAuthorizationDecision,
     callId: string | null,
     input: unknown,
     result: unknown,
@@ -406,7 +406,7 @@ export class Phase7SemanticDispatcher {
     }));
   }
 
-  #unknownToolDenial(call: Phase7SemanticToolCall): Phase7SemanticToolResult {
+  #unknownToolDenial(call: CapabilitySemanticToolCall): CapabilitySemanticToolResult {
     return deepFreeze({
       ok: false,
       operationId: call.operationId,
@@ -422,12 +422,12 @@ export class Phase7SemanticDispatcher {
   }
 
   #denial(
-    call: Phase7SemanticToolCall,
-    operationId: Phase7SemanticOperationId,
-    code: Exclude<Phase7SemanticAuthorizationDecision["code"], "allowed">,
+    call: CapabilitySemanticToolCall,
+    operationId: CapabilitySemanticOperationId,
+    code: Exclude<CapabilitySemanticAuthorizationDecision["code"], "allowed">,
     message: string,
     retryable = false,
-  ): Phase7SemanticToolResult {
+  ): CapabilitySemanticToolResult {
     return deepFreeze({
       ok: false,
       operationId,
@@ -443,7 +443,7 @@ export class Phase7SemanticDispatcher {
   }
 }
 
-function commandOutcome(outcome: Phase7CommandOutcome): OperationSuccess {
+function commandOutcome(outcome: CapabilityCommandOutcome): OperationSuccess {
   if (!outcome.ok) {
     throw new SemanticDispatchFailure(
       "control_plane_denied",
@@ -451,10 +451,10 @@ function commandOutcome(outcome: Phase7CommandOutcome): OperationSuccess {
       outcome.error.retryable,
     );
   }
-  return { result: outcome.result as unknown as Phase7JsonValue, stateRevision: outcome.result.stateRevision };
+  return { result: outcome.result as unknown as CapabilityJsonValue, stateRevision: outcome.result.stateRevision };
 }
 
-function toDefinition(descriptor: Phase7SemanticToolDescriptor): Phase7SemanticToolDefinition {
+function toDefinition(descriptor: CapabilitySemanticToolDescriptor): CapabilitySemanticToolDefinition {
   return {
     name: descriptor.operationId,
     description: descriptor.description,
@@ -471,16 +471,16 @@ function toDefinition(descriptor: Phase7SemanticToolDescriptor): Phase7SemanticT
 }
 
 function deniedDecision(
-  allowed: Phase7SemanticAuthorizationDecision,
-  code: Phase7SemanticDenialCode,
+  allowed: CapabilitySemanticAuthorizationDecision,
+  code: CapabilitySemanticDenialCode,
   reason: string,
-): Phase7SemanticAuthorizationDecision {
+): CapabilitySemanticAuthorizationDecision {
   return { ...allowed, allowed: false, code, reason };
 }
 
 function denialCode(
-  decision: Phase7SemanticAuthorizationDecision,
-): Phase7SemanticDenialCode {
+  decision: CapabilitySemanticAuthorizationDecision,
+): CapabilitySemanticDenialCode {
   if (decision.code === "allowed") {
     throw new Error("allowed authorization decision cannot create a denial");
   }
@@ -500,8 +500,8 @@ function formatValidationError(validator: ValidateFunction | undefined): string 
 }
 
 function activeDocument(
-  documents: ReturnType<Phase7SemanticControlPlane["snapshot"]>["documents"],
-  context: Phase7RunContext,
+  documents: ReturnType<CapabilitySemanticControlPlane["snapshot"]>["documents"],
+  context: CapabilityRunContext,
   key: string,
 ) {
   const document = documents.find(
@@ -512,7 +512,7 @@ function activeDocument(
 }
 
 function approvalById(
-  approvals: ReturnType<Phase7SemanticControlPlane["snapshot"]>["approvals"],
+  approvals: ReturnType<CapabilitySemanticControlPlane["snapshot"]>["approvals"],
   approvalId: string,
 ) {
   const approval = approvals.find((candidate) => candidate.id === approvalId);
@@ -554,7 +554,7 @@ function optionalStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function optionalJson(value: unknown): Phase7JsonValue {
+function optionalJson(value: unknown): CapabilityJsonValue {
   return value === undefined ? {} : redactSemanticValue(value);
 }
 

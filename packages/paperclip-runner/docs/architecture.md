@@ -11,7 +11,7 @@
                       |                               |
                       +---------------+---------------+
                                       v
-                         byte-identical Phase 0 result
+                         byte-identical Conformance result
 
 Paperclip core (later) --> implements ControlPlanePort / NativeSessionBackend
 ```
@@ -19,7 +19,7 @@ Paperclip core (later) --> implements ControlPlanePort / NativeSessionBackend
 The dependency arrow always points from an implementation toward a contract.
 The standalone package does not reach backward into a Paperclip implementation.
 
-## Initial contracts
+## Core contracts
 
 - `ControlPlanePort` is the narrow surface through which a runner opens a run,
   appends ordered events, and submits a terminal structured result.
@@ -29,9 +29,8 @@ The standalone package does not reach backward into a Paperclip implementation.
   a future control-plane consumer. Environment placement is not implied by the
   backend type.
 
-The Phase 0 TypeScript contracts are deliberately sketches: they name
-responsibility and dependency direction without prematurely implementing the
-runtime transport. Phase 1 adds this executable static path:
+The TypeScript contracts name responsibility and dependency direction while
+the executable replay path provides a deterministic oracle:
 
 ```text
 protocol/schemas/*.json
@@ -49,7 +48,7 @@ TypeScript schema constants/types -> validator -> deterministic reducer
 ```
 
 The Rust `runner-core` crate establishes the production language/package
-boundary and checks the same fixture summaries. Phase 2 adds the package-local
+boundary and checks the same fixture summaries. Local runner adds the package-local
 `paperclip-runnerd` and `fake-harness` binaries without changing that dependency
 direction.
 
@@ -59,19 +58,19 @@ direction.
   supervision, durable delivery, and the eventual `paperclip-runnerd` binary.
 - TypeScript owns the control-plane/browser side and remains a useful reference
   client/test oracle.
-- JSON Schema and shared fixtures are the language-neutral authority. Phase 0
-  keeps its narrow tracer fixture; Phase 1 adds the executable PRP v1 schema and
-  conformance corpus without silently changing the accepted Phase 0 path.
-- `check:phase0-parity` prevents either implementation from introducing a
+- JSON Schema and shared fixtures are the language-neutral authority. Conformance
+  keeps its narrow tracer fixture; Replay adds the executable PRP v1 schema and
+  conformance corpus without silently changing the accepted Conformance path.
+- `check:conformance-parity` prevents either implementation from introducing a
   language-specific observable result.
-- `check:phase1-parity` prevents TypeScript replay and the Rust production
+- `check:replay-parity` prevents TypeScript replay and the Rust production
   direction from disagreeing on identity, terminal state, duplicates, or gaps.
 
 ## Allowed dependencies
 
 - Rust crates declared by the package-local Cargo workspace.
 - Node.js standard-library modules.
-- Third-party packages declared by this workspace when a later phase needs them.
+- Third-party packages declared by this workspace.
 - Files within `packages/paperclip-runner/`.
 - A future explicit generated-schema package only after architecture review and
   an allowlist change in the boundary checker.
@@ -83,7 +82,7 @@ The following imports and package dependencies are rejected:
 - `server/`, `ui/`, and `cli/` implementation paths;
 - `@paperclipai/db` and production database schema or client modules;
 - `@paperclipai/shared`, adapter utilities, and other Paperclip workspace
-  internals unless a later boundary review explicitly allows a public contract;
+  internals unless a boundary review explicitly allows a public contract;
 - relative or absolute imports that escape `packages/paperclip-runner/`.
 
 This rule applies to type-only imports, exports, dynamic imports, CommonJS
@@ -96,19 +95,19 @@ must fail the checker.
 ```sh
 pnpm --filter @paperclipai/paperclip-runner check:forbidden-imports
 pnpm --filter @paperclipai/paperclip-runner test
-pnpm --filter @paperclipai/paperclip-runner check:phase1-parity
+pnpm --filter @paperclipai/paperclip-runner check:replay-parity
 ```
 
 The first command scans the package source, scripts, and manifest. The test
 command additionally asserts that the negative fixture is rejected. The normal
 scan excludes that fixture so a deliberate proof does not make the package fail.
 
-## Phase 0 process boundary
+## Conformance process boundary
 
 The mock core is an in-memory adapter, not a Paperclip server. Starting it only
 changes local object state. The tracer performs this sequence:
 
-1. load and validate `protocol/fixtures/phase-00-minimal-run.json`;
+1. load and validate `protocol/fixtures/conformance-minimal-run.json`;
 2. start the mock adapter;
 3. open the fixture run through `ControlPlanePort`;
 4. append contiguous typed events;
@@ -119,9 +118,9 @@ No socket, database, browser, Paperclip process, or model process is started.
 The default command executes this sequence in Rust. The TypeScript reference
 executes the same sequence, and the parity check compares their complete stdout.
 
-## Phase 1 static replay boundary
+## Static replay boundary
 
-`replayPhase1FixtureText` is the single entry point used by the CLI and browser.
+`replayReplayFixtureText` is the single entry point used by the CLI and browser.
 It parses JSON, validates JSON Schema plus cross-record bindings, and only then
 calls the reducer. The reducer is pure: it clones input state, applies an event
 at most once by source event ID, records source gaps/out-of-order deliveries,
@@ -132,7 +131,7 @@ Card, and Textarea are source-compatible adaptations of shadcn primitives; all
 visual values live in its local `styles.css` token layer. It imports the same
 replay module as the CLI and does not create a browser-only protocol model.
 
-## Phase 2 local process boundary
+## Local process boundary
 
 ```text
 TypeScript mock core
@@ -169,7 +168,7 @@ Every browser event passes `validatePrpEvent` and `applyPrpEvent`. When the run
 ends, the browser reduces the complete event list again and compares the replay
 snapshot with the live snapshot.
 
-## Phase 3 durable transport boundary
+## Durable transport boundary
 
 ```text
 TypeScript mock core
@@ -180,7 +179,7 @@ paperclip-runnerd (Rust WebSocket client)
   | atomic private JSON state
   +-- durable outbox and processed-command cache
   +-- stable runner/session/turn/item identities
-  +-- Phase 2 fake-harness process for restart proof
+  +-- Local runner fake-harness process for restart proof
 ```
 
 The runner initiates the loopback WebSocket. The bootstrap ticket is present
@@ -196,7 +195,7 @@ lease expiry, storage pressure, drain, and revoke. The browser recovery page
 calls that peer through guarded package-local Vite middleware and renders only
 safe trace fields.
 
-## Phase 7 capability-model boundary
+## Capability-model boundary
 
 ```text
 Paperclip skill + 7 references        Paperclip Evals corpus (106 cases)
@@ -216,19 +215,19 @@ Paperclip skill + 7 references        Paperclip Evals corpus (106 cases)
                    read-only browser scenario explorer
 ```
 
-Phase 7 is a package-local model of a native Paperclip run. It classifies every
+Capability is a package-local model of a native Paperclip run. It classifies every
 capability as control-plane-owned, always-agent-tool, or optional-agent-tool,
 exposes the always/optional set as a transport-neutral semantic tool catalog,
 gates optional tools behind grants, and proves 106 eval-derived cases against an
 in-process mock `ControlPlanePort`. The mock adapter is the only coupling point,
 so a real adapter can replace it later without touching the catalog,
-authorization rules, or conformance suite. Phase 7 contacts no Paperclip
+authorization rules, or conformance suite. Capability contacts no Paperclip
 service, database, ACPX session, or provider credential; the
 [forbidden-imports checker](#forbidden-dependencies) keeps it that way. Real
-integration is Phase 8 (ACPX) and requires separate approval; see
-[the future binding boundary](phase-07-future-binding-boundary.md).
+integration is future upload integration (ACPX) and requires separate approval; see
+[the future binding boundary](capability-future-binding-boundary.md).
 
-## Phase 7 live process topology
+## Capability live process topology
 
 The live surface adds a real provider turn loop over the same mock core. The
 package server owns every credential and every child process; the browser holds
@@ -238,7 +237,7 @@ none.
  browser (issue thread + evidence panel; no credential)
         |  HTTP/SSE over the trusted-proxy boundary
         v
- package server ── projectPhase7IssueThread ──> Phase7IssueThreadSnapshot
+ package server ── projectCapabilityIssueThread ──> CapabilityIssueThreadSnapshot
         |                                          (one contract, two producers)
         |  owns session, tool loop, provider auth
         v
@@ -248,7 +247,7 @@ none.
  codex app-server (real session)
         |  tool request
         v
- Phase7SemanticDispatcher ── typed command ──> in-process mock ControlPlanePort
+ CapabilitySemanticDispatcher ── typed command ──> in-process mock ControlPlanePort
         ^                                          |
         +──────── typed result / typed denial ─────+
 ```
@@ -256,28 +255,27 @@ none.
 Three actors stay separate at all times: **Real Codex** (the app-server
 session), **Real runnerd** (the package-local binary), and **Mock Paperclip**
 (the in-process `ControlPlanePort`). The same
-`Phase7IssueThreadSnapshot` is produced by deterministic `fake` fixtures for the
+`CapabilityIssueThreadSnapshot` is produced by deterministic `fake` fixtures for the
 screenshot matrix and by the server-side projection for a live session; the
 projection reads only durable records and decides nothing, so UI-side state math
 is a defect by construction. The scripted (`fake`) mode drives the conformance
 suite and replay offline; the Codex (live) mode requires a locally authenticated
-Codex. See [execution modes and identity](phase-07-execution-modes.md) for the
-mode and eligibility rules, and [the live runnerd/Codex loop](phase-07-live-runnerd-codex.md)
+Codex. See [execution modes and identity](capability-execution-modes.md) for the
+mode and eligibility rules, and [the live runnerd/Codex loop](capability-live-runnerd-codex.md)
 for the session API. The package server blocks every request to a real
 Paperclip API, and the evidence suite proves no such request occurred. The same
-topology serves the [clean-room chat](phase-07-clean-room-chat.md): the only
+topology serves the [clean-room chat](capability-clean-room-chat.md): the only
 difference is a mock tenant seeded with a company, an agent, and one blank issue
 instead of a recorded eval case.
 
-## Future integration rule
+## Integration rule
 
-The [implementation plan](../spec/paperclip-native-runner-implementation-plan.md)
-keeps production integration in a separately reviewed phase. Paperclip core may
-implement these contracts later, but this package must remain independently
-buildable, testable, and runnable against the mock adapter.
+Paperclip core may implement these contracts behind a separately reviewed
+adapter, but this package must remain independently buildable, testable, and
+runnable against the mock adapter.
 
-The proposed Phase 6 seam is recorded in
-[Phase 6 Thin Paperclip Adapter Boundary](design/phase-6-thin-paperclip-adapter.md).
+The proposed Standalone seam is recorded in
+[Standalone Thin Paperclip Adapter Boundary](design/standalone-thin-paperclip-adapter.md).
 It keeps one dependency direction, branches only after Paperclip workspace and
 environment realization, composes a package-owned `NativeSessionBackend` with
 a server-bound `ControlPlanePort`, and returns to the existing Paperclip

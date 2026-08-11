@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import type { Phase7ComposerModel } from "../../../src/issue-thread/types";
+import type { CapabilityComposerModel } from "../../../src/issue-thread/types";
 
 /**
  * Composer (contract §4). `data-composer-state` is the single test and
@@ -9,7 +9,7 @@ import type { Phase7ComposerModel } from "../../../src/issue-thread/types";
  */
 
 export interface ComposerProps {
-  model: Phase7ComposerModel;
+  model: CapabilityComposerModel;
   sessionId: string;
   onSend: (message: string) => void;
   onStop: () => void;
@@ -21,7 +21,7 @@ export interface ComposerProps {
 }
 
 function draftKey(sessionId: string): string {
-  return `paperclip-runner.phase7.draft.${sessionId}`;
+  return `paperclip-runner.capability.draft.${sessionId}`;
 }
 
 function readDraft(sessionId: string): string {

@@ -1,14 +1,14 @@
-import type { Phase7RunContext } from "../mock-core/phase7-control-plane-types.js";
-import { PHASE7_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
+import type { CapabilityRunContext } from "../mock-core/capability-control-plane-types.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
 import type {
-  Phase7SemanticAuthorizationDecision,
-  Phase7SemanticOperationId,
-  Phase7SemanticPolicyContext,
-  Phase7SemanticScenarioPolicy,
-  Phase7SemanticToolDescriptor,
+  CapabilitySemanticAuthorizationDecision,
+  CapabilitySemanticOperationId,
+  CapabilitySemanticPolicyContext,
+  CapabilitySemanticScenarioPolicy,
+  CapabilitySemanticToolDescriptor,
 } from "./types.js";
 
-const READ_OPERATIONS = new Set<Phase7SemanticOperationId>([
+const READ_OPERATIONS = new Set<CapabilitySemanticOperationId>([
   "get_task_context",
   "get_task_history",
   "list_documents",
@@ -23,15 +23,15 @@ const READ_OPERATIONS = new Set<Phase7SemanticOperationId>([
   "get_workspace_runtime",
 ]);
 
-export const DEFAULT_PHASE7_SCENARIO_POLICY: Phase7SemanticScenarioPolicy = {
-  id: "phase7-default",
+export const DEFAULT_CAPABILITY_SCENARIO_POLICY: CapabilitySemanticScenarioPolicy = {
+  id: "capability-default",
 };
 
-export function createPhase7SemanticPolicyContext(
-  context: Phase7RunContext,
-  scenario: Phase7SemanticScenarioPolicy = DEFAULT_PHASE7_SCENARIO_POLICY,
+export function createCapabilitySemanticPolicyContext(
+  context: CapabilityRunContext,
+  scenario: CapabilitySemanticScenarioPolicy = DEFAULT_CAPABILITY_SCENARIO_POLICY,
   explicitClaims: readonly string[] = context.capabilities,
-): Phase7SemanticPolicyContext {
+): CapabilitySemanticPolicyContext {
   return deepFreeze({
     runId: context.activeTask.executionRunId ?? context.activeTask.checkoutRunId ?? "",
     actor: context.actor,
@@ -42,18 +42,18 @@ export function createPhase7SemanticPolicyContext(
   });
 }
 
-export function decidePhase7SemanticAuthorization(
-  descriptor: Phase7SemanticToolDescriptor,
-  context: Phase7SemanticPolicyContext,
+export function decideCapabilitySemanticAuthorization(
+  descriptor: CapabilitySemanticToolDescriptor,
+  context: CapabilitySemanticPolicyContext,
   phase: "exposure" | "invocation",
   input?: unknown,
-): Phase7SemanticAuthorizationDecision {
+): CapabilitySemanticAuthorizationDecision {
   const effectiveClaims = computeEffectiveClaims(context);
   const base = { phase, operationId: descriptor.operationId, effectiveClaims } as const;
   const deny = (
-    code: Exclude<Phase7SemanticAuthorizationDecision["code"], "allowed">,
+    code: Exclude<CapabilitySemanticAuthorizationDecision["code"], "allowed">,
     reason: string,
-  ): Phase7SemanticAuthorizationDecision => ({ ...base, allowed: false, code, reason });
+  ): CapabilitySemanticAuthorizationDecision => ({ ...base, allowed: false, code, reason });
 
   if (context.actor.status !== "active") {
     return deny("actor_inactive", "The mock actor is not active.");
@@ -116,15 +116,15 @@ export function decidePhase7SemanticAuthorization(
   return { ...base, allowed: true, code: "allowed", reason: "Explicit semantic policy allowed the operation." };
 }
 
-export function exposedPhase7SemanticDescriptors(
-  context: Phase7SemanticPolicyContext,
-): readonly Phase7SemanticToolDescriptor[] {
-  return PHASE7_SEMANTIC_TOOL_CATALOG.filter(
-    (descriptor) => decidePhase7SemanticAuthorization(descriptor, context, "exposure").allowed,
+export function exposedCapabilitySemanticDescriptors(
+  context: CapabilitySemanticPolicyContext,
+): readonly CapabilitySemanticToolDescriptor[] {
+  return CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(
+    (descriptor) => decideCapabilitySemanticAuthorization(descriptor, context, "exposure").allowed,
   );
 }
 
-function computeEffectiveClaims(context: Phase7SemanticPolicyContext): string[] {
+function computeEffectiveClaims(context: CapabilitySemanticPolicyContext): string[] {
   const granted = new Set([
     ...context.actor.capabilityGrants,
     ...(context.scenario.claims ?? []),

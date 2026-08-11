@@ -6,9 +6,7 @@ okf_version: "0.2"
 
 ## Collections
 
-* [Journal](journal/) - Typed phase entries containing decisions, failures, gaps, and questions.
 * [Evidence](evidence/) - Reproducible command, version, and result records.
-* [Templates](templates/) - Authoring templates for new OKF concepts.
 
 ## History
 

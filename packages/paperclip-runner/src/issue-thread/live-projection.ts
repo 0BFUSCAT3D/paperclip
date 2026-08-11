@@ -1,5 +1,5 @@
 /**
- * Projects a live Phase 7 session into the issue-thread view contract.
+ * Projects a live Capability session into the issue-thread view contract.
  *
  * This runs in the package server, never in the browser. It reads only durable
  * records — the live snapshot's transcript, evidence entries, semantic
@@ -9,47 +9,47 @@
  */
 
 import type {
-  Phase7FixtureInteraction,
-  Phase7FixtureState,
-  Phase7JsonValue,
-} from "../mock-core/phase7-control-plane-types.js";
+  CapabilityFixtureInteraction,
+  CapabilityFixtureState,
+  CapabilityJsonValue,
+} from "../mock-core/capability-control-plane-types.js";
 import {
-  phase7EvidenceDetail,
-  phase7EvidenceDetails,
-  redactPhase7ToolResult,
-} from "../phase7/evidence-redaction.js";
+  capabilityEvidenceDetail,
+  capabilityEvidenceDetails,
+  redactCapabilityToolResult,
+} from "../live/evidence-redaction.js";
 import type {
-  Phase7LiveEvidenceEntry,
-  Phase7LiveSessionSnapshot,
-} from "../phase7/live-session.js";
-import { PHASE7_SEMANTIC_TOOL_CATALOG } from "../semantic-tools/catalog.js";
-import type { Phase7SemanticOperationId } from "../semantic-tools/types.js";
+  CapabilityLiveEvidenceEntry,
+  CapabilityLiveSessionSnapshot,
+} from "../live/live-session.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../semantic-tools/catalog.js";
+import type { CapabilitySemanticOperationId } from "../semantic-tools/types.js";
 import type {
-  Phase7ComposerModel,
-  Phase7EvidenceControlPlaneRecord,
-  Phase7EvidenceModel,
-  Phase7EvidenceParityRecord,
-  Phase7EvidenceToolRow,
-  Phase7EvidenceTraceabilityRecord,
-  Phase7IssueThreadSnapshot,
-  Phase7ThreadConnection,
-  Phase7ThreadInteractionCard,
-  Phase7ThreadInteractionState,
-  Phase7ThreadItem,
-  Phase7ThreadMode,
-  Phase7ThreadTurn,
-  Phase7ToolDisposition,
+  CapabilityComposerModel,
+  CapabilityEvidenceControlPlaneRecord,
+  CapabilityEvidenceModel,
+  CapabilityEvidenceParityRecord,
+  CapabilityEvidenceToolRow,
+  CapabilityEvidenceTraceabilityRecord,
+  CapabilityIssueThreadSnapshot,
+  CapabilityThreadConnection,
+  CapabilityThreadInteractionCard,
+  CapabilityThreadInteractionState,
+  CapabilityThreadItem,
+  CapabilityThreadMode,
+  CapabilityThreadTurn,
+  CapabilityToolDisposition,
 } from "./types.js";
-import { PHASE7_ISSUE_THREAD_VIEW_SCHEMA } from "./types.js";
+import { CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA } from "./types.js";
 
 const INTERACTION_RESULT_SCHEMA = "paperclip.semantic-interaction-result.v1";
 
-const DURABLE_COMMENT_OPERATIONS = new Set<Phase7SemanticOperationId>([
+const DURABLE_COMMENT_OPERATIONS = new Set<CapabilitySemanticOperationId>([
   "report_progress",
   "answer_status_question",
 ]);
 
-const DISPOSITION_OPERATIONS = new Set<Phase7SemanticOperationId>([
+const DISPOSITION_OPERATIONS = new Set<CapabilitySemanticOperationId>([
   "finish_task",
   "block_task",
   "request_review",
@@ -82,36 +82,36 @@ const PROGRESS_EVENTS = {
   },
 } as const;
 
-export interface Phase7LiveProjectionInput {
-  snapshot: Phase7LiveSessionSnapshot;
+export interface CapabilityLiveProjectionInput {
+  snapshot: CapabilityLiveSessionSnapshot;
   /** Transport state owned by the server, not inferred in the browser. */
-  connection?: Phase7ThreadConnection;
-  mode?: Phase7ThreadMode;
+  connection?: CapabilityThreadConnection;
+  mode?: CapabilityThreadMode;
   replaySource?: "fake" | "live" | null;
   fixtureProfile?: string;
   /** 7A traceability rows for the active fixture, passed through verbatim. */
-  traceability?: Phase7EvidenceTraceabilityRecord[];
+  traceability?: CapabilityEvidenceTraceabilityRecord[];
   /** 7F parity verdicts, passed through verbatim. */
-  parity?: Phase7EvidenceParityRecord[];
+  parity?: CapabilityEvidenceParityRecord[];
 }
 
-function readRecord(value: Phase7JsonValue | undefined): Record<string, Phase7JsonValue> {
+function readRecord(value: CapabilityJsonValue | undefined): Record<string, CapabilityJsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value
     : {};
 }
 
-function readString(value: Phase7JsonValue | undefined, fallback = ""): string {
+function readString(value: CapabilityJsonValue | undefined, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
 
-function readNumber(value: Phase7JsonValue | undefined, fallback = 0): number {
+function readNumber(value: CapabilityJsonValue | undefined, fallback = 0): number {
   return typeof value === "number" ? value : fallback;
 }
 
-function parseMockState(serialized: string): Phase7FixtureState | null {
+function parseMockState(serialized: string): CapabilityFixtureState | null {
   try {
-    return JSON.parse(serialized) as Phase7FixtureState;
+    return JSON.parse(serialized) as CapabilityFixtureState;
   } catch {
     return null;
   }
@@ -126,7 +126,7 @@ function isInteractionResultMessage(text: string): boolean {
   }
 }
 
-function toolSummary(operationId: string, result: Phase7JsonValue): string {
+function toolSummary(operationId: string, result: CapabilityJsonValue): string {
   const payload = readRecord(result);
   if (payload.ok === false) {
     return readString(readRecord(payload.denial).message, "denied");
@@ -137,8 +137,8 @@ function toolSummary(operationId: string, result: Phase7JsonValue): string {
   return revision > 0 ? `state revision ${revision}` : "completed";
 }
 
-function dispositionFor(operationId: string, exposed: Set<string>): Phase7ToolDisposition {
-  const descriptor = PHASE7_SEMANTIC_TOOL_CATALOG.find(
+function dispositionFor(operationId: string, exposed: Set<string>): CapabilityToolDisposition {
+  const descriptor = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(
     (candidate) => candidate.operationId === operationId,
   );
   if (descriptor === undefined || !exposed.has(operationId)) return "control_plane_owned";
@@ -146,8 +146,8 @@ function dispositionFor(operationId: string, exposed: Set<string>): Phase7ToolDi
 }
 
 function interactionState(
-  interaction: Phase7FixtureInteraction,
-): { state: Phase7ThreadInteractionState; label: string } {
+  interaction: CapabilityFixtureInteraction,
+): { state: CapabilityThreadInteractionState; label: string } {
   const outcome = readString(readRecord(interaction.result ?? undefined).outcome);
   if (interaction.status === "pending") return { state: "pending", label: "Waiting for you" };
   if (interaction.status === "accepted") return { state: "accepted", label: "Accepted" };
@@ -163,8 +163,8 @@ function interactionState(
 }
 
 function interactionPayload(
-  interaction: Phase7FixtureInteraction,
-): Phase7ThreadInteractionCard["payload"] {
+  interaction: CapabilityFixtureInteraction,
+): CapabilityThreadInteractionCard["payload"] {
   const payload = readRecord(interaction.payload ?? undefined);
   switch (interaction.kind) {
     case "questions":
@@ -250,9 +250,9 @@ function interactionPayload(
 }
 
 function interactionCard(
-  interaction: Phase7FixtureInteraction,
-  state: Phase7FixtureState | null,
-): Phase7ThreadInteractionCard {
+  interaction: CapabilityFixtureInteraction,
+  state: CapabilityFixtureState | null,
+): CapabilityThreadInteractionCard {
   const view = interactionState(interaction);
   const result = readRecord(interaction.result ?? undefined);
   const document = state?.documents.find((candidate) =>
@@ -292,14 +292,14 @@ interface CallPair {
   callId: string;
   turnId: string | null;
   operationId: string;
-  input: Phase7JsonValue;
-  result: Phase7JsonValue | null;
+  input: CapabilityJsonValue;
+  result: CapabilityJsonValue | null;
   at: string;
   beforeRevision: number;
   afterRevision: number | null;
 }
 
-function collectCalls(evidence: Phase7LiveEvidenceEntry[]): CallPair[] {
+function collectCalls(evidence: CapabilityLiveEvidenceEntry[]): CallPair[] {
   const pairs = new Map<string, CallPair>();
   const order: string[] = [];
   for (const entry of evidence) {
@@ -329,7 +329,7 @@ function collectCalls(evidence: Phase7LiveEvidenceEntry[]): CallPair[] {
   return order.map((callId) => pairs.get(callId)!);
 }
 
-function toolActivityItem(pair: CallPair): Phase7ThreadItem {
+function toolActivityItem(pair: CallPair): CapabilityThreadItem {
   const payload = readRecord(pair.result ?? undefined);
   if (pair.result === null) {
     return {
@@ -362,15 +362,15 @@ function toolActivityItem(pair: CallPair): Phase7ThreadItem {
     operationId: pair.operationId,
     summary: toolSummary(pair.operationId, pair.result),
     input: pair.input,
-    result: redactPhase7ToolResult(pair.result),
+    result: redactCapabilityToolResult(pair.result),
     evidenceRef: { section: "calls", recordId: pair.callId },
   };
 }
 
 function derivedRecordItems(
   pair: CallPair,
-  state: Phase7FixtureState | null,
-): Phase7ThreadItem[] {
+  state: CapabilityFixtureState | null,
+): CapabilityThreadItem[] {
   const payload = readRecord(pair.result ?? undefined);
   if (payload.ok !== true || state === null) return [];
   const command = readRecord(payload.result);
@@ -382,8 +382,8 @@ function derivedRecordItems(
     entityRefs
       .filter((ref) => ref.startsWith(`${kind}:`))
       .map((ref) => ref.slice(kind.length + 1));
-  const operationId = pair.operationId as Phase7SemanticOperationId;
-  const items: Phase7ThreadItem[] = [];
+  const operationId = pair.operationId as CapabilitySemanticOperationId;
+  const items: CapabilityThreadItem[] = [];
 
   if (DURABLE_COMMENT_OPERATIONS.has(operationId)) {
     for (const ref of refsOf("comment")) {
@@ -496,12 +496,12 @@ function derivedRecordItems(
 }
 
 function composerModel(
-  snapshot: Phase7LiveSessionSnapshot,
-  connection: Phase7ThreadConnection,
-  mode: Phase7ThreadMode,
+  snapshot: CapabilityLiveSessionSnapshot,
+  connection: CapabilityThreadConnection,
+  mode: CapabilityThreadMode,
   pendingInteractionId: string | null,
   terminal: boolean,
-): Phase7ComposerModel {
+): CapabilityComposerModel {
   if (mode === "replay") {
     return { state: "disabled", helper: null, reason: "Replay is read-only", pendingInteractionId: null };
   }
@@ -553,9 +553,9 @@ function composerModel(
  * something a reader has to take on trust.
  */
 function networkGuardRecord(
-  snapshot: Phase7LiveSessionSnapshot,
-  state: Phase7FixtureState | null,
-): Phase7EvidenceControlPlaneRecord {
+  snapshot: CapabilityLiveSessionSnapshot,
+  state: CapabilityFixtureState | null,
+): CapabilityEvidenceControlPlaneRecord {
   const { realPaperclipRequests, childPaperclipEnvironmentKeys } = snapshot.networkEvidence;
   return {
     id: `network-guard-${snapshot.sessionId}`,
@@ -575,11 +575,11 @@ function networkGuardRecord(
 }
 
 function evidenceModel(
-  snapshot: Phase7LiveSessionSnapshot,
-  state: Phase7FixtureState | null,
+  snapshot: CapabilityLiveSessionSnapshot,
+  state: CapabilityFixtureState | null,
   calls: CallPair[],
-  input: Phase7LiveProjectionInput,
-): Phase7EvidenceModel {
+  input: CapabilityLiveProjectionInput,
+): CapabilityEvidenceModel {
   const exposureEntry = [...snapshot.evidence]
     .reverse()
     .find((entry) => entry.kind === "tool_exposure");
@@ -588,7 +588,7 @@ function evidenceModel(
       ? exposureEntry.data.operationIds.map((entry) => readString(entry))
       : [],
   );
-  const rows: Phase7EvidenceToolRow[] = PHASE7_SEMANTIC_TOOL_CATALOG.map((descriptor) => ({
+  const rows: CapabilityEvidenceToolRow[] = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((descriptor) => ({
     operationId: descriptor.operationId,
     disposition: dispositionFor(descriptor.operationId, exposedIds),
     grant: descriptor.requiredClaims[0] ?? null,
@@ -613,7 +613,7 @@ function evidenceModel(
         dispatchedCommand:
           payload.ok === false ? "rejected before dispatch" : `control_plane.dispatch(${pair.operationId})`,
         outcome: payload.ok === false ? ("denied" as const) : ("ok" as const),
-        result: pair.result === null ? null : redactPhase7ToolResult(pair.result),
+        result: pair.result === null ? null : redactCapabilityToolResult(pair.result),
         redactions: pair.result === null ? [] : ["tool_result_detail"],
         threadAnchorId: `item-call-${pair.callId}`,
       };
@@ -656,8 +656,8 @@ function evidenceModel(
       turnId: entry.turnId ?? "turn-0",
       kind: entry.kind,
       ordinal: index + 1,
-      detail: phase7EvidenceDetail(entry.kind, entry.data),
-      details: phase7EvidenceDetails(entry.kind, entry.data),
+      detail: capabilityEvidenceDetail(entry.kind, entry.data),
+      details: capabilityEvidenceDetails(entry.kind, entry.data),
     })),
     state: calls
       .filter((pair) => pair.afterRevision !== null && pair.afterRevision !== pair.beforeRevision)
@@ -667,7 +667,7 @@ function evidenceModel(
         fromRevision: pair.beforeRevision,
         toRevision: pair.afterRevision ?? pair.beforeRevision,
         rows: (Array.isArray(readRecord(readRecord(pair.result ?? undefined).result).entityRefs)
-          ? (readRecord(readRecord(pair.result ?? undefined).result).entityRefs as Phase7JsonValue[])
+          ? (readRecord(readRecord(pair.result ?? undefined).result).entityRefs as CapabilityJsonValue[])
           : []
         ).map((ref) => ({
           entityClass: pair.operationId,
@@ -681,9 +681,9 @@ function evidenceModel(
   };
 }
 
-export function projectPhase7IssueThread(
-  input: Phase7LiveProjectionInput,
-): Phase7IssueThreadSnapshot {
+export function projectCapabilityIssueThread(
+  input: CapabilityLiveProjectionInput,
+): CapabilityIssueThreadSnapshot {
   const { snapshot } = input;
   const mode = input.mode ?? "live";
   const connection = input.connection ?? { state: "connected", attempt: 0 };
@@ -694,9 +694,9 @@ export function projectPhase7IssueThread(
     state?.tasks[0] ??
     null;
 
-  const turns = new Map<string, Phase7ThreadTurn>();
+  const turns = new Map<string, CapabilityThreadTurn>();
   const turnOrder: string[] = [];
-  function turnFor(turnId: string | null, at: string): Phase7ThreadTurn {
+  function turnFor(turnId: string | null, at: string): CapabilityThreadTurn {
     const key = turnId ?? "turn-0";
     let turn = turns.get(key);
     if (turn === undefined) {
@@ -810,7 +810,7 @@ export function projectPhase7IssueThread(
   const terminal = task?.status === "done" || task?.status === "cancelled";
 
   return {
-    schema: PHASE7_ISSUE_THREAD_VIEW_SCHEMA,
+    schema: CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA,
     sessionId: snapshot.sessionId,
     mode,
     identity: {

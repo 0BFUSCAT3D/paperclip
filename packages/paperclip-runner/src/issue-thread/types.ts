@@ -1,39 +1,39 @@
 /**
- * Phase 7G issue-thread view contract.
+ * Capability issue-thread view contract.
  *
  * The browser renders exactly this shape and nothing else. Every field is a
  * projection of a mock-core record, a canonical event, or a semantic
- * authorization record produced by the package server (Phase 7B UX contract
+ * authorization record produced by the package server (Capability UX contract
  * §11: the browser holds no policy, diff, or parity authority). Two producers
  * exist — the deterministic `fake` fixtures used by the screenshot matrix and
  * the live session projection — and they emit the same schema.
  */
 
 import type {
-  Phase7InteractionKind,
-  Phase7JsonValue,
-  Phase7TaskStatus,
-} from "../mock-core/phase7-control-plane-types.js";
-import type { Phase7SemanticOperationId } from "../semantic-tools/types.js";
+  CapabilityInteractionKind,
+  CapabilityJsonValue,
+  CapabilityTaskStatus,
+} from "../mock-core/capability-control-plane-types.js";
+import type { CapabilitySemanticOperationId } from "../semantic-tools/types.js";
 
-export const PHASE7_ISSUE_THREAD_VIEW_SCHEMA = "paperclip.phase7.issue-thread-view.v1" as const;
+export const CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA = "paperclip.capability.issue-thread-view.v1" as const;
 
 /** Contract §0: a surface never shows an unlabeled mode. */
-export type Phase7ThreadMode = "live" | "fake" | "replay";
+export type CapabilityThreadMode = "live" | "fake" | "replay";
 
 /** Contract §0: closed disposition enum; UI copy is fixed per disposition. */
-export type Phase7ToolDisposition =
+export type CapabilityToolDisposition =
   | "control_plane_owned"
   | "always_agent_tool"
   | "optional_agent_tool";
 
-export const PHASE7_DISPOSITION_LABELS: Readonly<Record<Phase7ToolDisposition, string>> = {
+export const CAPABILITY_DISPOSITION_LABELS: Readonly<Record<CapabilityToolDisposition, string>> = {
   always_agent_tool: "Agent tool — always",
   optional_agent_tool: "Agent tool — granted",
   control_plane_owned: "Control plane",
 };
 
-export interface Phase7ThreadIdentity {
+export interface CapabilityThreadIdentity {
   /** `Real Codex` in live mode, `Fake agent` in fake mode, `Replay` in replay mode. */
   agentLabel: string;
   /** `Real runnerd` in live mode, `In-process runner` otherwise. */
@@ -47,10 +47,10 @@ export interface Phase7ThreadIdentity {
   replaySource: "fake" | "live" | null;
 }
 
-export interface Phase7ThreadIssue {
+export interface CapabilityThreadIssue {
   identifier: string;
   title: string;
-  status: Phase7TaskStatus;
+  status: CapabilityTaskStatus;
   priority: "critical" | "high" | "medium" | "low";
   assignee: string | null;
   runState: string;
@@ -59,7 +59,7 @@ export interface Phase7ThreadIssue {
 }
 
 /** Contract §4. `data-composer-state` is the test and screenshot hook. */
-export type Phase7ComposerState =
+export type CapabilityComposerState =
   | "ready"
   | "sending"
   | "streaming"
@@ -67,8 +67,8 @@ export type Phase7ComposerState =
   | "reconnecting"
   | "disabled";
 
-export interface Phase7ComposerModel {
-  state: Phase7ComposerState;
+export interface CapabilityComposerModel {
+  state: CapabilityComposerState;
   helper: string | null;
   /** Reason line rendered by the `disabled` state. */
   reason: string | null;
@@ -76,7 +76,7 @@ export interface Phase7ComposerModel {
   pendingInteractionId: string | null;
 }
 
-export type Phase7ThreadInteractionState =
+export type CapabilityThreadInteractionState =
   | "pending"
   | "submitting"
   | "accepted"
@@ -88,13 +88,13 @@ export type Phase7ThreadInteractionState =
   | "withdrawn"
   | "issue_closed";
 
-export interface Phase7ThreadLink {
+export interface CapabilityThreadLink {
   label: string;
   /** In-explorer route only. Real Paperclip URLs never appear (§11). */
   href: string;
 }
 
-export interface Phase7ThreadQuestion {
+export interface CapabilityThreadQuestion {
   id: string;
   prompt: string;
   control: "radio" | "select" | "text";
@@ -102,19 +102,19 @@ export interface Phase7ThreadQuestion {
   required?: boolean;
 }
 
-export interface Phase7ThreadCheckboxOption {
+export interface CapabilityThreadCheckboxOption {
   id: string;
   label: string;
   defaultSelected?: boolean;
 }
 
-export interface Phase7ThreadProposedTask {
+export interface CapabilityThreadProposedTask {
   id: string;
   title: string;
   description: string;
 }
 
-export interface Phase7ThreadVerdictItem {
+export interface CapabilityThreadVerdictItem {
   id: string;
   title: string;
   requireReason?: boolean;
@@ -122,8 +122,8 @@ export interface Phase7ThreadVerdictItem {
   lockedVerdict?: "approve" | "reject" | "defer" | null;
 }
 
-export type Phase7ThreadInteractionPayload =
-  | { kind: "questions"; questions: Phase7ThreadQuestion[]; submitLabel: string }
+export type CapabilityThreadInteractionPayload =
+  | { kind: "questions"; questions: CapabilityThreadQuestion[]; submitLabel: string }
   | {
       kind: "confirmation";
       targetSummary: string;
@@ -133,24 +133,24 @@ export type Phase7ThreadInteractionPayload =
     }
   | {
       kind: "checkbox";
-      options: Phase7ThreadCheckboxOption[];
+      options: CapabilityThreadCheckboxOption[];
       minSelected: number;
       maxSelected: number;
       acceptLabel: string;
       rejectLabel: string;
     }
-  | { kind: "suggest_tasks"; tasks: Phase7ThreadProposedTask[]; acceptLabel: string }
-  | { kind: "item_verdicts"; items: Phase7ThreadVerdictItem[]; submitLabel: string };
+  | { kind: "suggest_tasks"; tasks: CapabilityThreadProposedTask[]; acceptLabel: string }
+  | { kind: "item_verdicts"; items: CapabilityThreadVerdictItem[]; submitLabel: string };
 
-export interface Phase7ThreadInteractionCard {
+export interface CapabilityThreadInteractionCard {
   interactionId: string;
-  interactionKind: Phase7InteractionKind;
+  interactionKind: CapabilityInteractionKind;
   title: string;
   prompt: string;
-  payload: Phase7ThreadInteractionPayload;
-  state: Phase7ThreadInteractionState;
+  payload: CapabilityThreadInteractionPayload;
+  state: CapabilityThreadInteractionState;
   /** Revision-bound confirmation target, e.g. `plan · r4`. */
-  target: Phase7ThreadLink | null;
+  target: CapabilityThreadLink | null;
   /** Chip copy, always paired with a glyph in the renderer (§9.5). */
   stateLabel: string;
   /** Chosen values summarised inline once resolved. */
@@ -158,16 +158,16 @@ export interface Phase7ThreadInteractionCard {
   /** Verbatim reject reason. */
   reason: string | null;
   /** Superseding revision or comment for the expired outcomes. */
-  supersededBy: Phase7ThreadLink | null;
-  evidenceRef: Phase7EvidenceRef;
+  supersededBy: CapabilityThreadLink | null;
+  evidenceRef: CapabilityEvidenceRef;
 }
 
-export interface Phase7EvidenceRef {
-  section: Phase7EvidenceSectionId;
+export interface CapabilityEvidenceRef {
+  section: CapabilityEvidenceSectionId;
   recordId: string;
 }
 
-export type Phase7ThreadItem =
+export type CapabilityThreadItem =
   | { kind: "user_message"; id: string; at: string; author: string; body: string }
   | {
       kind: "agent_message";
@@ -183,8 +183,8 @@ export type Phase7ThreadItem =
       at: string;
       author: string;
       body: string;
-      operationId: Phase7SemanticOperationId;
-      evidenceRef: Phase7EvidenceRef;
+      operationId: CapabilitySemanticOperationId;
+      evidenceRef: CapabilityEvidenceRef;
     }
   | {
       kind: "tool_activity";
@@ -193,9 +193,9 @@ export type Phase7ThreadItem =
       status: "ok" | "denied" | "running";
       operationId: string;
       summary: string;
-      input: Phase7JsonValue;
-      result: Phase7JsonValue;
-      evidenceRef: Phase7EvidenceRef;
+      input: CapabilityJsonValue;
+      result: CapabilityJsonValue;
+      evidenceRef: CapabilityEvidenceRef;
     }
   | {
       kind: "progress_activity";
@@ -207,7 +207,7 @@ export type Phase7ThreadItem =
       summary: string;
       eventCount: number;
     }
-  | ({ kind: "interaction"; id: string; at: string } & Phase7ThreadInteractionCard)
+  | ({ kind: "interaction"; id: string; at: string } & CapabilityThreadInteractionCard)
   | {
       kind: "document";
       id: string;
@@ -218,7 +218,7 @@ export type Phase7ThreadItem =
       revisionFrom: number | null;
       revisionTo: number;
       staleBehind: number | null;
-      evidenceRef: Phase7EvidenceRef;
+      evidenceRef: CapabilityEvidenceRef;
     }
   | {
       kind: "deliverable";
@@ -229,7 +229,7 @@ export type Phase7ThreadItem =
       byteSize: number;
       registeredBy: string;
       contentRef: string;
-      evidenceRef: Phase7EvidenceRef;
+      evidenceRef: CapabilityEvidenceRef;
     }
   | {
       kind: "dependency";
@@ -237,17 +237,17 @@ export type Phase7ThreadItem =
       at: string;
       createdTasks: Array<{ identifier: string; title: string }>;
       blockerEdges: string[];
-      evidenceRef: Phase7EvidenceRef;
+      evidenceRef: CapabilityEvidenceRef;
     }
   | {
       kind: "disposition";
       id: string;
       at: string;
-      operationId: Phase7SemanticOperationId;
-      status: Phase7TaskStatus;
+      operationId: CapabilitySemanticOperationId;
+      status: CapabilityTaskStatus;
       body: string;
       blockerOwner: string | null;
-      evidenceRef: Phase7EvidenceRef;
+      evidenceRef: CapabilityEvidenceRef;
     }
   | {
       kind: "denial";
@@ -256,7 +256,7 @@ export type Phase7ThreadItem =
       operationId: string;
       /** Verbatim from the authorization record; never paraphrased. */
       reason: string;
-      evidenceRef: Phase7EvidenceRef;
+      evidenceRef: CapabilityEvidenceRef;
     }
   | {
       kind: "system_notice";
@@ -264,20 +264,20 @@ export type Phase7ThreadItem =
       at: string;
       glyph: string;
       text: string;
-      evidenceRef: Phase7EvidenceRef;
+      evidenceRef: CapabilityEvidenceRef;
     };
 
-export interface Phase7ThreadTurn {
+export interface CapabilityThreadTurn {
   id: string;
   ordinal: number;
-  mode: Phase7ThreadMode;
+  mode: CapabilityThreadMode;
   toolCallCount: number;
   at: string;
   stoppedByUser: boolean;
-  items: Phase7ThreadItem[];
+  items: CapabilityThreadItem[];
 }
 
-export type Phase7EvidenceSectionId =
+export type CapabilityEvidenceSectionId =
   | "tools"
   | "calls"
   | "authorization"
@@ -287,8 +287,8 @@ export type Phase7EvidenceSectionId =
   | "traceability"
   | "parity";
 
-export const PHASE7_EVIDENCE_SECTIONS: ReadonlyArray<{
-  id: Phase7EvidenceSectionId;
+export const CAPABILITY_EVIDENCE_SECTIONS: ReadonlyArray<{
+  id: CapabilityEvidenceSectionId;
   title: string;
 }> = [
   { id: "tools", title: "Tools exposed" },
@@ -301,21 +301,21 @@ export const PHASE7_EVIDENCE_SECTIONS: ReadonlyArray<{
   { id: "parity", title: "Parity" },
 ];
 
-export interface Phase7EvidenceToolRow {
+export interface CapabilityEvidenceToolRow {
   operationId: string;
-  disposition: Phase7ToolDisposition;
+  disposition: CapabilityToolDisposition;
   /** 7A grant string rendered verbatim, e.g. `rf:read_or_write`. */
   grant: string | null;
   description: string;
 }
 
-export interface Phase7EvidenceToolsRecord {
+export interface CapabilityEvidenceToolsRecord {
   id: string;
   turnId: string;
-  rows: Phase7EvidenceToolRow[];
+  rows: CapabilityEvidenceToolRow[];
 }
 
-export interface Phase7EvidenceCallRecord {
+export interface CapabilityEvidenceCallRecord {
   id: string;
   turnId: string;
   operationId: string;
@@ -323,12 +323,12 @@ export interface Phase7EvidenceCallRecord {
   providerRequest: string;
   dispatchedCommand: string;
   outcome: "ok" | "denied";
-  result: Phase7JsonValue;
+  result: CapabilityJsonValue;
   redactions: string[];
   threadAnchorId: string;
 }
 
-export interface Phase7EvidenceAuthorizationRecord {
+export interface CapabilityEvidenceAuthorizationRecord {
   id: string;
   turnId: string;
   operationId: string;
@@ -342,7 +342,7 @@ export interface Phase7EvidenceAuthorizationRecord {
   threadAnchorId: string;
 }
 
-export interface Phase7EvidenceControlPlaneRecord {
+export interface CapabilityEvidenceControlPlaneRecord {
   id: string;
   turnId: string;
   category: "checkout" | "wake" | "budget" | "idempotency" | "reconciliation" | "session";
@@ -352,7 +352,7 @@ export interface Phase7EvidenceControlPlaneRecord {
   threadAnchorId: string | null;
 }
 
-export interface Phase7EvidenceRunnerRecord {
+export interface CapabilityEvidenceRunnerRecord {
   id: string;
   turnId: string;
   kind: string;
@@ -362,22 +362,22 @@ export interface Phase7EvidenceRunnerRecord {
   details: Array<{ label: string; value: string }>;
 }
 
-export interface Phase7EvidenceStateDiffRow {
+export interface CapabilityEvidenceStateDiffRow {
   entityClass: string;
   entityRef: string;
   before: string;
   after: string;
 }
 
-export interface Phase7EvidenceStateDiffRecord {
+export interface CapabilityEvidenceStateDiffRecord {
   id: string;
   turnId: string;
   fromRevision: number;
   toRevision: number;
-  rows: Phase7EvidenceStateDiffRow[];
+  rows: CapabilityEvidenceStateDiffRow[];
 }
 
-export interface Phase7EvidenceTraceabilityRecord {
+export interface CapabilityEvidenceTraceabilityRecord {
   id: string;
   turnId: string;
   capabilityId: string;
@@ -390,7 +390,7 @@ export interface Phase7EvidenceTraceabilityRecord {
   requiredCapabilityGrants: string[];
 }
 
-export interface Phase7EvidenceParityRecord {
+export interface CapabilityEvidenceParityRecord {
   id: string;
   turnId: string;
   assertion: string;
@@ -398,44 +398,44 @@ export interface Phase7EvidenceParityRecord {
   note: string | null;
 }
 
-export interface Phase7EvidenceModel {
-  tools: Phase7EvidenceToolsRecord[];
-  calls: Phase7EvidenceCallRecord[];
-  authorization: Phase7EvidenceAuthorizationRecord[];
-  control_plane: Phase7EvidenceControlPlaneRecord[];
-  runner: Phase7EvidenceRunnerRecord[];
-  state: Phase7EvidenceStateDiffRecord[];
-  traceability: Phase7EvidenceTraceabilityRecord[];
-  parity: Phase7EvidenceParityRecord[];
+export interface CapabilityEvidenceModel {
+  tools: CapabilityEvidenceToolsRecord[];
+  calls: CapabilityEvidenceCallRecord[];
+  authorization: CapabilityEvidenceAuthorizationRecord[];
+  control_plane: CapabilityEvidenceControlPlaneRecord[];
+  runner: CapabilityEvidenceRunnerRecord[];
+  state: CapabilityEvidenceStateDiffRecord[];
+  traceability: CapabilityEvidenceTraceabilityRecord[];
+  parity: CapabilityEvidenceParityRecord[];
 }
 
-export interface Phase7ThreadConnection {
+export interface CapabilityThreadConnection {
   state: "connected" | "reconnecting" | "closed";
   attempt: number;
 }
 
-export interface Phase7ReplayModel {
+export interface CapabilityReplayModel {
   ordinal: number;
   total: number;
 }
 
-export interface Phase7IssueThreadSnapshot {
-  schema: typeof PHASE7_ISSUE_THREAD_VIEW_SCHEMA;
+export interface CapabilityIssueThreadSnapshot {
+  schema: typeof CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA;
   sessionId: string;
-  mode: Phase7ThreadMode;
-  identity: Phase7ThreadIdentity;
-  issue: Phase7ThreadIssue;
-  turns: Phase7ThreadTurn[];
-  composer: Phase7ComposerModel;
-  evidence: Phase7EvidenceModel;
-  connection: Phase7ThreadConnection;
-  replay: Phase7ReplayModel | null;
+  mode: CapabilityThreadMode;
+  identity: CapabilityThreadIdentity;
+  issue: CapabilityThreadIssue;
+  turns: CapabilityThreadTurn[];
+  composer: CapabilityComposerModel;
+  evidence: CapabilityEvidenceModel;
+  connection: CapabilityThreadConnection;
+  replay: CapabilityReplayModel | null;
   /** Fixture clock; every rendered timestamp derives from snapshot data. */
   renderedAt: string;
 }
 
-export function phase7DispositionLabel(disposition: Phase7ToolDisposition): string {
-  return PHASE7_DISPOSITION_LABELS[disposition];
+export function capabilityDispositionLabel(disposition: CapabilityToolDisposition): string {
+  return CAPABILITY_DISPOSITION_LABELS[disposition];
 }
 
 /**
@@ -444,7 +444,7 @@ export function phase7DispositionLabel(disposition: Phase7ToolDisposition): stri
  * they must agree, so both sides (fixtures, live projection, and the browser
  * components) format through here rather than rolling their own division.
  */
-export function phase7FormatBytes(byteSize: number): string {
+export function capabilityFormatBytes(byteSize: number): string {
   if (byteSize < 1024) return `${byteSize} B`;
   if (byteSize < 1024 * 1024) return `${(byteSize / 1024).toFixed(1)} kB`;
   return `${(byteSize / (1024 * 1024)).toFixed(1)} MB`;
@@ -460,8 +460,8 @@ export function phase7FormatBytes(byteSize: number): string {
  * `Control plane — not exposed` list renders), so badging it would cry wolf on
  * every turn. Only invocation-phase denials mean the model was refused.
  */
-export function phase7DenialCount(
-  evidence: Phase7EvidenceModel,
+export function capabilityDenialCount(
+  evidence: CapabilityEvidenceModel,
   turnId: string | null,
 ): number {
   return evidence.authorization.filter(

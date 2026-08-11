@@ -2,7 +2,7 @@
  * Scripted Codex transport for the browser streaming test (track 7Q).
  *
  * Everything below the provider is the real thing: the same package server
- * middleware, the same `Phase7LiveSession`, the same NDJSON turn stream, and
+ * middleware, the same `CapabilityLiveSession`, the same NDJSON turn stream, and
  * the same built browser bundle. Only the provider is scripted, and only so the
  * test can decide when a delta arrives — a real Codex process cannot be asked
  * to emit exactly four deltas 220 ms apart, and a browser assertion needs that
@@ -15,18 +15,18 @@
  */
 
 const DELTA_INTERVAL_MS = 220;
-export const PHASE7_STREAM_FIXTURE_PRIVATE_REASONING =
+export const CAPABILITY_STREAM_FIXTURE_PRIVATE_REASONING =
   "PRIVATE reasoning text must never reach the browser.";
 
 /** Four deltas: enough for a browser to observe growth twice over, and short. */
-export const PHASE7_STREAM_FIXTURE_DELTAS = [
+export const CAPABILITY_STREAM_FIXTURE_DELTAS = [
   "Reading the clean-room issue. ",
   "It is blank, with one mock agent and one mock task. ",
   "Recording a first status against the mock control plane. ",
   "Done — every record stayed in the mock port.",
 ];
 
-export const PHASE7_STREAM_FIXTURE_REPLY = PHASE7_STREAM_FIXTURE_DELTAS.join("");
+export const CAPABILITY_STREAM_FIXTURE_REPLY = CAPABILITY_STREAM_FIXTURE_DELTAS.join("");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -122,10 +122,10 @@ class StreamFixtureTransport {
       params: {
         threadId: "stream-fixture-thread",
         turnId,
-        delta: PHASE7_STREAM_FIXTURE_PRIVATE_REASONING,
+        delta: CAPABILITY_STREAM_FIXTURE_PRIVATE_REASONING,
       },
     });
-    for (const delta of PHASE7_STREAM_FIXTURE_DELTAS) {
+    for (const delta of CAPABILITY_STREAM_FIXTURE_DELTAS) {
       await sleep(DELTA_INTERVAL_MS);
       if (this.#closed || this.#interrupted.has(turnId)) return;
       this.#queue.push({
@@ -140,7 +140,7 @@ class StreamFixtureTransport {
       params: {
         threadId: "stream-fixture-thread",
         turnId,
-        item: { id: `message-${turnId}`, type: "agentMessage", text: PHASE7_STREAM_FIXTURE_REPLY },
+        item: { id: `message-${turnId}`, type: "agentMessage", text: CAPABILITY_STREAM_FIXTURE_REPLY },
       },
     });
     this.#queue.push({
@@ -150,7 +150,7 @@ class StreamFixtureTransport {
   }
 }
 
-export function phase7StreamFixtureTransportFactory(options = {}) {
+export function capabilityStreamFixtureTransportFactory(options = {}) {
   const evidence = {
     runnerPid: 7100,
     runnerProcessGroupId: 7100,

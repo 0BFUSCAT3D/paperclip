@@ -1,15 +1,15 @@
 import { useEffect, useRef, type ReactNode } from "react";
 
 import type {
-  Phase7EvidenceModel,
-  Phase7EvidenceRunnerRecord,
-  Phase7EvidenceSectionId,
-  Phase7IssueThreadSnapshot,
-  Phase7ToolDisposition,
+  CapabilityEvidenceModel,
+  CapabilityEvidenceRunnerRecord,
+  CapabilityEvidenceSectionId,
+  CapabilityIssueThreadSnapshot,
+  CapabilityToolDisposition,
 } from "../../../src/issue-thread/types";
 import {
-  PHASE7_EVIDENCE_SECTIONS,
-  phase7DispositionLabel,
+  CAPABILITY_EVIDENCE_SECTIONS,
+  capabilityDispositionLabel,
 } from "../../../src/issue-thread/types";
 
 /**
@@ -18,16 +18,16 @@ import {
  * no verdicts of its own.
  */
 
-const DISPOSITION_ORDER: Phase7ToolDisposition[] = [
+const DISPOSITION_ORDER: CapabilityToolDisposition[] = [
   "always_agent_tool",
   "optional_agent_tool",
   "control_plane_owned",
 ];
 
-export interface Phase7RunnerEventGroup {
+export interface CapabilityRunnerEventGroup {
   id: string;
   event: string | null;
-  records: Phase7EvidenceRunnerRecord[];
+  records: CapabilityEvidenceRunnerRecord[];
 }
 
 /**
@@ -35,11 +35,11 @@ export interface Phase7RunnerEventGroup {
  * Aggregate each sanitized delta category within a turn at its first position;
  * expanding the group still exposes every individual event in ordinal order.
  */
-export function groupPhase7RunnerEvents(
-  records: readonly Phase7EvidenceRunnerRecord[],
-): Phase7RunnerEventGroup[] {
-  const groups: Phase7RunnerEventGroup[] = [];
-  const deltaGroups = new Map<string, Phase7RunnerEventGroup>();
+export function groupCapabilityRunnerEvents(
+  records: readonly CapabilityEvidenceRunnerRecord[],
+): CapabilityRunnerEventGroup[] {
+  const groups: CapabilityRunnerEventGroup[] = [];
+  const deltaGroups = new Map<string, CapabilityRunnerEventGroup>();
   for (const record of records) {
     const event = record.details.find((entry) => entry.label === "Event")?.value ?? null;
     if (event === null || !event.endsWith("_delta")) {
@@ -59,7 +59,7 @@ export function groupPhase7RunnerEvents(
   return groups;
 }
 
-function RunnerEvent({ record }: { record: Phase7EvidenceRunnerRecord }) {
+function RunnerEvent({ record }: { record: CapabilityEvidenceRunnerRecord }) {
   return (
     <details className="pit-runner-event" data-record-id={record.id}>
       <summary className="pit-runner-event-summary">
@@ -86,7 +86,7 @@ function RunnerEvent({ record }: { record: Phase7EvidenceRunnerRecord }) {
   );
 }
 
-function RunnerEventGroup({ group }: { group: Phase7RunnerEventGroup }) {
+function RunnerEventGroup({ group }: { group: CapabilityRunnerEventGroup }) {
   if (group.event === null) return <RunnerEvent record={group.records[0]!} />;
   return (
     <details className="pit-runner-group" data-runner-delta-group={group.event}>
@@ -105,21 +105,21 @@ function RunnerEventGroup({ group }: { group: Phase7RunnerEventGroup }) {
 }
 
 export interface EvidencePanelProps {
-  snapshot: Phase7IssueThreadSnapshot;
+  snapshot: CapabilityIssueThreadSnapshot;
   layout: "side" | "overlay" | "segment";
   width: number;
   selectedTurnId: string | "all";
-  openSections: Phase7EvidenceSectionId[];
+  openSections: CapabilityEvidenceSectionId[];
   highlightedRecordId: string | null;
   onSelectTurn: (turnId: string | "all") => void;
-  onToggleSection: (section: Phase7EvidenceSectionId) => void;
+  onToggleSection: (section: CapabilityEvidenceSectionId) => void;
   onClose: () => void;
   onJumpToThread: (anchorId: string) => void;
 }
 
 function sectionCount(
-  evidence: Phase7EvidenceModel,
-  section: Phase7EvidenceSectionId,
+  evidence: CapabilityEvidenceModel,
+  section: CapabilityEvidenceSectionId,
   turnId: string | "all",
 ): string {
   if (section === "parity") {
@@ -149,7 +149,7 @@ function Section({
   onToggle,
   children,
 }: {
-  id: Phase7EvidenceSectionId;
+  id: CapabilityEvidenceSectionId;
   title: string;
   count: string;
   open: boolean;
@@ -214,7 +214,7 @@ export function EvidencePanel(props: EvidencePanelProps) {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [layout, onClose]);
 
-  const isOpen = (section: Phase7EvidenceSectionId) => openSections.includes(section);
+  const isOpen = (section: CapabilityEvidenceSectionId) => openSections.includes(section);
 
   return (
     <aside
@@ -268,7 +268,7 @@ export function EvidencePanel(props: EvidencePanelProps) {
                   <p className="pit-tool-group-label" data-group={disposition}>
                     {disposition === "control_plane_owned"
                       ? "Control plane (not exposed to the agent)"
-                      : phase7DispositionLabel(disposition)}
+                      : capabilityDispositionLabel(disposition)}
                   </p>
                   {rows.map((row) => (
                     <p
@@ -398,7 +398,7 @@ export function EvidencePanel(props: EvidencePanelProps) {
         open={isOpen("runner")}
         onToggle={() => onToggleSection("runner")}
       >
-        {groupPhase7RunnerEvents(filterByTurn(evidence.runner, selectedTurnId)).map((group) => (
+        {groupCapabilityRunnerEvents(filterByTurn(evidence.runner, selectedTurnId)).map((group) => (
           <RunnerEventGroup key={group.id} group={group} />
         ))}
       </Section>
@@ -487,6 +487,6 @@ export function EvidencePanel(props: EvidencePanelProps) {
   );
 }
 
-export const PHASE7_EVIDENCE_SECTION_IDS = PHASE7_EVIDENCE_SECTIONS.map(
+export const CAPABILITY_EVIDENCE_SECTION_IDS = CAPABILITY_EVIDENCE_SECTIONS.map(
   (section) => section.id,
 );

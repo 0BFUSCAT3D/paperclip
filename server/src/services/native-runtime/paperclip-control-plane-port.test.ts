@@ -264,8 +264,8 @@ describe("PaperclipControlPlanePort conformance", () => {
       agentId: identity.agentId,
       completionContractId: contractId,
       completionContractSha256: contractSha,
-      sourceInstanceId: "runner-phase6-conformance",
-      controlPlaneSourceInstanceId: "control-phase6-conformance",
+      sourceInstanceId: "runner-standalone-conformance",
+      controlPlaneSourceInstanceId: "control-conformance",
     });
     await expect(runControlPlanePortConformance({ port })).resolves.toEqual({
       eventCount: 3,
@@ -307,6 +307,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     const sessionId = taskSessionId;
     const evidenceRef = `work_product:${taskWorkProductId}`;
     const taskResult = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
+    taskResult.completionClaim.contractRevision = "phase6-v1";
     taskResult.completionClaim.criteria[0]!.evidenceRefs = [evidenceRef];
     taskResult.evidence = [{ kind: "work_product", ref: evidenceRef }];
     taskResult.verification[0]!.artifactRef = evidenceRef;
@@ -419,8 +420,8 @@ describe("PaperclipControlPlanePort conformance", () => {
       agentId: identity.agentId,
       completionContractId: contractId,
       completionContractSha256: contractSha,
-      sourceInstanceId: "runner-phase6-conformance",
-      controlPlaneSourceInstanceId: "control-phase6-conformance",
+      sourceInstanceId: "runner-standalone-conformance",
+      controlPlaneSourceInstanceId: "control-conformance",
     });
     await expect(port.openRun(CONTROL_PLANE_CONFORMANCE_OPEN)).rejects.toThrow("binding_mismatch");
   });

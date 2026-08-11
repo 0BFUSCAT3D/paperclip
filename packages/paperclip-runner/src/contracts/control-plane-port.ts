@@ -7,7 +7,7 @@ import type {
   PrpEvent,
   PrpStructuredRunResult,
   PrpTerminalState,
-} from "../protocol/phase1-contract.js";
+} from "../protocol/replay-contract.js";
 import type { PersistedNativeSession } from "./native-session-backend.js";
 
 export interface OpenControlPlaneRunInput {

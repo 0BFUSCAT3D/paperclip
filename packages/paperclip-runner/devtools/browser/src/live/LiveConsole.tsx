@@ -74,13 +74,13 @@ export function LiveConsole() {
   const compact = useCompactLayout();
 
   React.useEffect(() => {
-    const stored = window.localStorage.getItem("paperclip-runner.phase4b.inspector");
+    const stored = window.localStorage.getItem("paperclip-runner.live-console.inspector");
     if (stored === "open") setInspectorOpen(true);
   }, []);
 
   React.useEffect(() => {
     window.localStorage.setItem(
-      "paperclip-runner.phase4b.inspector",
+      "paperclip-runner.live-console.inspector",
       inspectorOpen ? "open" : "closed",
     );
   }, [inspectorOpen]);

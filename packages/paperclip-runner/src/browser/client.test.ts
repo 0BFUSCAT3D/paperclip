@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { PrpEvent } from "../protocol/phase1-contract.js";
+import type { PrpEvent } from "../protocol/replay-contract.js";
 import {
   createRunnerClient,
   RunnerClientError,
@@ -68,7 +68,7 @@ describe("public runner browser client", () => {
     const onError = vi.fn();
     const handle = client.openEventStream("session/id", 8, { onEvent, onError });
 
-    expect(url).toBe("/api/phase4b/sessions/session%2Fid/stream?after=8");
+    expect(url).toBe("/api/liveConsole/sessions/session%2Fid/stream?after=8");
     source.onmessage?.({ data: JSON.stringify(event) } as MessageEvent<string>);
     expect(onEvent).toHaveBeenCalledWith(event);
     source.onmessage?.({ data: "not json" } as MessageEvent<string>);

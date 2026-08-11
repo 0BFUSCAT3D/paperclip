@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import type { PrpEvent } from "../protocol/phase1-contract.js";
+import type { PrpEvent } from "../protocol/replay-contract.js";
 import type { SessionSnapshot } from "../reducer/session-reducer.js";
 import { Badge } from "./components/badge.js";
 import { Tabs } from "./components/tabs.js";

@@ -1,15 +1,15 @@
-import { PHASE7_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
 import type {
-  Phase7SemanticToolDefinition,
-  Phase7SemanticToolDescriptor,
+  CapabilitySemanticToolDefinition,
+  CapabilitySemanticToolDescriptor,
 } from "./types.js";
 
-export type Phase7SemanticBindingKind = "fake" | "live_codex";
+export type CapabilitySemanticBindingKind = "fake" | "live_codex";
 
-export interface Phase7ProviderNeutralSemanticBinding {
+export interface CapabilityProviderNeutralSemanticBinding {
   readonly schema: "paperclip.semantic-binding.v1";
-  readonly bindingKind: Phase7SemanticBindingKind;
-  readonly contracts: readonly Phase7SemanticToolDefinition[];
+  readonly bindingKind: CapabilitySemanticBindingKind;
+  readonly contracts: readonly CapabilitySemanticToolDefinition[];
 }
 
 /**
@@ -17,10 +17,10 @@ export interface Phase7ProviderNeutralSemanticBinding {
  * binding label is deliberately outside the contract array, so fake and live
  * Codex bindings cannot drift in names, schemas, claims, or redaction metadata.
  */
-export function createPhase7ProviderNeutralBinding(
-  bindingKind: Phase7SemanticBindingKind,
-  descriptors: readonly Phase7SemanticToolDescriptor[] = PHASE7_SEMANTIC_TOOL_CATALOG,
-): Phase7ProviderNeutralSemanticBinding {
+export function createCapabilityProviderNeutralBinding(
+  bindingKind: CapabilitySemanticBindingKind,
+  descriptors: readonly CapabilitySemanticToolDescriptor[] = CAPABILITY_SEMANTIC_TOOL_CATALOG,
+): CapabilityProviderNeutralSemanticBinding {
   return deepFreeze({
     schema: "paperclip.semantic-binding.v1",
     bindingKind,
@@ -28,15 +28,15 @@ export function createPhase7ProviderNeutralBinding(
   });
 }
 
-export function phase7GeneratedSemanticContracts(): readonly Phase7SemanticToolDefinition[] {
-  return createPhase7ProviderNeutralBinding("fake").contracts;
+export function capabilityGeneratedSemanticContracts(): readonly CapabilitySemanticToolDefinition[] {
+  return createCapabilityProviderNeutralBinding("fake").contracts;
 }
 
-export function serializePhase7GeneratedSemanticContracts(): string {
-  return `${canonicalJson(phase7GeneratedSemanticContracts())}\n`;
+export function serializeCapabilityGeneratedSemanticContracts(): string {
+  return `${canonicalJson(capabilityGeneratedSemanticContracts())}\n`;
 }
 
-function toDefinition(descriptor: Phase7SemanticToolDescriptor): Phase7SemanticToolDefinition {
+function toDefinition(descriptor: CapabilitySemanticToolDescriptor): CapabilitySemanticToolDefinition {
   return {
     name: descriptor.operationId,
     description: descriptor.description,

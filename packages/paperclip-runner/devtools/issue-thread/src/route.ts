@@ -1,6 +1,6 @@
 /**
- * Deterministic route scheme from the Phase 7B UX contract §10.1, plus the
- * Phase 7M clean-room surface.
+ * Deterministic route scheme from the Capability UX contract §10.1, plus the
+ * Capability clean-room surface.
  *
  * `#/issue/<fixtureProfile>?shot=<slug>&panel=<section>&rec=<id>&at=<ordinal>&seg=thread|evidence`
  * `#/chat?panel=<section>&rec=<id>&seg=thread|evidence`
@@ -14,17 +14,17 @@
  * with a fixture or a recording.
  */
 
-import type { Phase7EvidenceSectionId } from "../../../src/issue-thread/types";
-import { PHASE7_EVIDENCE_SECTIONS } from "../../../src/issue-thread/types";
-import { PHASE7_DEFAULT_FIXTURE_PROFILE } from "../../../src/issue-thread/fixtures";
+import type { CapabilityEvidenceSectionId } from "../../../src/issue-thread/types";
+import { CAPABILITY_EVIDENCE_SECTIONS } from "../../../src/issue-thread/types";
+import { CAPABILITY_DEFAULT_FIXTURE_PROFILE } from "../../../src/issue-thread/fixtures";
 
-export type Phase7Surface = "issue" | "chat";
+export type CapabilitySurface = "issue" | "chat";
 
-export interface Phase7Route {
-  surface: Phase7Surface;
+export interface CapabilityRoute {
+  surface: CapabilitySurface;
   fixtureProfile: string;
   shot: string | null;
-  panel: Phase7EvidenceSectionId | null;
+  panel: CapabilityEvidenceSectionId | null;
   record: string | null;
   at: number | null;
   segment: "thread" | "evidence";
@@ -32,7 +32,7 @@ export interface Phase7Route {
   mode: "fake" | "live" | "replay";
 }
 
-const SECTION_IDS = new Set<string>(PHASE7_EVIDENCE_SECTIONS.map((section) => section.id));
+const SECTION_IDS = new Set<string>(CAPABILITY_EVIDENCE_SECTIONS.map((section) => section.id));
 
 function mergeParams(search: string, hash: string): URLSearchParams {
   const params = new URLSearchParams(search);
@@ -45,10 +45,10 @@ function mergeParams(search: string, hash: string): URLSearchParams {
   return params;
 }
 
-export function parsePhase7Route(url: {
+export function parseCapabilityRoute(url: {
   search: string;
   hash: string;
-}): Phase7Route {
+}): CapabilityRoute {
   const params = mergeParams(url.search, url.hash);
   const path = url.hash.replace(/^#/, "").split("?")[0] ?? "";
   const chat = /^\/chat\/?$/.test(path);
@@ -67,9 +67,9 @@ export function parsePhase7Route(url: {
         : "fake";
   return {
     surface: chat ? "chat" : "issue",
-    fixtureProfile: match?.[1] ?? PHASE7_DEFAULT_FIXTURE_PROFILE,
+    fixtureProfile: match?.[1] ?? CAPABILITY_DEFAULT_FIXTURE_PROFILE,
     shot,
-    panel: panel !== null && SECTION_IDS.has(panel) ? (panel as Phase7EvidenceSectionId) : null,
+    panel: panel !== null && SECTION_IDS.has(panel) ? (panel as CapabilityEvidenceSectionId) : null,
     record: params.get("rec"),
     at: chat || at === null || !/^\d+$/.test(at) ? null : Number.parseInt(at, 10),
     segment: segment === "evidence" ? "evidence" : "thread",
@@ -77,7 +77,7 @@ export function parsePhase7Route(url: {
   };
 }
 
-export function phase7RouteHref(route: Phase7Route, overrides: Partial<Phase7Route>): string {
+export function capabilityRouteHref(route: CapabilityRoute, overrides: Partial<CapabilityRoute>): string {
   const next = { ...route, ...overrides };
   const params = new URLSearchParams();
   if (next.surface === "chat") {

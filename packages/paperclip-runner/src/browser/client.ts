@@ -1,4 +1,4 @@
-import type { PrpEvent } from "../protocol/phase1-contract.js";
+import type { PrpEvent } from "../protocol/replay-contract.js";
 import type {
   GoalOperation,
   ManifestSummary,
@@ -108,7 +108,7 @@ function nativeEventSource(url: string): EventSourceLike {
  * but that auth is never copied into public session state or component props.
  */
 export function createRunnerClient(options: RunnerClientOptions = {}): RunnerClient {
-  const baseUrl = normalizedBaseUrl(options.baseUrl ?? "/api/phase4b");
+  const baseUrl = normalizedBaseUrl(options.baseUrl ?? "/api/liveConsole");
   const fetchImpl = options.fetchImpl ?? nativeFetch();
   const eventSourceFactory = options.eventSourceFactory ?? nativeEventSource;
 

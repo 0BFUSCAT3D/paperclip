@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { Phase7FixtureSeed } from "../mock-core/phase7-control-plane-types.js";
-import { Phase7MockControlPlaneAdapter } from "../mock-core/phase7-mock-control-plane-adapter.js";
-import { PHASE7_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
-import { Phase7SemanticDispatcher } from "./dispatcher.js";
-import { createPhase7ProviderNeutralBinding } from "./provider-neutral.js";
+import type { CapabilityFixtureSeed } from "../mock-core/capability-control-plane-types.js";
+import { CapabilityMockControlPlaneAdapter } from "../mock-core/capability-mock-control-plane-adapter.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "./catalog.js";
+import { CapabilitySemanticDispatcher } from "./dispatcher.js";
+import { createCapabilityProviderNeutralBinding } from "./provider-neutral.js";
 
 const OPEN = {
   identity: {
@@ -20,9 +20,9 @@ const OPEN = {
 
 async function running(
   claims: string[] = [],
-  seed: Phase7FixtureSeed = {},
+  seed: CapabilityFixtureSeed = {},
 ) {
-  const adapter = new Phase7MockControlPlaneAdapter({
+  const adapter = new CapabilityMockControlPlaneAdapter({
     ...seed,
     actors: seed.actors ?? [
       {
@@ -41,9 +41,9 @@ async function running(
   return adapter;
 }
 
-describe("Phase 7 semantic catalog and authorization", () => {
+describe("Capability semantic catalog and authorization", () => {
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
-    const names = PHASE7_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
+    const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toHaveLength(28);
     expect(names).toContain("get_task_context");
@@ -51,9 +51,9 @@ describe("Phase 7 semantic catalog and authorization", () => {
     expect(names).not.toContain("checkout_task");
     expect(names).not.toContain("record_budget_usage");
     expect(names).not.toContain("resolve_human_input");
-    expect(PHASE7_SEMANTIC_TOOL_CATALOG.find((tool) => tool.operationId === "generic_api_request"))
+    expect(CAPABILITY_SEMANTIC_TOOL_CATALOG.find((tool) => tool.operationId === "generic_api_request"))
       .toMatchObject({ exposure: "optional", disabledByDefault: true });
-    const schemaKeys = PHASE7_SEMANTIC_TOOL_CATALOG.flatMap((tool) =>
+    const schemaKeys = CAPABILITY_SEMANTIC_TOOL_CATALOG.flatMap((tool) =>
       Object.keys(tool.inputSchema.properties ?? {}),
     );
     expect(schemaKeys.join(" ")).not.toMatch(
@@ -63,7 +63,7 @@ describe("Phase 7 semantic catalog and authorization", () => {
 
   it("exposes always tools while optional tools require actor, scenario, and explicit run claims", async () => {
     const adapter = await running();
-    const dispatcher = new Phase7SemanticDispatcher(adapter);
+    const dispatcher = new CapabilitySemanticDispatcher(adapter);
     const names = dispatcher.listTools(OPEN.identity.runId).map((tool) => tool.name);
     expect(names).toContain("get_task_context");
     expect(names).toContain("report_progress");
@@ -122,7 +122,7 @@ describe("Phase 7 semantic catalog and authorization", () => {
         },
       ],
     });
-    const dispatcher = new Phase7SemanticDispatcher(adapter, {
+    const dispatcher = new CapabilitySemanticDispatcher(adapter, {
       scenario: { id: "dependency-manager", claims: [claim] },
       explicitClaims: [claim],
     });
@@ -153,7 +153,7 @@ describe("Phase 7 semantic catalog and authorization", () => {
         return context;
       },
     };
-    const dispatcher = new Phase7SemanticDispatcher(port, {
+    const dispatcher = new CapabilitySemanticDispatcher(port, {
       scenario: { id: "revocation", claims: [claim] },
       explicitClaims: [claim],
     });
@@ -190,7 +190,7 @@ describe("Phase 7 semantic catalog and authorization", () => {
         completedAt: null,
       }],
     });
-    const dispatcher = new Phase7SemanticDispatcher(adapter);
+    const dispatcher = new CapabilitySemanticDispatcher(adapter);
     const names = dispatcher.listTools(OPEN.identity.runId).map((tool) => tool.name);
     expect(names).not.toContain("write_document");
     expect(names).not.toContain("finish_task");
@@ -211,7 +211,7 @@ describe("Phase 7 semantic catalog and authorization", () => {
   it("rejects protected inputs before mutation and redacts authorization records", async () => {
     const claim = "governance:approvals:request";
     const adapter = await running([claim]);
-    const dispatcher = new Phase7SemanticDispatcher(adapter, {
+    const dispatcher = new CapabilitySemanticDispatcher(adapter, {
       scenario: { id: "approval", claims: [claim] },
       explicitClaims: [claim],
     });
@@ -245,7 +245,7 @@ describe("Phase 7 semantic catalog and authorization", () => {
         createdAt: "2026-08-09T00:00:00.000Z",
       }],
     });
-    const dispatcher = new Phase7SemanticDispatcher(adapter);
+    const dispatcher = new CapabilitySemanticDispatcher(adapter);
     const result = await dispatcher.dispatch({
       runId: OPEN.identity.runId,
       callId: "history",
@@ -258,7 +258,7 @@ describe("Phase 7 semantic catalog and authorization", () => {
 
   it("applies always-tool commands and records authorization for every invocation", async () => {
     const adapter = await running();
-    const dispatcher = new Phase7SemanticDispatcher(adapter);
+    const dispatcher = new CapabilitySemanticDispatcher(adapter);
     const progress = await dispatcher.dispatch({
       runId: OPEN.identity.runId,
       callId: "progress",
@@ -275,13 +275,13 @@ describe("Phase 7 semantic catalog and authorization", () => {
   });
 
   it("keeps generated contracts identical across fake and live Codex bindings", () => {
-    const fake = createPhase7ProviderNeutralBinding("fake");
-    const live = createPhase7ProviderNeutralBinding("live_codex");
+    const fake = createCapabilityProviderNeutralBinding("fake");
+    const live = createCapabilityProviderNeutralBinding("live_codex");
     expect(fake.bindingKind).toBe("fake");
     expect(live.bindingKind).toBe("live_codex");
     expect(live.contracts).toEqual(fake.contracts);
     expect(live.contracts.map((tool) => tool.name)).toEqual(
-      PHASE7_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId),
+      CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId),
     );
   });
 });

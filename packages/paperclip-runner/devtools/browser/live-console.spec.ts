@@ -1,17 +1,10 @@
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { expect, test, type Page } from "@playwright/test";
-
-const evidenceRoot = resolve(
-  fileURLToPath(new URL("../../knowledge/evidence/phase-04b", import.meta.url)),
-);
 
 const DESKTOP = { width: 1440, height: 900 };
 const MOBILE = { width: 390, height: 844 };
 
 function shot(page: Page, name: string) {
-  return page.screenshot({ path: resolve(evidenceRoot, `${name}.png`), fullPage: true });
+  return page.screenshot({ path: test.info().outputPath(`${name}.png`), fullPage: true });
 }
 
 async function openConsole(page: Page) {
@@ -27,7 +20,7 @@ async function runManifest(page: Page, id: string) {
   await expect(page.getByTestId("connection-status")).toHaveText("connected", { timeout: 15_000 });
 }
 
-test.describe("Phase 4b live console", () => {
+test.describe("Live console", () => {
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize(DESKTOP);
   });
@@ -46,7 +39,7 @@ test.describe("Phase 4b live console", () => {
     await expect(page.getByTestId("turn-completed")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByTestId("live-transcript")).toContainText("finished the task");
     await expect(page.getByTestId("live-transcript")).toContainText(
-      "Summarize what the Phase 4b demo server proves.",
+      "Summarize what the Live console demo server proves.",
     );
     await expect(page.getByTestId("tool-item")).toHaveAttribute("data-status", "completed");
     await shot(page, "desktop-03-turn-completed");
@@ -364,7 +357,7 @@ test.describe("Phase 4b live console", () => {
   });
 });
 
-test.describe("Phase 4b live console on a small screen", () => {
+test.describe("Live console on a small screen", () => {
   test("keeps the transcript and composer usable at 390 by 844", async ({ page }) => {
     await page.setViewportSize(MOBILE);
     await openConsole(page);

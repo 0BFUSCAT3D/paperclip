@@ -1,7 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 /**
- * Focused browser suite for the Phase 7G issue thread.
+ * Focused browser suite for the Capability issue thread.
  *
  * The suite runs the built app through `vite preview` on loopback. Fake-mode
  * routes render from package fixtures, so no provider, runnerd, or Codex

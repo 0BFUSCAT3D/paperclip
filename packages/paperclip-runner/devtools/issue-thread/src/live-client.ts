@@ -1,14 +1,14 @@
-import type { Phase7IssueThreadSnapshot } from "../../../src/issue-thread/types";
+import type { CapabilityIssueThreadSnapshot } from "../../../src/issue-thread/types";
 import {
-  PHASE7_TURN_STREAM_ACCEPT,
-  Phase7TurnStreamError,
-  readPhase7TurnStream,
-} from "../../../src/phase7/turn-stream";
+  CAPABILITY_TURN_STREAM_ACCEPT,
+  CapabilityTurnStreamError,
+  readCapabilityTurnStream,
+} from "../../../src/live/turn-stream";
 
 /**
  * Browser client for the package session server.
  *
- * Every response is a server-projected `Phase7IssueThreadSnapshot`. The client
+ * Every response is a server-projected `CapabilityIssueThreadSnapshot`. The client
  * posts intents and renders what comes back; it never patches the snapshot
  * locally, which is what keeps policy and state authority on the server
  * (contract §11).
@@ -20,7 +20,7 @@ import {
  * the settled one is final.
  */
 
-const BASE = "/api/phase7/ui";
+const BASE = "/api/capability/ui";
 
 /**
  * Every route is session-scoped and mediated by the per-browser capability
@@ -30,7 +30,7 @@ const BASE = "/api/phase7/ui";
  */
 const CREDENTIALS = "same-origin" as const;
 
-export interface Phase7CleanRoomIdentity {
+export interface CapabilityCleanRoomIdentity {
   token: string;
   sequence: number;
   companyId: string;
@@ -39,12 +39,12 @@ export interface Phase7CleanRoomIdentity {
   identifier: string;
 }
 
-export interface Phase7LiveResponse {
+export interface CapabilityLiveResponse {
   sessionId: string;
-  view: Phase7IssueThreadSnapshot;
+  view: CapabilityIssueThreadSnapshot;
   surface?: "issue" | "cleanroom";
   /** Present on the clean-room surface so the UI can show which tenant is live. */
-  identity?: Phase7CleanRoomIdentity;
+  identity?: CapabilityCleanRoomIdentity;
   limits?: { maxTurns: number; maxMessageBytes: number };
   turns?: number;
 }
@@ -55,29 +55,29 @@ export interface Phase7LiveResponse {
  * lets a failure to start real Codex read as a failure rather than quietly
  * degrading into a fixture.
  */
-export class Phase7LiveError extends Error {
+export class CapabilityLiveError extends Error {
   constructor(
     readonly code: string,
     message: string,
   ) {
     super(message);
-    this.name = "Phase7LiveError";
+    this.name = "CapabilityLiveError";
   }
 }
 
-async function readError(response: Response, path: string): Promise<Phase7LiveError> {
+async function readError(response: Response, path: string): Promise<CapabilityLiveError> {
   try {
     const body = (await response.json()) as { error?: string; message?: string };
-    return new Phase7LiveError(
+    return new CapabilityLiveError(
       body.error ?? `http_${response.status}`,
       body.message ?? `${path} failed with ${response.status}`,
     );
   } catch {
-    return new Phase7LiveError(`http_${response.status}`, `${path} failed with ${response.status}`);
+    return new CapabilityLiveError(`http_${response.status}`, `${path} failed with ${response.status}`);
   }
 }
 
-async function post(path: string, body: unknown): Promise<Phase7LiveResponse> {
+async function post(path: string, body: unknown): Promise<CapabilityLiveResponse> {
   const response = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -85,14 +85,14 @@ async function post(path: string, body: unknown): Promise<Phase7LiveResponse> {
     credentials: CREDENTIALS,
   });
   if (!response.ok) throw await readError(response, path);
-  return (await response.json()) as Phase7LiveResponse;
+  return (await response.json()) as CapabilityLiveResponse;
 }
 
 /** Interim projection delivered while the turn is still running. */
-export type Phase7TurnFrameHandler = (view: Phase7IssueThreadSnapshot) => void;
+export type CapabilityTurnFrameHandler = (view: CapabilityIssueThreadSnapshot) => void;
 
-export interface Phase7SendOptions {
-  onFrame?: Phase7TurnFrameHandler;
+export interface CapabilitySendOptions {
+  onFrame?: CapabilityTurnFrameHandler;
   /** Abort the turn stream — used when the surface is torn down or rotated. */
   signal?: AbortSignal;
 }
@@ -100,11 +100,11 @@ export interface Phase7SendOptions {
 async function postTurnStream(
   path: string,
   body: unknown,
-  options: Phase7SendOptions,
-): Promise<Phase7LiveResponse> {
+  options: CapabilitySendOptions,
+): Promise<CapabilityLiveResponse> {
   const response = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: PHASE7_TURN_STREAM_ACCEPT },
+    headers: { "content-type": "application/json", accept: CAPABILITY_TURN_STREAM_ACCEPT },
     body: JSON.stringify(body),
     credentials: CREDENTIALS,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -113,37 +113,37 @@ async function postTurnStream(
   // because they are decided before the first frame is written.
   if (!response.ok) throw await readError(response, path);
   try {
-    return await readPhase7TurnStream<Phase7IssueThreadSnapshot, Phase7LiveResponse>(
+    return await readCapabilityTurnStream<CapabilityIssueThreadSnapshot, CapabilityLiveResponse>(
       response,
       (frame) => options.onFrame?.(frame.view),
     );
   } catch (cause) {
-    if (cause instanceof Phase7TurnStreamError) {
-      throw new Phase7LiveError(cause.code, cause.message);
+    if (cause instanceof CapabilityTurnStreamError) {
+      throw new CapabilityLiveError(cause.code, cause.message);
     }
     throw cause;
   }
 }
 
-export const phase7LiveClient = {
-  async load(sessionId: string | null): Promise<Phase7LiveResponse> {
+export const capabilityLiveClient = {
+  async load(sessionId: string | null): Promise<CapabilityLiveResponse> {
     const query = sessionId === null ? "" : `?sessionId=${encodeURIComponent(sessionId)}`;
     const response = await fetch(`${BASE}/session${query}`, { credentials: CREDENTIALS });
     if (!response.ok) throw await readError(response, "/session");
-    return (await response.json()) as Phase7LiveResponse;
+    return (await response.json()) as CapabilityLiveResponse;
   },
-  create(scenario: string): Promise<Phase7LiveResponse> {
+  create(scenario: string): Promise<CapabilityLiveResponse> {
     return post("/session", { scenario });
   },
   /** Reconnect to a clean room, or open one when there is nothing to resume. */
-  async loadCleanRoom(sessionId: string | null): Promise<Phase7LiveResponse> {
+  async loadCleanRoom(sessionId: string | null): Promise<CapabilityLiveResponse> {
     const query = sessionId === null ? "" : `?sessionId=${encodeURIComponent(sessionId)}`;
     const response = await fetch(`${BASE}/cleanroom/session${query}`, { credentials: CREDENTIALS });
     if (!response.ok) throw await readError(response, "/cleanroom/session");
-    return (await response.json()) as Phase7LiveResponse;
+    return (await response.json()) as CapabilityLiveResponse;
   },
   /** `New chat`: retire the current room and mint a new mock tenant. */
-  newCleanRoom(sessionId: string | null): Promise<Phase7LiveResponse> {
+  newCleanRoom(sessionId: string | null): Promise<CapabilityLiveResponse> {
     return post("/cleanroom/session", sessionId === null ? {} : { sessionId });
   },
   /**
@@ -153,17 +153,17 @@ export const phase7LiveClient = {
   send(
     sessionId: string,
     message: string,
-    options: Phase7SendOptions = {},
-  ): Promise<Phase7LiveResponse> {
+    options: CapabilitySendOptions = {},
+  ): Promise<CapabilityLiveResponse> {
     return postTurnStream("/message", { sessionId, message }, options);
   },
-  stop(sessionId: string): Promise<Phase7LiveResponse> {
+  stop(sessionId: string): Promise<CapabilityLiveResponse> {
     return post("/interrupt", { sessionId });
   },
-  reset(sessionId: string): Promise<Phase7LiveResponse> {
+  reset(sessionId: string): Promise<CapabilityLiveResponse> {
     return post("/reset", { sessionId });
   },
-  reconnect(sessionId: string): Promise<Phase7LiveResponse> {
+  reconnect(sessionId: string): Promise<CapabilityLiveResponse> {
     return post("/reconnect", { sessionId });
   },
   respond(
@@ -171,18 +171,18 @@ export const phase7LiveClient = {
     interactionId: string,
     outcome: string,
     result: unknown,
-  ): Promise<Phase7LiveResponse> {
+  ): Promise<CapabilityLiveResponse> {
     return post("/interaction", { sessionId, interactionId, outcome, result });
   },
 };
 
-const SESSION_STORAGE_KEY = "paperclip-runner.phase7.session";
+const SESSION_STORAGE_KEY = "paperclip-runner.capability.session";
 /**
  * The clean room keeps its own key. Sharing one would let a scenario session id
  * be handed to the clean-room route (and the reverse) after a refresh, which is
  * exactly the cross-surface bleed the isolation criterion forbids.
  */
-const CLEAN_ROOM_STORAGE_KEY = "paperclip-runner.phase7.cleanroom.session";
+const CLEAN_ROOM_STORAGE_KEY = "paperclip-runner.capability.cleanroom.session";
 
 function storageKey(surface: "issue" | "cleanroom"): string {
   return surface === "cleanroom" ? CLEAN_ROOM_STORAGE_KEY : SESSION_STORAGE_KEY;

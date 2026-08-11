@@ -1,38 +1,38 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
-  PHASE7_DEFAULT_FIXTURE_PROFILE,
-  phase7IssueThreadFixture,
+  CAPABILITY_DEFAULT_FIXTURE_PROFILE,
+  capabilityIssueThreadFixture,
 } from "../../../src/issue-thread/fixtures";
 import type {
-  Phase7EvidenceSectionId,
-  Phase7IssueThreadSnapshot,
+  CapabilityEvidenceSectionId,
+  CapabilityIssueThreadSnapshot,
 } from "../../../src/issue-thread/types";
-import { phase7DenialCount } from "../../../src/issue-thread/types";
+import { capabilityDenialCount } from "../../../src/issue-thread/types";
 import { Composer } from "./Composer";
 import { EvidencePanel } from "./EvidencePanel";
 import { IssueHeader } from "./IssueHeader";
 import { applyFakeInteractionResponse } from "./fake-store";
-import type { Phase7InteractionResponse } from "./InteractionCard";
+import type { CapabilityInteractionResponse } from "./InteractionCard";
 import {
-  phase7LiveClient,
+  capabilityLiveClient,
   recallSession,
   rememberSession,
-  type Phase7CleanRoomIdentity,
+  type CapabilityCleanRoomIdentity,
 } from "./live-client";
-import { parsePhase7Route, phase7RouteHref, type Phase7Route } from "./route";
+import { parseCapabilityRoute, capabilityRouteHref, type CapabilityRoute } from "./route";
 import { SurfaceNav } from "./SurfaceNav";
 import { TurnGroup } from "./ThreadItems";
 
-const PANEL_OPEN_KEY = "paperclip-runner.phase7.panel.open";
+const PANEL_OPEN_KEY = "paperclip-runner.capability.panel.open";
 /**
  * The clean room keeps its own panel preference. Evidence is collapsed by
  * default there on purpose (revision 5: "the default view reads as plain
  * chat"), and inheriting an explorer session's opened drawer would quietly
  * break that on the very first visit.
  */
-const CHAT_PANEL_OPEN_KEY = "paperclip-runner.phase7.chat.panel.open";
-const PANEL_WIDTH_KEY = "paperclip-runner.phase7.panel.width";
+const CHAT_PANEL_OPEN_KEY = "paperclip-runner.capability.chat.panel.open";
+const PANEL_WIDTH_KEY = "paperclip-runner.capability.panel.width";
 const PANEL_MIN = 320;
 const PANEL_MAX = 640;
 /** Play-all cadence for the replay strip (§6); slow enough to read a turn. */
@@ -85,7 +85,7 @@ function describe(cause: unknown): string {
 }
 
 /** Resolution copy for a request that settled without this client answering it. */
-function settledAnnouncement(snapshot: Phase7IssueThreadSnapshot, interactionId: string): string {
+function settledAnnouncement(snapshot: CapabilityIssueThreadSnapshot, interactionId: string): string {
   for (const turn of snapshot.turns) {
     for (const item of turn.items) {
       if (item.kind === "interaction" && item.interactionId === interactionId) {
@@ -96,10 +96,10 @@ function settledAnnouncement(snapshot: Phase7IssueThreadSnapshot, interactionId:
   return SETTLED_ANNOUNCEMENT;
 }
 
-function useRoute(): Phase7Route {
-  const [route, setRoute] = useState(() => parsePhase7Route(window.location));
+function useRoute(): CapabilityRoute {
+  const [route, setRoute] = useState(() => parseCapabilityRoute(window.location));
   useEffect(() => {
-    const onChange = () => setRoute(parsePhase7Route(window.location));
+    const onChange = () => setRoute(parseCapabilityRoute(window.location));
     window.addEventListener("hashchange", onChange);
     window.addEventListener("popstate", onChange);
     return () => {
@@ -127,8 +127,15 @@ export function App() {
   const route = useRoute();
   const chat = route.surface === "chat";
   const layout = useLayout();
-  const [snapshot, setSnapshot] = useState<Phase7IssueThreadSnapshot | null>(null);
-  const [identity, setIdentity] = useState<Phase7CleanRoomIdentity | null>(null);
+
+  useEffect(() => {
+    document.title = chat
+      ? "🫧 Mock Paperclip · Issue thread"
+      : "🧯 Mock Paperclip · Issue thread";
+  }, [chat]);
+
+  const [snapshot, setSnapshot] = useState<CapabilityIssueThreadSnapshot | null>(null);
+  const [identity, setIdentity] = useState<CapabilityCleanRoomIdentity | null>(null);
   /**
    * Which surface produced `snapshot`. A hash change commits the new route in
    * the same frame that still renders the old snapshot, so without this a
@@ -145,7 +152,7 @@ export function App() {
   );
   const [panelWidth, setPanelWidth] = useState(() => readStoredNumber(PANEL_WIDTH_KEY, 384));
   const [segment, setSegment] = useState<"thread" | "evidence">(route.segment);
-  const [openSections, setOpenSections] = useState<Phase7EvidenceSectionId[]>(["tools"]);
+  const [openSections, setOpenSections] = useState<CapabilityEvidenceSectionId[]>(["tools"]);
   const [selectedTurnId, setSelectedTurnId] = useState<string | "all">("all");
   const [highlightedRecordId, setHighlightedRecordId] = useState<string | null>(route.record);
   const [focusInteractionId, setFocusInteractionId] = useState<string | null>(null);
@@ -188,7 +195,7 @@ export function App() {
       // cannot start, the surface says so rather than rendering a canned thread.
       void (async () => {
         try {
-          const response = await phase7LiveClient.loadCleanRoom(recallSession("cleanroom"));
+          const response = await capabilityLiveClient.loadCleanRoom(recallSession("cleanroom"));
           if (cancelled) return;
           rememberSession(response.sessionId, "cleanroom");
           setIdentity(response.identity ?? null);
@@ -201,7 +208,7 @@ export function App() {
     } else if (route.mode === "live") {
       void (async () => {
         try {
-          const response = await phase7LiveClient.load(recallSession());
+          const response = await capabilityLiveClient.load(recallSession());
           if (cancelled) return;
           rememberSession(response.sessionId);
           setSnapshot(response.view);
@@ -212,7 +219,7 @@ export function App() {
       })();
     } else {
       setIdentity(null);
-      setSnapshot(phase7IssueThreadFixture(route.shot ?? "thread-baseline", route.fixtureProfile));
+      setSnapshot(capabilityIssueThreadFixture(route.shot ?? "thread-baseline", route.fixtureProfile));
       setSnapshotSurface("issue");
     }
     return () => {
@@ -230,9 +237,9 @@ export function App() {
     setPanelOpen(true);
     setSegment("evidence");
     setOpenSections((current) =>
-      current.includes(route.panel as Phase7EvidenceSectionId)
+      current.includes(route.panel as CapabilityEvidenceSectionId)
         ? current
-        : [...current, route.panel as Phase7EvidenceSectionId],
+        : [...current, route.panel as CapabilityEvidenceSectionId],
     );
     setHighlightedRecordId(route.record);
   }, [route.panel, route.record]);
@@ -330,7 +337,7 @@ export function App() {
   );
 
   const openEvidence = useCallback(
-    (section: Phase7EvidenceSectionId, recordId: string) => {
+    (section: CapabilityEvidenceSectionId, recordId: string) => {
       setPanelOpen(true);
       setSegment("evidence");
       setSelectedTurnId("all");
@@ -371,11 +378,11 @@ export function App() {
   }, []);
 
   const respond = useCallback(
-    (response: Phase7InteractionResponse) => {
+    (response: CapabilityInteractionResponse) => {
       setSnapshot((current) => {
         if (current === null) return current;
         if (route.mode === "live") {
-          void phase7LiveClient
+          void capabilityLiveClient
             .respond(current.sessionId, response.interactionId, response.outcome, response.result)
             .then((next) => setSnapshot(next.view))
             .catch((cause) => setActionError(describe(cause)));
@@ -418,7 +425,7 @@ export function App() {
       setSnapshot((current) =>
         current === null ? current : { ...current, composer: { ...current.composer, state: "sending" } },
       );
-      void phase7LiveClient
+      void capabilityLiveClient
         .send(snapshot.sessionId, message, {
           signal: controller.signal,
           onFrame: (view) => {
@@ -453,7 +460,7 @@ export function App() {
         // turn stream keeps rendering and its terminal frame — not this
         // response — decides what the stopped turn finally looks like.
         const streaming = turnAbortRef.current !== null;
-        void phase7LiveClient
+        void capabilityLiveClient
           .stop(current.sessionId)
           .then((next) => {
             if (!streaming && turnAbortRef.current === null) setSnapshot(next.view);
@@ -478,7 +485,7 @@ export function App() {
    * server always answers with a new session id and new mock identities, so the
    * client's job is only to forget the old ones.
    */
-  const adoptCleanRoom = useCallback((next: Awaited<ReturnType<typeof phase7LiveClient.newCleanRoom>>) => {
+  const adoptCleanRoom = useCallback((next: Awaited<ReturnType<typeof capabilityLiveClient.newCleanRoom>>) => {
     rememberSession(next.sessionId, "cleanroom");
     setIdentity(next.identity ?? null);
     setSnapshot(next.view);
@@ -494,7 +501,7 @@ export function App() {
     // dropped before the request that retires it.
     abandonTurn();
     setAnnouncement("Starting a new clean-room chat…");
-    void phase7LiveClient
+    void capabilityLiveClient
       .newCleanRoom(snapshot?.sessionId ?? null)
       .then(adoptCleanRoom)
       .catch((cause) => setActionError(describe(cause)));
@@ -504,14 +511,14 @@ export function App() {
     setConfirmReset(false);
     abandonTurn();
     if (chat && snapshot !== null) {
-      void phase7LiveClient
+      void capabilityLiveClient
         .reset(snapshot.sessionId)
         .then(adoptCleanRoom)
         .catch((cause) => setActionError(describe(cause)));
       return;
     }
     if (route.mode === "live" && snapshot !== null) {
-      void phase7LiveClient
+      void capabilityLiveClient
         .reset(snapshot.sessionId)
         .then((next) => {
           rememberSession(next.sessionId);
@@ -520,13 +527,13 @@ export function App() {
         .catch((cause) => setActionError(describe(cause)));
       return;
     }
-    setSnapshot(phase7IssueThreadFixture("thread-baseline", route.fixtureProfile));
+    setSnapshot(capabilityIssueThreadFixture("thread-baseline", route.fixtureProfile));
     setAnnouncement("Scenario reset. The mock state is back to its clean seed.");
   }, [abandonTurn, adoptCleanRoom, chat, route.fixtureProfile, route.mode, snapshot]);
 
   const retry = useCallback(() => {
     if (route.mode === "live" && snapshot !== null) {
-      void phase7LiveClient
+      void capabilityLiveClient
         .reconnect(snapshot.sessionId)
         .then((next) => setSnapshot(next.view))
         .catch((cause) => setActionError(describe(cause)));
@@ -570,7 +577,7 @@ export function App() {
   const seekReplay = useCallback(
     (ordinal: number) => {
       setPlaying(false);
-      window.location.hash = phase7RouteHref(route, { at: ordinal });
+      window.location.hash = capabilityRouteHref(route, { at: ordinal });
     },
     [route],
   );
@@ -582,7 +589,7 @@ export function App() {
       return;
     }
     const timer = window.setTimeout(() => {
-      window.location.hash = phase7RouteHref(route, { at: replay.ordinal + 1 });
+      window.location.hash = capabilityRouteHref(route, { at: replay.ordinal + 1 });
     }, REPLAY_STEP_MS);
     return () => window.clearTimeout(timer);
   }, [playing, replay, route]);
@@ -594,7 +601,7 @@ export function App() {
   /* ---------------------------------------------------------------- render */
 
   const denialCount = useMemo(
-    () => (snapshot === null ? 0 : phase7DenialCount(snapshot.evidence, null)),
+    () => (snapshot === null ? 0 : capabilityDenialCount(snapshot.evidence, null)),
     [snapshot],
   );
 
@@ -678,10 +685,10 @@ export function App() {
           if (layout === "segment") setSegment(next ? "evidence" : "thread");
         }}
         onSelectScenario={(scenario) => {
-          window.location.hash = phase7RouteHref(route, { fixtureProfile: scenario });
+          window.location.hash = capabilityRouteHref(route, { fixtureProfile: scenario });
         }}
         onReplay={() => {
-          window.location.hash = phase7RouteHref(route, {
+          window.location.hash = capabilityRouteHref(route, {
             shot: "replay-mode",
             mode: "replay",
             at: 12,

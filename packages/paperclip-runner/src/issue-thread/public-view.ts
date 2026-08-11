@@ -1,7 +1,7 @@
 /**
  * The public issue-thread DTO (track 7U).
  *
- * `projectPhase7IssueThread` produces the view contract; this module produces
+ * `projectCapabilityIssueThread` produces the view contract; this module produces
  * the *published* form of it. Every field is copied by name, so a field added
  * to the projection — or to a record it passes through — cannot reach a browser
  * until it is listed here. That is the property the previous serialization
@@ -24,25 +24,25 @@
  */
 
 import type {
-  Phase7EvidenceAuthorizationRecord,
-  Phase7EvidenceCallRecord,
-  Phase7EvidenceControlPlaneRecord,
-  Phase7EvidenceModel,
-  Phase7EvidenceParityRecord,
-  Phase7EvidenceRef,
-  Phase7EvidenceRunnerRecord,
-  Phase7EvidenceStateDiffRecord,
-  Phase7EvidenceToolsRecord,
-  Phase7EvidenceTraceabilityRecord,
-  Phase7IssueThreadSnapshot,
-  Phase7ThreadInteractionCard,
-  Phase7ThreadInteractionPayload,
-  Phase7ThreadItem,
-  Phase7ThreadLink,
-  Phase7ThreadTurn,
+  CapabilityEvidenceAuthorizationRecord,
+  CapabilityEvidenceCallRecord,
+  CapabilityEvidenceControlPlaneRecord,
+  CapabilityEvidenceModel,
+  CapabilityEvidenceParityRecord,
+  CapabilityEvidenceRef,
+  CapabilityEvidenceRunnerRecord,
+  CapabilityEvidenceStateDiffRecord,
+  CapabilityEvidenceToolsRecord,
+  CapabilityEvidenceTraceabilityRecord,
+  CapabilityIssueThreadSnapshot,
+  CapabilityThreadInteractionCard,
+  CapabilityThreadInteractionPayload,
+  CapabilityThreadItem,
+  CapabilityThreadLink,
+  CapabilityThreadTurn,
 } from "./types.js";
-import { PHASE7_ISSUE_THREAD_VIEW_SCHEMA } from "./types.js";
-import type { Phase7JsonValue } from "../mock-core/phase7-control-plane-types.js";
+import { CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA } from "./types.js";
+import type { CapabilityJsonValue } from "../mock-core/capability-control-plane-types.js";
 
 /**
  * Structurally the view contract: the browser renders one component tree for
@@ -50,9 +50,9 @@ import type { Phase7JsonValue } from "../mock-core/phase7-control-plane-types.js
  * only invite the two to drift. The guarantee lives in the builder below, not
  * in a second set of field names.
  */
-export type Phase7PublicIssueThreadView = Phase7IssueThreadSnapshot;
+export type CapabilityPublicIssueThreadView = CapabilityIssueThreadSnapshot;
 
-export interface Phase7PublicThreadViewOptions {
+export interface CapabilityPublicThreadViewOptions {
   /**
    * Values that must not appear anywhere in the published DTO — provider thread
    * and session identity. Short values are ignored: scrubbing a two-character
@@ -84,15 +84,15 @@ function clamp(value: string, limit = MAX_DETAIL_CHARS): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}…`;
 }
 
-function asRecord(value: Phase7JsonValue | null): Record<string, Phase7JsonValue> {
+function asRecord(value: CapabilityJsonValue | null): Record<string, CapabilityJsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
 }
 
 function pick(
-  source: Record<string, Phase7JsonValue>,
+  source: Record<string, CapabilityJsonValue>,
   keys: readonly string[],
-): Record<string, Phase7JsonValue> {
-  const result: Record<string, Phase7JsonValue> = {};
+): Record<string, CapabilityJsonValue> {
+  const result: Record<string, CapabilityJsonValue> = {};
   for (const key of keys) if (key in source) result[key] = source[key]!;
   return result;
 }
@@ -102,7 +102,7 @@ class Aliases {
   readonly #map = new Map<string, string>();
   readonly #ordered: string[];
 
-  constructor(view: Phase7IssueThreadSnapshot) {
+  constructor(view: CapabilityIssueThreadSnapshot) {
     view.turns.forEach((turn, index) => this.#add(turn.id, `turn-${index + 1}`));
     view.evidence.calls.forEach((call, index) => this.#add(call.id, `call-${index + 1}`));
     // Longest first, so one raw id that contains another cannot be half-replaced.
@@ -129,15 +129,15 @@ class Aliases {
   }
 }
 
-function publicRef(ref: Phase7EvidenceRef, aliases: Aliases): Phase7EvidenceRef {
+function publicRef(ref: CapabilityEvidenceRef, aliases: Aliases): CapabilityEvidenceRef {
   return { section: ref.section, recordId: aliases.text(ref.recordId) };
 }
 
-function publicLink(link: Phase7ThreadLink | null): Phase7ThreadLink | null {
+function publicLink(link: CapabilityThreadLink | null): CapabilityThreadLink | null {
   return link === null ? null : { label: clamp(link.label), href: clamp(link.href) };
 }
 
-function publicToolInput(value: Phase7JsonValue): Phase7JsonValue {
+function publicToolInput(value: CapabilityJsonValue): CapabilityJsonValue {
   const source = pick(asRecord(value), TOOL_INPUT_KEYS);
   const fields = Array.isArray(source.fields)
     ? source.fields.filter((entry): entry is string => typeof entry === "string")
@@ -149,7 +149,7 @@ function publicToolInput(value: Phase7JsonValue): Phase7JsonValue {
   };
 }
 
-function publicToolResult(value: Phase7JsonValue | null): Phase7JsonValue | null {
+function publicToolResult(value: CapabilityJsonValue | null): CapabilityJsonValue | null {
   if (value === null) return null;
   const source = pick(asRecord(value), TOOL_RESULT_KEYS);
   const inner = pick(asRecord(source.result ?? null), TOOL_RESULT_INNER_KEYS);
@@ -166,8 +166,8 @@ function publicToolResult(value: Phase7JsonValue | null): Phase7JsonValue | null
 }
 
 function publicInteractionPayload(
-  payload: Phase7ThreadInteractionPayload,
-): Phase7ThreadInteractionPayload {
+  payload: CapabilityThreadInteractionPayload,
+): CapabilityThreadInteractionPayload {
   switch (payload.kind) {
     case "questions":
       return {
@@ -231,9 +231,9 @@ function publicInteractionPayload(
 }
 
 function publicInteractionCard(
-  card: Phase7ThreadInteractionCard,
+  card: CapabilityThreadInteractionCard,
   aliases: Aliases,
-): Phase7ThreadInteractionCard {
+): CapabilityThreadInteractionCard {
   return {
     interactionId: card.interactionId,
     interactionKind: card.interactionKind,
@@ -250,7 +250,7 @@ function publicInteractionCard(
   };
 }
 
-function publicItem(item: Phase7ThreadItem, aliases: Aliases): Phase7ThreadItem {
+function publicItem(item: CapabilityThreadItem, aliases: Aliases): CapabilityThreadItem {
   const id = aliases.text(item.id);
   switch (item.kind) {
     case "user_message":
@@ -373,7 +373,7 @@ function publicItem(item: Phase7ThreadItem, aliases: Aliases): Phase7ThreadItem 
   }
 }
 
-function publicTurn(turn: Phase7ThreadTurn, aliases: Aliases): Phase7ThreadTurn {
+function publicTurn(turn: CapabilityThreadTurn, aliases: Aliases): CapabilityThreadTurn {
   return {
     id: aliases.turn(turn.id),
     ordinal: turn.ordinal,
@@ -385,7 +385,7 @@ function publicTurn(turn: Phase7ThreadTurn, aliases: Aliases): Phase7ThreadTurn 
   };
 }
 
-function publicTools(record: Phase7EvidenceToolsRecord, aliases: Aliases): Phase7EvidenceToolsRecord {
+function publicTools(record: CapabilityEvidenceToolsRecord, aliases: Aliases): CapabilityEvidenceToolsRecord {
   return {
     id: aliases.text(record.id),
     turnId: aliases.turn(record.turnId),
@@ -398,7 +398,7 @@ function publicTools(record: Phase7EvidenceToolsRecord, aliases: Aliases): Phase
   };
 }
 
-function publicCall(record: Phase7EvidenceCallRecord, aliases: Aliases): Phase7EvidenceCallRecord {
+function publicCall(record: CapabilityEvidenceCallRecord, aliases: Aliases): CapabilityEvidenceCallRecord {
   return {
     id: aliases.text(record.id),
     turnId: aliases.turn(record.turnId),
@@ -414,9 +414,9 @@ function publicCall(record: Phase7EvidenceCallRecord, aliases: Aliases): Phase7E
 }
 
 function publicAuthorization(
-  record: Phase7EvidenceAuthorizationRecord,
+  record: CapabilityEvidenceAuthorizationRecord,
   aliases: Aliases,
-): Phase7EvidenceAuthorizationRecord {
+): CapabilityEvidenceAuthorizationRecord {
   return {
     id: aliases.text(record.id),
     turnId: aliases.turn(record.turnId),
@@ -433,9 +433,9 @@ function publicAuthorization(
 }
 
 function publicControlPlane(
-  record: Phase7EvidenceControlPlaneRecord,
+  record: CapabilityEvidenceControlPlaneRecord,
   aliases: Aliases,
-): Phase7EvidenceControlPlaneRecord {
+): CapabilityEvidenceControlPlaneRecord {
   return {
     id: aliases.text(record.id),
     turnId: aliases.turn(record.turnId),
@@ -448,9 +448,9 @@ function publicControlPlane(
 }
 
 function publicRunner(
-  record: Phase7EvidenceRunnerRecord,
+  record: CapabilityEvidenceRunnerRecord,
   aliases: Aliases,
-): Phase7EvidenceRunnerRecord {
+): CapabilityEvidenceRunnerRecord {
   return {
     id: record.id,
     turnId: aliases.turn(record.turnId),
@@ -465,9 +465,9 @@ function publicRunner(
 }
 
 function publicStateDiff(
-  record: Phase7EvidenceStateDiffRecord,
+  record: CapabilityEvidenceStateDiffRecord,
   aliases: Aliases,
-): Phase7EvidenceStateDiffRecord {
+): CapabilityEvidenceStateDiffRecord {
   return {
     id: aliases.text(record.id),
     turnId: aliases.turn(record.turnId),
@@ -483,9 +483,9 @@ function publicStateDiff(
 }
 
 function publicTraceability(
-  record: Phase7EvidenceTraceabilityRecord,
+  record: CapabilityEvidenceTraceabilityRecord,
   aliases: Aliases,
-): Phase7EvidenceTraceabilityRecord {
+): CapabilityEvidenceTraceabilityRecord {
   return {
     id: record.id,
     turnId: aliases.turn(record.turnId),
@@ -501,9 +501,9 @@ function publicTraceability(
 }
 
 function publicParity(
-  record: Phase7EvidenceParityRecord,
+  record: CapabilityEvidenceParityRecord,
   aliases: Aliases,
-): Phase7EvidenceParityRecord {
+): CapabilityEvidenceParityRecord {
   return {
     id: record.id,
     turnId: aliases.turn(record.turnId),
@@ -513,7 +513,7 @@ function publicParity(
   };
 }
 
-function publicEvidence(evidence: Phase7EvidenceModel, aliases: Aliases): Phase7EvidenceModel {
+function publicEvidence(evidence: CapabilityEvidenceModel, aliases: Aliases): CapabilityEvidenceModel {
   return {
     tools: evidence.tools.map((record) => publicTools(record, aliases)),
     calls: evidence.calls.map((record) => publicCall(record, aliases)),
@@ -532,7 +532,7 @@ function publicEvidence(evidence: Phase7EvidenceModel, aliases: Aliases): Phase7
  * nobody anticipated still cannot ship, and so the property is testable by
  * scanning bytes rather than by reasoning about call graphs.
  */
-function scrubWithheld(view: Phase7PublicIssueThreadView, values: readonly string[]): Phase7PublicIssueThreadView {
+function scrubWithheld(view: CapabilityPublicIssueThreadView, values: readonly string[]): CapabilityPublicIssueThreadView {
   const scrubbable = [...new Set(values.filter((value) => value.length >= MIN_SCRUBBABLE_LENGTH))]
     .sort((left, right) => right.length - left.length);
   if (scrubbable.length === 0) return view;
@@ -547,7 +547,7 @@ function scrubWithheld(view: Phase7PublicIssueThreadView, values: readonly strin
   // field-by-field copy already left nothing to scrub. Re-parsing then would buy
   // an identical object for the price of a full round-trip per frame.
   if (!replaced) return view;
-  return JSON.parse(encoded) as Phase7PublicIssueThreadView;
+  return JSON.parse(encoded) as CapabilityPublicIssueThreadView;
 }
 
 /**
@@ -558,13 +558,13 @@ function scrubWithheld(view: Phase7PublicIssueThreadView, values: readonly strin
  * here so a single omission cannot open a disclosure path that the other
  * responses closed.
  */
-export function toPhase7PublicThreadView(
-  view: Phase7IssueThreadSnapshot,
-  options: Phase7PublicThreadViewOptions = {},
-): Phase7PublicIssueThreadView {
+export function toCapabilityPublicThreadView(
+  view: CapabilityIssueThreadSnapshot,
+  options: CapabilityPublicThreadViewOptions = {},
+): CapabilityPublicIssueThreadView {
   const aliases = new Aliases(view);
-  const published: Phase7PublicIssueThreadView = {
-    schema: PHASE7_ISSUE_THREAD_VIEW_SCHEMA,
+  const published: CapabilityPublicIssueThreadView = {
+    schema: CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA,
     sessionId: view.sessionId,
     mode: view.mode,
     identity: {

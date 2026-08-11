@@ -4,7 +4,7 @@ import type { ControlPlanePort } from "./contracts/control-plane-port.js";
 import type { NativeExecutionInputV1, NativeSessionExecutionResult } from "./contracts/native-execution.js";
 import { buildNativeModelEnvelope, parseNativeExecutionInput } from "./contracts/native-execution.js";
 import type { NativeSession, NativeSessionBackend } from "./contracts/native-session-backend.js";
-import type { PrpEvent, PrpTerminalState } from "./protocol/phase1-contract.js";
+import type { PrpEvent, PrpTerminalState } from "./protocol/replay-contract.js";
 
 export interface ExecuteNativeSessionOptions {
   input: NativeExecutionInputV1;

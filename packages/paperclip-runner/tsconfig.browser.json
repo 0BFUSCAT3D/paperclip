@@ -27,8 +27,8 @@
       "@paperclipai/paperclip-runner/styles.css": [
         "styles.css"
       ],
-      "@paperclip-runner-local/phase7": [
-        "src/phase7/browser-index.ts"
+      "@paperclip-runner-local/capability": [
+        "src/scenarios/index.ts"
       ]
     }
   },

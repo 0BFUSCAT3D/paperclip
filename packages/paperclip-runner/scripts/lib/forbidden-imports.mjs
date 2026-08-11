@@ -55,7 +55,7 @@ export function findSpecifiers(source) {
   return found;
 }
 
-// The Phase 4b component decision record adapts shadcn/ui and AI Elements
+// The Live console component decision record adapts shadcn/ui and AI Elements
 // source rather than adopting their runtimes. These packages would reintroduce
 // a second message model or a Tailwind/radix dependency for the demo app.
 const BROWSER_FORBIDDEN_PACKAGES = [

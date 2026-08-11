@@ -1,6 +1,6 @@
-# Phase 7 issue-thread fonts
+# Capability issue-thread fonts
 
-The Phase 7 issue-thread bundle includes Latin-subset WOFF2 files so captures
+The Capability issue-thread bundle includes Latin-subset WOFF2 files so captures
 do not depend on fonts installed on the host.
 
 ## Inter

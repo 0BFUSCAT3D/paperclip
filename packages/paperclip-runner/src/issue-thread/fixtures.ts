@@ -1,20 +1,20 @@
 /**
- * Deterministic `fake`-mode fixtures for the Phase 7B screenshot matrix
+ * Deterministic `fake`-mode fixtures for the Capability screenshot matrix
  * (contract §10.2). Every timestamp, identifier, and verdict is authored data
  * so two captures of the same slug are pixel-identical. Nothing here reads a
  * clock, a random source, or a locale.
  */
 
 import type {
-  Phase7EvidenceModel,
-  Phase7IssueThreadSnapshot,
-  Phase7ThreadInteractionCard,
-  Phase7ThreadItem,
-  Phase7ThreadTurn,
+  CapabilityEvidenceModel,
+  CapabilityIssueThreadSnapshot,
+  CapabilityThreadInteractionCard,
+  CapabilityThreadItem,
+  CapabilityThreadTurn,
 } from "./types.js";
-import { PHASE7_ISSUE_THREAD_VIEW_SCHEMA, phase7FormatBytes } from "./types.js";
+import { CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA, capabilityFormatBytes } from "./types.js";
 
-export const PHASE7_UI_SHOT_SLUGS = [
+export const CAPABILITY_UI_SHOT_SLUGS = [
   "thread-baseline",
   "turn-streaming",
   "interaction-question-pending",
@@ -29,9 +29,9 @@ export const PHASE7_UI_SHOT_SLUGS = [
   "replay-mode",
 ] as const;
 
-export type Phase7UiShotSlug = (typeof PHASE7_UI_SHOT_SLUGS)[number];
+export type CapabilityUiShotSlug = (typeof CAPABILITY_UI_SHOT_SLUGS)[number];
 
-export const PHASE7_DEFAULT_FIXTURE_PROFILE = "hb-baseline";
+export const CAPABILITY_DEFAULT_FIXTURE_PROFILE = "hb-baseline";
 
 const FIXTURE_CLOCK = "2026-08-09T09:00:00.000Z";
 const AGENT = "Mock Engineer";
@@ -42,7 +42,7 @@ function at(minute: number, second = 0): string {
   return stamp.toISOString();
 }
 
-function baseEvidence(): Phase7EvidenceModel {
+function baseEvidence(): CapabilityEvidenceModel {
   return {
     tools: [
       {
@@ -380,13 +380,13 @@ function baseEvidence(): Phase7EvidenceModel {
         turnId: "turn-2",
         assertion: "attachment byte upload is exercised end to end",
         verdict: "intentional_gap",
-        note: "Phase 7 registers deliverables by content ref; byte upload lands in Phase 8.",
+        note: "Capability registers deliverables by content ref; byte upload lands in future upload integration.",
       },
     ],
   };
 }
 
-function baselineTurns(): Phase7ThreadTurn[] {
+function baselineTurns(): CapabilityThreadTurn[] {
   return [
     {
       id: "turn-1",
@@ -519,9 +519,9 @@ function baselineTurns(): Phase7ThreadTurn[] {
   ];
 }
 
-function baseline(): Phase7IssueThreadSnapshot {
+function baseline(): CapabilityIssueThreadSnapshot {
   return {
-    schema: PHASE7_ISSUE_THREAD_VIEW_SCHEMA,
+    schema: CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA,
     sessionId: "session-7g-fixture",
     mode: "fake",
     identity: {
@@ -540,7 +540,7 @@ function baseline(): Phase7IssueThreadSnapshot {
       assignee: AGENT,
       runState: "run-7g-1 · attempt 1",
       scenarioId: "hb-baseline",
-      fixtureProfile: PHASE7_DEFAULT_FIXTURE_PROFILE,
+      fixtureProfile: CAPABILITY_DEFAULT_FIXTURE_PROFILE,
     },
     turns: baselineTurns(),
     composer: {
@@ -557,17 +557,17 @@ function baseline(): Phase7IssueThreadSnapshot {
 }
 
 function interactionItem(
-  card: Phase7ThreadInteractionCard,
+  card: CapabilityThreadInteractionCard,
   id: string,
   when: string,
-): Phase7ThreadItem {
+): CapabilityThreadItem {
   return { kind: "interaction", id, at: when, ...card };
 }
 
 function questionsCard(
-  state: Phase7ThreadInteractionCard["state"],
-  overrides: Partial<Phase7ThreadInteractionCard> = {},
-): Phase7ThreadInteractionCard {
+  state: CapabilityThreadInteractionCard["state"],
+  overrides: Partial<CapabilityThreadInteractionCard> = {},
+): CapabilityThreadInteractionCard {
   return {
     interactionId: "ix-questions-01",
     interactionKind: "questions",
@@ -611,9 +611,9 @@ function questionsCard(
 }
 
 function confirmationCard(
-  state: Phase7ThreadInteractionCard["state"],
-  overrides: Partial<Phase7ThreadInteractionCard> = {},
-): Phase7ThreadInteractionCard {
+  state: CapabilityThreadInteractionCard["state"],
+  overrides: Partial<CapabilityThreadInteractionCard> = {},
+): CapabilityThreadInteractionCard {
   return {
     interactionId: "ix-confirmation-plan-01",
     interactionKind: "confirmation",
@@ -637,7 +637,7 @@ function confirmationCard(
   };
 }
 
-const INTERACTION_AUTHORIZATION: Phase7EvidenceModel["authorization"] = [
+const INTERACTION_AUTHORIZATION: CapabilityEvidenceModel["authorization"] = [
   {
     id: "authz-ix-1",
     turnId: "turn-3",
@@ -667,8 +667,8 @@ const INTERACTION_AUTHORIZATION: Phase7EvidenceModel["authorization"] = [
 ];
 
 function withInteractionAuthorization(
-  snapshot: Phase7IssueThreadSnapshot,
-): Phase7IssueThreadSnapshot {
+  snapshot: CapabilityIssueThreadSnapshot,
+): CapabilityIssueThreadSnapshot {
   snapshot.evidence.authorization = [
     ...snapshot.evidence.authorization,
     ...INTERACTION_AUTHORIZATION,
@@ -676,15 +676,15 @@ function withInteractionAuthorization(
   return snapshot;
 }
 
-function lastTurn(snapshot: Phase7IssueThreadSnapshot): Phase7ThreadTurn {
+function lastTurn(snapshot: CapabilityIssueThreadSnapshot): CapabilityThreadTurn {
   const turn = snapshot.turns.at(-1);
   if (turn === undefined) {
-    throw new Error("Phase 7 fixture has no turns");
+    throw new Error("Capability fixture has no turns");
   }
   return turn;
 }
 
-const BUILDERS: Record<Phase7UiShotSlug, () => Phase7IssueThreadSnapshot> = {
+const BUILDERS: Record<CapabilityUiShotSlug, () => CapabilityIssueThreadSnapshot> = {
   "thread-baseline": baseline,
 
   "turn-streaming": () => {
@@ -922,7 +922,7 @@ const BUILDERS: Record<Phase7UiShotSlug, () => Phase7IssueThreadSnapshot> = {
         status: "ok",
         operationId: "register_deliverable",
         // Same formatter as the deliverable card so the two never disagree.
-        summary: `spike-trace.json registered · ${phase7FormatBytes(deliverableBytes)}`,
+        summary: `spike-trace.json registered · ${capabilityFormatBytes(deliverableBytes)}`,
         input: { filename: "spike-trace.json", contentType: "application/json" },
         result: { commandKind: "register_deliverable", stateRevision: 4 },
         evidenceRef: { section: "calls", recordId: "call-5" },
@@ -1042,11 +1042,11 @@ const BUILDERS: Record<Phase7UiShotSlug, () => Phase7IssueThreadSnapshot> = {
 };
 
 /** Deterministic dependency-free `fake` snapshot for a screenshot slug. */
-export function phase7IssueThreadFixture(
+export function capabilityIssueThreadFixture(
   slug: string = "thread-baseline",
-  fixtureProfile: string = PHASE7_DEFAULT_FIXTURE_PROFILE,
-): Phase7IssueThreadSnapshot {
-  const build = BUILDERS[slug as Phase7UiShotSlug] ?? BUILDERS["thread-baseline"];
+  fixtureProfile: string = CAPABILITY_DEFAULT_FIXTURE_PROFILE,
+): CapabilityIssueThreadSnapshot {
+  const build = BUILDERS[slug as CapabilityUiShotSlug] ?? BUILDERS["thread-baseline"];
   const snapshot = build();
   snapshot.issue.fixtureProfile = fixtureProfile;
   return snapshot;

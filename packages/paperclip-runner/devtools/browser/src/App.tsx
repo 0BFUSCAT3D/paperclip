@@ -1,24 +1,24 @@
 import { useMemo, useRef, useState } from "react";
 
-import type { PrpEvent, PrpRequest } from "../../../src/protocol/phase1-contract";
+import type { PrpEvent, PrpRequest } from "../../../src/protocol/replay-contract";
 import type { SessionSnapshot } from "../../../src/reducer/session-reducer";
 import type {
-  Phase2RunMetadata,
-  Phase2RunTrace,
-  Phase2Scenario,
-} from "../../../src/contracts/phase2";
+  LocalRunnerRunMetadata,
+  LocalRunnerRunTrace,
+  LocalRunnerScenario,
+} from "../../../src/contracts/local-runner";
 import {
-  PHASE3_FAULTS,
-  type Phase3Fault,
-  type Phase3RunTrace,
-} from "../../../src/contracts/phase3";
+  DURABLE_RECOVERY_FAULTS,
+  type DurableRecoveryFault,
+  type DurableRecoveryRunTrace,
+} from "../../../src/contracts/durable-recovery";
 import {
-  applyPhase2LiveEvent,
-  createPhase2LiveSnapshot,
-  phase2SnapshotsMatch,
-  replayPhase2Events,
-} from "../../../src/tracer/phase2-live";
-import { replayPhase1FixtureText } from "../../../src/tracer/phase1-replay";
+  applyLocalRunnerLiveEvent,
+  createLocalRunnerLiveSnapshot,
+  localRunnerSnapshotsMatch,
+  replayLocalRunnerEvents,
+} from "../../../src/tracer/local-runner-live";
+import { replayReplayFixtureText } from "../../../src/tracer/replay";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import {
@@ -32,7 +32,7 @@ import { Textarea } from "./components/ui/textarea";
 import { LiveConsole } from "./live/LiveConsole";
 
 const fixtureFiles = import.meta.glob(
-  "../../../protocol/fixtures/phase-01/*.json",
+  "../../../protocol/fixtures/replay/*.json",
   { eager: true, query: "?raw", import: "default" },
 ) as Record<string, string>;
 
@@ -46,7 +46,7 @@ const fixtureOrder = [
   "unsupported-required-version",
 ];
 
-const liveScenarios: Array<{ key: Phase2Scenario; label: string }> = [
+const liveScenarios: Array<{ key: LocalRunnerScenario; label: string }> = [
   { key: "happy-path", label: "Happy path" },
   { key: "permission-input", label: "Permission and input" },
   { key: "interrupted", label: "Interruption" },
@@ -57,7 +57,7 @@ const liveScenarios: Array<{ key: Phase2Scenario; label: string }> = [
 type BrowserMode = "console" | "recovery" | "live" | "replay";
 type LiveStatus = "idle" | "starting" | "running" | "terminal" | "error";
 
-const phase3FaultLabels: Record<Phase3Fault, string> = {
+const durableRecoveryFaultLabels: Record<DurableRecoveryFault, string> = {
   none: "Normal connection",
   "socket-drop": "Socket drop",
   "lost-ack": "Lost ACK",
@@ -76,25 +76,25 @@ const modeCopy: Record<
   { eyebrow: string; title: string; description: string }
 > = {
   console: {
-    eyebrow: "Paperclip Runner Protocol · Phase 4b",
+    eyebrow: "Paperclip Runner Protocol · Live console",
     title: "Live Codex protocol console",
     description:
       "Chat with a live session, steer it, stop it, answer its requests, and inspect the canonical protocol behind every surface.",
   },
   recovery: {
-    eyebrow: "Paperclip Runner Protocol · Phase 3",
+    eyebrow: "Paperclip Runner Protocol · Durable recovery",
     title: "Durable recovery diagnostics",
     description:
       "Break the outbound transport, recover the same session, and inspect durable state.",
   },
   live: {
-    eyebrow: "Paperclip Runner Protocol · Phase 2",
+    eyebrow: "Paperclip Runner Protocol · Local runner",
     title: "Live runner diagnostics",
     description:
       "Run the local harness, stream validated events, and compare the live and replayed state.",
   },
   replay: {
-    eyebrow: "Paperclip Runner Protocol · Phase 1",
+    eyebrow: "Paperclip Runner Protocol · Replay",
     title: "Static protocol replay",
     description:
       "Validate a protocol fixture, replay its events, and inspect the resulting session state.",
@@ -107,10 +107,10 @@ interface BrowserFixture {
   source: string;
 }
 
-type Phase2StreamRecord =
+type LocalRunnerStreamRecord =
   | { kind: "event"; event: unknown }
   | { kind: "diagnostic"; message: string }
-  | { kind: "trace"; trace: Phase2RunTrace }
+  | { kind: "trace"; trace: LocalRunnerRunTrace }
   | { kind: "error"; message: string };
 
 const browserFixtures = Object.entries(fixtureFiles)
@@ -139,7 +139,7 @@ function humanizeProtocolLabel(value: string): string {
   return words.length === 0 ? words : `${words[0]?.toUpperCase()}${words.slice(1)}`;
 }
 
-function recoveryOutcomeTone(outcome: Phase3RunTrace["diagnostics"]["recovery"]["outcome"]) {
+function recoveryOutcomeTone(outcome: DurableRecoveryRunTrace["diagnostics"]["recovery"]["outcome"]) {
   if (outcome === "recovered") {
     return "success" as const;
   }
@@ -150,8 +150,8 @@ function recoveryOutcomeTone(outcome: Phase3RunTrace["diagnostics"]["recovery"][
 }
 
 function RecoveryDiagnostics() {
-  const [fault, setFault] = useState<Phase3Fault>("lost-ack");
-  const [trace, setTrace] = useState<Phase3RunTrace | null>(null);
+  const [fault, setFault] = useState<DurableRecoveryFault>("lost-ack");
+  const [trace, setTrace] = useState<DurableRecoveryRunTrace | null>(null);
   const [status, setStatus] = useState<"idle" | "running" | "complete" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -159,12 +159,12 @@ function RecoveryDiagnostics() {
     setStatus("running");
     setError(null);
     try {
-      const response = await fetch("/api/phase3/recovery", {
+      const response = await fetch("/api/durableRecovery/recovery", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ fault }),
       });
-      const result = (await response.json()) as Phase3RunTrace & { error?: string };
+      const result = (await response.json()) as DurableRecoveryRunTrace & { error?: string };
       if (!response.ok) throw new Error(result.error ?? "The recovery trace failed.");
       setTrace(result);
       setStatus("complete");
@@ -189,16 +189,16 @@ function RecoveryDiagnostics() {
             id="recovery-fault"
             value={fault}
             disabled={status === "running"}
-            onChange={(event) => setFault(event.target.value as Phase3Fault)}
+            onChange={(event) => setFault(event.target.value as DurableRecoveryFault)}
           >
-            {PHASE3_FAULTS.map((candidate) => (
+            {DURABLE_RECOVERY_FAULTS.map((candidate) => (
               <option key={candidate} value={candidate}>
-                {phase3FaultLabels[candidate]}
+                {durableRecoveryFaultLabels[candidate]}
               </option>
             ))}
           </select>
           <Button type="button" disabled={status === "running"} onClick={() => void runRecovery()}>
-            {status === "running" ? "Running recovery…" : "Run Phase 3 recovery"}
+            {status === "running" ? "Running recovery…" : "Run Durable recovery"}
           </Button>
           <div className="live-status" aria-live="polite">
             <span>Recovery status</span>
@@ -223,22 +223,22 @@ function RecoveryDiagnostics() {
             <div className="empty-live-state"><p>Run the trace to collect recovery diagnostics.</p></div>
           ) : (
             <>
-              <dl className="recovery-grid" data-testid="phase3-diagnostics">
+              <dl className="recovery-grid" data-testid="durable-recovery-diagnostics">
                 <div>
                   <dt>Connection</dt>
-                  <dd data-testid="phase3-connection-state">
+                  <dd data-testid="durable-recovery-connection-state">
                     {humanizeProtocolLabel(trace.diagnostics.connection.state)}
                   </dd>
                 </div>
                 <div>
                   <dt>Connections</dt>
-                  <dd data-testid="phase3-connections">
+                  <dd data-testid="durable-recovery-connections">
                     {trace.diagnostics.connection.connectionCount}
                   </dd>
                 </div>
                 <div>
                   <dt>Reconnects</dt>
-                  <dd data-testid="phase3-reconnects">
+                  <dd data-testid="durable-recovery-reconnects">
                     {trace.diagnostics.connection.reconnectCount}
                   </dd>
                 </div>
@@ -260,7 +260,7 @@ function RecoveryDiagnostics() {
                 </div>
                 <div>
                   <dt>Runner restarts</dt>
-                  <dd data-testid="phase3-runner-restarts">
+                  <dd data-testid="durable-recovery-runner-restarts">
                     {trace.diagnostics.recovery.runnerRestarts}
                   </dd>
                 </div>
@@ -270,7 +270,7 @@ function RecoveryDiagnostics() {
                 </div>
                 <div>
                   <dt>Fresh bootstraps</dt>
-                  <dd data-testid="phase3-fresh-bootstraps">
+                  <dd data-testid="durable-recovery-fresh-bootstraps">
                     {trace.diagnostics.recovery.freshBootstraps}
                   </dd>
                 </div>
@@ -280,7 +280,7 @@ function RecoveryDiagnostics() {
                 </div>
                 <div>
                   <dt>Storage</dt>
-                  <dd className="storage-diagnostic" data-testid="phase3-storage">
+                  <dd className="storage-diagnostic" data-testid="durable-recovery-storage">
                     <span>
                       {trace.diagnostics.outbox.bytes} bytes of {trace.diagnostics.outbox.maxBytes}{" "}
                       max
@@ -299,7 +299,7 @@ function RecoveryDiagnostics() {
                   <dd className="outcome-diagnostic">
                     <Badge
                       tone={recoveryOutcomeTone(trace.diagnostics.recovery.outcome)}
-                      data-testid="phase3-outcome"
+                      data-testid="durable-recovery-outcome"
                     >
                       {humanizeProtocolLabel(trace.diagnostics.recovery.outcome)}
                     </Badge>
@@ -481,15 +481,15 @@ function pendingRuntimeRequest(events: readonly PrpEvent[]): PrpRequest | null {
 }
 
 function LiveRunner() {
-  const [scenario, setScenario] = useState<Phase2Scenario>("happy-path");
+  const [scenario, setScenario] = useState<LocalRunnerScenario>("happy-path");
   const [status, setStatus] = useState<LiveStatus>("idle");
   const [runId, setRunId] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
   const [events, setEvents] = useState<PrpEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [diagnostic, setDiagnostic] = useState<string | null>(null);
-  const [input, setInput] = useState("phase-02-live-trace");
-  const [trace, setTrace] = useState<Phase2RunTrace | null>(null);
+  const [input, setInput] = useState("local-runner-live-trace");
+  const [trace, setTrace] = useState<LocalRunnerRunTrace | null>(null);
   const [parity, setParity] = useState<boolean | null>(null);
   const snapshotRef = useRef<SessionSnapshot | null>(null);
   const eventsRef = useRef<PrpEvent[]>([]);
@@ -509,26 +509,26 @@ function LiveRunner() {
     snapshotRef.current = null;
 
     try {
-      const startResponse = await fetch("/api/phase2/runs", {
+      const startResponse = await fetch("/api/localRunner/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenario }),
       });
       const started = (await startResponse.json()) as {
         id?: string;
-        metadata?: Phase2RunMetadata;
+        metadata?: LocalRunnerRunMetadata;
         error?: string;
       };
       if (!startResponse.ok || started.id === undefined || started.metadata === undefined) {
         throw new Error(started.error ?? "The local runner did not start.");
       }
       setRunId(started.id);
-      const initial = createPhase2LiveSnapshot(started.metadata);
+      const initial = createLocalRunnerLiveSnapshot(started.metadata);
       setSnapshot(initial);
       snapshotRef.current = initial;
       setStatus("running");
 
-      const streamResponse = await fetch(`/api/phase2/runs/${started.id}/events`);
+      const streamResponse = await fetch(`/api/localRunner/runs/${started.id}/events`);
       if (!streamResponse.ok || streamResponse.body === null) {
         throw new Error("The live event stream did not open.");
       }
@@ -542,12 +542,12 @@ function LiveRunner() {
         buffered = lines.pop() ?? "";
         for (const line of lines) {
           if (line.trim().length > 0) {
-            handleRecord(JSON.parse(line) as Phase2StreamRecord, started.metadata);
+            handleRecord(JSON.parse(line) as LocalRunnerStreamRecord, started.metadata);
           }
         }
         if (part.done) {
           if (buffered.trim().length > 0) {
-            handleRecord(JSON.parse(buffered) as Phase2StreamRecord, started.metadata);
+            handleRecord(JSON.parse(buffered) as LocalRunnerStreamRecord, started.metadata);
           }
           break;
         }
@@ -558,13 +558,13 @@ function LiveRunner() {
     }
   }
 
-  function handleRecord(record: Phase2StreamRecord, metadata: Phase2RunMetadata) {
+  function handleRecord(record: LocalRunnerStreamRecord, metadata: LocalRunnerRunMetadata) {
     if (record.kind === "event") {
       const current = snapshotRef.current;
       if (current === null) {
         return;
       }
-      const applied = applyPhase2LiveEvent(current, record.event);
+      const applied = applyLocalRunnerLiveEvent(current, record.event);
       if (!applied.ok) {
         setStatus("error");
         setError(applied.issues.join("; "));
@@ -586,11 +586,11 @@ function LiveRunner() {
       return;
     }
     setTrace(record.trace);
-    const replay = replayPhase2Events(metadata, record.trace.events);
+    const replay = replayLocalRunnerEvents(metadata, record.trace.events);
     setParity(
       snapshotRef.current === null
         ? false
-        : phase2SnapshotsMatch(snapshotRef.current, replay),
+        : localRunnerSnapshotsMatch(snapshotRef.current, replay),
     );
     setStatus("terminal");
   }
@@ -599,7 +599,7 @@ function LiveRunner() {
     if (runId === null) {
       return;
     }
-    const response = await fetch(`/api/phase2/runs/${runId}/${action}`, {
+    const response = await fetch(`/api/localRunner/runs/${runId}/${action}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body ?? {}),
@@ -626,7 +626,7 @@ function LiveRunner() {
             id="live-scenario"
             value={scenario}
             disabled={status === "starting" || status === "running"}
-            onChange={(event) => setScenario(event.target.value as Phase2Scenario)}
+            onChange={(event) => setScenario(event.target.value as LocalRunnerScenario)}
           >
             {liveScenarios.map((candidate) => (
               <option key={candidate.key} value={candidate.key}>
@@ -737,7 +737,7 @@ function LiveRunner() {
           <div className="empty-live-state">
             <p className="eyebrow">Validated live snapshot</p>
             <h2>Start a local run</h2>
-            <p>Each incoming event will pass the Phase 1 validator before the reducer applies it.</p>
+            <p>Each incoming event will pass the Replay validator before the reducer applies it.</p>
           </div>
         )}
       </section>
@@ -748,11 +748,11 @@ function LiveRunner() {
 function StaticReplay() {
   const defaultFixture = browserFixtures[0];
   if (defaultFixture === undefined) {
-    throw new Error("No Phase 1 fixtures were bundled");
+    throw new Error("No Replay fixtures were bundled");
   }
   const [selectedFixture, setSelectedFixture] = useState(defaultFixture.key);
   const [source, setSource] = useState(defaultFixture.source);
-  const [replay, setReplay] = useState(() => replayPhase1FixtureText(defaultFixture.source));
+  const [replay, setReplay] = useState(() => replayReplayFixtureText(defaultFixture.source));
   const selected = useMemo(
     () => browserFixtures.find((fixture) => fixture.key === selectedFixture),
     [selectedFixture],
@@ -765,7 +765,7 @@ function StaticReplay() {
     }
     setSelectedFixture(key);
     setSource(fixture.source);
-    setReplay(replayPhase1FixtureText(fixture.source));
+    setReplay(replayReplayFixtureText(fixture.source));
   }
 
   return (
@@ -799,7 +799,7 @@ function StaticReplay() {
           />
           <div className="editor-actions">
             <span>{selected?.label ?? "Edited fixture"}</span>
-            <Button type="button" onClick={() => setReplay(replayPhase1FixtureText(source))}>
+            <Button type="button" onClick={() => setReplay(replayReplayFixtureText(source))}>
               Validate &amp; replay
             </Button>
           </div>
@@ -828,8 +828,8 @@ function StaticReplay() {
 }
 
 export function App() {
-  // Phase 1-3 surfaces keep their landing mode: their screenshots are frozen
-  // QA evidence and their specs open on the Phase 2 runner.
+  // Replay-3 surfaces keep their landing mode: their screenshots are frozen
+  // QA evidence and their specs open on the Local runner runner.
   const [mode, setMode] = useState<BrowserMode>("live");
   const header = modeCopy[mode];
 

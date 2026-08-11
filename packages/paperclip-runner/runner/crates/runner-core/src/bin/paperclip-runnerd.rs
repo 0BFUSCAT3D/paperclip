@@ -2,55 +2,55 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use paperclip_runner_core::phase2::{run_local_runner, Phase2Error, RunnerConfig};
-use paperclip_runner_core::phase3::{
+use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, run_durable_runner, BootstrapTicket, DurableRunnerConfig,
 };
+use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 
-fn value(args: &[String], name: &str) -> Result<String, Phase2Error> {
+fn value(args: &[String], name: &str) -> Result<String, LocalRunnerError> {
     let index = args
         .iter()
         .position(|argument| argument == name)
-        .ok_or_else(|| Phase2Error::invalid(format!("missing required argument {name}")))?;
+        .ok_or_else(|| LocalRunnerError::invalid(format!("missing required argument {name}")))?;
     args.get(index + 1)
         .cloned()
-        .ok_or_else(|| Phase2Error::invalid(format!("missing value for {name}")))
+        .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
 }
 
-fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, Phase2Error> {
+fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerError> {
     let Some(index) = args.iter().position(|argument| argument == name) else {
         return Ok(None);
     };
     let value = args
         .get(index + 1)
-        .ok_or_else(|| Phase2Error::invalid(format!("missing value for {name}")))?;
+        .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))?;
     value
         .parse::<u64>()
         .map(Some)
-        .map_err(|error| Phase2Error::invalid(format!("invalid {name}: {error}")))
+        .map_err(|error| LocalRunnerError::invalid(format!("invalid {name}: {error}")))
 }
 
-fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, Phase2Error> {
+fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, LocalRunnerError> {
     optional_u64(args, name)?.map_or(Ok(default), |value| {
         usize::try_from(value)
-            .map_err(|error| Phase2Error::invalid(format!("invalid {name}: {error}")))
+            .map_err(|error| LocalRunnerError::invalid(format!("invalid {name}: {error}")))
     })
 }
 
-fn duration_value(args: &[String], name: &str, default: u64) -> Result<Duration, Phase2Error> {
+fn duration_value(args: &[String], name: &str, default: u64) -> Result<Duration, LocalRunnerError> {
     Ok(Duration::from_millis(
         optional_u64(args, name)?.unwrap_or(default),
     ))
 }
 
-fn repeated_values(args: &[String], name: &str) -> Result<Vec<String>, Phase2Error> {
+fn repeated_values(args: &[String], name: &str) -> Result<Vec<String>, LocalRunnerError> {
     let mut values = Vec::new();
     let mut index = 0;
     while index < args.len() {
         if args[index] == name {
             let value = args
                 .get(index + 1)
-                .ok_or_else(|| Phase2Error::invalid(format!("missing value for {name}")))?;
+                .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))?;
             values.push(value.clone());
             index += 2;
         } else {
@@ -60,10 +60,10 @@ fn repeated_values(args: &[String], name: &str) -> Result<Vec<String>, Phase2Err
     Ok(values)
 }
 
-/// Phase 7 keeps runnerd as the package-local process owner while the existing
+/// Native runner keeps runnerd as the package-local process owner while the existing
 /// Codex app-server remains the provider protocol implementation. Stdio stays
 /// byte-for-byte JSON-RPC; runnerd writes process evidence only to stderr.
-fn run_codex_app_server_proxy(args: &[String]) -> Result<(), Phase2Error> {
+fn run_codex_app_server_proxy(args: &[String]) -> Result<(), LocalRunnerError> {
     let command_name = value(args, "--codex-command")?;
     let codex_args = repeated_values(args, "--codex-arg")?;
     let mut command = Command::new(&command_name);
@@ -97,32 +97,36 @@ fn run_codex_app_server_proxy(args: &[String]) -> Result<(), Phase2Error> {
         }
     }
     let mut child = command.spawn().map_err(|error| {
-        Phase2Error::invalid(format!("failed to start Codex app-server: {error}"))
+        LocalRunnerError::invalid(format!("failed to start Codex app-server: {error}"))
     })?;
     eprintln!(
-        "paperclip-runnerd: phase7 codex proxy started runner_pid={} codex_pid={}",
+        "paperclip-runnerd: native codex proxy started runner_pid={} codex_pid={}",
         std::process::id(),
         child.id()
     );
     let status = child.wait().map_err(|error| {
-        Phase2Error::invalid(format!("failed to wait for Codex app-server: {error}"))
+        LocalRunnerError::invalid(format!("failed to wait for Codex app-server: {error}"))
     })?;
     eprintln!(
-        "paperclip-runnerd: phase7 codex proxy exited success={} code={}",
+        "paperclip-runnerd: native codex proxy exited success={} code={}",
         status.success(),
-        status.code().map_or_else(|| "signal".to_owned(), |code| code.to_string())
+        status
+            .code()
+            .map_or_else(|| "signal".to_owned(), |code| code.to_string())
     );
     if status.success() {
         Ok(())
     } else {
-        Err(Phase2Error::invalid("Codex app-server exited unsuccessfully"))
+        Err(LocalRunnerError::invalid(
+            "Codex app-server exited unsuccessfully",
+        ))
     }
 }
 
-fn run_phase3(
+fn run_durable_mode(
     args: &[String],
     bootstrap_ticket: Option<BootstrapTicket>,
-) -> Result<(), Phase2Error> {
+) -> Result<(), LocalRunnerError> {
     let config = DurableRunnerConfig {
         connect_url: value(args, "--connect-url")?,
         state_dir: PathBuf::from(value(args, "--state-dir")?),
@@ -151,18 +155,21 @@ fn run_phase3(
         max_runtime: duration_value(args, "--max-runtime-ms", 15_000)?,
     };
     let bootstrap_ticket = bootstrap_ticket
-        .ok_or_else(|| Phase2Error::invalid("runner bootstrap ticket is not available"))?;
+        .ok_or_else(|| LocalRunnerError::invalid("runner bootstrap ticket is not available"))?;
     run_durable_runner(config, bootstrap_ticket)
-        .map_err(|error| Phase2Error::invalid(error.to_string()))
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
 
-fn run(bootstrap_ticket: Option<BootstrapTicket>) -> Result<(), Phase2Error> {
+fn run(bootstrap_ticket: Option<BootstrapTicket>) -> Result<(), LocalRunnerError> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if args.iter().any(|argument| argument == "--codex-app-server-proxy") {
+    if args
+        .iter()
+        .any(|argument| argument == "--codex-app-server-proxy")
+    {
         return run_codex_app_server_proxy(&args);
     }
     if args.iter().any(|argument| argument == "--connect-url") {
-        return run_phase3(&args, bootstrap_ticket);
+        return run_durable_mode(&args, bootstrap_ticket);
     }
     run_local_runner(RunnerConfig {
         run_id: value(&args, "--run-id")?,

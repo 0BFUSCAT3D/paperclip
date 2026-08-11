@@ -14,7 +14,7 @@ if (params.get("capture") === "1" || new URLSearchParams(hashQuery).get("capture
 
 const root = document.getElementById("root");
 if (root === null) {
-  throw new Error("Phase 7 issue-thread root element is missing");
+  throw new Error("Capability issue-thread root element is missing");
 }
 
 createRoot(root).render(

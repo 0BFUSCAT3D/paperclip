@@ -1,4 +1,4 @@
-import type { PrpEvent } from "../../../../src/protocol/phase1-contract";
+import type { PrpEvent } from "../../../../src/protocol/replay-contract";
 import type {
   SessionItemSnapshot,
   SessionSnapshot,

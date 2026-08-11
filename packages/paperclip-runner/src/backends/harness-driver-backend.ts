@@ -13,7 +13,7 @@ import type {
 import type {
   PrpEvent,
   PrpTerminalState,
-} from "../protocol/phase1-contract.js";
+} from "../protocol/replay-contract.js";
 
 /**
  * Package-owned adapter from the concrete harness driver contract to the

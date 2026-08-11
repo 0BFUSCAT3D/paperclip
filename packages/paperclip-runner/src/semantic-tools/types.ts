@@ -1,12 +1,12 @@
 import type {
-  Phase7InteractionKind,
-  Phase7JsonValue,
-  Phase7RunContext,
-} from "../mock-core/phase7-control-plane-types.js";
+  CapabilityInteractionKind,
+  CapabilityJsonValue,
+  CapabilityRunContext,
+} from "../mock-core/capability-control-plane-types.js";
 
-export type Phase7SemanticToolExposure = "always" | "optional";
+export type CapabilitySemanticToolExposure = "always" | "optional";
 
-export type Phase7SemanticOperationId =
+export type CapabilitySemanticOperationId =
   | "get_task_context"
   | "get_task_history"
   | "list_documents"
@@ -36,19 +36,19 @@ export type Phase7SemanticOperationId =
   | "schedule_wake"
   | "generic_api_request";
 
-export interface Phase7JsonSchema {
+export interface CapabilityJsonSchema {
   readonly $schema?: string;
   readonly type?: string | readonly string[];
   readonly title?: string;
   readonly description?: string;
-  readonly properties?: Readonly<Record<string, Phase7JsonSchema>>;
+  readonly properties?: Readonly<Record<string, CapabilityJsonSchema>>;
   readonly required?: readonly string[];
-  readonly additionalProperties?: boolean | Phase7JsonSchema;
-  readonly items?: Phase7JsonSchema;
-  readonly enum?: readonly Phase7JsonValue[];
-  readonly const?: Phase7JsonValue;
-  readonly oneOf?: readonly Phase7JsonSchema[];
-  readonly anyOf?: readonly Phase7JsonSchema[];
+  readonly additionalProperties?: boolean | CapabilityJsonSchema;
+  readonly items?: CapabilityJsonSchema;
+  readonly enum?: readonly CapabilityJsonValue[];
+  readonly const?: CapabilityJsonValue;
+  readonly oneOf?: readonly CapabilityJsonSchema[];
+  readonly anyOf?: readonly CapabilityJsonSchema[];
   readonly minimum?: number;
   readonly maximum?: number;
   readonly minLength?: number;
@@ -58,46 +58,46 @@ export interface Phase7JsonSchema {
   readonly uniqueItems?: boolean;
   readonly pattern?: string;
   readonly format?: string;
-  readonly default?: Phase7JsonValue;
+  readonly default?: CapabilityJsonValue;
 }
 
-export interface Phase7SemanticToolDescriptor {
+export interface CapabilitySemanticToolDescriptor {
   readonly schema: "paperclip.semantic-tool.v1";
-  readonly operationId: Phase7SemanticOperationId;
+  readonly operationId: CapabilitySemanticOperationId;
   readonly version: 1;
   readonly title: string;
   readonly description: string;
-  readonly exposure: Phase7SemanticToolExposure;
+  readonly exposure: CapabilitySemanticToolExposure;
   readonly requiredClaims: readonly string[];
-  readonly allowedModes: readonly Phase7RunContext["activeTask"]["workMode"][];
+  readonly allowedModes: readonly CapabilityRunContext["activeTask"]["workMode"][];
   readonly allowedRoles?: readonly string[];
   readonly disabledByDefault?: boolean;
-  readonly inputSchema: Phase7JsonSchema;
-  readonly outputSchema: Phase7JsonSchema;
+  readonly inputSchema: CapabilityJsonSchema;
+  readonly outputSchema: CapabilityJsonSchema;
 }
 
-export interface Phase7SemanticScenarioPolicy {
+export interface CapabilitySemanticScenarioPolicy {
   readonly id: string;
   /** Claims that this scenario is permitted to grant. Run claims still narrow this set. */
   readonly claims?: readonly string[];
-  readonly allowOperations?: readonly Phase7SemanticOperationId[];
-  readonly denyOperations?: readonly Phase7SemanticOperationId[];
-  readonly allowedInteractionKinds?: readonly Phase7InteractionKind[];
+  readonly allowOperations?: readonly CapabilitySemanticOperationId[];
+  readonly denyOperations?: readonly CapabilitySemanticOperationId[];
+  readonly allowedInteractionKinds?: readonly CapabilityInteractionKind[];
   readonly enableGenericApiRequest?: boolean;
 }
 
-export interface Phase7SemanticPolicyContext {
+export interface CapabilitySemanticPolicyContext {
   readonly runId: string;
-  readonly actor: Phase7RunContext["actor"];
-  readonly task: Phase7RunContext["activeTask"];
+  readonly actor: CapabilityRunContext["actor"];
+  readonly task: CapabilityRunContext["activeTask"];
   readonly runClaims: readonly string[];
   readonly explicitClaims: readonly string[];
-  readonly scenario: Phase7SemanticScenarioPolicy;
+  readonly scenario: CapabilitySemanticScenarioPolicy;
 }
 
-export type Phase7AuthorizationPhase = "exposure" | "invocation";
+export type CapabilityAuthorizationPhase = "exposure" | "invocation";
 
-export type Phase7SemanticDenialCode =
+export type CapabilitySemanticDenialCode =
   | "tool_not_exposed"
   | "actor_inactive"
   | "task_mode_denied"
@@ -113,17 +113,17 @@ export type Phase7SemanticDenialCode =
   | "operation_unavailable"
   | "control_plane_denied";
 
-export interface Phase7SemanticAuthorizationDecision {
+export interface CapabilitySemanticAuthorizationDecision {
   readonly allowed: boolean;
-  readonly phase: Phase7AuthorizationPhase;
-  readonly operationId: Phase7SemanticOperationId;
-  readonly code: "allowed" | Phase7SemanticDenialCode;
+  readonly phase: CapabilityAuthorizationPhase;
+  readonly operationId: CapabilitySemanticOperationId;
+  readonly code: "allowed" | CapabilitySemanticDenialCode;
   readonly reason: string;
   readonly effectiveClaims: readonly string[];
 }
 
-export interface Phase7SemanticAuthorizationRecord
-  extends Phase7SemanticAuthorizationDecision {
+export interface CapabilitySemanticAuthorizationRecord
+  extends CapabilitySemanticAuthorizationDecision {
   readonly schema: "paperclip.semantic-authorization-record.v1";
   readonly id: string;
   readonly runId: string;
@@ -131,52 +131,52 @@ export interface Phase7SemanticAuthorizationRecord
   readonly actorId: string;
   readonly taskId: string;
   readonly callId: string | null;
-  readonly input: Phase7JsonValue | null;
-  readonly result: Phase7JsonValue | null;
+  readonly input: CapabilityJsonValue | null;
+  readonly result: CapabilityJsonValue | null;
 }
 
-export interface Phase7SemanticToolDefinition {
-  readonly name: Phase7SemanticOperationId;
+export interface CapabilitySemanticToolDefinition {
+  readonly name: CapabilitySemanticOperationId;
   readonly description: string;
-  readonly inputSchema: Phase7JsonSchema;
-  readonly outputSchema: Phase7JsonSchema;
+  readonly inputSchema: CapabilityJsonSchema;
+  readonly outputSchema: CapabilityJsonSchema;
   readonly annotations: {
     readonly semanticContract: "paperclip.semantic-tool.v1";
-    readonly operationId: Phase7SemanticOperationId;
+    readonly operationId: CapabilitySemanticOperationId;
     readonly version: 1;
-    readonly exposure: Phase7SemanticToolExposure;
+    readonly exposure: CapabilitySemanticToolExposure;
     readonly requiredClaims: readonly string[];
   };
 }
 
-export interface Phase7SemanticToolCall {
+export interface CapabilitySemanticToolCall {
   readonly runId: string;
   readonly callId: string;
-  readonly operationId: Phase7SemanticOperationId | string;
+  readonly operationId: CapabilitySemanticOperationId | string;
   readonly input: unknown;
 }
 
-export interface Phase7SemanticToolSuccess {
+export interface CapabilitySemanticToolSuccess {
   readonly ok: true;
-  readonly operationId: Phase7SemanticOperationId;
+  readonly operationId: CapabilitySemanticOperationId;
   readonly callId: string;
-  readonly result: Phase7JsonValue;
+  readonly result: CapabilityJsonValue;
   readonly stateRevision: number;
 }
 
-export interface Phase7SemanticToolDenial {
+export interface CapabilitySemanticToolDenial {
   readonly ok: false;
   readonly operationId: string;
   readonly callId: string;
   readonly denial: {
     readonly schema: "paperclip.semantic-denial.v1";
-    readonly code: Phase7SemanticDenialCode;
+    readonly code: CapabilitySemanticDenialCode;
     readonly message: string;
     readonly retryable: boolean;
   };
   readonly stateRevision: number;
 }
 
-export type Phase7SemanticToolResult =
-  | Phase7SemanticToolSuccess
-  | Phase7SemanticToolDenial;
+export type CapabilitySemanticToolResult =
+  | CapabilitySemanticToolSuccess
+  | CapabilitySemanticToolDenial;

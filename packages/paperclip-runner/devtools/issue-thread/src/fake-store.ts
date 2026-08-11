@@ -1,9 +1,9 @@
 import type {
-  Phase7IssueThreadSnapshot,
-  Phase7ThreadInteractionState,
-  Phase7ThreadItem,
+  CapabilityIssueThreadSnapshot,
+  CapabilityThreadInteractionState,
+  CapabilityThreadItem,
 } from "../../../src/issue-thread/types";
-import type { Phase7InteractionResponse } from "./InteractionCard";
+import type { CapabilityInteractionResponse } from "./InteractionCard";
 
 /**
  * `fake`-mode interaction store.
@@ -17,14 +17,14 @@ import type { Phase7InteractionResponse } from "./InteractionCard";
  */
 
 function resolvedState(
-  outcome: Phase7InteractionResponse["outcome"],
-): { state: Phase7ThreadInteractionState; label: string } {
+  outcome: CapabilityInteractionResponse["outcome"],
+): { state: CapabilityThreadInteractionState; label: string } {
   if (outcome === "accepted") return { state: "accepted", label: "Accepted" };
   if (outcome === "rejected") return { state: "rejected", label: "Changes requested" };
   return { state: "answered", label: "Answered" };
 }
 
-function summarise(response: Phase7InteractionResponse): string[] {
+function summarise(response: CapabilityInteractionResponse): string[] {
   const result = response.result;
   if (Array.isArray(result.selected)) return result.selected.map((entry) => String(entry));
   if (Array.isArray(result.acceptedTaskIds)) {
@@ -46,9 +46,9 @@ function summarise(response: Phase7InteractionResponse): string[] {
 }
 
 function applyToItem(
-  item: Phase7ThreadItem,
-  response: Phase7InteractionResponse,
-): Phase7ThreadItem {
+  item: CapabilityThreadItem,
+  response: CapabilityInteractionResponse,
+): CapabilityThreadItem {
   if (item.kind !== "interaction" || item.interactionId !== response.interactionId) return item;
   const view = resolvedState(response.outcome);
   return {
@@ -62,9 +62,9 @@ function applyToItem(
 
 /** Store the typed response, then return the snapshot the card renders from. */
 export function applyFakeInteractionResponse(
-  snapshot: Phase7IssueThreadSnapshot,
-  response: Phase7InteractionResponse,
-): Phase7IssueThreadSnapshot {
+  snapshot: CapabilityIssueThreadSnapshot,
+  response: CapabilityInteractionResponse,
+): CapabilityIssueThreadSnapshot {
   const turns = snapshot.turns.map((turn) => ({
     ...turn,
     items: turn.items.map((item) => applyToItem(item, response)),

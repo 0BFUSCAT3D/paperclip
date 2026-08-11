@@ -1,11 +1,11 @@
 import { useState } from "react";
 
 import type {
-  Phase7EvidenceSectionId,
-  Phase7ThreadItem,
-  Phase7ThreadTurn,
+  CapabilityEvidenceSectionId,
+  CapabilityThreadItem,
+  CapabilityThreadTurn,
 } from "../../../src/issue-thread/types";
-import { InteractionCard, type Phase7InteractionResponse } from "./InteractionCard";
+import { InteractionCard, type CapabilityInteractionResponse } from "./InteractionCard";
 import { Chip, StatusBadge, Timestamp, formatBytes } from "./primitives";
 
 /** Progressive disclosure budget from contract §3 (T4). */
@@ -14,8 +14,8 @@ const VISIBLE_STRIPS = 3;
 const STATUS_GLYPH = { ok: "✓", denied: "✕", running: "⏳" } as const;
 
 export interface ThreadCallbacks {
-  onOpenEvidence: (section: Phase7EvidenceSectionId, recordId: string) => void;
-  onRespond: (response: Phase7InteractionResponse) => void;
+  onOpenEvidence: (section: CapabilityEvidenceSectionId, recordId: string) => void;
+  onRespond: (response: CapabilityInteractionResponse) => void;
   focusInteractionId: string | null;
 }
 
@@ -23,7 +23,7 @@ function ToolStrip({
   item,
   callbacks,
 }: {
-  item: Extract<Phase7ThreadItem, { kind: "tool_activity" }>;
+  item: Extract<CapabilityThreadItem, { kind: "tool_activity" }>;
   callbacks: ThreadCallbacks;
 }) {
   return (
@@ -66,7 +66,7 @@ function ToolStrip({
 function ProgressItem({
   item,
 }: {
-  item: Extract<Phase7ThreadItem, { kind: "progress_activity" }>;
+  item: Extract<CapabilityThreadItem, { kind: "progress_activity" }>;
 }) {
   return (
     <details
@@ -99,7 +99,7 @@ function ThreadItemView({
   item,
   callbacks,
 }: {
-  item: Phase7ThreadItem;
+  item: CapabilityThreadItem;
   callbacks: ThreadCallbacks;
 }) {
   switch (item.kind) {
@@ -208,7 +208,7 @@ function ThreadItemView({
           autoFocus={callbacks.focusInteractionId === item.interactionId}
           onRespond={callbacks.onRespond}
           onOpenEvidence={(section, recordId) =>
-            callbacks.onOpenEvidence(section as Phase7EvidenceSectionId, recordId)
+            callbacks.onOpenEvidence(section as CapabilityEvidenceSectionId, recordId)
           }
         />
       );
@@ -331,7 +331,7 @@ export function TurnGroup({
   turn,
   callbacks,
 }: {
-  turn: Phase7ThreadTurn;
+  turn: CapabilityThreadTurn;
   callbacks: ThreadCallbacks;
 }) {
   const [showAllStrips, setShowAllStrips] = useState(false);

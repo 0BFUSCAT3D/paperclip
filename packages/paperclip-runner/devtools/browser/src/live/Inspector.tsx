@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import type { PrpEvent } from "../../../../src/protocol/phase1-contract";
+import type { PrpEvent } from "../../../../src/protocol/replay-contract";
 import type { SessionSnapshot } from "../../../../src/reducer/session-reducer";
 import { Badge } from "../components/ui/badge";
 import { Tabs } from "../components/ui/tabs";

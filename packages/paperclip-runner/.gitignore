@@ -1,9 +1,9 @@
 /dist-browser/
-/dist-phase5/
+/dist-sdk/
 /playwright-report/
 /test-results/
-/dist-phase6/
-/dist-phase7/
+/dist-standalone/
+/dist-scenarios/
 /dist-issue-thread/
 
 # The repository root ignores scratch `check-*.mjs` files and only re-includes

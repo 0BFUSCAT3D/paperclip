@@ -1,25 +1,25 @@
 import type {
-  Phase7JsonSchema,
-  Phase7SemanticOperationId,
-  Phase7SemanticToolDescriptor,
+  CapabilityJsonSchema,
+  CapabilitySemanticOperationId,
+  CapabilitySemanticToolDescriptor,
 } from "./types.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
 const STANDARD_MODE = ["standard"] as const;
 
-const text = (description: string, maxLength = 20_000): Phase7JsonSchema => ({
+const text = (description: string, maxLength = 20_000): CapabilityJsonSchema => ({
   type: "string",
   description,
   minLength: 1,
   maxLength,
 });
-const nullableText = (description: string): Phase7JsonSchema => ({
+const nullableText = (description: string): CapabilityJsonSchema => ({
   type: ["string", "null"],
   description,
   maxLength: 20_000,
 });
-const stringArray = (description: string): Phase7JsonSchema => ({
+const stringArray = (description: string): CapabilityJsonSchema => ({
   type: "array",
   description,
   items: { type: "string", minLength: 1 },
@@ -27,15 +27,15 @@ const stringArray = (description: string): Phase7JsonSchema => ({
   uniqueItems: true,
 });
 const object = (
-  properties: Readonly<Record<string, Phase7JsonSchema>> = {},
+  properties: Readonly<Record<string, CapabilityJsonSchema>> = {},
   required: readonly string[] = [],
-): Phase7JsonSchema => ({
+): CapabilityJsonSchema => ({
   type: "object",
   properties,
   required,
   additionalProperties: false,
 });
-const jsonObject: Phase7JsonSchema = { type: "object", additionalProperties: true };
+const jsonObject: CapabilityJsonSchema = { type: "object", additionalProperties: true };
 const operationResult = object({
   commandId: text("Stable mock command identifier.", 200),
   disposition: { enum: ["applied", "duplicate"] },
@@ -43,22 +43,22 @@ const operationResult = object({
   entityRefs: stringArray("Mock entities affected by the operation."),
   scheduledWakeIds: stringArray("Wake identifiers scheduled by the operation."),
 }, ["commandId", "disposition", "stateRevision", "entityRefs", "scheduledWakeIds"]);
-const readResult: Phase7JsonSchema = { type: "object", additionalProperties: true };
+const readResult: CapabilityJsonSchema = { type: "object", additionalProperties: true };
 
 interface DescriptorInput {
-  operationId: Phase7SemanticOperationId;
+  operationId: CapabilitySemanticOperationId;
   title: string;
   description: string;
   exposure?: "always" | "optional";
   requiredClaims?: readonly string[];
-  allowedModes?: Phase7SemanticToolDescriptor["allowedModes"];
+  allowedModes?: CapabilitySemanticToolDescriptor["allowedModes"];
   allowedRoles?: readonly string[];
   disabledByDefault?: boolean;
-  inputSchema?: Phase7JsonSchema;
-  outputSchema?: Phase7JsonSchema;
+  inputSchema?: CapabilityJsonSchema;
+  outputSchema?: CapabilityJsonSchema;
 }
 
-function descriptor(input: DescriptorInput): Phase7SemanticToolDescriptor {
+function descriptor(input: DescriptorInput): CapabilitySemanticToolDescriptor {
   return {
     schema: "paperclip.semantic-tool.v1",
     operationId: input.operationId,
@@ -77,7 +77,7 @@ function descriptor(input: DescriptorInput): Phase7SemanticToolDescriptor {
 
 const idempotency = { idempotencyKey: text("Caller-stable retry key.", 240) } as const;
 
-const descriptors: readonly Phase7SemanticToolDescriptor[] = [
+const descriptors: readonly CapabilitySemanticToolDescriptor[] = [
   descriptor({
     operationId: "get_task_context",
     title: "Get active task context",
@@ -185,18 +185,18 @@ const descriptors: readonly Phase7SemanticToolDescriptor[] = [
 ];
 
 const byId = new Map(descriptors.map((item) => [item.operationId, item]));
-if (byId.size !== descriptors.length) throw new Error("duplicate Phase 7 semantic operation id");
+if (byId.size !== descriptors.length) throw new Error("duplicate Capability semantic operation id");
 
-export const PHASE7_SEMANTIC_TOOL_CATALOG = deepFreeze(descriptors);
+export const CAPABILITY_SEMANTIC_TOOL_CATALOG = deepFreeze(descriptors);
 
-export function phase7SemanticToolDescriptor(
+export function capabilitySemanticToolDescriptor(
   operationId: string,
-): Phase7SemanticToolDescriptor | undefined {
-  return byId.get(operationId as Phase7SemanticOperationId);
+): CapabilitySemanticToolDescriptor | undefined {
+  return byId.get(operationId as CapabilitySemanticOperationId);
 }
 
-export function canonicalPhase7SemanticCatalog(): string {
-  return canonicalJson(PHASE7_SEMANTIC_TOOL_CATALOG);
+export function canonicalCapabilitySemanticCatalog(): string {
+  return canonicalJson(CAPABILITY_SEMANTIC_TOOL_CATALOG);
 }
 
 function deepFreeze<T>(value: T): T {

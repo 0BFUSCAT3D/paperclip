@@ -1,23 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { Phase7MockControlPlaneAdapter } from "../mock-core/phase7-mock-control-plane-adapter.js";
-import type { Phase7LiveSessionSnapshot } from "../phase7/live-session.js";
+import { CapabilityMockControlPlaneAdapter } from "../mock-core/capability-mock-control-plane-adapter.js";
+import type { CapabilityLiveSessionSnapshot } from "../live/live-session.js";
 import {
-  PHASE7_UI_SHOT_SLUGS,
-  phase7IssueThreadFixture,
+  CAPABILITY_UI_SHOT_SLUGS,
+  capabilityIssueThreadFixture,
 } from "./fixtures.js";
-import { projectPhase7IssueThread } from "./live-projection.js";
+import { projectCapabilityIssueThread } from "./live-projection.js";
 import {
-  PHASE7_EVIDENCE_SECTIONS,
-  PHASE7_ISSUE_THREAD_VIEW_SCHEMA,
-  phase7DenialCount,
-  type Phase7IssueThreadSnapshot,
-  type Phase7ThreadInteractionState,
-  type Phase7ThreadItem,
+  CAPABILITY_EVIDENCE_SECTIONS,
+  CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA,
+  capabilityDenialCount,
+  type CapabilityIssueThreadSnapshot,
+  type CapabilityThreadInteractionState,
+  type CapabilityThreadItem,
 } from "./types.js";
 
 /** Contract §3 item taxonomy T1–T11. */
-const REQUIRED_ITEM_KINDS: Array<Phase7ThreadItem["kind"]> = [
+const REQUIRED_ITEM_KINDS: Array<CapabilityThreadItem["kind"]> = [
   "user_message",
   "agent_message",
   "durable_comment",
@@ -31,7 +31,7 @@ const REQUIRED_ITEM_KINDS: Array<Phase7ThreadItem["kind"]> = [
 ];
 
 /** Contract §5 state matrix. */
-const REQUIRED_INTERACTION_STATES: Phase7ThreadInteractionState[] = [
+const REQUIRED_INTERACTION_STATES: CapabilityThreadInteractionState[] = [
   "pending",
   "accepted",
   "answered",
@@ -40,7 +40,7 @@ const REQUIRED_INTERACTION_STATES: Phase7ThreadInteractionState[] = [
   "superseded_by_comment",
 ];
 
-function allItems(snapshot: Phase7IssueThreadSnapshot): Phase7ThreadItem[] {
+function allItems(snapshot: CapabilityIssueThreadSnapshot): CapabilityThreadItem[] {
   return snapshot.turns.flatMap((turn) => turn.items);
 }
 
@@ -58,37 +58,37 @@ function credentialLike(value: unknown): string[] {
   return patterns.filter((pattern) => pattern.test(serialized)).map(String);
 }
 
-describe("Phase 7 issue-thread fixtures", () => {
+describe("Capability issue-thread fixtures", () => {
   it("exposes exactly the twelve screenshot slugs from the UX contract §10.2", () => {
-    expect(PHASE7_UI_SHOT_SLUGS).toHaveLength(12);
-    expect(new Set(PHASE7_UI_SHOT_SLUGS).size).toBe(12);
+    expect(CAPABILITY_UI_SHOT_SLUGS).toHaveLength(12);
+    expect(new Set(CAPABILITY_UI_SHOT_SLUGS).size).toBe(12);
   });
 
   it("builds a schema-valid snapshot for every slug", () => {
-    for (const slug of PHASE7_UI_SHOT_SLUGS) {
-      const snapshot = phase7IssueThreadFixture(slug);
-      expect(snapshot.schema).toBe(PHASE7_ISSUE_THREAD_VIEW_SCHEMA);
+    for (const slug of CAPABILITY_UI_SHOT_SLUGS) {
+      const snapshot = capabilityIssueThreadFixture(slug);
+      expect(snapshot.schema).toBe(CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA);
       expect(snapshot.turns.length).toBeGreaterThan(0);
       expect(snapshot.identity.controlPlaneLabel).toBe("Mock Paperclip");
       expect(snapshot.issue.identifier.startsWith("MCK-")).toBe(true);
-      for (const section of PHASE7_EVIDENCE_SECTIONS) {
+      for (const section of CAPABILITY_EVIDENCE_SECTIONS) {
         expect(Array.isArray(snapshot.evidence[section.id])).toBe(true);
       }
     }
   });
 
   it("is deterministic: two builds of a slug are byte-identical", () => {
-    for (const slug of PHASE7_UI_SHOT_SLUGS) {
-      expect(JSON.stringify(phase7IssueThreadFixture(slug))).toBe(
-        JSON.stringify(phase7IssueThreadFixture(slug)),
+    for (const slug of CAPABILITY_UI_SHOT_SLUGS) {
+      expect(JSON.stringify(capabilityIssueThreadFixture(slug))).toBe(
+        JSON.stringify(capabilityIssueThreadFixture(slug)),
       );
     }
   });
 
   it("covers every §3 thread item type across the matrix", () => {
-    const seen = new Set<Phase7ThreadItem["kind"]>();
-    for (const slug of PHASE7_UI_SHOT_SLUGS) {
-      for (const item of allItems(phase7IssueThreadFixture(slug))) seen.add(item.kind);
+    const seen = new Set<CapabilityThreadItem["kind"]>();
+    for (const slug of CAPABILITY_UI_SHOT_SLUGS) {
+      for (const item of allItems(capabilityIssueThreadFixture(slug))) seen.add(item.kind);
     }
     for (const kind of REQUIRED_ITEM_KINDS) {
       expect(seen, `missing thread item ${kind}`).toContain(kind);
@@ -96,9 +96,9 @@ describe("Phase 7 issue-thread fixtures", () => {
   });
 
   it("covers the §5 interaction state matrix", () => {
-    const seen = new Set<Phase7ThreadInteractionState>();
-    for (const slug of PHASE7_UI_SHOT_SLUGS) {
-      for (const item of allItems(phase7IssueThreadFixture(slug))) {
+    const seen = new Set<CapabilityThreadInteractionState>();
+    for (const slug of CAPABILITY_UI_SHOT_SLUGS) {
+      for (const item of allItems(capabilityIssueThreadFixture(slug))) {
         if (item.kind === "interaction") seen.add(item.state);
       }
     }
@@ -109,7 +109,7 @@ describe("Phase 7 issue-thread fixtures", () => {
 
   it("covers every §4 composer state", () => {
     const seen = new Set(
-      PHASE7_UI_SHOT_SLUGS.map((slug) => phase7IssueThreadFixture(slug).composer.state),
+      CAPABILITY_UI_SHOT_SLUGS.map((slug) => capabilityIssueThreadFixture(slug).composer.state),
     );
     for (const state of ["ready", "streaming", "waiting", "reconnecting", "disabled"]) {
       expect(seen, `missing composer state ${state}`).toContain(state);
@@ -117,7 +117,7 @@ describe("Phase 7 issue-thread fixtures", () => {
   });
 
   it("binds the confirmation card to an explicit revision", () => {
-    const snapshot = phase7IssueThreadFixture("interaction-confirmation-pending");
+    const snapshot = capabilityIssueThreadFixture("interaction-confirmation-pending");
     const card = allItems(snapshot).find(
       (item) => item.kind === "interaction" && item.interactionKind === "confirmation",
     );
@@ -130,7 +130,7 @@ describe("Phase 7 issue-thread fixtures", () => {
   });
 
   it("quotes the deny reason verbatim and counts it for the evidence badge", () => {
-    const snapshot = phase7IssueThreadFixture("denial-optional-tool");
+    const snapshot = capabilityIssueThreadFixture("denial-optional-tool");
     const denial = allItems(snapshot).find((item) => item.kind === "denial");
     expect(denial?.kind).toBe("denial");
     if (denial?.kind !== "denial") return;
@@ -139,11 +139,11 @@ describe("Phase 7 issue-thread fixtures", () => {
     );
     expect(record?.allowed).toBe(false);
     expect(denial.reason).toBe(record?.reason);
-    expect(phase7DenialCount(snapshot.evidence, null)).toBe(1);
+    expect(capabilityDenialCount(snapshot.evidence, null)).toBe(1);
   });
 
   it("labels replay as fake-derived so replay never satisfies a live criterion", () => {
-    const snapshot = phase7IssueThreadFixture("replay-mode");
+    const snapshot = capabilityIssueThreadFixture("replay-mode");
     expect(snapshot.mode).toBe("replay");
     expect(snapshot.identity.replaySource).toBe("fake");
     expect(snapshot.composer.state).toBe("disabled");
@@ -151,7 +151,7 @@ describe("Phase 7 issue-thread fixtures", () => {
   });
 
   it("names the control-plane operations that are withheld from the agent", () => {
-    const snapshot = phase7IssueThreadFixture("thread-baseline");
+    const snapshot = capabilityIssueThreadFixture("thread-baseline");
     const withheld = snapshot.evidence.tools[0]?.rows.filter(
       (row) => row.disposition === "control_plane_owned",
     );
@@ -160,15 +160,15 @@ describe("Phase 7 issue-thread fixtures", () => {
   });
 
   it("keeps credentials out of every fixture", () => {
-    for (const slug of PHASE7_UI_SHOT_SLUGS) {
-      expect(credentialLike(phase7IssueThreadFixture(slug)), slug).toEqual([]);
+    for (const slug of CAPABILITY_UI_SHOT_SLUGS) {
+      expect(credentialLike(capabilityIssueThreadFixture(slug)), slug).toEqual([]);
     }
   });
 });
 
-describe("Phase 7 live projection", () => {
-  async function liveSnapshot(): Promise<Phase7LiveSessionSnapshot> {
-    const adapter = new Phase7MockControlPlaneAdapter({
+describe("Capability live projection", () => {
+  async function liveSnapshot(): Promise<CapabilityLiveSessionSnapshot> {
+    const adapter = new CapabilityMockControlPlaneAdapter({
       epochMs: Date.UTC(2026, 7, 9, 9, 0, 0),
       tasks: [
         {
@@ -199,7 +199,7 @@ describe("Phase 7 live projection", () => {
         agentId: "actor-1",
       },
       backendKind: "mock",
-      sourceInstanceId: "phase7-ui",
+      sourceInstanceId: "capability-ui",
     });
     const applied = await adapter.applyCommand({
       runId: "run-7g-1",
@@ -208,7 +208,7 @@ describe("Phase 7 live projection", () => {
     });
 
     return {
-      schema: "paperclip.phase7.live-session.v1",
+      schema: "paperclip.capability.live-session.v1",
       revision: 1,
       sessionId: "session-7g-1",
       providerThreadId: "thr-mock",
@@ -341,13 +341,13 @@ describe("Phase 7 live projection", () => {
       ],
       process: null,
       networkEvidence: { realPaperclipRequests: 0, childPaperclipEnvironmentKeys: [] },
-    } as Phase7LiveSessionSnapshot;
+    } as CapabilityLiveSessionSnapshot;
   }
 
   it("projects mock records into the same view contract the fixtures use", async () => {
-    const view = projectPhase7IssueThread({ snapshot: await liveSnapshot() });
+    const view = projectCapabilityIssueThread({ snapshot: await liveSnapshot() });
 
-    expect(view.schema).toBe(PHASE7_ISSUE_THREAD_VIEW_SCHEMA);
+    expect(view.schema).toBe(CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA);
     expect(view.mode).toBe("live");
     expect(view.identity.agentLabel).toBe("Real Codex");
     expect(view.identity.runnerLabel).toBe("Real runnerd");
@@ -381,7 +381,7 @@ describe("Phase 7 live projection", () => {
   });
 
   it("hides the synthetic interaction-result message from the thread", async () => {
-    const view = projectPhase7IssueThread({ snapshot: await liveSnapshot() });
+    const view = projectCapabilityIssueThread({ snapshot: await liveSnapshot() });
     const bodies = allItems(view)
       .filter((item) => item.kind === "user_message")
       .map((item) => item.body);
@@ -389,7 +389,7 @@ describe("Phase 7 live projection", () => {
   });
 
   it("separates exposed agent tools from withheld control-plane operations", async () => {
-    const view = projectPhase7IssueThread({ snapshot: await liveSnapshot() });
+    const view = projectCapabilityIssueThread({ snapshot: await liveSnapshot() });
     const rows = view.evidence.tools[0]?.rows ?? [];
     const always = rows.filter((row) => row.disposition === "always_agent_tool");
     const granted = rows.filter((row) => row.disposition === "optional_agent_tool");
@@ -401,25 +401,25 @@ describe("Phase 7 live projection", () => {
 
   it("derives composer state from server records rather than browser guesses", async () => {
     const snapshot = await liveSnapshot();
-    expect(projectPhase7IssueThread({ snapshot }).composer.state).toBe("ready");
+    expect(projectCapabilityIssueThread({ snapshot }).composer.state).toBe("ready");
     expect(
-      projectPhase7IssueThread({
+      projectCapabilityIssueThread({
         snapshot: { ...snapshot, activeTurnId: "turn-1" },
       }).composer.state,
     ).toBe("streaming");
     expect(
-      projectPhase7IssueThread({
+      projectCapabilityIssueThread({
         snapshot,
         connection: { state: "reconnecting", attempt: 2 },
       }).composer.state,
     ).toBe("reconnecting");
     expect(
-      projectPhase7IssueThread({ snapshot, mode: "replay" }).composer.state,
+      projectCapabilityIssueThread({ snapshot, mode: "replay" }).composer.state,
     ).toBe("disabled");
   });
 
   it("keeps credentials out of the projected view", async () => {
-    const view = projectPhase7IssueThread({ snapshot: await liveSnapshot() });
+    const view = projectCapabilityIssueThread({ snapshot: await liveSnapshot() });
     expect(credentialLike(view)).toEqual([]);
   });
 });

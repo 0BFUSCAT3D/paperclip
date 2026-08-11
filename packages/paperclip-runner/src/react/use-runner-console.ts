@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { PrpEvent } from "../protocol/phase1-contract.js";
+import type { PrpEvent } from "../protocol/replay-contract.js";
 import {
   createSessionSnapshotFromMetadata,
   reduceSessionEvents,

@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { resolve } from "node:path";
-import { validateRows } from "../scripts/generate-phase-07-contract.mjs";
+import { validateRows } from "../scripts/generate-capability-contract.mjs";
 
-const phaseDirectory = resolve(import.meta.dirname, "../generated/phase-07");
+const phaseDirectory = resolve(import.meta.dirname, "../generated/capability");
 
 async function readRows(file) {
   return JSON.parse(await readFile(resolve(phaseDirectory, file), "utf8")).rows;
 }
 
-test("generated Phase 7 inventory has full source coverage", async () => {
+test("generated Capability inventory has full source coverage", async () => {
   const [capabilities, tools, evals] = await Promise.all([
     readRows("capabilities.yaml"),
     readRows("mcp-tool-map.yaml"),

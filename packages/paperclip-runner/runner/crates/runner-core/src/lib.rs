@@ -1,20 +1,22 @@
 #![forbid(unsafe_code)]
 
-pub mod phase1;
-pub mod phase2;
-pub mod phase3;
+pub mod durable;
+pub mod fake_harness;
+pub mod local_runner;
+pub mod process_supervisor;
+pub mod replay;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 
-pub const PHASE0_FIXTURE_SCHEMA: &str = "paperclip.runner.phase0.fixture.v1";
-pub const PHASE0_OUTPUT_SCHEMA: &str = "paperclip.runner.phase0.output.v1";
-pub const PHASE0_FIXTURE: &str =
-    include_str!("../../../../protocol/fixtures/phase-00-minimal-run.json");
-pub const PHASE0_EXPECTED_OUTPUT: &str =
-    include_str!("../../../../protocol/fixtures/phase-00-expected-output.json");
+pub const CONFORMANCE_FIXTURE_SCHEMA: &str = "paperclip.runner.conformance.fixture.v1";
+pub const CONFORMANCE_OUTPUT_SCHEMA: &str = "paperclip.runner.conformance.output.v1";
+pub const CONFORMANCE_FIXTURE: &str =
+    include_str!("../../../../protocol/fixtures/conformance-minimal-run.json");
+pub const CONFORMANCE_EXPECTED_OUTPUT: &str =
+    include_str!("../../../../protocol/fixtures/conformance-expected-output.json");
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -46,7 +48,7 @@ pub struct NativeRunResult {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct Phase0Fixture {
+pub struct ConformanceFixture {
     pub schema_version: String,
     pub run: NativeRunIdentity,
     pub events: Vec<NativeRunEvent>,
@@ -54,23 +56,23 @@ pub struct Phase0Fixture {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Phase0Error(String);
+pub struct ConformanceError(String);
 
-impl Phase0Error {
+impl ConformanceError {
     fn invalid(message: impl Into<String>) -> Self {
         Self(message.into())
     }
 }
 
-impl Display for Phase0Error {
+impl Display for ConformanceError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
-impl Error for Phase0Error {}
+impl Error for ConformanceError {}
 
-fn validate_identifier(value: &str, path: &str) -> Result<(), Phase0Error> {
+fn validate_identifier(value: &str, path: &str) -> Result<(), ConformanceError> {
     let mut characters = value.chars();
     let starts_lowercase = characters
         .next()
@@ -82,19 +84,20 @@ fn validate_identifier(value: &str, path: &str) -> Result<(), Phase0Error> {
     if starts_lowercase && remainder_is_valid {
         Ok(())
     } else {
-        Err(Phase0Error::invalid(format!(
+        Err(ConformanceError::invalid(format!(
             "{path} must be a stable lowercase identifier"
         )))
     }
 }
 
-pub fn validate_phase0_fixture(input: &str) -> Result<Phase0Fixture, Phase0Error> {
-    let fixture: Phase0Fixture = serde_json::from_str(input)
-        .map_err(|error| Phase0Error::invalid(format!("fixture must be valid JSON: {error}")))?;
+pub fn validate_conformance_fixture(input: &str) -> Result<ConformanceFixture, ConformanceError> {
+    let fixture: ConformanceFixture = serde_json::from_str(input).map_err(|error| {
+        ConformanceError::invalid(format!("fixture must be valid JSON: {error}"))
+    })?;
 
-    if fixture.schema_version != PHASE0_FIXTURE_SCHEMA {
-        return Err(Phase0Error::invalid(format!(
-            "schemaVersion must be {PHASE0_FIXTURE_SCHEMA}"
+    if fixture.schema_version != CONFORMANCE_FIXTURE_SCHEMA {
+        return Err(ConformanceError::invalid(format!(
+            "schemaVersion must be {CONFORMANCE_FIXTURE_SCHEMA}"
         )));
     }
 
@@ -109,7 +112,7 @@ pub fn validate_phase0_fixture(input: &str) -> Result<Phase0Fixture, Phase0Error
     }
 
     if fixture.events.len() < 2 {
-        return Err(Phase0Error::invalid(
+        return Err(ConformanceError::invalid(
             "events must contain at least run.started and run.completed",
         ));
     }
@@ -117,18 +120,18 @@ pub fn validate_phase0_fixture(input: &str) -> Result<Phase0Fixture, Phase0Error
     for (index, event) in fixture.events.iter().enumerate() {
         validate_identifier(&event.event_id, &format!("events[{index}].eventId"))?;
         if event.run_id != fixture.run.run_id {
-            return Err(Phase0Error::invalid(format!(
+            return Err(ConformanceError::invalid(format!(
                 "events[{index}].runId must match run.runId"
             )));
         }
         let expected_sequence = index as u64 + 1;
         if event.sequence != expected_sequence {
-            return Err(Phase0Error::invalid(format!(
+            return Err(ConformanceError::invalid(format!(
                 "events[{index}].sequence must be {expected_sequence}"
             )));
         }
         if !matches!(event.event_type.as_str(), "run.started" | "run.completed") {
-            return Err(Phase0Error::invalid(format!(
+            return Err(ConformanceError::invalid(format!(
                 "events[{index}].type is unsupported"
             )));
         }
@@ -140,23 +143,27 @@ pub fn validate_phase0_fixture(input: &str) -> Result<Phase0Fixture, Phase0Error
         .map(|event| event.event_type.as_str())
         != Some("run.started")
     {
-        return Err(Phase0Error::invalid("the first event must be run.started"));
+        return Err(ConformanceError::invalid(
+            "the first event must be run.started",
+        ));
     }
     if fixture.events.last().map(|event| event.event_type.as_str()) != Some("run.completed") {
-        return Err(Phase0Error::invalid(
+        return Err(ConformanceError::invalid(
             "the final event must be run.completed",
         ));
     }
     if fixture.result.run_id != fixture.run.run_id {
-        return Err(Phase0Error::invalid("result.runId must match run.runId"));
+        return Err(ConformanceError::invalid(
+            "result.runId must match run.runId",
+        ));
     }
     if fixture.result.status != "succeeded" {
-        return Err(Phase0Error::invalid(
-            "the Phase 0 fixture result must be succeeded",
+        return Err(ConformanceError::invalid(
+            "the Conformance fixture result must be succeeded",
         ));
     }
     if fixture.result.summary.trim().is_empty() {
-        return Err(Phase0Error::invalid(
+        return Err(ConformanceError::invalid(
             "result.summary must be a non-empty string",
         ));
     }
@@ -173,9 +180,9 @@ pub struct MockControlPlane {
 }
 
 impl MockControlPlane {
-    pub fn start(&mut self) -> Result<(), Phase0Error> {
+    pub fn start(&mut self) -> Result<(), ConformanceError> {
         if self.running {
-            return Err(Phase0Error::invalid(
+            return Err(ConformanceError::invalid(
                 "mock control plane is already running",
             ));
         }
@@ -187,27 +194,27 @@ impl MockControlPlane {
         self.running = false;
     }
 
-    pub fn open_run(&mut self, identity: &NativeRunIdentity) -> Result<(), Phase0Error> {
+    pub fn open_run(&mut self, identity: &NativeRunIdentity) -> Result<(), ConformanceError> {
         self.require_running()?;
         if self.opened_run_id.is_some() {
-            return Err(Phase0Error::invalid(
-                "mock control plane accepts one Phase 0 run",
+            return Err(ConformanceError::invalid(
+                "mock control plane accepts one Conformance run",
             ));
         }
         self.opened_run_id = Some(identity.run_id.clone());
         Ok(())
     }
 
-    pub fn append_event(&mut self, event: &NativeRunEvent) -> Result<u64, Phase0Error> {
+    pub fn append_event(&mut self, event: &NativeRunEvent) -> Result<u64, ConformanceError> {
         let run_id = self.require_run_id()?;
         if event.run_id != run_id {
-            return Err(Phase0Error::invalid(
+            return Err(ConformanceError::invalid(
                 "event runId does not match the opened run",
             ));
         }
         let expected_sequence = self.events.len() as u64 + 1;
         if event.sequence != expected_sequence {
-            return Err(Phase0Error::invalid(format!(
+            return Err(ConformanceError::invalid(format!(
                 "event sequence must be {expected_sequence}"
             )));
         }
@@ -215,20 +222,20 @@ impl MockControlPlane {
         Ok(event.sequence)
     }
 
-    pub fn complete_run(&mut self, result: &NativeRunResult) -> Result<(), Phase0Error> {
+    pub fn complete_run(&mut self, result: &NativeRunResult) -> Result<(), ConformanceError> {
         let run_id = self.require_run_id()?;
         if result.run_id != run_id {
-            return Err(Phase0Error::invalid(
+            return Err(ConformanceError::invalid(
                 "result runId does not match the opened run",
             ));
         }
         if self.events.last().map(|event| event.event_type.as_str()) != Some("run.completed") {
-            return Err(Phase0Error::invalid(
+            return Err(ConformanceError::invalid(
                 "run.completed must be ingested before the result",
             ));
         }
         if self.result.is_some() {
-            return Err(Phase0Error::invalid(
+            return Err(ConformanceError::invalid(
                 "mock control plane accepts one terminal result",
             ));
         }
@@ -236,47 +243,47 @@ impl MockControlPlane {
         Ok(())
     }
 
-    fn require_running(&self) -> Result<(), Phase0Error> {
+    fn require_running(&self) -> Result<(), ConformanceError> {
         if self.running {
             Ok(())
         } else {
-            Err(Phase0Error::invalid(
+            Err(ConformanceError::invalid(
                 "mock control plane must be started first",
             ))
         }
     }
 
-    fn require_run_id(&self) -> Result<&str, Phase0Error> {
+    fn require_run_id(&self) -> Result<&str, ConformanceError> {
         self.require_running()?;
         self.opened_run_id
             .as_deref()
-            .ok_or_else(|| Phase0Error::invalid("a run must be opened first"))
+            .ok_or_else(|| ConformanceError::invalid("a run must be opened first"))
     }
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Phase0TracerOutput<'a> {
+struct ConformanceTracerOutput<'a> {
     schema_version: &'static str,
-    run_identity: Phase0RunIdentityOutput<'a>,
-    result: Phase0ResultOutput<'a>,
+    run_identity: ConformanceRunIdentityOutput<'a>,
+    result: ConformanceResultOutput<'a>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Phase0RunIdentityOutput<'a> {
+struct ConformanceRunIdentityOutput<'a> {
     run_id: &'a str,
     session_id: &'a str,
 }
 
 #[derive(Serialize)]
-struct Phase0ResultOutput<'a> {
+struct ConformanceResultOutput<'a> {
     status: &'a str,
     summary: &'a str,
 }
 
-pub fn run_phase0_tracer(input: &str) -> Result<String, Phase0Error> {
-    let fixture = validate_phase0_fixture(input)?;
+pub fn run_conformance_tracer(input: &str) -> Result<String, ConformanceError> {
+    let fixture = validate_conformance_fixture(input)?;
     let mut mock_core = MockControlPlane::default();
     mock_core.start()?;
 
@@ -286,18 +293,18 @@ pub fn run_phase0_tracer(input: &str) -> Result<String, Phase0Error> {
             mock_core.append_event(event)?;
         }
         mock_core.complete_run(&fixture.result)?;
-        serde_json::to_string(&Phase0TracerOutput {
-            schema_version: PHASE0_OUTPUT_SCHEMA,
-            run_identity: Phase0RunIdentityOutput {
+        serde_json::to_string(&ConformanceTracerOutput {
+            schema_version: CONFORMANCE_OUTPUT_SCHEMA,
+            run_identity: ConformanceRunIdentityOutput {
                 run_id: &fixture.run.run_id,
                 session_id: &fixture.run.session_id,
             },
-            result: Phase0ResultOutput {
+            result: ConformanceResultOutput {
                 status: &fixture.result.status,
                 summary: &fixture.result.summary,
             },
         })
-        .map_err(|error| Phase0Error::invalid(format!("output serialization failed: {error}")))
+        .map_err(|error| ConformanceError::invalid(format!("output serialization failed: {error}")))
     })();
 
     mock_core.stop();
@@ -310,8 +317,8 @@ mod tests {
 
     #[test]
     fn validates_the_shared_fixture() {
-        let fixture =
-            validate_phase0_fixture(PHASE0_FIXTURE).expect("shared fixture should validate");
+        let fixture = validate_conformance_fixture(CONFORMANCE_FIXTURE)
+            .expect("shared fixture should validate");
 
         assert_eq!(fixture.events.len(), 2);
         assert_eq!(fixture.events[1].sequence, 2);
@@ -320,17 +327,17 @@ mod tests {
 
     #[test]
     fn rejects_a_sequence_gap() {
-        let invalid = PHASE0_FIXTURE.replacen(r#""sequence": 2"#, r#""sequence": 3"#, 1);
+        let invalid = CONFORMANCE_FIXTURE.replacen(r#""sequence": 2"#, r#""sequence": 3"#, 1);
 
-        let error = validate_phase0_fixture(&invalid).expect_err("sequence gap must fail");
+        let error = validate_conformance_fixture(&invalid).expect_err("sequence gap must fail");
         assert_eq!(error.to_string(), "events[1].sequence must be 2");
     }
 
     #[test]
     fn runs_the_mock_core_path_with_stable_output() {
         assert_eq!(
-            run_phase0_tracer(PHASE0_FIXTURE).expect("tracer should succeed"),
-            PHASE0_EXPECTED_OUTPUT.trim_end(),
+            run_conformance_tracer(CONFORMANCE_FIXTURE).expect("tracer should succeed"),
+            CONFORMANCE_EXPECTED_OUTPUT.trim_end(),
         );
     }
 }

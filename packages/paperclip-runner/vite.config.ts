@@ -4,14 +4,14 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-import { phase2BrowserServerPlugin } from "./scripts/phase2-browser-server.mjs";
-import { phase4bBrowserServerPlugin } from "./scripts/phase4b-browser-server.mjs";
+import { localRunnerBrowserServerPlugin } from "./scripts/local-runner-browser-server.mjs";
+import { liveConsoleBrowserServerPlugin } from "./scripts/live-console-browser-server.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   root: resolve(packageRoot, "devtools/browser"),
-  plugins: [react(), phase2BrowserServerPlugin(), phase4bBrowserServerPlugin()],
+  plugins: [react(), localRunnerBrowserServerPlugin(), liveConsoleBrowserServerPlugin()],
   server: {
     host: "127.0.0.1",
   },

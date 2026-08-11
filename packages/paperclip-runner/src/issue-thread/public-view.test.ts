@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  phase7AllowlistedInputFields,
-  phase7EvidenceDetail,
-  phase7EvidenceDetails,
-  redactPhase7EvidenceData,
-  redactPhase7ToolResult,
-} from "../phase7/evidence-redaction.js";
-import { toPhase7PublicThreadView } from "./public-view.js";
-import { PHASE7_ISSUE_THREAD_VIEW_SCHEMA, type Phase7IssueThreadSnapshot } from "./types.js";
+  capabilityAllowlistedInputFields,
+  capabilityEvidenceDetail,
+  capabilityEvidenceDetails,
+  redactCapabilityEvidenceData,
+  redactCapabilityToolResult,
+} from "../live/evidence-redaction.js";
+import { toCapabilityPublicThreadView } from "./public-view.js";
+import { CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA, type CapabilityIssueThreadSnapshot } from "./types.js";
 
 /**
  * Track 7U, finding 1, at the unit level.
@@ -25,9 +25,9 @@ const PROVIDER_TURN = "turn_01HZX8Q2M4KDR7VJ";
 const PROVIDER_CALL = "call_01HZX8Q2M4KDR7VJ";
 const PROVIDER_THREAD = "thr_01HZX8Q2M4KDR7VJWN";
 
-function projectedView(): Phase7IssueThreadSnapshot {
+function projectedView(): CapabilityIssueThreadSnapshot {
   return {
-    schema: PHASE7_ISSUE_THREAD_VIEW_SCHEMA,
+    schema: CAPABILITY_ISSUE_THREAD_VIEW_SCHEMA,
     sessionId: "session-1",
     mode: "live",
     identity: {
@@ -113,14 +113,14 @@ function projectedView(): Phase7IssueThreadSnapshot {
   };
 }
 
-describe("Phase 7 public issue-thread DTO", () => {
+describe("Capability public issue-thread DTO", () => {
   it("copies by allowlist, so a field added to the projection cannot ship", () => {
-    const view = projectedView() as Phase7IssueThreadSnapshot & { leakedTop?: string };
+    const view = projectedView() as CapabilityIssueThreadSnapshot & { leakedTop?: string };
     view.leakedTop = CANARY;
     (view.issue as unknown as Record<string, string>).leakedIssue = CANARY;
     (view.turns[0]!.items[0] as unknown as Record<string, string>).leakedItem = CANARY;
 
-    const encoded = JSON.stringify(toPhase7PublicThreadView(view));
+    const encoded = JSON.stringify(toCapabilityPublicThreadView(view));
 
     expect(encoded).not.toContain(CANARY);
     expect(encoded).not.toContain("leakedTop");
@@ -129,7 +129,7 @@ describe("Phase 7 public issue-thread DTO", () => {
   });
 
   it("narrows a tool payload to the summary the UI renders", () => {
-    const published = toPhase7PublicThreadView(projectedView());
+    const published = toCapabilityPublicThreadView(projectedView());
     const item = published.turns[0]!.items[0]!;
 
     expect(item.kind).toBe("tool_activity");
@@ -140,7 +140,7 @@ describe("Phase 7 public issue-thread DTO", () => {
   });
 
   it("replaces provider identifiers with in-view aliases everywhere they appear", () => {
-    const published = toPhase7PublicThreadView(projectedView());
+    const published = toCapabilityPublicThreadView(projectedView());
     const encoded = JSON.stringify(published);
 
     expect(published.turns[0]!.id).toBe("turn-1");
@@ -158,7 +158,7 @@ describe("Phase 7 public issue-thread DTO", () => {
   });
 
   it("scrubs withheld provider identity even out of free-text detail", () => {
-    const published = toPhase7PublicThreadView(projectedView(), {
+    const published = toCapabilityPublicThreadView(projectedView(), {
       withheldValues: [PROVIDER_THREAD, ""],
     });
 
@@ -167,9 +167,9 @@ describe("Phase 7 public issue-thread DTO", () => {
   });
 });
 
-describe("Phase 7 evidence redaction", () => {
+describe("Capability evidence redaction", () => {
   it("reduces a provider notification to a coarse category", () => {
-    const redacted = redactPhase7EvidenceData("provider_event", {
+    const redacted = redactCapabilityEvidenceData("provider_event", {
       method: "item/agentMessage/delta",
       params: {
         threadId: PROVIDER_THREAD,
@@ -181,7 +181,7 @@ describe("Phase 7 evidence redaction", () => {
 
     expect(redacted).toEqual({ event: "assistant_delta" });
     expect(JSON.stringify(redacted)).not.toContain(CANARY);
-    expect(phase7EvidenceDetail("provider_event", redacted)).toBe("provider event · assistant_delta");
+    expect(capabilityEvidenceDetail("provider_event", redacted)).toBe("provider event · assistant_delta");
   });
 
   it("recognizes progress notifications without retaining their text", () => {
@@ -191,30 +191,30 @@ describe("Phase 7 evidence redaction", () => {
       "item/commandExecution/outputDelta",
       "item/fileChange/outputDelta",
     ]) {
-      const redacted = redactPhase7EvidenceData("provider_event", {
+      const redacted = redactCapabilityEvidenceData("provider_event", {
         method,
         params: { delta: CANARY },
       });
       expect(String(redacted.event)).toMatch(/_delta$/);
       expect(JSON.stringify(redacted)).not.toContain(CANARY);
-      expect(phase7EvidenceDetails("provider_event", redacted)).toEqual([
+      expect(capabilityEvidenceDetails("provider_event", redacted)).toEqual([
         { label: "Event", value: redacted.event },
       ]);
     }
   });
 
   it("collapses an unknown provider method rather than echoing it", () => {
-    expect(redactPhase7EvidenceData("provider_event", { method: `x/${CANARY}` })).toEqual({
+    expect(redactCapabilityEvidenceData("provider_event", { method: `x/${CANARY}` })).toEqual({
       event: "other",
     });
   });
 
   it("withholds provider diagnostics and provider thread identity", () => {
-    expect(redactPhase7EvidenceData("diagnostic", { message: `PAPERCLIP_API_KEY=${CANARY}` })).toEqual({
+    expect(redactCapabilityEvidenceData("diagnostic", { message: `PAPERCLIP_API_KEY=${CANARY}` })).toEqual({
       diagnostic: "withheld",
     });
     expect(
-      redactPhase7EvidenceData("session", {
+      redactCapabilityEvidenceData("session", {
         action: "started",
         sessionId: "session-1",
         providerThreadId: PROVIDER_THREAD,
@@ -226,7 +226,7 @@ describe("Phase 7 evidence redaction", () => {
 
   it("drops process identifiers while keeping the transport transition", () => {
     expect(
-      redactPhase7EvidenceData("process", {
+      redactCapabilityEvidenceData("process", {
         action: "transport_closed",
         reason: "reconnect",
         runnerExited: true,
@@ -237,7 +237,7 @@ describe("Phase 7 evidence redaction", () => {
   });
 
   it("keeps only the tool-call fields the catalog declares", () => {
-    const redacted = redactPhase7EvidenceData("tool_call", {
+    const redacted = redactCapabilityEvidenceData("tool_call", {
       callId: "call-1",
       operationId: "report_progress",
       beforeRevision: 1,
@@ -250,7 +250,7 @@ describe("Phase 7 evidence redaction", () => {
   });
 
   it("carries the disposition summary the contract renders, and nothing else", () => {
-    const redacted = redactPhase7EvidenceData("tool_call", {
+    const redacted = redactCapabilityEvidenceData("tool_call", {
       callId: "call-2",
       operationId: "finish_task",
       beforeRevision: 4,
@@ -265,7 +265,7 @@ describe("Phase 7 evidence redaction", () => {
   });
 
   it("reduces a tool result to the outcome, revisions, and mock entity refs", () => {
-    const redacted = redactPhase7ToolResult({
+    const redacted = redactCapabilityToolResult({
       ok: true,
       operationId: "get_task_context",
       callId: "call-3",
@@ -296,7 +296,7 @@ describe("Phase 7 evidence redaction", () => {
   });
 
   it("keeps our own denial copy, which the denial card renders verbatim", () => {
-    const redacted = redactPhase7ToolResult({
+    const redacted = redactCapabilityToolResult({
       ok: false,
       denial: {
         schema: "paperclip.semantic-denial.v1",
@@ -316,20 +316,20 @@ describe("Phase 7 evidence redaction", () => {
   });
 
   it("reports undeclared arguments as a count rather than by name", () => {
-    expect(phase7AllowlistedInputFields("report_progress", { body: "x", oops: 1, alsoOops: 2 })).toEqual([
+    expect(capabilityAllowlistedInputFields("report_progress", { body: "x", oops: 1, alsoOops: 2 })).toEqual([
       "body",
       "2 undeclared",
     ]);
-    expect(phase7AllowlistedInputFields("not_a_tool", { anything: 1 })).toEqual(["1 undeclared"]);
+    expect(capabilityAllowlistedInputFields("not_a_tool", { anything: 1 })).toEqual(["1 undeclared"]);
   });
 
   it("returns nothing for an unlisted evidence kind", () => {
-    expect(redactPhase7EvidenceData("cleanup", { reason: "shutdown", authorityCleared: true })).toEqual({
+    expect(redactCapabilityEvidenceData("cleanup", { reason: "shutdown", authorityCleared: true })).toEqual({
       reason: "shutdown",
       authorityCleared: true,
     });
     expect(
-      redactPhase7EvidenceData("interaction", {
+      redactCapabilityEvidenceData("interaction", {
         interactionId: "interaction-1",
         interactionKind: "questions",
         outcome: "answered",

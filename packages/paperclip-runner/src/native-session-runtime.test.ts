@@ -11,7 +11,7 @@ import type {
   PrpEvent,
   PrpStructuredRunResult,
   PrpTerminalState,
-} from "./protocol/phase1-contract.js";
+} from "./protocol/replay-contract.js";
 import { executeNativeSession } from "./native-session-runtime.js";
 
 const identity = {

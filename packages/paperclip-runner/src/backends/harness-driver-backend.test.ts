@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
-import type { PrpEvent, PrpStructuredRunResult } from "../protocol/phase1-contract.js";
+import type { PrpEvent, PrpStructuredRunResult } from "../protocol/replay-contract.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 
 const result: PrpStructuredRunResult = {

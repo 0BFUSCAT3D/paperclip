@@ -1,4 +1,4 @@
-import { createPhase4TaskEnvelope } from "../contracts/phase4.js";
+import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import type { NativeExecutionInputV1 } from "../contracts/native-execution.js";
 import type { NativeSessionBackend } from "../contracts/native-session-backend.js";
 import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
@@ -13,7 +13,7 @@ export function createCodexNativeSessionBackend(
   options: { runnerInstanceId?: string } = {},
 ): NativeSessionBackend {
   return new HarnessDriverBackend(new CodexAppServerDriver({
-    taskEnvelope: createPhase4TaskEnvelope({
+    taskEnvelope: createCodexTaskEnvelope({
       objective: input.completionContract.contract.objective,
       contractRevision: input.completionContract.contract.revision,
       criteria: input.completionContract.contract.criteria,
