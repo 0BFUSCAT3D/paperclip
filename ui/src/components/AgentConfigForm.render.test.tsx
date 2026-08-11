@@ -16,6 +16,13 @@ const mockAgentsApi = vi.hoisted(() => ({
   detectModel: vi.fn(),
   list: vi.fn(),
   testEnvironment: vi.fn(),
+  startAdapterAuthLogin: vi.fn(),
+  getAdapterAuthLoginStatus: vi.fn(),
+  cancelAdapterAuthLogin: vi.fn(),
+}));
+
+const mockClipboard = vi.hoisted(() => ({
+  copyTextToClipboard: vi.fn(),
 }));
 
 const mockEnvironmentsApi = vi.hoisted(() => ({
@@ -47,6 +54,10 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../api/secrets", () => ({
   secretsApi: mockSecretsApi,
+}));
+
+vi.mock("../lib/clipboard", () => ({
+  copyTextToClipboard: mockClipboard.copyTextToClipboard,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -277,6 +288,69 @@ async function renderCreateForm(
   return { container, root, onChange };
 }
 
+const AUTH_MISSING_RESULT = {
+  adapterType: "codex_local",
+  status: "fail",
+  checks: [
+    {
+      code: "adapter_auth_missing",
+      level: "error",
+      message: "The sandbox has no ready authentication.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
+function findButton(container: HTMLElement, label: string) {
+  return Array.from(container.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === label,
+  );
+}
+
+function findByAriaLabel(container: HTMLElement, label: string) {
+  return container.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+}
+
+async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "E2B",
+        driver: "sandbox",
+        config: { provider: "e2b" },
+      }),
+    ],
+    { defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+async function clickByText(container: HTMLElement, label: string) {
+  const button = findButton(container, label);
+  await act(async () => {
+    button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+}
+
+async function clickElement(element: Element | null | undefined) {
+  await act(async () => {
+    element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushReact();
+}
+
+async function runTest(container: HTMLElement) {
+  await clickByText(container, "Test");
+}
+
+async function startLogin(container: HTMLElement) {
+  await clickByText(container, "Log in");
+  await flushReact();
+}
+
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
@@ -296,6 +370,30 @@ describe("AgentConfigForm environment selector", () => {
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/device", code: "WXYZ-1234" },
+    });
+    mockAgentsApi.cancelAdapterAuthLogin.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "cancelled",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+    });
+    mockClipboard.copyTextToClipboard.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -608,5 +706,197 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
     expect(result.container.textContent).toContain("Network unavailable");
+  });
+
+  it("hides the Login button before Test and shows it after the adapter_auth_missing check for a Codex sandbox", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+  });
+
+  it("does not show the Login button when the Test result has no adapter_auth_missing check", async () => {
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("does not show the Login button when the effective environment is Local", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {},
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("starts a login session for the effective sandbox and shows the code and the authentication URL", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "codex_local", {
+      environmentId: "sandbox-1",
+    });
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.textContent).toContain("https://auth.example.test/device");
+  });
+
+  it("shows the loading state while the session starts and the prompt is not ready", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+    });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(result.container.textContent).toContain("Preparing the login");
+    expect(result.container.textContent).not.toContain("https://");
+  });
+
+  it("copies the login code and the authentication URL", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    await clickElement(findByAriaLabel(result.container, "Copy code"));
+    await clickElement(findByAriaLabel(result.container, "Copy URL"));
+
+    expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("WXYZ-1234");
+    expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("https://auth.example.test/device");
+  });
+
+  it("opens the authentication URL in a new tab with a safe rel", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    const link = result.container.querySelector('a[href="https://auth.example.test/device"]');
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noreferrer noopener");
+  });
+
+  it("disables a second login start while a session is active", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    const startButton = findButton(result.container, "Log in");
+    expect(startButton).toBeTruthy();
+    expect(startButton?.disabled).toBe(true);
+    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the authenticated terminal state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+    });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(result.container.textContent).toContain("Authenticated");
+  });
+
+  it("renders the failed terminal state with the non-secret message", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "failed",
+      expiresAt: null,
+      failure: { reason: "device_rejected", message: "The device rejected the code." },
+      prompt: null,
+    });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(result.container.textContent).toContain("Login failed");
+    expect(result.container.textContent).toContain("The device rejected the code.");
+  });
+
+  it("renders the timed-out terminal state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "timed_out",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+    });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(result.container.textContent).toContain("Login timed out");
+  });
+
+  it("hides the Login button when the effective environment changes after a Test", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+
+    const select = result.container.querySelector("select");
+    await act(async () => {
+      if (select) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+        setter?.call(select, "");
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await flushReact();
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
   });
 });
