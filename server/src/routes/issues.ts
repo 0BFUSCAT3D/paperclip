@@ -2737,8 +2737,6 @@ export function issueRoutes(
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
-  const repositoryAccessSvc = repositoryAccessService(db);
-  const authorizationSvc = authorizationService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -5829,11 +5827,11 @@ export function issueRoutes(
       includeForIssueComment: wakeCommentId !== null,
     });
     const effectiveRepositories = issue.assigneeAgentId
-      ? ((await repositoryAccessSvc.listEffectiveRepositories({
+      ? ((await repositoryAccessService(db).listEffectiveRepositories({
           companyId: issue.companyId,
           agentId: issue.assigneeAgentId,
           canAccessProject: async (candidate) => {
-            const decision = await authorizationSvc.decide({
+            const decision = await authorizationService(db).decide({
               actor: {
                 type: "agent",
                 agentId: issue.assigneeAgentId,
