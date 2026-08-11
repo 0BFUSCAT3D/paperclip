@@ -103,6 +103,25 @@ describe("deriveRecoveryDisplayState", () => {
     expect(deriveRecoveryDisplayState(base, {})).toBe("needed");
   });
 
+  // PAP-17057 added this kind: a run stopped to wait on nothing, so the original
+  // owner gets bounded disposition-repair attempts. While one of those attempts
+  // is live or queued the state is recessed, not a prominent call to action.
+  it("reads a bounded repair attempt on deliberate_wait_without_target as in progress", () => {
+    const action = { ...base, kind: "deliberate_wait_without_target" as const };
+    expect(
+      deriveRecoveryDisplayState(action, {
+        ownerRun: { agentId: CTO_ID, status: "running" },
+      }),
+    ).toBe("in_progress");
+    expect(deriveRecoveryDisplayState(action, { hasQueuedWake: true })).toBe("in_progress");
+  });
+
+  it("keeps deliberate_wait_without_target needed once repair attempts stop", () => {
+    expect(
+      deriveRecoveryDisplayState({ ...base, kind: "deliberate_wait_without_target" }, {}),
+    ).toBe("needed");
+  });
+
   it("prefers the server-projected display state when present", () => {
     expect(
       deriveRecoveryDisplayState({ ...base, displayState: "observe_only" } as never, {
