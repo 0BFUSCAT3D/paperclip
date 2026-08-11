@@ -3735,6 +3735,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function reconcileDispositionRepair(
     issue: typeof issues.$inferSelect,
     latestRun: LatestIssueRun,
+    options: { historicalAttemptCount?: number } = {},
   ): Promise<"queued" | "escalated" | "covered" | "skipped"> {
     const current = await db
       .select()
@@ -3775,7 +3776,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       activeRepairAction.fingerprint === state.fingerprint
       ? activeRepairAction.attemptCount
       : 0;
-    const sameFingerprintAttempt = Math.max(runAttempt, persistedAttempt);
+    // Upgrade compatibility: pre-fingerprint continuation parks already spent
+    // attempts against this unchanged source state. Seed the durable counter
+    // from that consecutive legacy history instead of granting three fresh
+    // attempts merely because the recovery-action row did not exist yet.
+    const historicalAttempt = Math.min(
+      DISPOSITION_REPAIR_MAX_ATTEMPTS,
+      Math.max(0, Math.floor(options.historicalAttemptCount ?? 0)),
+    );
+    const sameFingerprintAttempt = Math.max(runAttempt, persistedAttempt, historicalAttempt);
     if (!ownerInvokable || budgetBlocked) {
       const escalated = await escalateDispositionRepair({
         issue: current,
@@ -4338,6 +4347,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? acceptedContinuationInteraction.resolvedAt ?? acceptedContinuationInteraction.updatedAt
         : null;
       if (acceptedContinuationInteraction && acceptedInteractionResolvedAt && !pendingExecutionState) {
+        const legacyReviewParkAttempts = await summarizeRecentContinuationRetries(
+          issue.companyId,
+          issue.id,
+          agentId,
+          CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
+          acceptedInteractionResolvedAt,
+        );
         const successfulRunSinceResolution = await hasSuccessfulIssueRunSince(
           issue.companyId,
           issue.id,
@@ -4378,7 +4394,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               result.issueIds.push(issue.id);
               continue;
             }
-            const outcome = await reconcileDispositionRepair(issue, latestPostResolutionRun);
+            const outcome = await reconcileDispositionRepair(issue, latestPostResolutionRun, {
+              historicalAttemptCount: legacyReviewParkAttempts.consecutive,
+            });
             if (outcome === "queued") {
               result.continuationRequeued += 1;
               result.dispositionRepairRequeued += 1;
@@ -4391,13 +4409,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             }
             continue;
           }
-          const { consecutive } = await summarizeRecentContinuationRetries(
-            issue.companyId,
-            issue.id,
-            agentId,
-            CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
-            acceptedInteractionResolvedAt,
-          );
+          const { consecutive } = legacyReviewParkAttempts;
           if (consecutive >= INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS && latestPostResolutionRun) {
             const resolved = await resolveContinuationWaitingOnReview(issue);
             if (resolved) {
