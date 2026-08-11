@@ -297,6 +297,7 @@ export {
   portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
   portabilitySkillManifestEntrySchema,
+  portabilityRepositoryManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,

@@ -219,6 +219,7 @@ function buildImportResult(): CompanyPortabilityImportResult {
     agents: [{ slug: "coder", id: "agent-1", action: "created", name: "Coder", reason: null }],
     skills: [],
     projects: [],
+    repositories: [],
     routines: [{ slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly Report", status: "paused" }],
     envInputs: [],
     warnings: [],

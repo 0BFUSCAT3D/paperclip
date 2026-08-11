@@ -677,6 +677,12 @@ Extensions verify their implementation with the conformance suite exported at
 `@paperclipai/plugin-sdk/repository-provider-conformance`, which the host also
 runs against the bridge.
 
+Provider installations are deliberately not portable. Company export may carry
+secret-free repository identity and portable project/agent relationships, but
+never the connection snapshot, provider configuration, metadata, or transient
+credential. Import recreates those entries as disconnected manual metadata; a
+destination operator must install/authorize the provider again.
+
 ## 14. SDK Surface
 
 Plugins do not talk to the DB directly.
