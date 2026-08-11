@@ -4,6 +4,9 @@ import {
   type RepositoryProviderLookup,
 } from "../repository-connections.js";
 import type { RepositoryProviderConnector } from "./provider-contract.js";
+import { guardRepositoryProviderConnector } from "./connector-guard.js";
+import { createGitHubProvider } from "./github-provider.js";
+import { createGitHubAppTransport } from "./github-transport.js";
 
 /**
  * Narrows a registered Foundation adapter to the full connection/discovery
@@ -68,4 +71,45 @@ export function listAvailableRepositoryProviders(
       supportsDiscovery: registration.descriptor.supportsDiscovery && isProviderConnector(registration.adapter),
     }))
     .sort((a, b) => (a.provider === b.provider ? a.host.localeCompare(b.host) : a.provider.localeCompare(b.provider)));
+}
+
+export interface RegisterRepositoryProvidersOptions {
+  env?: NodeJS.ProcessEnv;
+}
+
+/** Registers core repository providers configured through server environment. */
+export function registerConfiguredRepositoryProviders(
+  options: RegisterRepositoryProvidersOptions = {},
+): Array<() => void> {
+  const env = options.env ?? process.env;
+  const unregister: Array<() => void> = [];
+
+  const appId = env.PAPERCLIP_GITHUB_APP_ID?.trim();
+  const privateKey = env.PAPERCLIP_GITHUB_APP_PRIVATE_KEY;
+  const appSlug = env.PAPERCLIP_GITHUB_APP_SLUG?.trim();
+  const stateSecret = env.PAPERCLIP_GITHUB_CONNECTION_STATE_SECRET?.trim();
+
+  if (appId && privateKey && appSlug && stateSecret) {
+    const transport = createGitHubAppTransport({
+      appId,
+      privateKey,
+      host: env.PAPERCLIP_GITHUB_HOST?.trim() || undefined,
+      apiBaseUrl: env.PAPERCLIP_GITHUB_API_BASE_URL?.trim() || undefined,
+    });
+    const provider = createGitHubProvider({ transport, config: { appSlug, stateSecret } });
+    unregister.push(repositoryProviderRegistry.register(
+      guardRepositoryProviderConnector(provider, { provider: provider.provider, host: provider.host }),
+      {
+        host: provider.host,
+        descriptor: {
+          displayName: "GitHub",
+          source: "core",
+          supportsDiscovery: true,
+          supportsCloneCredentials: true,
+        },
+      },
+    ));
+  }
+
+  return unregister;
 }

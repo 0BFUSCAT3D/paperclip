@@ -164,7 +164,8 @@ export function repositoryService(db: Db) {
 
     findImportedProviderRepositories: async (
       companyId: string,
-      connectionId: string,
+      provider: string,
+      host: string,
       providerRepositoryIds: string[],
     ): Promise<Repository[]> => {
       if (providerRepositoryIds.length === 0) return [];
@@ -173,7 +174,8 @@ export function repositoryService(db: Db) {
         .from(repositories)
         .where(and(
           eq(repositories.companyId, companyId),
-          eq(repositories.connectionId, connectionId),
+          eq(repositories.provider, provider),
+          eq(repositories.host, host),
           inArray(repositories.providerRepositoryId, providerRepositoryIds),
         ));
       return rows.map(toRepository);
@@ -311,59 +313,83 @@ export function repositoryService(db: Db) {
       });
       const webUrl = input.webUrl ? normalizeRepositoryWebUrl(input.webUrl) : normalized.webUrl;
       const now = new Date();
-      const row = await db.transaction(async (tx) => {
-        const updated = await tx
+      return db.transaction(async (tx) => {
+        const values = {
+          companyId,
+          connectionId,
+          provider,
+          providerRepositoryId: input.providerRepositoryId,
+          identityKey,
+          host: normalized.host,
+          owner: normalized.owner,
+          name: normalized.name,
+          cloneUrl: normalized.cloneUrl,
+          webUrl,
+          defaultBranch: input.defaultBranch ?? null,
+          visibility: input.visibility ?? "unknown",
+          state: input.state ?? "active",
+          unavailableReason: input.unavailableReason ?? null,
+          providerMetadata: sanitizeRepositoryProviderMetadata(input.providerMetadata),
+          updatedAt: now,
+        } satisfies typeof repositories.$inferInsert;
+        const updateValues = {
+          host: normalized.host,
+          owner: normalized.owner,
+          name: normalized.name,
+          cloneUrl: normalized.cloneUrl,
+          webUrl,
+          defaultBranch: input.defaultBranch ?? null,
+          visibility: input.visibility ?? "unknown",
+          state: sql`CASE
+            WHEN ${repositories.state} = 'archived' THEN ${repositories.state}
+            ELSE ${input.state ?? "active"}
+          END`,
+          unavailableReason: input.unavailableReason ?? null,
+          providerMetadata: sanitizeRepositoryProviderMetadata(input.providerMetadata),
+          updatedAt: now,
+        };
+
+        let existing = await tx
+          .select()
+          .from(repositories)
+          .where(and(eq(repositories.companyId, companyId), eq(repositories.identityKey, identityKey)))
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          if (existing.connectionId === connectionId) {
+            existing = await tx
+              .update(repositories)
+              .set(updateValues)
+              .where(and(eq(repositories.companyId, companyId), eq(repositories.id, existing.id)))
+              .returning()
+              .then((rows) => rows[0] ?? existing);
+          }
+          return { repository: toRepository(existing), created: false };
+        }
+
+        const inserted = await tx
           .insert(repositories)
-          .values({
-            companyId,
-            connectionId,
-            provider,
-            providerRepositoryId: input.providerRepositoryId,
-            identityKey,
-            host: normalized.host,
-            owner: normalized.owner,
-            name: normalized.name,
-            cloneUrl: normalized.cloneUrl,
-            webUrl,
-            defaultBranch: input.defaultBranch ?? null,
-            visibility: input.visibility ?? "unknown",
-            state: input.state ?? "active",
-            unavailableReason: input.unavailableReason ?? null,
-            providerMetadata: sanitizeRepositoryProviderMetadata(input.providerMetadata),
-            updatedAt: now,
-          })
-          .onConflictDoUpdate({
-            target: [repositories.companyId, repositories.identityKey],
-            set: {
-              connectionId,
-              host: normalized.host,
-              owner: normalized.owner,
-              name: normalized.name,
-              cloneUrl: normalized.cloneUrl,
-              webUrl,
-              defaultBranch: input.defaultBranch ?? null,
-              visibility: input.visibility ?? "unknown",
-              state: sql`CASE
-                WHEN ${repositories.state} = 'archived' THEN ${repositories.state}
-                ELSE ${input.state ?? "active"}
-              END`,
-              unavailableReason: input.unavailableReason ?? null,
-              providerMetadata: sanitizeRepositoryProviderMetadata(input.providerMetadata),
-              updatedAt: now,
-            },
-          })
+          .values(values)
+          .onConflictDoNothing({ target: [repositories.companyId, repositories.identityKey] })
           .returning()
-          .then((rows) => rows[0]!);
+          .then((rows) => rows[0] ?? null);
+        if (!inserted) {
+          existing = await tx
+            .select()
+            .from(repositories)
+            .where(and(eq(repositories.companyId, companyId), eq(repositories.identityKey, identityKey)))
+            .then((rows) => rows[0] ?? null);
+          if (!existing) throw conflict("Repository import conflicted with another request");
+          return { repository: toRepository(existing), created: false };
+        }
         await tx
           .update(projectWorkspaces)
           .set({ repoUrl: normalized.cloneUrl, updatedAt: now })
           .where(and(
             eq(projectWorkspaces.companyId, companyId),
-            eq(projectWorkspaces.repositoryId, updated.id),
+            eq(projectWorkspaces.repositoryId, inserted.id),
           ));
-        return updated;
+        return { repository: toRepository(inserted), created: true };
       });
-      return toRepository(row!);
     },
 
     markConnectionUnavailable: async (companyId: string, connectionId: string, reason: string) => {

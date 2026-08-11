@@ -424,7 +424,8 @@ export function repositoryRoutes(db: Db) {
     });
     const imported = await repositories.findImportedProviderRepositories(
       connection.companyId,
-      connectionId,
+      connection.provider,
+      connection.host,
       page.items.map((item) => item.providerRepositoryId),
     );
     const importedById = new Map(imported.map((repo) => [repo.providerRepositoryId, repo]));
@@ -468,7 +469,7 @@ export function repositoryRoutes(db: Db) {
       if (connection.status === "disconnected") throw unprocessable("Disconnected repository connection cannot import repositories");
 
       const providerRepositoryIds: string[] = req.body.providerRepositoryIds;
-      const importedRepositories = [];
+      const importResults = [];
       const skipped: string[] = [];
       for (const providerRepositoryId of providerRepositoryIds) {
         const snapshot = await connector.refreshMetadata({ connection, providerRepositoryId });
@@ -476,12 +477,14 @@ export function repositoryRoutes(db: Db) {
           skipped.push(providerRepositoryId);
           continue;
         }
-        importedRepositories.push(
+        importResults.push(
           await repositories.upsertProviderRepository(connection.companyId, connectionId, connection.provider, snapshot),
         );
       }
+      const importedRepositories = importResults.map((result) => result.repository);
+      const importedCount = importResults.filter((result) => result.created).length;
       const { attribution } = activityActor(req);
-      if (importedRepositories.length > 0) {
+      if (importedCount > 0) {
         await logActivity(db, {
           companyId: connection.companyId,
           ...attribution,
@@ -490,14 +493,14 @@ export function repositoryRoutes(db: Db) {
           entityId: connectionId,
           details: {
             provider: connection.provider,
-            importedCount: importedRepositories.length,
+            importedCount,
             skippedCount: skipped.length,
           },
         });
       }
       res
-        .status(importedRepositories.length > 0 ? 201 : 200)
-        .json({ repositories: importedRepositories, imported: importedRepositories.length, skipped });
+        .status(importedCount > 0 ? 201 : 200)
+        .json({ repositories: importedRepositories, imported: importedCount, skipped });
     },
   );
 

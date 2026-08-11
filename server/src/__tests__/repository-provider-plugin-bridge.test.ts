@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { RepositoryConnection } from "@paperclipai/shared";
 import type { HostToWorkerMethodName } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
-import { FakeRepositoryProvider } from "../services/repository-providers/index.js";
+import { FakeRepositoryProvider } from "../services/repository-providers/fake-provider.js";
 import {
   createPluginRepositoryProviderConnector,
   REQUIRED_REPOSITORY_PROVIDER_METHODS,
@@ -11,7 +11,7 @@ import {
 import {
   runProviderConformance,
   type ProviderConformanceWorld,
-} from "./helpers/repository-provider-conformance.js";
+} from "./helpers/fake-github-transport.js";
 
 /**
  * Parity check for the extension seam: the exact conformance suite the

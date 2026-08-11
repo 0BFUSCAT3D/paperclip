@@ -109,7 +109,7 @@ describeEmbeddedPostgres("repository connection flow (GitHub-style provider)", (
 
   it("runs install -> callback -> discover -> import end to end", async () => {
     const company = await seedCompany();
-    const { installationId } = registerFakeProvider();
+    const { provider, installationId } = registerFakeProvider();
     const app = createApp(db, boardActor(company.id));
 
     const install = await request(app)
@@ -157,8 +157,45 @@ describeEmbeddedPostgres("repository connection flow (GitHub-style provider)", (
     const reimport = await request(app)
       .post(`/api/repository-connections/${connectionId}/import`)
       .send({ providerRepositoryIds: ["1"] });
+    expect(reimport.status).toBe(200);
+    expect(reimport.body.imported).toBe(0);
     expect(reimport.body.repositories[0].id).toBe(importedRepositoryId);
     expect(await db.select().from(repositories)).toHaveLength(1);
+
+    // A second installation sees the provider identity as already imported.
+    // Importing it directly remains idempotent and must not move catalog
+    // ownership to the new connection or over-report newly created rows.
+    const secondInstallationId = "inst-2";
+    provider.setInstallation({
+      installationId: secondInstallationId,
+      accountId: "acct-2",
+      accountName: "acme-secondary",
+      repositories: [{ providerRepositoryId: "1", owner: "acme", name: "alpha" }],
+    });
+    const secondInstall = await request(app)
+      .post(`/api/companies/${company.id}/repository-connections/fake/install`)
+      .send({});
+    const secondCallback = await request(app)
+      .post(`/api/companies/${company.id}/repository-connections/fake/callback`)
+      .send({ state: secondInstall.body.state, installationId: secondInstallationId });
+    const secondConnectionId = secondCallback.body.connection.id as string;
+
+    const secondDiscovery = await request(app)
+      .get(`/api/repository-connections/${secondConnectionId}/discover?query=alpha`);
+    expect(secondDiscovery.body.items[0]).toMatchObject({
+      imported: true,
+      importedRepositoryId,
+    });
+
+    const secondImport = await request(app)
+      .post(`/api/repository-connections/${secondConnectionId}/import`)
+      .send({ providerRepositoryIds: ["1"] });
+    expect(secondImport.status).toBe(200);
+    expect(secondImport.body.imported).toBe(0);
+    expect(secondImport.body.repositories[0].id).toBe(importedRepositoryId);
+    expect(await db.select().from(repositories)).toEqual([
+      expect.objectContaining({ id: importedRepositoryId, connectionId }),
+    ]);
   });
 
   it("rejects a tampered callback state", async () => {

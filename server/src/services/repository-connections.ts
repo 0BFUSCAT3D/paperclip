@@ -357,7 +357,7 @@ export function repositoryConnectionService(
             const snapshot = snapshotsById.get(providerRepositoryId);
             if (!snapshot) continue;
             syncedRepositories.push(
-              await transactionalRepositories.upsertProviderRepository(companyId, id, row.provider, snapshot),
+              (await transactionalRepositories.upsertProviderRepository(companyId, id, row.provider, snapshot)).repository,
             );
           }
           const unavailableIds = [...importedIds].filter((providerRepositoryId) => !snapshotsById.has(providerRepositoryId));

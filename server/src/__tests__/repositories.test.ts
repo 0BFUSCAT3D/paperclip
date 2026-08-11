@@ -452,7 +452,7 @@ describeEmbeddedPostgres("repository services and routes", () => {
       provider: "test_provider",
       host: "git.example.com",
     }).returning();
-    const providerRepository = await repositoryService(db).upsertProviderRepository(
+    const { repository: providerRepository } = await repositoryService(db).upsertProviderRepository(
       seeded.companyA.id,
       connection!.id,
       "test_provider",
@@ -567,7 +567,7 @@ describeEmbeddedPostgres("repository services and routes", () => {
     expect(created.created).toBe(true);
     expect(duplicate.created).toBe(false);
 
-    const providerRepository = await repositoryService(db).upsertProviderRepository(
+    const { repository: providerRepository } = await repositoryService(db).upsertProviderRepository(
       seeded.companyA.id,
       created.connection.id,
       provider.provider,

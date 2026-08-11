@@ -31,7 +31,7 @@ import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { repositoryRoutes } from "./routes/repositories.js";
-import { registerConfiguredRepositoryProviders } from "./services/repository-providers/bootstrap.js";
+import { registerConfiguredRepositoryProviders } from "./services/repository-providers/registry.js";
 import { createPluginRepositoryProviderRegistrar } from "./services/repository-providers/plugin-registrar.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";

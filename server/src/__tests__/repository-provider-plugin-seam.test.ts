@@ -7,16 +7,20 @@ import { pluginCapabilityValidator } from "../services/plugin-capability-validat
 import { repositoryProviderRegistry } from "../services/repository-connections.js";
 import {
   authorizedRepositoryProviderDeclarations,
-  createPluginRepositoryProviderConnector,
   createPluginRepositoryProviderRegistrar,
-  getRepositoryProviderConnector,
-  listAvailableRepositoryProviders,
-  markCloneCredentialNoStore,
   pluginRepositoryProviderOwnerKey,
-  REQUIRED_REPOSITORY_PROVIDER_METHODS,
   type RepositoryProviderPluginRecord,
   type RepositoryProviderPluginSource,
-} from "../services/repository-providers/index.js";
+} from "../services/repository-providers/plugin-registrar.js";
+import {
+  createPluginRepositoryProviderConnector,
+  REQUIRED_REPOSITORY_PROVIDER_METHODS,
+} from "../services/repository-providers/plugin-connector.js";
+import { markCloneCredentialNoStore } from "../services/repository-providers/connector-guard.js";
+import {
+  getRepositoryProviderConnector,
+  listAvailableRepositoryProviders,
+} from "../services/repository-providers/registry.js";
 
 /**
  * Regression coverage for the trusted-extension repository provider seam
