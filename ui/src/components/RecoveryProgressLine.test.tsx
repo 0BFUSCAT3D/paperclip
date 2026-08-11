@@ -212,8 +212,37 @@ describe("RecoveryProgressLine", () => {
     const label = toggle?.querySelector("span");
     expect(label?.className).toContain("truncate");
     // The "Details" hint is desktop-only so the owner name keeps the mobile row.
-    const hint = toggle?.querySelectorAll("span")[1];
+    const hint = host.querySelector('[data-testid="recovery-progress-line-hint"]');
     expect(hint?.className).toContain("hidden");
     expect(hint?.className).toContain("sm:inline");
+  });
+
+  // PAP-17070: `text-muted-foreground/70` measured 2.71:1 (light) and 4.20:1
+  // (dark) against the surfaces this line renders on — a serious axe
+  // `color-contrast` violation at 12px. The undiluted token measures 4.73:1 and
+  // 7.63:1, and 4.53:1 against the `hover:bg-muted/50` wash, so the hint must
+  // inherit the button's colour rather than fade it further.
+  it("does not dilute the disclosure hint below WCAG AA contrast", () => {
+    for (const open of [false, true]) {
+      const host = render(
+        <RecoveryProgressLine
+          state="in_progress"
+          defaultOpen={open}
+          action={buildAction()}
+          agentMap={agentMap}
+        />,
+      );
+      const hint = host.querySelector('[data-testid="recovery-progress-line-hint"]');
+      expect(hint?.textContent).toContain(open ? "Hide details" : "Details");
+      // No opacity-diluted foreground token anywhere on the hint...
+      expect(hint?.className).not.toMatch(/text-(muted-)?foreground\/\d+/);
+      // ...and no diluted token on the button it inherits from either.
+      const toggle = host.querySelector('[data-testid="recovery-progress-line-toggle"]');
+      expect(toggle?.className).toContain("text-muted-foreground");
+      expect(toggle?.className).not.toMatch(/text-(muted-)?foreground\/\d+/);
+      // Hierarchy is carried by weight: the label is medium, the hint is not.
+      expect(host.querySelector(".truncate")?.className).toContain("font-medium");
+      expect(hint?.className).toContain("font-normal");
+    }
   });
 });

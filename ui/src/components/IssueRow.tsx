@@ -279,8 +279,18 @@ export function IssueRow({
               <span className="shrink-0 font-mono text-xs text-muted-foreground">
                 {identifier}
               </span>
-              {parkedBlockerIndicator}
-              {recoveryIndicator}
+              {/* Desktop-only copies. The mobile row already renders both chips
+                  in its `sm:hidden` leading cluster above, so leaving these
+                  ungated painted a SECOND nowrap chip beside the identifier at
+                  390px — and because badges are `whitespace-nowrap shrink-0`
+                  inside a cluster with no `min-w-0`, that duplicate pushed the
+                  document from 390px to 403px (PAP-17070). */}
+              {parkedBlockerIndicator || recoveryIndicator ? (
+                <span className="hidden min-w-0 shrink-0 items-center sm:inline-flex">
+                  {parkedBlockerIndicator}
+                  {recoveryIndicator}
+                </span>
+              ) : null}
             </>
           )}
           {mobileMeta ? (
@@ -357,14 +367,18 @@ function renderRecoveryChip(
       role="status"
       aria-label={label}
       className={cn(
-        "ml-1.5 gap-0.5 text-(length:--text-nano)",
+        // `max-w` caps the chip even though badges are `shrink-0`: it is the only
+        // thing standing between a long recovery label and a row wider than a
+        // 390px viewport. Every current label fits well inside 12rem, so this is
+        // a ceiling, not a truncation the operator will normally see.
+        "ml-1.5 max-w-(--sz-12rem) gap-0.5 text-(length:--text-nano)",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
       title={`${label} — open the source task to act.`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
-      {label}
+      <span className="min-w-0 truncate">{label}</span>
     </Badge>
   );
 }

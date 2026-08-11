@@ -67,7 +67,11 @@ export function RecoveryProgressLine({
       >
         <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate font-medium">{label}</span>
-        <span className="hidden shrink-0 text-muted-foreground/70 sm:inline">
+        {/* Inherits the button's `text-muted-foreground`; the hint must NOT be
+            diluted further (`text-muted-foreground/70` measured 2.71:1 light /
+            4.20:1 dark and failed WCAG AA — PAP-17070). Weight, not contrast,
+            is what keeps this subordinate to the label. */}
+        <span data-testid="recovery-progress-line-hint" className="hidden shrink-0 font-normal sm:inline">
           · {open ? "Hide details" : "Details"}
         </span>
         <ChevronDown

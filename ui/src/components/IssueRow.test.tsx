@@ -597,6 +597,66 @@ describe("IssueRow", () => {
         ),
       ).toEqual({ state: "in_progress", text: "Recovery in progress" });
     });
+
+    // PAP-17070: the chip was painted twice on mobile — once in the `sm:hidden`
+    // leading cluster and again beside the identifier, whose copy had no desktop
+    // gate. Because badges are `whitespace-nowrap shrink-0`, that duplicate
+    // pushed a 390px document out to 403px. Exactly one copy may be visible at
+    // any one breakpoint.
+    it.each([
+      ["needed", {}],
+      [
+        "in_progress",
+        { status: "in_progress", executionRunId: "run-1", assigneeAgentId: "cto-agent" },
+      ],
+      [
+        "observe_only",
+        { status: "in_progress", executionRunId: "run-1", assigneeAgentId: "coder-agent" },
+      ],
+      ["escalated", { activeRecoveryAction: { ...recoveryAction, status: "escalated" } }],
+    ] as const)("renders one %s chip per breakpoint, never two at once", (state, overrides) => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <IssueRow
+            issue={createIssue({
+              activeRecoveryAction: recoveryAction,
+              ...(overrides as Partial<Issue>),
+            })}
+          />,
+        );
+      });
+
+      const chips = Array.from(
+        container.querySelectorAll('[data-testid="issue-row-recovery-indicator"]'),
+      );
+      expect(chips.map((chip) => chip.getAttribute("data-recovery-state"))).toEqual([state, state]);
+
+      // Classify each copy by the breakpoint gate on its ancestors.
+      const visibility = chips.map((chip) => {
+        let node = chip.parentElement;
+        while (node && node !== container) {
+          const classes = node.className;
+          if (typeof classes === "string") {
+            if (classes.includes("sm:hidden")) return "mobile";
+            if (classes.includes("hidden") && classes.includes("sm:inline-flex")) return "desktop";
+          }
+          node = node.parentElement;
+        }
+        return "always";
+      });
+      expect(visibility.sort()).toEqual(["desktop", "mobile"]);
+
+      // A hard width ceiling is the backstop for a long label in either slot.
+      chips.forEach((chip) => {
+        expect(chip.className).toContain("max-w-(--sz-12rem)");
+        expect(chip.querySelector("span")?.className).toContain("truncate");
+      });
+
+      act(() => {
+        root.unmount();
+      });
+    });
   });
 
   it("keeps the hover wash on the row root while the overlay link stays a bare positioning layer", () => {

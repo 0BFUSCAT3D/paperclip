@@ -364,6 +364,10 @@ function ActiveRunPanel() {
 
 function InboxRowPanel() {
   const baseIssue = createIssue();
+  // Liveness now decides the chip, so each row pins the signals for the state it
+  // is meant to demonstrate: an ownerless task with no live run reads `needed`,
+  // the recovery owner holding the live run reads `in_progress`, and a live run
+  // owned by somebody else folds down to `observe_only`.
   return (
     <div className="rounded-lg border border-border/70 bg-background/80">
       <IssueRow
@@ -372,6 +376,20 @@ function InboxRowPanel() {
           identifier: "PAP-9065",
           title: "Add full company search page",
           status: "in_progress",
+          executionRunId: null,
+          scheduledRetry: null,
+          activeRecoveryAction: buildAction(),
+        }}
+      />
+      <IssueRow
+        issue={{
+          ...baseIssue,
+          id: "issue-recovery-in-progress",
+          identifier: "PAP-9101",
+          title: "Owner is live on the source task — recessed in-progress chip",
+          status: "in_progress",
+          assigneeAgentId: claudeAgent.id,
+          executionRunId: "run-recovery-owner-live",
           activeRecoveryAction: buildAction(),
         }}
       />
@@ -402,6 +420,11 @@ function InboxRowPanel() {
           identifier: "PAP-10409",
           title: "Phase 6 follow-up failed: git workspace lost",
           status: "blocked",
+          // No live run, so this keeps the `needed` state and its longer
+          // "Workspace recovery needed" label — the widest chip the row has to
+          // survive at 390px.
+          executionRunId: null,
+          scheduledRetry: null,
           activeRecoveryAction: buildAction({
             kind: "workspace_validation",
             cause: "workspace_validation_failed",
