@@ -13,6 +13,7 @@ import {
   listAvailableRepositoryProviders,
   markCloneCredentialNoStore,
   pluginRepositoryProviderOwnerKey,
+  REQUIRED_REPOSITORY_PROVIDER_METHODS,
   type RepositoryProviderPluginRecord,
   type RepositoryProviderPluginSource,
 } from "../services/repository-providers/index.js";
@@ -81,6 +82,8 @@ function fakeLifecycle() {
 
 interface FakeWorkerOptions {
   running?: boolean;
+  /** Methods the worker reported at initialization. Omit to skip the check. */
+  supportedMethods?: string[];
   handlers?: Partial<{
     [M in HostToWorkerMethodName]: (params: HostToWorkerMethods[M][0]) => unknown;
   }>;
@@ -95,6 +98,10 @@ function fakeWorkerManager(options: FakeWorkerOptions = {}) {
       running = next;
     },
     isRunning: () => running,
+    getWorker: ((() =>
+      (options.supportedMethods
+        ? { supportedMethods: options.supportedMethods }
+        : undefined)) as never),
     call: (async (_pluginId: string, method: HostToWorkerMethodName, params: unknown) => {
       calls.push({ method, params });
       const handler = options.handlers?.[method] as ((p: unknown) => unknown) | undefined;
@@ -216,6 +223,36 @@ describe("registration lifecycle", () => {
     await registrar.start();
 
     expect(getRepositoryProviderConnector(PROVIDER, { host: HOST })).toBeNull();
+    registrar.stop();
+  });
+
+  it("does not register a worker that implements only part of the connector", async () => {
+    const lifecycle = fakeLifecycle();
+    const registrar = createPluginRepositoryProviderRegistrar({
+      lifecycle,
+      workerManager: fakeWorkerManager({
+        supportedMethods: [...REQUIRED_REPOSITORY_PROVIDER_METHODS].filter(
+          (method) => method !== "repositoryProviderResolveCloneCredential",
+        ),
+      }),
+      plugins: pluginSource([pluginRecord()]),
+    });
+    await registrar.start();
+
+    expect(getRepositoryProviderConnector(PROVIDER, { host: HOST })).toBeNull();
+    registrar.stop();
+  });
+
+  it("registers a worker that implements the whole connector", async () => {
+    const lifecycle = fakeLifecycle();
+    const registrar = createPluginRepositoryProviderRegistrar({
+      lifecycle,
+      workerManager: fakeWorkerManager({ supportedMethods: [...REQUIRED_REPOSITORY_PROVIDER_METHODS] }),
+      plugins: pluginSource([pluginRecord()]),
+    });
+    await registrar.start();
+
+    expect(getRepositoryProviderConnector(PROVIDER, { host: HOST })).not.toBeNull();
     registrar.stop();
   });
 

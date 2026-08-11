@@ -38,7 +38,38 @@ import type {
  */
 
 /** Worker-manager surface the bridge needs; narrow for easy testing. */
-export type RepositoryProviderWorkerHost = Pick<PluginWorkerManager, "call" | "isRunning">;
+export type RepositoryProviderWorkerHost = Pick<PluginWorkerManager, "call" | "isRunning"> & {
+  getWorker?: PluginWorkerManager["getWorker"];
+};
+
+/**
+ * The hooks a worker must implement before the host will treat it as a
+ * repository provider. A connector that answers installation but not credential
+ * resolution would strand an operator halfway through connecting a repository,
+ * so the seam refuses the registration instead.
+ */
+export const REQUIRED_REPOSITORY_PROVIDER_METHODS = [
+  "repositoryProviderBeginInstallation",
+  "repositoryProviderCompleteInstallation",
+  "repositoryProviderDiscover",
+  "repositoryProviderRefreshMetadata",
+  "repositoryProviderSync",
+  "repositoryProviderResolveCloneCredential",
+] as const;
+
+/**
+ * Methods a running worker declared at initialization but does not implement.
+ * Returns an empty list when the worker manager cannot report them, since an
+ * older worker handle predates the advertisement and is checked at call time.
+ */
+export function missingRepositoryProviderMethods(
+  workerManager: RepositoryProviderWorkerHost,
+  pluginId: string,
+): string[] {
+  const supported = workerManager.getWorker?.(pluginId)?.supportedMethods;
+  if (!supported) return [];
+  return REQUIRED_REPOSITORY_PROVIDER_METHODS.filter((method) => !supported.includes(method));
+}
 
 export interface PluginRepositoryProviderConnectorOptions {
   pluginId: string;

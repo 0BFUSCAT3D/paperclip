@@ -8,7 +8,11 @@ import { logger } from "../../middleware/logger.js";
 import type { PluginLifecycleManager } from "../plugin-lifecycle.js";
 import { pluginRegistryService } from "../plugin-registry.js";
 import { repositoryProviderRegistry } from "../repository-connections.js";
-import { createPluginRepositoryProviderConnector, type RepositoryProviderWorkerHost } from "./plugin-connector.js";
+import {
+  createPluginRepositoryProviderConnector,
+  missingRepositoryProviderMethods,
+  type RepositoryProviderWorkerHost,
+} from "./plugin-connector.js";
 import { listAvailableRepositoryProviders, type RepositoryProviderAvailability } from "./registry.js";
 
 /**
@@ -136,6 +140,15 @@ export function createPluginRepositoryProviderRegistrar(
 
     const declarations = authorizedRepositoryProviderDeclarations(plugin.manifestJson);
     if (declarations.length === 0) return 0;
+
+    const missingMethods = missingRepositoryProviderMethods(options.workerManager, pluginId);
+    if (missingMethods.length > 0) {
+      log.warn(
+        { pluginId, pluginKey: plugin.pluginKey, missingMethods },
+        "repository provider registration refused: worker does not implement the full connector",
+      );
+      return 0;
+    }
 
     const ownerKey = pluginRepositoryProviderOwnerKey(pluginId);
     const identities: string[] = [];
