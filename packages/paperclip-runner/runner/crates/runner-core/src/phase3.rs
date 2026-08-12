@@ -2075,6 +2075,22 @@ fn send_outbox(client: &mut WsClient, state: &DurableRunnerState) -> Result<(), 
     Ok(())
 }
 
+fn fail_revocation_flush(
+    state: &mut DurableRunnerState,
+    store: &DurableStateStore,
+    reason: impl AsRef<str>,
+) -> Result<(), Phase3Error> {
+    state.unrecoverable_outcome = Some("revocation_flush_incomplete".to_owned());
+    state.record_diagnostic(format!(
+        "revocation flush incomplete; unacked durable events require operator recovery: {}",
+        reason.as_ref()
+    ));
+    store.save(state)?;
+    Err(Phase3Error::invalid(
+        "revocation flush incomplete; unacked durable events require operator recovery",
+    ))
+}
+
 struct ConnectionMetadata {
     connection_id: String,
     lease_id: String,
@@ -2396,13 +2412,11 @@ pub fn run_durable_runner(
                 return Ok(());
             }
             if revoke_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                state.record_diagnostic(
-                    "revocation flush deadline elapsed; unacked durable events remain preserved",
+                return fail_revocation_flush(
+                    &mut state,
+                    &store,
+                    "revocation flush deadline elapsed",
                 );
-                store.save(&state)?;
-                connection_lease_token.take();
-                bootstrap_ticket.take();
-                return Ok(());
             }
             if current_unix_ms()? >= connection.lease_expires_at_unix_ms {
                 state.recoverable_failure = Some("lease_expired_requires_bootstrap".to_owned());
@@ -2419,13 +2433,10 @@ pub fn run_durable_runner(
             match client.receive_json() {
                 Ok(None) => continue,
                 Err(error) => {
-                    state.record_diagnostic(error.to_string());
                     if state.lifecycle == "revoked" {
-                        store.save(&state)?;
-                        connection_lease_token.take();
-                        bootstrap_ticket.take();
-                        return Ok(());
+                        return fail_revocation_flush(&mut state, &store, error.to_string());
                     }
+                    state.record_diagnostic(error.to_string());
                     state.reconnect_count += 1;
                     store.save(&state)?;
                     break true;
@@ -2460,13 +2471,14 @@ pub fn run_durable_runner(
                                         .send_json(&command_result_envelope(&state, &processed))
                                         .and_then(|()| send_outbox(&mut client, &state));
                                     if let Err(error) = delivery {
-                                        state.record_diagnostic(error.to_string());
                                         if state.lifecycle == "revoked" {
-                                            store.save(&state)?;
-                                            connection_lease_token.take();
-                                            bootstrap_ticket.take();
-                                            return Ok(());
+                                            return fail_revocation_flush(
+                                                &mut state,
+                                                &store,
+                                                error.to_string(),
+                                            );
                                         }
+                                        state.record_diagnostic(error.to_string());
                                         state.reconnect_count += 1;
                                         store.save(&state)?;
                                         break true;
@@ -2502,11 +2514,11 @@ pub fn run_durable_runner(
                             );
                             store.save(&state)?;
                             if let Err(error) = send_outbox(&mut client, &state) {
-                                state.record_diagnostic(error.to_string());
-                                store.save(&state)?;
-                                connection_lease_token.take();
-                                bootstrap_ticket.take();
-                                return Ok(());
+                                return fail_revocation_flush(
+                                    &mut state,
+                                    &store,
+                                    error.to_string(),
+                                );
                             }
                         }
                         Some("ping") => {
@@ -2522,13 +2534,14 @@ pub fn run_durable_runner(
                                 },
                             }));
                             if let Err(error) = pong {
-                                state.record_diagnostic(error.to_string());
                                 if state.lifecycle == "revoked" {
-                                    store.save(&state)?;
-                                    connection_lease_token.take();
-                                    bootstrap_ticket.take();
-                                    return Ok(());
+                                    return fail_revocation_flush(
+                                        &mut state,
+                                        &store,
+                                        error.to_string(),
+                                    );
                                 }
+                                state.record_diagnostic(error.to_string());
                                 state.reconnect_count += 1;
                                 store.save(&state)?;
                                 break true;
@@ -2538,12 +2551,14 @@ pub fn run_durable_runner(
                             state.record_diagnostic(
                                 "malformed or unsupported control frame closed the connection",
                             );
-                            store.save(&state)?;
                             if state.lifecycle == "revoked" {
-                                connection_lease_token.take();
-                                bootstrap_ticket.take();
-                                return Ok(());
+                                return fail_revocation_flush(
+                                    &mut state,
+                                    &store,
+                                    "malformed or unsupported control frame",
+                                );
                             }
+                            store.save(&state)?;
                             break true;
                         }
                     }
@@ -3100,6 +3115,43 @@ mod tests {
         let (restored, _) = store.load_or_create(&config).unwrap();
         assert_eq!(restored.lifecycle, "revoked");
         assert_eq!(restored.outbox.len(), before);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_revocation_flush_requires_operator_recovery() {
+        let root = temporary_root("revocation-flush-failure");
+        let config = config(&root);
+        let store = DurableStateStore::new(&root).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        enqueue_event(
+            &mut state,
+            &config,
+            "run.terminal",
+            0,
+            json!({ "runTerminalState": "succeeded" }),
+            None,
+        )
+        .unwrap();
+        state.lifecycle = "revoked".to_owned();
+        state.stop_after_flush = true;
+        store.save(&state).unwrap();
+
+        let error = fail_revocation_flush(&mut state, &store, "socket closed").unwrap_err();
+
+        assert!(error.to_string().contains("operator recovery"));
+        let (restored, recovered) = store.load_or_create(&config).unwrap();
+        assert!(recovered);
+        assert_eq!(restored.lifecycle, "revoked");
+        assert_eq!(
+            restored.unrecoverable_outcome.as_deref(),
+            Some("revocation_flush_incomplete")
+        );
+        assert_eq!(restored.outbox.len(), 1);
+        assert!(restored
+            .diagnostics
+            .iter()
+            .any(|entry| entry.contains("socket closed")));
         let _ = fs::remove_dir_all(root);
     }
 
