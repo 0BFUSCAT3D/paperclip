@@ -67,6 +67,7 @@ import {
   Check,
   Loader2,
   ChevronDown,
+  RefreshCw,
   X
 } from "lucide-react";
 
@@ -288,7 +289,12 @@ export function OnboardingWizard() {
   // company's goal rather than retyped. The Review step and the lead agent's
   // instructions bundle both read `companyGoal`, and `createdCompanyGoalId` is
   // what the first task is filed against at launch.
-  const { data: existingCompanyGoals, isError: existingCompanyGoalsFailed } = useQuery({
+  const {
+    data: existingCompanyGoals,
+    isError: existingCompanyGoalsFailed,
+    isFetching: missionRetrying,
+    refetch: refetchExistingCompanyGoals,
+  } = useQuery({
     queryKey: existingCompanyId
       ? queryKeys.goals.list(existingCompanyId)
       : ["goals", "none", "onboarding-mission"],
@@ -1773,6 +1779,29 @@ export function OnboardingWizard() {
               {visibleError && (
                 <div className="mt-3">
                   <p className="text-xs text-destructive">{visibleError}</p>
+                  {/* A failed mission read is the one error here the user can
+                      act on directly: it blocks the hire, and without this the
+                      only way back is closing the wizard or refocusing the
+                      window. */}
+                  {missionLoadFailed && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-1 -ml-2 h-7 text-xs"
+                      disabled={missionRetrying}
+                      onClick={() => {
+                        setError(null);
+                        void refetchExistingCompanyGoals();
+                      }}
+                    >
+                      {missionRetrying ? (
+                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3 w-3 mr-1" />
+                      )}
+                      {missionRetrying ? "Retrying..." : "Retry"}
+                    </Button>
+                  )}
                 </div>
               )}
 
