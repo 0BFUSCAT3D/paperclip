@@ -580,24 +580,53 @@ describe("TaskChatComposer", () => {
     expect(editable().textContent).toBe(`[/deploy](${SLASH_HREF}) `);
   });
 
-  it("shows the assignee combobox only when reassign is enabled, with the current label", () => {
+  it("shows a searchable assignee combobox and selects a filtered assignee", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
     expect(container.querySelector('[data-testid="task-chat-composer-assignee"]')).toBeNull();
 
     render(
       <TaskChatComposer
-        onAdd={vi.fn()}
+        onAdd={onAdd}
         workMode="standard"
         enableReassign
         reassignOptions={[
-          { id: "agent:a1", label: "Clippy" },
-          { id: "user:u1", label: "Sam" },
+          { id: "agent:a1", label: "Clippy", searchText: "engineering" },
+          { id: "user:u1", label: "Sam", searchText: "board" },
         ]}
         currentAssigneeValue="user:u1"
       />,
     );
-    const trigger = container.querySelector('[data-testid="task-chat-composer-assignee"]');
+    const trigger = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]');
     expect(trigger?.textContent).toContain("Sam");
+
+    flushSync(() => trigger?.click());
+    await flushAsync();
+
+    const searchInput = document.body.querySelector<HTMLInputElement>('input[placeholder="Search assignees…"]');
+    expect(searchInput).not.toBeNull();
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(searchInput, "engineering");
+      searchInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const optionButtons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[type="button"]'));
+    const clippyOption = optionButtons.find((button) => button.textContent?.includes("Clippy"));
+    const samOption = optionButtons.find((button) => button.textContent?.includes("Sam") && button !== trigger);
+    expect(clippyOption).not.toBeUndefined();
+    expect(samOption).toBeUndefined();
+
+    flushSync(() => clippyOption?.click());
+    expect(trigger?.textContent).toContain("Clippy");
+
+    typeText("Please take this.");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith(
+      "Please take this.",
+      undefined,
+      { assigneeAgentId: "a1", assigneeUserId: null },
+    );
   });
 
   describe("draft persistence", () => {

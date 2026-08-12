@@ -107,6 +107,9 @@ function shouldImplicitlyReopenComment(issueStatus: string | undefined, assignee
 }
 
 function parseAssigneeValue(value: string): CommentReassignment | undefined {
+  if (!value) {
+    return { assigneeAgentId: null, assigneeUserId: null };
+  }
   if (value.startsWith("agent:")) {
     const id = value.slice("agent:".length);
     return id ? { assigneeAgentId: id, assigneeUserId: null } : undefined;
