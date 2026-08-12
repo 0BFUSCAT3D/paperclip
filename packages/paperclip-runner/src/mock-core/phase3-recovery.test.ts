@@ -700,7 +700,7 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
     expect(trace.assertions.sourceCursorContinuous).toBe(true);
   });
 
-  it("keeps a restarted revoked runner network-silent and byte-stable with a fresh ticket", async () => {
+  it("uses a fresh bootstrap only to flush a restarted revoked runner's durable outbox", async () => {
     const scratch =
       process.env.PAPERCLIP_RUN_SCRATCH_DIR ??
       process.env.PAPERCLIP_SCRATCH_DIR ??
@@ -720,6 +720,10 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
         sourceSeq: 4,
         eventType: "run.terminal",
         priority: 0,
+        sourceInstanceId: identity.runnerInstanceId,
+        runId: identity.runId,
+        normalizedSessionId: identity.normalizedSessionId,
+        turnId: identity.turnId,
         payload: { status: "succeeded" },
       },
     };
@@ -764,12 +768,13 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
       ),
       { mode: 0o600 },
     );
-    const before = readFileSync(statePath);
     const core = new Phase3MockCore({
       stateDirectory: resolve(root, "mock-core"),
       identity,
       fault: "none",
     });
+    core.store.state.ackedSourceSeq = 3;
+    core.store.save();
     try {
       await core.start();
       const ticket = core.issueBootstrapTicket();
@@ -783,11 +788,23 @@ describe.sequential("Phase 3 durable transport and recovery", () => {
       });
 
       expect(result.code, result.stderr).toBe(0);
-      expect(core.store.state.connectionCount).toBe(connectionsBefore);
-      expect(Object.values(core.store.state.tickets).map((record) => record.usedAt)).toEqual([
-        null,
+      expect(core.store.state.connectionCount).toBe(connectionsBefore + 1);
+      expect(Object.values(core.store.state.tickets).every((record) => record.usedAt !== null)).toBe(
+        true,
+      );
+      expect(core.store.state.committedEvents).toEqual([
+        expect.objectContaining({
+          sourceSeq: 4,
+          sourceEventId: `event_${identity.runnerInstanceId}_000004`,
+          eventType: "run.terminal",
+        }),
       ]);
-      expect(readFileSync(statePath)).toEqual(before);
+      expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+        lifecycle: "revoked",
+        ackedSourceSeq: 4,
+        outbox: [],
+        recoverableFailure: null,
+      });
     } finally {
       await core.stop();
       rmSync(root, { recursive: true, force: true });

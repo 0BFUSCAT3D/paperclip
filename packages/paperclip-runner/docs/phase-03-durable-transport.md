@@ -204,7 +204,12 @@ acknowledged.
 
 A `revoke` envelope persists the `revoked` lifecycle. The runner flushes any
 existing durable events and exits. It does not accept new work or delete
-unacknowledged facts.
+unacknowledged facts. If the revoked connection fails before the flush is
+acknowledged, the runner exits unsuccessfully and records
+`revocation_flush_requires_bootstrap`. A replacement process may use a new
+one-time bootstrap only to replay the preserved outbox. It skips pending
+commands and exits after the cumulative ACK empties the outbox. A restarted
+revoked runner with no pending events stays network-silent.
 
 ## Diagnostics
 

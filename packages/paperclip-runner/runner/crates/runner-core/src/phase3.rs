@@ -2080,14 +2080,14 @@ fn fail_revocation_flush(
     store: &DurableStateStore,
     reason: impl AsRef<str>,
 ) -> Result<(), Phase3Error> {
-    state.unrecoverable_outcome = Some("revocation_flush_incomplete".to_owned());
+    state.recoverable_failure = Some("revocation_flush_requires_bootstrap".to_owned());
     state.record_diagnostic(format!(
-        "revocation flush incomplete; unacked durable events require operator recovery: {}",
+        "revocation flush interrupted; unacked durable events require a fresh bootstrap: {}",
         reason.as_ref()
     ));
     store.save(state)?;
     Err(Phase3Error::invalid(
-        "revocation flush incomplete; unacked durable events require operator recovery",
+        "revocation flush interrupted; unacked durable events require a fresh bootstrap",
     ))
 }
 
@@ -2220,17 +2220,22 @@ pub fn run_durable_runner(
     }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
-    if recovered && state.lifecycle == "revoked" {
-        // Revocation is durable and terminal. Dropping the fresh bootstrap capability before
-        // destination resolution guarantees a restarted daemon cannot authenticate, reconnect,
-        // advance cursors, or rewrite the preserved operator-recovery state.
+    if recovered && state.lifecycle == "revoked" && state.outbox.is_empty() {
+        // A fully flushed revocation is durable and terminal. A revoked state with pending
+        // events may use a newly issued bootstrap only to finish delivery below.
         drop(bootstrap_ticket);
         return Ok(());
     }
     // Resolve once before authentication. Reconnects use only this validated,
     // concrete address set, so DNS cannot redirect a retry.
     let target = ResolvedWsTarget::resolve(&config.connect_url)?;
-    if recovered {
+    if recovered && state.lifecycle == "revoked" {
+        state.reconnect_count += 1;
+        state.record_diagnostic(
+            "revoked runner restored with a fresh bootstrap for durable outbox flush only",
+        );
+        store.save(&state)?;
+    } else if recovered {
         state.reconnect_count += 1;
         state.record_diagnostic("runner process restored the same durable identity");
         enqueue_event(
@@ -2375,15 +2380,17 @@ pub fn run_durable_runner(
         store.save(&state)?;
 
         let initial_delivery = (|| -> Result<(), Phase3Error> {
-            if let Some(commands) = payload.get("pendingCommands").and_then(Value::as_array) {
-                for command in commands {
-                    match process_command(&mut state, &store, &config, command) {
-                        Ok(processed) => {
-                            client.send_json(&command_result_envelope(&state, &processed))?
-                        }
-                        Err(error) => {
-                            state.record_diagnostic(error.to_string());
-                            store.save(&state)?;
+            if state.lifecycle != "revoked" {
+                if let Some(commands) = payload.get("pendingCommands").and_then(Value::as_array) {
+                    for command in commands {
+                        match process_command(&mut state, &store, &config, command) {
+                            Ok(processed) => {
+                                client.send_json(&command_result_envelope(&state, &processed))?
+                            }
+                            Err(error) => {
+                                state.record_diagnostic(error.to_string());
+                                store.save(&state)?;
+                            }
                         }
                     }
                 }
@@ -3119,7 +3126,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_revocation_flush_requires_operator_recovery() {
+    fn failed_revocation_flush_requires_a_fresh_bootstrap() {
         let root = temporary_root("revocation-flush-failure");
         let config = config(&root);
         let store = DurableStateStore::new(&root).unwrap();
@@ -3139,14 +3146,15 @@ mod tests {
 
         let error = fail_revocation_flush(&mut state, &store, "socket closed").unwrap_err();
 
-        assert!(error.to_string().contains("operator recovery"));
+        assert!(error.to_string().contains("fresh bootstrap"));
         let (restored, recovered) = store.load_or_create(&config).unwrap();
         assert!(recovered);
         assert_eq!(restored.lifecycle, "revoked");
         assert_eq!(
-            restored.unrecoverable_outcome.as_deref(),
-            Some("revocation_flush_incomplete")
+            restored.recoverable_failure.as_deref(),
+            Some("revocation_flush_requires_bootstrap")
         );
+        assert_eq!(restored.unrecoverable_outcome, None);
         assert_eq!(restored.outbox.len(), 1);
         assert!(restored
             .diagnostics
