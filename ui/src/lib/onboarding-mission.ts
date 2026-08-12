@@ -30,6 +30,25 @@ export function selectExistingCompanyMission(goals: Goal[]): ExistingCompanyMiss
   };
 }
 
+/**
+ * Whether an existing company's mission has yet to be read back from the server.
+ *
+ * On an existing-company entry the mission is never typed — it is hydrated from
+ * the company's goals. Until that read lands (still in flight, or failed) the
+ * wizard's mission field still holds whatever the last run saved, which may
+ * belong to an entirely different company. Hiring the lead agent inside that
+ * window would seed its instructions with an empty or foreign mission and
+ * report nothing, so the hire waits for the read.
+ */
+export function isExistingCompanyMissionUnresolved(params: {
+  existingCompanyId?: string | null;
+  goalsLoaded: boolean;
+}): boolean {
+  if (!params.existingCompanyId) return false;
+
+  return !params.goalsLoaded;
+}
+
 export type MissionGoalPayload = {
   title: string;
   description?: string | null;

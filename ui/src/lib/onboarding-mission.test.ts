@@ -2,6 +2,7 @@ import type { Goal } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import { parseOnboardingGoalInput } from "./onboarding-goal";
 import {
+  isExistingCompanyMissionUnresolved,
   planMissionPersistence,
   selectExistingCompanyMission,
 } from "./onboarding-mission";
@@ -150,5 +151,37 @@ describe("planMissionPersistence", () => {
     expect(
       planMissionPersistence({ goalInput: "   \n  ", existingGoalId: "goal-1" }),
     ).toEqual({ kind: "skip" });
+  });
+});
+
+describe("isExistingCompanyMissionUnresolved", () => {
+  it("holds the hire until the existing company's goals have been read", () => {
+    expect(
+      isExistingCompanyMissionUnresolved({
+        existingCompanyId: "company-1",
+        goalsLoaded: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("releases the hire once they land", () => {
+    expect(
+      isExistingCompanyMissionUnresolved({
+        existingCompanyId: "company-1",
+        goalsLoaded: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("never holds a company created in this run — step 2 typed its mission", () => {
+    expect(
+      isExistingCompanyMissionUnresolved({
+        existingCompanyId: undefined,
+        goalsLoaded: false,
+      }),
+    ).toBe(false);
+    expect(
+      isExistingCompanyMissionUnresolved({ existingCompanyId: null, goalsLoaded: false }),
+    ).toBe(false);
   });
 });

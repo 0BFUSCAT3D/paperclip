@@ -39,6 +39,7 @@ import {
   selectReusableOnboardingProject,
 } from "../lib/onboarding-launch";
 import {
+  isExistingCompanyMissionUnresolved,
   planMissionPersistence,
   selectExistingCompanyMission,
 } from "../lib/onboarding-mission";
@@ -120,6 +121,8 @@ Work in this order:
 Propose, don't decide. Keep it conversational.`;
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
+const MISSION_UNRESOLVED_MESSAGE =
+  "This organization's mission hasn't loaded yet, and your agent needs it. Check your connection and try again.";
 
 function loadSavedState(): Record<string, unknown> | null {
   try {
@@ -285,12 +288,20 @@ export function OnboardingWizard() {
   // company's goal rather than retyped. The Review step and the lead agent's
   // instructions bundle both read `companyGoal`, and `createdCompanyGoalId` is
   // what the first task is filed against at launch.
-  const { data: existingCompanyGoals } = useQuery({
+  const { data: existingCompanyGoals, isError: existingCompanyGoalsFailed } = useQuery({
     queryKey: existingCompanyId
       ? queryKeys.goals.list(existingCompanyId)
       : ["goals", "none", "onboarding-mission"],
     queryFn: () => goalsApi.list(existingCompanyId!),
     enabled: Boolean(existingCompanyId) && effectiveOnboardingOpen,
+  });
+
+  // Until that read lands the mission on screen is not this company's, so the
+  // lead agent must not be hired against it — see
+  // isExistingCompanyMissionUnresolved.
+  const missionUnresolved = isExistingCompanyMissionUnresolved({
+    existingCompanyId,
+    goalsLoaded: Boolean(existingCompanyGoals),
   });
 
   // Hydrate once per company: the company's own goal is authoritative over any
@@ -302,9 +313,12 @@ export function OnboardingWizard() {
     if (hydratedMissionCompanyIdRef.current === existingCompanyId) return;
     hydratedMissionCompanyIdRef.current = existingCompanyId;
     const mission = selectExistingCompanyMission(existingCompanyGoals);
-    if (mission.goalId) {
-      setCreatedCompanyGoalId((current) => current ?? mission.goalId);
-    }
+    // Authoritative, not a fallback: a saved goal id may belong to a previous
+    // run on a *different* company, and launch files the first task against
+    // whatever id is held here (it only re-reads when the id is null). Keeping
+    // the stale one would file this company's first task against another
+    // company's goal.
+    setCreatedCompanyGoalId(mission.goalId);
     setCompanyGoal(mission.goalInput);
   }, [existingCompanyId, existingCompanyGoals]);
 
@@ -702,6 +716,13 @@ export function OnboardingWizard() {
       setStep(5);
       return;
     }
+    // The hire seeds the agent's instructions from `companyGoal`. On an
+    // existing company that value is only trustworthy once the company's own
+    // goals have been read back.
+    if (missionUnresolved) {
+      setError(MISSION_UNRESOLVED_MESSAGE);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -864,7 +885,14 @@ export function OnboardingWizard() {
   if (!effectiveOnboardingOpen) return null;
 
   const launchStateIncomplete = step === 5 && (!createdCompanyId || !createdAgentId);
-  const visibleError = error ?? (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null);
+  // Explain the disabled hire button rather than leaving it inert and silent.
+  // Only once the read has actually failed — while it is still in flight the
+  // button just reads as loading.
+  const missionLoadFailed = missionUnresolved && existingCompanyGoalsFailed;
+  const visibleError =
+    error ??
+    (launchStateIncomplete ? INCOMPLETE_ONBOARDING_STATE_MESSAGE : null) ??
+    (missionLoadFailed ? MISSION_UNRESOLVED_MESSAGE : null);
 
   return (
     <Dialog
@@ -1807,7 +1835,9 @@ export function OnboardingWizard() {
                   {step === 4 && (
                     <Button
                       size="sm"
-                      disabled={!agentName.trim() || loading || adapterEnvLoading}
+                      disabled={
+                        !agentName.trim() || loading || adapterEnvLoading || missionUnresolved
+                      }
                       onClick={handleGiveHeartbeat}
                     >
                       {loading ? (
