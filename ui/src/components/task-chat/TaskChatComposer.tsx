@@ -534,6 +534,7 @@ export function TaskChatComposer({
             searchPlaceholder="Search assignees…"
             emptyMessage="No matches."
             onChange={setPendingAssignee}
+            onConfirm={() => editorRef.current?.focus()}
             disabled={disabled}
             triggerTestId="task-chat-composer-assignee"
             className="h-8 gap-1.5 bg-transparent px-2.5 text-xs hover:bg-accent"

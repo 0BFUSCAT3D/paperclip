@@ -599,6 +599,8 @@ describe("TaskChatComposer", () => {
     );
     const trigger = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]');
     expect(trigger?.textContent).toContain("Sam");
+    expect(trigger?.className).toContain("min-w-0");
+    expect(trigger?.className).not.toContain("shrink-0");
 
     flushSync(() => trigger?.click());
     await flushAsync();
@@ -617,7 +619,9 @@ describe("TaskChatComposer", () => {
     expect(samOption).toBeUndefined();
 
     flushSync(() => clippyOption?.click());
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     expect(trigger?.textContent).toContain("Clippy");
+    expect(document.activeElement).toBe(editable());
 
     typeText("Please take this.");
     pressKey("Enter", { metaKey: true });
