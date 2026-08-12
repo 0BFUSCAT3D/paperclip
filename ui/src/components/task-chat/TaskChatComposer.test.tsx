@@ -633,6 +633,40 @@ describe("TaskChatComposer", () => {
     );
   });
 
+  it("can clear the current assignee from the searchable combobox", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TaskChatComposer
+        onAdd={onAdd}
+        workMode="standard"
+        enableReassign
+        reassignOptions={[{ id: "user:u1", label: "Sam" }]}
+        currentAssigneeValue="user:u1"
+      />,
+    );
+
+    const trigger = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]');
+    flushSync(() => trigger?.click());
+    await flushAsync();
+
+    const noAssigneeOption = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('button[type="button"]'),
+    ).find((button) => button !== trigger && button.textContent?.includes("No assignee"));
+    expect(noAssigneeOption).not.toBeUndefined();
+
+    flushSync(() => noAssigneeOption?.click());
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    typeText("Please unassign this.");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+
+    expect(onAdd).toHaveBeenCalledWith(
+      "Please unassign this.",
+      undefined,
+      { assigneeAgentId: null, assigneeUserId: null },
+    );
+  });
+
   describe("draft persistence", () => {
     const draftKey = "task-chat-draft:issue-1";
 
