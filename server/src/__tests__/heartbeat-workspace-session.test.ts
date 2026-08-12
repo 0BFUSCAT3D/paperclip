@@ -24,6 +24,8 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
+  PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   resolveExecutionWorkspaceConfigFreshness,
@@ -1633,8 +1635,29 @@ describe("effective run execution workspace config freshness", () => {
         throw new Error("restore command failed");
       },
       realizeWorkspace,
-    })).rejects.toThrow(/restore command failed/);
+    })).rejects.toMatchObject({
+      code: PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
+      message: expect.stringContaining("restore command failed"),
+      resultJson: {
+        executionWorkspaceReuse: expect.objectContaining({
+          reason: PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
+          executionWorkspaceId: "workspace-old",
+        }),
+      },
+    });
     expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("treats a workspace id without a preference as an explicit reuse pin", () => {
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-old",
+      issueExecutionWorkspacePreference: null,
+      existingExecutionWorkspaceStatus: "active",
+    })).toEqual({
+      requestedExecutionWorkspaceId: "workspace-old",
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceAvailable: true,
+    });
   });
 
   it.each([
@@ -1672,7 +1695,16 @@ describe("effective run execution workspace config freshness", () => {
         ? async () => ({ id: "workspace-old", warnings: [] })
         : null,
       realizeWorkspace,
-    })).rejects.toThrow(/could not be restored/);
+    })).rejects.toMatchObject({
+      code: PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
+      message: expect.stringContaining("could not be restored"),
+      resultJson: {
+        executionWorkspaceReuse: expect.objectContaining({
+          reason: PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
+          executionWorkspaceId: "workspace-old",
+        }),
+      },
+    });
     expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 
