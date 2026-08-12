@@ -1155,6 +1155,10 @@ describe("NewIssueDialog", () => {
     });
     descriptionInput?.focus();
 
+    expect(dialogContent?.style.top).toBe("");
+    expect(dialogContent?.style.height).toBe("");
+    expect(dialogContent?.style.translate).toBe("");
+
     visualViewport.height = 420;
     visualViewport.offsetTop = 24;
     await act(async () => {
@@ -1164,8 +1168,15 @@ describe("NewIssueDialog", () => {
 
     expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-height")).toBe("420px");
     expect(dialogContent?.style.getPropertyValue("--new-issue-visual-viewport-offset-top")).toBe("24px");
+    expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-top")).toBe(
+      "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+    );
+    expect(dialogContent?.style.getPropertyValue("--new-issue-dialog-height")).toBe(
+      "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
+    );
     expect(dialogContent?.style.top).toBe("var(--new-issue-dialog-top)");
     expect(dialogContent?.style.height).toBe("var(--new-issue-dialog-height)");
+    expect(dialogContent?.style.translate).toBe("var(--pct-neg-50)");
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
 
     act(() => root.unmount());

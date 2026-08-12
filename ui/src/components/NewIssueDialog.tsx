@@ -92,6 +92,8 @@ type VisualViewportLayout = {
 type NewIssueDialogViewportStyle = CSSProperties & {
   "--new-issue-visual-viewport-height"?: string;
   "--new-issue-visual-viewport-offset-top"?: string;
+  "--new-issue-dialog-top"?: string;
+  "--new-issue-dialog-height"?: string;
 };
 
 function readVisualViewportLayout(): VisualViewportLayout | null {
@@ -1317,14 +1319,22 @@ export function NewIssueDialog() {
   const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
   const dialogViewportStyle = useMemo<NewIssueDialogViewportStyle>(() => {
-    if (!visualViewportLayout) return {};
+    const dialogGeometry = {
+      "--new-issue-dialog-top":
+        "calc(var(--new-issue-visual-viewport-offset-top) + var(--new-issue-dialog-top-gap))",
+      "--new-issue-dialog-height":
+        "calc(var(--new-issue-visual-viewport-height) - var(--new-issue-dialog-top-gap) - var(--new-issue-dialog-bottom-gap))",
+    };
+    if (!visualViewportLayout) return dialogGeometry;
     return {
+      ...dialogGeometry,
       "--new-issue-visual-viewport-height": `${visualViewportLayout.height}px`,
       "--new-issue-visual-viewport-offset-top": `${visualViewportLayout.offsetTop}px`,
       ...(visualViewportLayout.constrained
         ? {
             top: "var(--new-issue-dialog-top)",
             height: "var(--new-issue-dialog-height)",
+            translate: "var(--pct-neg-50)",
           }
         : {}),
     };
