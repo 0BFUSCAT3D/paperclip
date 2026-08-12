@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
@@ -38,12 +38,20 @@ import {
   selectDefaultCompanyGoalId,
   selectReusableOnboardingProject,
 } from "../lib/onboarding-launch";
+import {
+  planMissionPersistence,
+  selectExistingCompanyMission,
+} from "../lib/onboarding-mission";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
-import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import {
+  canGoBackFromOnboardingStep,
+  canJumpToOnboardingStep,
+  resolveRouteOnboardingOptions,
+} from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -244,12 +252,61 @@ export function OnboardingWizard() {
     effectiveOnboardingOptions.initialStep
   ]);
 
-  // Backfill issue prefix for an existing company once companies are loaded.
+  // Backfill issue prefix and name for an existing company once companies are
+  // loaded. Entering on an existing company skips step 1, so the organization's
+  // name has to come from the company itself — otherwise the wizard renders a
+  // blank name on steps 3 and 5 and hires the lead agent with no organization
+  // in its instructions bundle.
   useEffect(() => {
-    if (!effectiveOnboardingOpen || !createdCompanyId || createdCompanyPrefix) return;
+    if (!effectiveOnboardingOpen || !createdCompanyId) return;
     const company = companies.find((c) => c.id === createdCompanyId);
-    if (company) setCreatedCompanyPrefix(company.issuePrefix);
-  }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
+    if (!company) return;
+    if (!createdCompanyPrefix) setCreatedCompanyPrefix(company.issuePrefix);
+    // When the wizard was entered on an existing company the company is the
+    // only source of truth for its name — a stale localStorage wizard run from
+    // a different company must not label this one. When the company was instead
+    // created in this run, step 1 still owns the field, so only fill a blank.
+    if (createdCompanyId === existingCompanyId) {
+      if (companyName !== company.name) setCompanyName(company.name);
+    } else if (!companyName.trim()) {
+      setCompanyName(company.name);
+    }
+  }, [
+    existingCompanyId,
+    effectiveOnboardingOpen,
+    createdCompanyId,
+    createdCompanyPrefix,
+    companyName,
+    companies,
+  ]);
+
+  // Carry an existing company's mission into the wizard. The managed path never
+  // re-asks for the mission, so on this entry the mission is read back from the
+  // company's goal rather than retyped. The Review step and the lead agent's
+  // instructions bundle both read `companyGoal`, and `createdCompanyGoalId` is
+  // what the first task is filed against at launch.
+  const { data: existingCompanyGoals } = useQuery({
+    queryKey: existingCompanyId
+      ? queryKeys.goals.list(existingCompanyId)
+      : ["goals", "none", "onboarding-mission"],
+    queryFn: () => goalsApi.list(existingCompanyId!),
+    enabled: Boolean(existingCompanyId) && effectiveOnboardingOpen,
+  });
+
+  // Hydrate once per company: the company's own goal is authoritative over any
+  // saved mission text (which may belong to an entirely different company), but
+  // a refetch must not clobber edits made after hydration.
+  const hydratedMissionCompanyIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!existingCompanyId || !existingCompanyGoals) return;
+    if (hydratedMissionCompanyIdRef.current === existingCompanyId) return;
+    hydratedMissionCompanyIdRef.current = existingCompanyId;
+    const mission = selectExistingCompanyMission(existingCompanyGoals);
+    if (mission.goalId) {
+      setCreatedCompanyGoalId((current) => current ?? mission.goalId);
+    }
+    setCompanyGoal(mission.goalInput);
+  }, [existingCompanyId, existingCompanyGoals]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {
@@ -416,6 +473,9 @@ export function OnboardingWizard() {
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
+    // reset() clears the mission it hydrated, so the next entry on the same
+    // company has to hydrate again.
+    hydratedMissionCompanyIdRef.current = null;
   }
 
   function handleClose() {
@@ -570,8 +630,36 @@ export function OnboardingWizard() {
   // goal, then advance to naming the team lead. Guarded so revisiting the
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
+    // The company already exists — entered on it, or created on a previous pass
+    // through this step. There is nothing to create, but the mission still has
+    // to be written to its company-level goal: early-returning here silently
+    // discarded whatever the user typed.
     if (createdCompanyId) {
-      setStep(3);
+      const plan = planMissionPersistence({
+        goalInput: companyGoal,
+        existingGoalId: createdCompanyGoalId,
+      });
+      if (plan.kind === "skip") {
+        setStep(3);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const goal =
+          plan.kind === "update"
+            ? await goalsApi.update(plan.goalId, plan.payload)
+            : await goalsApi.create(createdCompanyId, plan.payload);
+        setCreatedCompanyGoalId(goal.id);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list(createdCompanyId)
+        });
+        setStep(3); // → Create your team lead
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save mission");
+      } finally {
+        setLoading(false);
+      }
       return;
     }
     setLoading(true);
@@ -822,11 +910,19 @@ export function OnboardingWizard() {
           >
             <div className="w-full max-w-md mx-auto my-auto px-8 py-12 shrink-0">
               {/* 5-segment progress bar (brand .wsteps/.wstep) — segment N
-                  filled once step ≥ N. Completed segments jump back. */}
+                  filled once step ≥ N. Completed segments jump back, but never
+                  behind the entry step: a wizard entered on an existing company
+                  starts past "Name your company" and "Define your mission", and
+                  those steps do not apply to it. This is the same
+                  bound the Back button uses. */}
               <div className="flex items-center gap-1.5 mb-8">
                 {([1, 2, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
-                  const canJump = s < step;
+                  const canJump = canJumpToOnboardingStep({
+                    targetStep: s,
+                    currentStep: step,
+                    entryStep: initialStep,
+                  });
                   return (
                     <button
                       key={s}
@@ -1655,7 +1751,10 @@ export function OnboardingWizard() {
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {step > 1 && step > (effectiveOnboardingOptions.initialStep ?? 0) && (
+                  {canGoBackFromOnboardingStep({
+                    currentStep: step,
+                    entryStep: initialStep,
+                  }) && (
                     <Button
                       variant="ghost"
                       size="sm"

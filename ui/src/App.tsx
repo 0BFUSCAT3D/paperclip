@@ -92,6 +92,7 @@ import { useCompany } from "./context/CompanyContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
+  EXISTING_COMPANY_ONBOARDING_STEP,
   isOnboardingWizardActive,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
@@ -431,7 +432,10 @@ function OnboardingRoutePage() {
           <Button
             onClick={() =>
               matchedCompany
-                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
+                ? openOnboarding({
+                    initialStep: EXISTING_COMPANY_ONBOARDING_STEP,
+                    companyId: matchedCompany.id,
+                  })
                 : openOnboarding()
             }
           >
