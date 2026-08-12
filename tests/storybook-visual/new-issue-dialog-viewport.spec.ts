@@ -39,9 +39,17 @@ async function renderDialog(page: Page, viewport: ViewportCase) {
   await page.setViewportSize({ width: viewport.width, height: viewport.layoutHeight });
   await installVisualViewport(page, viewport.layoutHeight);
   await page.goto(`/iframe.html?id=${STORY_ID}&viewMode=story`, { waitUntil: "load" });
+  await page.waitForFunction(() => {
+    const body = document.body;
+    return body.classList.contains("sb-show-main") || body.classList.contains("sb-show-errordisplay");
+  });
+  expect(
+    await page.locator(".sb-show-errordisplay").count(),
+    `story ${STORY_ID} threw during render`,
+  ).toBe(0);
 
   const dialog = page.locator('[data-slot="dialog-content"]');
-  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "Create Task" })).toBeEnabled();
   return dialog;
 }
