@@ -173,6 +173,26 @@ describe("isExistingCompanyMissionUnresolved", () => {
     ).toBe(false);
   });
 
+  it("holds the hire while a cached read is being superseded", () => {
+    expect(
+      isExistingCompanyMissionUnresolved({
+        existingCompanyId: "company-1",
+        goalsLoaded: true,
+        goalsFetching: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("still ignores an in-flight read for a company created in this run", () => {
+    expect(
+      isExistingCompanyMissionUnresolved({
+        existingCompanyId: null,
+        goalsLoaded: false,
+        goalsFetching: true,
+      }),
+    ).toBe(false);
+  });
+
   it("never holds a company created in this run — step 2 typed its mission", () => {
     expect(
       isExistingCompanyMissionUnresolved({

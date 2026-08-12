@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
+import type { AdapterEnvironmentTestResult, Goal } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -292,7 +292,7 @@ export function OnboardingWizard() {
   const {
     data: existingCompanyGoals,
     isError: existingCompanyGoalsFailed,
-    isFetching: missionRetrying,
+    isFetching: missionFetching,
     refetch: refetchExistingCompanyGoals,
   } = useQuery({
     queryKey: existingCompanyId
@@ -308,16 +308,21 @@ export function OnboardingWizard() {
   const missionUnresolved = isExistingCompanyMissionUnresolved({
     existingCompanyId,
     goalsLoaded: Boolean(existingCompanyGoals),
+    goalsFetching: missionFetching,
   });
 
-  // Hydrate once per company: the company's own goal is authoritative over any
-  // saved mission text (which may belong to an entirely different company), but
-  // a refetch must not clobber edits made after hydration.
-  const hydratedMissionCompanyIdRef = useRef<string | null>(null);
+  // Hydrate once per distinct read, not once per company. The company's own
+  // goal is authoritative over any saved mission text (which may belong to an
+  // entirely different company), and React Query keeps the same array
+  // reference until the data actually changes — so this runs once per server
+  // response rather than on every render, while a refetch that supersedes a
+  // cached mission still lands. Keying this on the company id instead would
+  // pin the wizard to whatever was in cache when it opened.
+  const hydratedMissionGoalsRef = useRef<Goal[] | null>(null);
   useEffect(() => {
     if (!existingCompanyId || !existingCompanyGoals) return;
-    if (hydratedMissionCompanyIdRef.current === existingCompanyId) return;
-    hydratedMissionCompanyIdRef.current = existingCompanyId;
+    if (hydratedMissionGoalsRef.current === existingCompanyGoals) return;
+    hydratedMissionGoalsRef.current = existingCompanyGoals;
     const mission = selectExistingCompanyMission(existingCompanyGoals);
     // Authoritative, not a fallback: a saved goal id may belong to a previous
     // run on a *different* company, and launch files the first task against
@@ -493,9 +498,9 @@ export function OnboardingWizard() {
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
-    // reset() clears the mission it hydrated, so the next entry on the same
-    // company has to hydrate again.
-    hydratedMissionCompanyIdRef.current = null;
+    // reset() clears the mission it hydrated, so the next entry has to hydrate
+    // again even if the goals query hands back the very same cached read.
+    hydratedMissionGoalsRef.current = null;
   }
 
   function handleClose() {
@@ -1788,18 +1793,18 @@ export function OnboardingWizard() {
                       variant="ghost"
                       size="sm"
                       className="mt-1 -ml-2 h-7 text-xs"
-                      disabled={missionRetrying}
+                      disabled={missionFetching}
                       onClick={() => {
                         setError(null);
                         void refetchExistingCompanyGoals();
                       }}
                     >
-                      {missionRetrying ? (
+                      {missionFetching ? (
                         <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                       ) : (
                         <RefreshCw className="h-3 w-3 mr-1" />
                       )}
-                      {missionRetrying ? "Retrying..." : "Retry"}
+                      {missionFetching ? "Retrying..." : "Retry"}
                     </Button>
                   )}
                 </div>

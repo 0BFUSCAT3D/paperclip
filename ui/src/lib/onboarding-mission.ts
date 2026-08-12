@@ -43,8 +43,14 @@ export function selectExistingCompanyMission(goals: Goal[]): ExistingCompanyMiss
 export function isExistingCompanyMissionUnresolved(params: {
   existingCompanyId?: string | null;
   goalsLoaded: boolean;
+  goalsFetching?: boolean;
 }): boolean {
   if (!params.existingCompanyId) return false;
+  // Loaded data can be a cached read from before the wizard opened, with the
+  // current request still in flight. Cached goals are at least the right
+  // company's, but they are not necessarily its current mission, so an
+  // in-flight read counts as unresolved rather than as already answered.
+  if (params.goalsFetching) return true;
 
   return !params.goalsLoaded;
 }
