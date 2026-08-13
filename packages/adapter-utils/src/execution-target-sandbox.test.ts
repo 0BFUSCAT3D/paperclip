@@ -992,6 +992,77 @@ describe("sandbox adapter execution targets", () => {
       }
     });
 
+    it("keeps stdin file order when a later stdinEnd write finishes first", async () => {
+      // The remote stdin poller reads files in name order and holds that order
+      // only across files it already sees. It cannot know that a file with an
+      // earlier name is still on the way. So the host must land the stdin files
+      // in send order. A stdin write runs several execs, so two writes can
+      // interleave: the `stdinEnd` file can finish before the earlier data file
+      // it must follow. The poller then ends the child stdin before the input
+      // lands, and the child exits with no output. This runner delays the first
+      // data file's finalize exec, so the `stdinEnd` file wins the race. The
+      // bridge must still deliver the echo, which proves it serializes the
+      // stdin writes.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-order-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', (chunk) => {",
+          "  process.stdout.write('out:' + chunk.toString());",
+          "  process.stderr.write('err:' + chunk.toString());",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const delegate = createLocalSandboxRunner();
+      const runner = {
+        execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+          const script = input.args?.[1] ?? "";
+          // Delay only the finalize exec (`base64 -d ... > ... && mv ...`) of the
+          // first stdin data file, so the later `stdinEnd` file lands first.
+          if (/000000000001\.json/.test(script) && /base64 -d/.test(script)) {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+          }
+          return delegate.execute(input);
+        },
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner,
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-order",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe("out:hello\n");
+        expect(result.stderr).toBe("err:hello\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
     it("wraps the long-lived streamed launch in a sandbox.agentProcess span", async () => {
       // The streamed launch is fire-and-forget and lives for the whole run, so
       // its span must open under the live run root (not the ephemeral bring-up

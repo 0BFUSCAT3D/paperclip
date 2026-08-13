@@ -1527,6 +1527,16 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     signalStopped = resolve;
   });
   let stdinSeq = 0;
+  // Serialize the stdin file writes. The remote stdin poller reads the stdin
+  // files in name order and holds that order only across files it already sees.
+  // It cannot know that a file with an earlier name is still on the way. So each
+  // stdin file must land on the remote in send order. Two `writeTextFile` calls
+  // run several execs each and can interleave, so a later `stdinEnd` file can
+  // land before the earlier data file it must follow. The poller then ends the
+  // child stdin before the input arrives, and the child exits with no output.
+  // A single chain makes each write finish before the next one starts, so the
+  // files land in send order.
+  let stdinWriteChain: Promise<void> = Promise.resolve();
   let pollTimer: NodeJS.Timeout | null = null;
   const pendingRemoteEvents: Array<{
     type?: string;
@@ -1637,12 +1647,20 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
         if (stdinPayload) {
           stdinSeq += 1;
           const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-          void runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
-            client.writeTextFile(path.posix.join(stdinDir, name), jsonLine(stdinPayload)),
-          ).catch((error) => {
-            nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-            nextSocket.destroy();
-          });
+          const payload = stdinPayload;
+          // Chain the write so the file lands after every earlier stdin file.
+          // Without the chain a later `stdinEnd` file can win the race and end
+          // the child stdin before the input file lands.
+          stdinWriteChain = stdinWriteChain
+            .then(() =>
+              runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
+                client.writeTextFile(path.posix.join(stdinDir, name), jsonLine(payload)),
+              ),
+            )
+            .catch((error) => {
+              nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+              nextSocket.destroy();
+            });
         }
       }
     });
@@ -1825,10 +1843,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       if (pollTimer) clearTimeout(pollTimer);
       for (const liveSocket of liveSockets) liveSocket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
-      await client.writeTextFile(
-        path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
-        jsonLine({ type: "stdinEnd" }),
-      ).catch(() => undefined);
+      // Chain the teardown `stdinEnd` after any in-flight stdin writes, so it
+      // lands last and never ends the child stdin before an earlier input file.
+      const teardownName = `${String(stdinSeq + 1).padStart(12, "0")}.json`;
+      stdinWriteChain = stdinWriteChain
+        .then(() =>
+          client.writeTextFile(path.posix.join(stdinDir, teardownName), jsonLine({ type: "stdinEnd" })),
+        )
+        .catch(() => undefined);
+      await stdinWriteChain;
       await client.remove(sessionDir).catch(() => undefined);
       await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
     },
