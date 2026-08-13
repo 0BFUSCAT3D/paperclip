@@ -4355,6 +4355,25 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   };
 }
 
+export function shouldReusePinnedExecutionWorkspaceForRun(input: {
+  requestedShouldReuseExisting: boolean;
+  trustPresetKind: TrustPresetResolution["kind"];
+  requestedExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
+  existingExecutionWorkspaceMode: string | null;
+}): boolean {
+  if (!input.requestedShouldReuseExisting) return false;
+
+  // A durable pin cannot weaken the low-trust isolation boundary. An available
+  // non-isolated pin is bypassed so the policy can provision a fresh isolated workspace.
+  // Missing or archived pins still flow through the named reuse-failure path.
+  return !(
+    input.trustPresetKind === "low_trust_review"
+    && input.requestedExecutionWorkspaceMode === "isolated_workspace"
+    && input.existingExecutionWorkspaceMode !== null
+    && input.existingExecutionWorkspaceMode !== "isolated_workspace"
+  );
+}
+
 export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   requestedShouldReuseExisting: boolean;
   workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
@@ -14020,8 +14039,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
       existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
     });
-    const requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
-    const reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
+    const requestedShouldReuseExisting = shouldReusePinnedExecutionWorkspaceForRun({
+      requestedShouldReuseExisting: workspaceReuseRequest.requestedShouldReuseExisting,
+      trustPresetKind: trustPreset.kind,
+      requestedExecutionWorkspaceMode,
+      existingExecutionWorkspaceMode: workspaceReuseRequest.existingExecutionWorkspaceAvailable
+        ? existingExecutionWorkspace?.mode ?? null
+        : null,
+    });
+    const reusableExistingExecutionWorkspace = requestedShouldReuseExisting
+      && workspaceReuseRequest.existingExecutionWorkspaceAvailable
       ? existingExecutionWorkspace
       : null;
     if (

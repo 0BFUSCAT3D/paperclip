@@ -41,6 +41,7 @@ import {
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
+  shouldReusePinnedExecutionWorkspaceForRun,
   stripConfiguredModelFromSessionParams,
   stripPaperclipSessionMetadataFromSessionParams,
   normalizeSessionParams,
@@ -1658,6 +1659,33 @@ describe("effective run execution workspace config freshness", () => {
       requestedShouldReuseExisting: true,
       existingExecutionWorkspaceAvailable: true,
     });
+  });
+
+  it("does not reuse an available shared pin for a low-trust isolated run", () => {
+    expect(shouldReusePinnedExecutionWorkspaceForRun({
+      requestedShouldReuseExisting: true,
+      trustPresetKind: "low_trust_review",
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: "shared_workspace",
+    })).toBe(false);
+  });
+
+  it("reuses an available isolated pin for a low-trust isolated run", () => {
+    expect(shouldReusePinnedExecutionWorkspaceForRun({
+      requestedShouldReuseExisting: true,
+      trustPresetKind: "low_trust_review",
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: "isolated_workspace",
+    })).toBe(true);
+  });
+
+  it("keeps unavailable low-trust pins on the named reuse-failure path", () => {
+    expect(shouldReusePinnedExecutionWorkspaceForRun({
+      requestedShouldReuseExisting: true,
+      trustPresetKind: "low_trust_review",
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: null,
+    })).toBe(true);
   });
 
   it.each([
