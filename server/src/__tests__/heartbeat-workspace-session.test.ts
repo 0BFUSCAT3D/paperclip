@@ -26,6 +26,8 @@ import {
   parseSessionCompactionPolicy,
   PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
   PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
+  PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+  ExecutionWorkspaceReuseFailure,
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   resolveExecutionWorkspaceConfigFreshness,
@@ -41,7 +43,7 @@ import {
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
-  shouldReusePinnedExecutionWorkspaceForRun,
+  isPinnedExecutionWorkspaceIncompatibleWithTrust,
   stripConfiguredModelFromSessionParams,
   stripPaperclipSessionMetadataFromSessionParams,
   normalizeSessionParams,
@@ -1661,31 +1663,58 @@ describe("effective run execution workspace config freshness", () => {
     });
   });
 
-  it("does not reuse an available shared pin for a low-trust isolated run", () => {
-    expect(shouldReusePinnedExecutionWorkspaceForRun({
+  it("marks an available shared pin incompatible with a low-trust isolated run", () => {
+    expect(isPinnedExecutionWorkspaceIncompatibleWithTrust({
       requestedShouldReuseExisting: true,
       trustPresetKind: "low_trust_review",
       requestedExecutionWorkspaceMode: "isolated_workspace",
       existingExecutionWorkspaceMode: "shared_workspace",
-    })).toBe(false);
+    })).toBe(true);
   });
 
-  it("reuses an available isolated pin for a low-trust isolated run", () => {
-    expect(shouldReusePinnedExecutionWorkspaceForRun({
+  it("accepts an available isolated pin for a low-trust isolated run", () => {
+    expect(isPinnedExecutionWorkspaceIncompatibleWithTrust({
       requestedShouldReuseExisting: true,
       trustPresetKind: "low_trust_review",
       requestedExecutionWorkspaceMode: "isolated_workspace",
       existingExecutionWorkspaceMode: "isolated_workspace",
-    })).toBe(true);
+    })).toBe(false);
   });
 
-  it("keeps unavailable low-trust pins on the named reuse-failure path", () => {
-    expect(shouldReusePinnedExecutionWorkspaceForRun({
+  it("keeps unavailable low-trust pins on the named availability-failure path", () => {
+    expect(isPinnedExecutionWorkspaceIncompatibleWithTrust({
       requestedShouldReuseExisting: true,
       trustPresetKind: "low_trust_review",
       requestedExecutionWorkspaceMode: "isolated_workspace",
       existingExecutionWorkspaceMode: null,
-    })).toBe(true);
+    })).toBe(false);
+  });
+
+  it("reports a named incompatibility without realizing a replacement workspace", () => {
+    const metadata = buildWorkspaceConfigMetadata();
+    const workspaceConfigFreshness = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(metadata),
+      nextMetadata: metadata,
+    });
+    const failure = new ExecutionWorkspaceReuseFailure({
+      reason: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      executionWorkspaceId: "workspace-shared",
+      workspaceConfigFreshness,
+    });
+
+    expect(failure).toMatchObject({
+      code: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+      message: expect.stringContaining("incompatible with the run's isolation policy"),
+      resultJson: {
+        executionWorkspaceReuse: expect.objectContaining({
+          reason: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+          executionWorkspaceId: "workspace-shared",
+        }),
+      },
+    });
   });
 
   it.each([

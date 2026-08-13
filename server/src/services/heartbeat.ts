@@ -398,6 +398,8 @@ export const PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE =
   "pinned_execution_workspace_restore_failed";
 export const PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE =
   "pinned_execution_workspace_unavailable";
+export const PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE =
+  "pinned_execution_workspace_incompatible";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
@@ -4355,7 +4357,7 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   };
 }
 
-export function shouldReusePinnedExecutionWorkspaceForRun(input: {
+export function isPinnedExecutionWorkspaceIncompatibleWithTrust(input: {
   requestedShouldReuseExisting: boolean;
   trustPresetKind: TrustPresetResolution["kind"];
   requestedExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
@@ -4363,10 +4365,7 @@ export function shouldReusePinnedExecutionWorkspaceForRun(input: {
 }): boolean {
   if (!input.requestedShouldReuseExisting) return false;
 
-  // A durable pin cannot weaken the low-trust isolation boundary. An available
-  // non-isolated pin is bypassed so the policy can provision a fresh isolated workspace.
-  // Missing or archived pins still flow through the named reuse-failure path.
-  return !(
+  return (
     input.trustPresetKind === "low_trust_review"
     && input.requestedExecutionWorkspaceMode === "isolated_workspace"
     && input.existingExecutionWorkspaceMode !== null
@@ -4394,7 +4393,8 @@ export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
 
 type ExecutionWorkspaceReuseFailureReason =
   | typeof PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE
-  | typeof PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE;
+  | typeof PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE
+  | typeof PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE;
 
 function formatPinnedExecutionWorkspaceReuseFailure(input: {
   reason: ExecutionWorkspaceReuseFailureReason;
@@ -4411,12 +4411,17 @@ function formatPinnedExecutionWorkspaceReuseFailure(input: {
     : input.cause != null
       ? String(input.cause)
       : null;
+  const incompatible = input.reason === PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE;
   const remediation = input.reason === PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE
     ? "Inspect the pinned execution workspace restore/provision logs, repair or unarchive the workspace, or intentionally clear the issue's execution workspace binding before retrying."
-    : "Repair or unarchive the pinned execution workspace, or intentionally clear the issue's execution workspace binding before retrying.";
-  const message = causeMessage
-    ? `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
-    : `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but the workspace could not be restored.`;
+    : incompatible
+      ? "Pin an isolated workspace, change the task trust policy, or intentionally clear the issue's execution workspace binding before retrying."
+      : "Repair or unarchive the pinned execution workspace, or intentionally clear the issue's execution workspace binding before retrying.";
+  const message = incompatible
+    ? `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but that workspace is incompatible with the run's isolation policy.`
+    : causeMessage
+      ? `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
+      : `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but the workspace could not be restored.`;
 
   return `${message} ${remediation}`;
 }
@@ -14039,7 +14044,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
       existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
     });
-    const requestedShouldReuseExisting = shouldReusePinnedExecutionWorkspaceForRun({
+    const pinnedExecutionWorkspaceIncompatibleWithTrust = isPinnedExecutionWorkspaceIncompatibleWithTrust({
       requestedShouldReuseExisting: workspaceReuseRequest.requestedShouldReuseExisting,
       trustPresetKind: trustPreset.kind,
       requestedExecutionWorkspaceMode,
@@ -14047,13 +14052,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? existingExecutionWorkspace?.mode ?? null
         : null,
     });
-    const reusableExistingExecutionWorkspace = requestedShouldReuseExisting
-      && workspaceReuseRequest.existingExecutionWorkspaceAvailable
+    const requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
+    const reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
       ? existingExecutionWorkspace
       : null;
     if (
       requestedShouldReuseExisting &&
       reusableExistingExecutionWorkspace &&
+      !pinnedExecutionWorkspaceIncompatibleWithTrust &&
       (
         issueExecutionWorkspaceSettings?.mode == null ||
         issueExecutionWorkspaceSettings.mode === "inherit" ||
@@ -14554,6 +14560,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       inferredMetadata: inferredExistingWorkspaceConfigMetadata,
       nextMetadata: latestWorkspaceConfigMetadata,
     });
+    if (pinnedExecutionWorkspaceIncompatibleWithTrust) {
+      throw new ExecutionWorkspaceReuseFailure({
+        reason: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+        issueRef,
+        runId: run.id,
+        executionWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
+        workspaceConfigFreshness,
+      });
+    }
     const workspaceReuseProvisioningPolicy = resolveExecutionWorkspaceReuseProvisioningPolicy({
       requestedShouldReuseExisting,
       workspaceConfigFreshness,
