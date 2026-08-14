@@ -169,6 +169,7 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+  appDraftEditLockHeld?: boolean;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -4825,12 +4826,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
-    if (input.connectionId) {
+    if (input.connectionId && !options.appDraftEditLockHeld) {
       return db.transaction(async (tx) => {
         await tx.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${`tool_app_draft_edit:${companyId}:${input.connectionId}`}, 0))`,
         );
-        return connectGalleryAppLocked(companyId, input, actor);
+        return toolAccessService(tx as unknown as Db, {
+          ...options,
+          appDraftEditLockHeld: true,
+        }).connectGalleryApp(companyId, input, actor);
       });
     }
     return connectGalleryAppLocked(companyId, input, actor);
