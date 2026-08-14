@@ -10340,7 +10340,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outstandingCommentIds: input.delivery.commentIds,
         retryGeneration: input.delivery.generation,
         lastFailureCode: input.run.errorCode,
-        lastFailureReason: input.run.error,
         gateErrorCode: input.gateErrorCode ?? null,
         gateReason: input.gateReason ?? null,
       },
