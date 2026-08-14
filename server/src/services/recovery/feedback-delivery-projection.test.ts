@@ -31,6 +31,7 @@ function action(
       // Deliberately present: the projection must never surface it.
       lastFailureReason: "Error: ECONNREFUSED /home/agent/.secret/token.json",
     },
+    previousOwnerAgentId: "agent-1",
     attemptCount: 1,
     maxAttempts: 1,
     lastAttemptAt: new Date("2026-08-14T17:58:00.000Z"),
@@ -45,6 +46,7 @@ function replay(
 ): FeedbackDeliveryPendingReplay {
   return {
     fingerprint: FINGERPRINT,
+    agentId: "agent-1",
     commentIds: ["comment-1"],
     generation: 1,
     runId: "run-2",

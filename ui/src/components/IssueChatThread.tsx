@@ -185,6 +185,12 @@ import {
   type RecoveryReissueRequest,
   type RecoveryResolveOutcome,
 } from "./IssueRecoveryActionCard";
+import {
+  FeedbackDeliveryFooterStatus,
+  FeedbackDeliveryNotice,
+  isIssueCommentFeedbackDelivery,
+  useFeedbackDeliveryTransientSuccess,
+} from "./FeedbackDeliveryState";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { CommentAttributionChip } from "./CommentAttributionChip";
 import { resolveCommentAttribution } from "../lib/comment-attribution";
@@ -209,6 +215,12 @@ interface IssueChatMessageContext {
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
+  /** Explicit operator retry for a comment whose feedback delivery is exhausted. */
+  onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void;
+  /** Comment id whose retry request is currently in flight. */
+  retryingFeedbackDeliveryCommentId?: string | null;
+  /** Comment id whose last retry request failed, so the banner can say so inline. */
+  failedFeedbackDeliveryRetryCommentId?: string | null;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction:
@@ -531,6 +543,9 @@ interface IssueChatThreadProps {
   includeSucceededRunsWithoutOutput?: boolean;
   onInterruptQueued?: (runId: string) => Promise<void>;
   onCancelQueued?: (commentId: string) => void;
+  onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void;
+  retryingFeedbackDeliveryCommentId?: string | null;
+  failedFeedbackDeliveryRetryCommentId?: string | null;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
@@ -1460,6 +1475,9 @@ function IssueChatUserMessage({
     onInterruptQueued,
     onCancelQueued,
     onDeleteComment,
+    onRetryFeedbackDelivery,
+    retryingFeedbackDeliveryCommentId,
+    failedFeedbackDeliveryRetryCommentId,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
@@ -1476,6 +1494,10 @@ function IssueChatUserMessage({
   const pending = custom.clientStatus === "pending";
   const deleted = Boolean(custom.deletedAt);
   const queueTargetRunId = typeof custom.queueTargetRunId === "string" ? custom.queueTargetRunId : null;
+  const feedbackDelivery = isIssueCommentFeedbackDelivery(custom.feedbackDelivery)
+    ? custom.feedbackDelivery
+    : null;
+  const showTransientDeliverySuccess = useFeedbackDeliveryTransientSuccess(feedbackDelivery);
   const [copied, setCopied] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const toastActions = useOptionalToastActions();
@@ -1634,6 +1656,11 @@ function IssueChatUserMessage({
           ) : null}
         </div>
       )}
+      <FeedbackDeliveryFooterStatus
+        delivery={feedbackDelivery}
+        showTransientSuccess={showTransientDeliverySuccess}
+        align={isCurrentUser ? "end" : "start"}
+      />
     </div>
   );
 
@@ -1653,6 +1680,15 @@ function IssueChatUserMessage({
             </>
           )}
         </div>
+        {feedbackDelivery ? (
+          <FeedbackDeliveryNotice
+            className="mt-2"
+            delivery={feedbackDelivery}
+            onRetry={onRetryFeedbackDelivery}
+            retryPending={retryingFeedbackDeliveryCommentId === feedbackDelivery.sourceCommentId}
+            retryError={failedFeedbackDeliveryRetryCommentId === feedbackDelivery.sourceCommentId}
+          />
+        ) : null}
       </div>
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
@@ -4400,6 +4436,9 @@ export function IssueChatThread({
   onInterruptQueued,
   onCancelQueued,
   onDeleteComment,
+  onRetryFeedbackDelivery,
+  retryingFeedbackDeliveryCommentId = null,
+  failedFeedbackDeliveryRetryCommentId = null,
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
@@ -4949,6 +4988,7 @@ export function IssueChatThread({
   const stableOnInterruptQueued = useStableEvent(onInterruptQueued);
   const stableOnCancelQueued = useStableEvent(onCancelQueued);
   const stableOnDeleteComment = useStableEvent(onDeleteComment);
+  const stableOnRetryFeedbackDelivery = useStableEvent(onRetryFeedbackDelivery);
   const stableOnImageClick = useStableEvent(onImageClick);
   const stableOnAcceptInteraction = useStableEvent(onAcceptInteraction);
   const stableOnRejectInteraction = useStableEvent(onRejectInteraction);
@@ -4974,6 +5014,9 @@ export function IssueChatThread({
       onInterruptQueued: stableOnInterruptQueued,
       onCancelQueued: stableOnCancelQueued,
       onDeleteComment: stableOnDeleteComment,
+      onRetryFeedbackDelivery: stableOnRetryFeedbackDelivery,
+      retryingFeedbackDeliveryCommentId,
+      failedFeedbackDeliveryRetryCommentId,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
       onRejectInteraction: stableOnRejectInteraction,
@@ -5003,6 +5046,9 @@ export function IssueChatThread({
       stableOnInterruptQueued,
       stableOnCancelQueued,
       stableOnDeleteComment,
+      stableOnRetryFeedbackDelivery,
+      retryingFeedbackDeliveryCommentId,
+      failedFeedbackDeliveryRetryCommentId,
       stableOnImageClick,
       stableOnAcceptInteraction,
       stableOnRejectInteraction,
@@ -5102,7 +5148,11 @@ export function IssueChatThread({
                     onResume={onResumeFromBacklog}
                     resuming={resumeFromBacklogPending}
                   />
-                  {recoveryAction ? (
+                  {/* An exhausted feedback delivery is represented once, by the
+                      compact banner under the comment it belongs to. Rendering
+                      the generic card as well would duplicate the same state at
+                      two densities in one thread. */}
+                  {recoveryAction && recoveryAction.kind !== "feedback_delivery" ? (
                     <IssueRecoveryActionCard
                       action={recoveryAction}
                       agentMap={agentMap}

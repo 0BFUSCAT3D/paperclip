@@ -54,6 +54,8 @@ export type FeedbackDeliveryRecoveryActionRow = {
   status: string;
   fingerprint: string;
   evidence: unknown;
+  /** Original assignee, used to build the run route for `sourceRunId`. */
+  previousOwnerAgentId: string | null;
   attemptCount: number;
   maxAttempts: number | null;
   lastAttemptAt: Date | string | null;
@@ -67,6 +69,7 @@ export type FeedbackDeliveryRecoveryActionRow = {
  */
 export type FeedbackDeliveryPendingReplay = {
   fingerprint: string | null;
+  agentId: string;
   commentIds: readonly string[];
   generation: number;
   runId: string | null;
@@ -186,6 +189,7 @@ export function projectFeedbackDeliveryByComment(
         lastAttemptAt: toIso(action.lastAttemptAt),
         deliveredAt: toIso(action.resolvedAt),
         targetRunId,
+        targetRunAgentId: targetRunId ? action.previousOwnerAgentId : null,
         canRetry: false,
         retryInFlight: false,
         safeFailureReason: null,
@@ -215,6 +219,7 @@ export function projectFeedbackDeliveryByComment(
         lastAttemptAt: toIso(replay.requestedAt),
         deliveredAt: null,
         targetRunId: input.viewerCanReadRuns ? replay.runId : null,
+        targetRunAgentId: input.viewerCanReadRuns && replay.runId ? replay.agentId : null,
         canRetry: false,
         retryInFlight: true,
         safeFailureReason: null,
@@ -230,6 +235,11 @@ export function projectFeedbackDeliveryByComment(
     const targetRunId = input.viewerCanReadRuns
       ? replay?.runId ?? readEvidenceString(action.evidence, "sourceRunId")
       : null;
+    const targetRunAgentId = !targetRunId
+      ? null
+      : replay?.runId === targetRunId
+        ? replay.agentId
+        : action.previousOwnerAgentId;
     const safeFailureReason =
       toSafeFeedbackDeliveryFailureReason(readEvidenceString(action.evidence, "lastFailureCode"))
       ?? toSafeFeedbackDeliveryFailureReason(readEvidenceString(action.evidence, "gateErrorCode"));
@@ -246,6 +256,7 @@ export function projectFeedbackDeliveryByComment(
         lastAttemptAt: toIso(action.lastAttemptAt ?? action.createdAt),
         deliveredAt: null,
         targetRunId,
+        targetRunAgentId,
         canRetry: input.viewerCanRetry && !retryInFlight,
         retryInFlight,
         safeFailureReason,

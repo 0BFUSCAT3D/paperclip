@@ -967,6 +967,8 @@ export interface IssueCommentFeedbackDelivery {
    * mystery action.
    */
   targetRunId: string | null;
+  /** Agent that owns `targetRunId`; both are needed to build the run route. */
+  targetRunAgentId: string | null;
   /** True when the viewer may ask for one more explicit delivery attempt. */
   canRetry: boolean;
   /**
