@@ -376,6 +376,8 @@ For runtime-created `git_worktree` execution workspaces, branch coherence is par
 
 #### Managed runtime coherence
 
+This subsection is the accepted target contract for ongoing managed-runtime coherence work. It defines the required end state; it does not claim that every current runtime or completion path enforces these rules yet.
+
 Every managed runtime-service command must finish with one coherent, inspectable postcondition. Desired state and actual state are separate values:
 
 - desired state records the operator's intent, such as `running` or `stopped`
