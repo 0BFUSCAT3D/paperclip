@@ -43,9 +43,25 @@ export function isIssueCommentFeedbackDelivery(
 }
 
 /** Anchor id for deep-linking the attention queue straight at the banner. */
+export const FEEDBACK_DELIVERY_ANCHOR_PREFIX = "feedback-delivery-";
+
 export function feedbackDeliveryAnchorId(commentId: string) {
-  return `feedback-delivery-${commentId}`;
+  return `${FEEDBACK_DELIVERY_ANCHOR_PREFIX}${commentId}`;
 }
+
+/**
+ * Delay before claiming focus for a deep-linked banner. The thread's own
+ * hash handling makes up to three scroll attempts over ~250ms; focusing inside
+ * that window loses the focus to the thread viewport.
+ */
+const DEEP_LINK_FOCUS_SETTLE_MS = 350;
+
+/**
+ * Desktop constrains the notice to the same edge as the message body it belongs
+ * to, so ownership is unambiguous when consecutive comments each carry one.
+ * Mobile keeps the full thread width inside the thread's own padding.
+ */
+const FEEDBACK_DELIVERY_NOTICE_WIDTH = "w-full sm:max-w-(--pct-85)";
 
 function shortRunId(runId: string) {
   return runId.slice(0, 8);
@@ -235,13 +251,18 @@ export function FeedbackDeliveryNotice({
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (window.location.hash !== `#${anchorId}`) return;
-    headingRef.current?.focus();
+    const timer = setTimeout(() => headingRef.current?.focus(), DEEP_LINK_FOCUS_SETTLE_MS);
+    return () => clearTimeout(timer);
   }, [anchorId]);
 
   if (delivery.state === "recovered_after_attention") {
     const deliveredAt = delivery.deliveredAt ? deliveredTimeLabel(delivery.deliveredAt) : null;
     return (
-      <div id={anchorId} data-testid="feedback-delivery-recovered" className={className}>
+      <div
+        id={anchorId}
+        data-testid="feedback-delivery-recovered"
+        className={cn(FEEDBACK_DELIVERY_NOTICE_WIDTH, className)}
+      >
         <SystemNotice
           tone="success"
           label="Feedback delivered"
@@ -270,7 +291,11 @@ export function FeedbackDeliveryNotice({
     : null;
 
   return (
-    <div id={anchorId} data-testid="feedback-delivery-exhausted" className={className}>
+    <div
+      id={anchorId}
+      data-testid="feedback-delivery-exhausted"
+      className={cn(FEEDBACK_DELIVERY_NOTICE_WIDTH, className)}
+    >
       {/* Announced once on transition, not on every rerender of the banner. */}
       <span role="alert" className="sr-only">
         Feedback wasn&apos;t delivered. Paperclip stopped retrying.

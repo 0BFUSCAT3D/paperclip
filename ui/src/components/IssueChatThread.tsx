@@ -186,6 +186,7 @@ import {
   type RecoveryResolveOutcome,
 } from "./IssueRecoveryActionCard";
 import {
+  FEEDBACK_DELIVERY_ANCHOR_PREFIX,
   FeedbackDeliveryFooterStatus,
   FeedbackDeliveryNotice,
   isIssueCommentFeedbackDelivery,
@@ -1682,7 +1683,7 @@ function IssueChatUserMessage({
         </div>
         {feedbackDelivery ? (
           <FeedbackDeliveryNotice
-            className="mt-2"
+            className={cn("mt-2", isCurrentUser && "sm:ml-auto")}
             delivery={feedbackDelivery}
             onRetry={onRetryFeedbackDelivery}
             retryPending={retryingFeedbackDeliveryCommentId === feedbackDelivery.sourceCommentId}
@@ -4742,7 +4743,10 @@ export function IssueChatThread({
     const isThreadHash = hash.startsWith("#comment-")
       || hash.startsWith("#activity-")
       || hash.startsWith("#run-")
-      || hash.startsWith("#interaction-");
+      || hash.startsWith("#interaction-")
+      // The attention queue deep-links an exhausted feedback delivery straight
+      // at its banner, which lives inside the source comment's anchored block.
+      || hash.startsWith(`#${FEEDBACK_DELIVERY_ANCHOR_PREFIX}`);
     if (messages.length === 0) return;
     if (!isThreadHash) {
       if (!didInitialHashScrollDecisionRef.current) {
