@@ -1705,6 +1705,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     if (!retryRun || !releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+    const recoveryActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId: fixture.companyId,
+      sourceIssueId: fixture.issueId,
+      kind: "feedback_delivery",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: fixture.agentId,
+      previousOwnerAgentId: fixture.agentId,
+      returnOwnerAgentId: fixture.agentId,
+      cause: "feedback_delivery_exhausted",
+      fingerprint: buildFeedbackDeliveryFingerprint({
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        rootWakeupRequestId: fixture.wakeupRequestId,
+      }),
+      evidence: {
+        rootWakeupRequestId: fixture.wakeupRequestId,
+        outstandingCommentIds: [commentId],
+      },
+      nextAction: "Retry feedback delivery manually.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
     await db.insert(issueComments).values({
       companyId: fixture.companyId,
       issueId: fixture.issueId,
@@ -1723,6 +1748,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, fixture.agentId));
     expect(finalRuns).toHaveLength(2);
+    const resolvedAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, recoveryActionId))
+      .then((rows) => rows[0] ?? null);
+    expect(resolvedAction).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+    });
+    expect(resolvedAction?.resolvedAt).toBeTruthy();
+    const resolutionActivity = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.entityId, fixture.issueId),
+        eq(activityLog.runId, retryRun.id),
+        eq(activityLog.action, "issue.recovery_action_resolved"),
+      ));
+    expect(resolutionActivity).toHaveLength(1);
+    expect(resolutionActivity[0]?.details).toMatchObject({
+      source: "successful_feedback_delivery",
+      recoveryActionId,
+      rootWakeupRequestId: fixture.wakeupRequestId,
+      sourceRunId: retryRun.id,
+      outcome: "restored",
+    });
   });
 
   it("creates one source-scoped recovery action when the feedback replay is exhausted", async () => {

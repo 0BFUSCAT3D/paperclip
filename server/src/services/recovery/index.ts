@@ -42,6 +42,7 @@ export {
   carriesExplicitFeedbackResume,
   decideStrandedFeedbackDeliveryBackstop,
   isEligibleFeedbackDeliveryWake,
+  isSuccessfulFeedbackDeliveryRecoveryMatch,
   readFeedbackDeliveryRetryGeneration,
   readFeedbackDeliveryRunContext,
   readFeedbackDeliveryWakeCommentIds,
