@@ -9,6 +9,11 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 type RuntimeServiceReadDb = Pick<Db, "select">;
+const ACTIVE_RUNTIME_SERVICE_STATUSES = new Set<WorkspaceRuntimeServiceRow["status"]>([
+  "provisioning",
+  "starting",
+  "running",
+]);
 
 function runtimeServiceIdentityKey(row: WorkspaceRuntimeServiceRow) {
   if (row.reuseKey) return row.reuseKey;
@@ -77,7 +82,10 @@ export function selectConfiguredRuntimeServiceRows(
     availableRows.splice(availableRows.indexOf(matchedRow), 1);
   }
 
-  return selectedRows;
+  return [
+    ...selectedRows,
+    ...availableRows.filter((row) => ACTIVE_RUNTIME_SERVICE_STATUSES.has(row.status)),
+  ];
 }
 
 export async function listCurrentRuntimeServicesForProjectWorkspaces(

@@ -91,6 +91,45 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     ]);
   });
 
+  it("retains unmatched active rows as reconciliation safety evidence", () => {
+    const configuredWeb = runtimeServiceRow({
+      serviceName: "web",
+      command: "pnpm dev",
+    });
+    const removedActiveWorker = runtimeServiceRow({
+      serviceName: "worker",
+      command: "pnpm worker",
+      status: "running",
+      healthStatus: "healthy",
+    });
+    const removedStoppedJob = runtimeServiceRow({
+      serviceName: "job",
+      command: "pnpm job",
+      status: "stopped",
+    });
+
+    const selected = selectConfiguredRuntimeServiceRows(
+      [removedActiveWorker, removedStoppedJob, configuredWeb],
+      { services: [{ name: "web", command: "pnpm dev" }] },
+      "stopped",
+    );
+
+    expect(selected).toEqual([
+      expect.objectContaining({
+        id: configuredWeb.id,
+        configIndex: 0,
+        desiredState: "stopped",
+      }),
+      expect.objectContaining({
+        id: removedActiveWorker.id,
+        configIndex: null,
+        workspaceCommandId: null,
+        desiredState: null,
+        status: "running",
+      }),
+    ]);
+  });
+
   it("matches configured services only to rows with the configured reuse scope", () => {
     const staleProjectScopedWorker = runtimeServiceRow({
       serviceName: "worker",

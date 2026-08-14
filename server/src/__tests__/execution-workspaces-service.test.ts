@@ -2599,6 +2599,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       providerRef: worktreePath,
       branchName: "feature/recorded",
       baseRef: "main",
+      metadata: {
+        config: {
+          workspaceRuntime: {
+            services: [{ name: "renamed-web", command: "pnpm renamed-dev" }],
+          },
+        },
+      },
     });
     await db.insert(workspaceRuntimeServices).values({
       id: runtimeServiceId,
