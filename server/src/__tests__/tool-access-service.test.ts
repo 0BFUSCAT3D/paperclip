@@ -4610,6 +4610,66 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(unchanged.name).toBe("PostHog production project");
   });
 
+  it("serializes concurrent updates to the same app connection draft", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const concurrentService = toolAccessService(db);
+    const initialFetch = mockToolsList([{ name: "read_project", annotations: { readOnlyHint: true } }]);
+    const draft = await service.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/one",
+      name: "PostHog project",
+    }, { actorType: "user", actorId: "board" });
+    initialFetch.mockRestore();
+
+    let releaseHealthCheck!: (response: Response) => void;
+    const healthCheckGate = new Promise<Response>((resolve) => {
+      releaseHealthCheck = resolve;
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce(() => healthCheckGate)
+      .mockResolvedValue(mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: "paperclip-catalog-refresh",
+        result: { tools: [{ name: "read_project", annotations: { readOnlyHint: true } }] },
+      }));
+
+    const firstUpdate = service.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/two",
+      name: "PostHog production",
+      connectionId: draft.connectionId,
+    }, { actorType: "user", actorId: "board" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    await expect(concurrentService.connectGalleryApp(company.id, {
+      link: "https://posthog.example.test/project/three",
+      name: "PostHog concurrent retry",
+      connectionId: draft.connectionId,
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "tool_connection_draft_update_in_progress",
+        retryable: true,
+      },
+    });
+
+    releaseHealthCheck(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-catalog-refresh",
+      result: { tools: [{ name: "read_project", annotations: { readOnlyHint: true } }] },
+    }));
+    const updated = await firstUpdate;
+
+    expect(updated.connection).toMatchObject({
+      id: draft.connectionId,
+      name: "PostHog production",
+      config: {
+        url: "https://posthog.example.test/project/two",
+        quarantineNewEntries: true,
+      },
+    });
+    expect(updated.connection.config).not.toHaveProperty("draftEditLease");
+  });
+
   it("fails closed when a draft update crosses company, source, application, or status boundaries", async () => {
     const company = await createCompany(db);
     const otherCompany = await createCompany(db);
