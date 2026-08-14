@@ -224,6 +224,16 @@ import {
   isSuccessfulRunHandoffValidPathSkip,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
+  FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+  FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND,
+  FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+  FEEDBACK_DELIVERY_RETRY_REASON,
+  FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+  buildFeedbackDeliveryFingerprint,
+  buildFeedbackDeliveryRetryIdempotencyKey,
+  carriesExplicitFeedbackResume,
+  isEligibleFeedbackDeliveryWake,
+  readFeedbackDeliveryRetryGeneration,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
@@ -486,10 +496,7 @@ export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
-export const FEEDBACK_DELIVERY_RETRY_REASON = "feedback_delivery_retry";
-export const FEEDBACK_DELIVERY_RETRY_WAKE_REASON = "feedback_delivery_retry";
-const FEEDBACK_DELIVERY_RECOVERY_CAUSE = "feedback_delivery_exhausted";
-const FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES = 1;
+export { FEEDBACK_DELIVERY_RETRY_REASON, FEEDBACK_DELIVERY_RETRY_WAKE_REASON };
 // A running run stops counting as a shared-workspace holder once it has been
 // silent this long. This is recovery's own "suspicious silence" bar for active
 // runs (scanSilentActiveRuns escalates such runs), so a zombie holder cannot
@@ -10155,17 +10162,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const wakeReason = readNonEmptyString(context.wakeReason);
     const commentIds = mergeWakeCommentIds(context, deriveCommentId(context, null));
-    const carriesExplicitResume = context.resumeIntent === true || context.followUpRequested === true;
-    const eligibleWake =
-      wakeReason === "issue_commented" ||
-      wakeReason === "issue_reopened_via_comment" ||
-      wakeReason === FEEDBACK_DELIVERY_RETRY_WAKE_REASON ||
-      (carriesExplicitResume && (
-        wakeReason === "issue_assigned" ||
-        wakeReason === "issue_status_changed" ||
-        wakeReason === "issue_commented" ||
-        wakeReason === "issue_reopened_via_comment"
-      ));
+    const carriesExplicitResume = carriesExplicitFeedbackResume(context);
+    const eligibleWake = isEligibleFeedbackDeliveryWake({ wakeReason, carriesExplicitResume });
     if (!eligibleWake || (commentIds.length === 0 && !carriesExplicitResume)) return null;
 
     const rootWake = await db
@@ -10181,28 +10179,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // generation-1 wakes retain their original user wake id in context.
     if (rootWake?.requestedByActorType !== "user") return null;
 
-    const generation = Math.max(
-      0,
-      Math.floor(
-        typeof context.feedbackDeliveryRetryGeneration === "number"
-          ? context.feedbackDeliveryRetryGeneration
-          : run.scheduledRetryReason === FEEDBACK_DELIVERY_RETRY_REASON
-            ? run.scheduledRetryAttempt ?? 0
-            : 0,
-      ),
-    );
     return {
       issueId,
       rootWakeupRequestId,
       commentIds,
-      generation,
-      fingerprint: [
-        "feedback_delivery",
-        run.companyId,
+      generation: readFeedbackDeliveryRetryGeneration({
+        contextSnapshot: context,
+        scheduledRetryReason: run.scheduledRetryReason,
+        scheduledRetryAttempt: run.scheduledRetryAttempt,
+      }),
+      // Shared with the periodic backstop so neither lane can drift into a
+      // second parallel delivery lane for the same feedback batch.
+      fingerprint: buildFeedbackDeliveryFingerprint({
+        companyId: run.companyId,
         issueId,
-        run.agentId,
+        agentId: run.agentId,
         rootWakeupRequestId,
-      ].join(":"),
+      }),
     };
   }
 
@@ -10323,7 +10316,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const existing = await recoveryActions.getActiveForIssue(input.run.companyId, issue.id);
     if (
-      existing?.kind === "feedback_delivery"
+      existing?.kind === FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND
       && existing.cause === FEEDBACK_DELIVERY_RECOVERY_CAUSE
       && existing.fingerprint === input.delivery.fingerprint
     ) {
@@ -10333,7 +10326,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const action = await recoveryActions.upsertSourceScoped({
       companyId: input.run.companyId,
       sourceIssueId: issue.id,
-      kind: "feedback_delivery",
+      kind: FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND,
       ownerType: "agent",
       ownerAgentId: input.agent.id,
       previousOwnerAgentId: input.agent.id,
@@ -10415,7 +10408,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const taskKey = deriveTaskKeyWithHeartbeatFallback(retryContext, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(input.agent, taskKey);
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(input.run, retryContext);
-    const idempotencyKey = `${input.delivery.fingerprint}:generation:1`;
+    const idempotencyKey = buildFeedbackDeliveryRetryIdempotencyKey({
+      fingerprint: input.delivery.fingerprint,
+      generation: 1,
+    });
 
     const result = await db.transaction(async (tx) => {
       const companyIsActive = await tx
