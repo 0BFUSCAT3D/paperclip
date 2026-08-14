@@ -649,6 +649,8 @@ export type {
   IssueReviewRequest,
   IssueExecutionDecision,
   IssueComment,
+  IssueCommentFeedbackDelivery,
+  IssueFeedbackDeliveryRetryResponse,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentMetadataSection,

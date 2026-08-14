@@ -63,6 +63,20 @@ export function buildFeedbackDeliveryRetryIdempotencyKey(input: {
   return `${input.fingerprint}:generation:${input.generation}`;
 }
 
+/**
+ * Explicit operator "Retry delivery" replays get their own key namespace: the
+ * automatic `:generation:N` keys are already spent by the time delivery is
+ * exhausted, so reusing them would silently swallow the operator's request.
+ * Keying on the recovery action's attempt count still collapses a double-click
+ * into one replay while allowing a fresh attempt after a failure.
+ */
+export function buildFeedbackDeliveryManualRetryIdempotencyKey(input: {
+  fingerprint: string;
+  attempt: number;
+}) {
+  return `${input.fingerprint}:manual:${input.attempt}`;
+}
+
 export function readFeedbackDeliveryWakeCommentIds(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): string[] {

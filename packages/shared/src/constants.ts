@@ -402,6 +402,23 @@ export const ISSUE_RECOVERY_ACTION_OWNER_TYPES = [
 ] as const;
 export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_TYPES)[number];
 
+/**
+ * Delivery state of one human feedback comment, as projected onto that comment
+ * for operator surfaces. This is deliberately *not* a task status: the task
+ * keeps its own workflow status while a delivery attempt is in flight.
+ *
+ * - `retrying` — automatic replay is still in flight; no operator action.
+ * - `exhausted_needs_attention` — automatic replay gave up; a human must act.
+ * - `recovered_after_attention` — delivery succeeded after it had needed
+ *   attention, so the resolution stays visible in thread history.
+ */
+export const ISSUE_FEEDBACK_DELIVERY_STATES = [
+  "retrying",
+  "exhausted_needs_attention",
+  "recovered_after_attention",
+] as const;
+export type IssueFeedbackDeliveryState = (typeof ISSUE_FEEDBACK_DELIVERY_STATES)[number];
+
 export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
   "handed_back",
