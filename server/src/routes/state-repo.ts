@@ -87,6 +87,7 @@ export function stateRepoRoutes(db: Db, service: StateRepoService, markerDir: st
 
   router.get("/companies/:companyId/state-repo/bundle", async (req, res) => {
     const companyId = req.params.companyId as string;
+    assertBoard(req);
     assertCompanyAccess(req, companyId);
     await fs.mkdir(markerDir, { recursive: true });
     const outputPath = path.join(markerDir, `state-repo-${companyId}-${Date.now()}.bundle`);

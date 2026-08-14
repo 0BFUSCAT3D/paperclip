@@ -9,11 +9,16 @@ vi.mock("../services/activity-log.js", () => ({ logActivity: mockLogActivity }))
 const mockRemotes = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), clear: vi.fn() }));
 vi.mock("../services/state-repo-remote.js", () => ({ stateRepoRemoteService: () => mockRemotes }));
 
-function createApp(service: Record<string, ReturnType<typeof vi.fn>>) {
+function createApp(
+  service: Record<string, ReturnType<typeof vi.fn>>,
+  actorType: "board" | "agent" = "board",
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
+    req.actor = actorType === "board"
+      ? { type: "board", userId: "board-user", source: "local_implicit" }
+      : { type: "agent", agentId: "agent-1", companyId: "company-1" };
     next();
   });
   app.use("/api", stateRepoRoutes({} as never, service as never, "/tmp"));
@@ -64,6 +69,15 @@ describe("state repo routes", () => {
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ configured: true, healthy: true });
     expect(service.health).toHaveBeenCalledWith("company-1");
+  });
+
+  it("rejects agent credentials before exporting a company state bundle", async () => {
+    const service = { exportBundle: vi.fn() };
+    const response = await request(createApp(service, "agent"))
+      .get("/api/companies/company-1/state-repo/bundle");
+
+    expect(response.status).toBe(403);
+    expect(service.exportBundle).not.toHaveBeenCalled();
   });
 
   it("tests the configured mirror", async () => {
