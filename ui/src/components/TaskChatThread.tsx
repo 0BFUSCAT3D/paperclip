@@ -136,6 +136,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     blockedBy = [],
     blockerAttention,
     liveIssueIds,
+    onRetryFeedbackDelivery,
+    retryingFeedbackDeliveryCommentId,
+    failedFeedbackDeliveryRetryCommentId,
   } = props;
 
   const liveWorkLinks = useMemo(
@@ -681,6 +684,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
             renderQueuedAction={renderQueuedAction}
+            onRetryFeedbackDelivery={onRetryFeedbackDelivery}
+            retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId}
+            failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId}
             tail={tailRunId || bottomBlockerLinks ? (
               <>
                 {tailRunId ? (

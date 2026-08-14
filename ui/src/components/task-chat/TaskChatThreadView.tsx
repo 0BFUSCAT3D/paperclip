@@ -43,6 +43,9 @@ interface TaskChatThreadViewProps {
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode;
   /** Renders an interrupt action beside a queued human message. */
   renderQueuedAction?: (item: TaskChatMessageItem) => ReactNode;
+  onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void;
+  retryingFeedbackDeliveryCommentId?: string | null;
+  failedFeedbackDeliveryRetryCommentId?: string | null;
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
@@ -59,6 +62,9 @@ function renderItem(
   renderBrief?: () => ReactNode,
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode,
   renderQueuedAction?: (item: TaskChatMessageItem) => ReactNode,
+  onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void,
+  retryingFeedbackDeliveryCommentId?: string | null,
+  failedFeedbackDeliveryRetryCommentId?: string | null,
 ) {
   switch (item.kind) {
     case "message": {
@@ -73,6 +79,9 @@ function renderItem(
           item={item}
           actions={actions}
           queuedAction={renderQueuedAction?.(item)}
+          onRetryFeedbackDelivery={onRetryFeedbackDelivery}
+          retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId}
+          failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId}
           attachedTurn={
             item.attachedTurn ? (
               <TaskChatTurn
@@ -140,6 +149,9 @@ export function TaskChatThreadView({
   renderBrief,
   renderMessageActions,
   renderQueuedAction,
+  onRetryFeedbackDelivery,
+  retryingFeedbackDeliveryCommentId,
+  failedFeedbackDeliveryRetryCommentId,
   tail,
   contentKey,
   className,
@@ -161,6 +173,9 @@ export function TaskChatThreadView({
             renderBrief,
             renderMessageActions,
             renderQueuedAction,
+            onRetryFeedbackDelivery,
+            retryingFeedbackDeliveryCommentId,
+            failedFeedbackDeliveryRetryCommentId,
           )}
         </div>
       ))}
