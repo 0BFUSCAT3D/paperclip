@@ -412,6 +412,8 @@ Task and execution-workspace UI must render inherited and local effective runtim
 
 #### Delivery evidence for claimed fixes
 
+This subsection continues the target contract above; it does not claim that every current completion path enforces delivery evidence yet.
+
 An issue that claims a code fix is complete must register inspectable delivery evidence appropriate to the requested handoff: the branch, commit, or pull-request work product that contains the fix, plus ancestry or pull-request-head evidence that the cited change is actually on that delivery path. A local commit proves implementation but does not prove upstream delivery when the requested outcome is a pull request or merged change. Tests, screenshots, comments, and runtime logs remain verification evidence; they do not replace branch/commit/pull-request delivery evidence.
 
 ### Explicit recovery actions
