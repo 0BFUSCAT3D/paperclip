@@ -4640,24 +4640,24 @@ describeEmbeddedPostgres("tool access service", () => {
     }, { actorType: "user", actorId: "board" });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    await expect(concurrentService.connectGalleryApp(company.id, {
+    let concurrentSettled = false;
+    const concurrentUpdate = concurrentService.connectGalleryApp(company.id, {
       link: "https://posthog.example.test/project/three",
       name: "PostHog concurrent retry",
       connectionId: draft.connectionId,
-    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
-      status: 409,
-      details: {
-        code: "tool_connection_draft_update_in_progress",
-        retryable: true,
-      },
+    }, { actorType: "user", actorId: "board" }).finally(() => {
+      concurrentSettled = true;
     });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(concurrentSettled).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
     releaseHealthCheck(mcpHttpResponse({
       jsonrpc: "2.0",
       id: "paperclip-catalog-refresh",
       result: { tools: [{ name: "read_project", annotations: { readOnlyHint: true } }] },
     }));
-    const updated = await firstUpdate;
+    const [updated, concurrent] = await Promise.all([firstUpdate, concurrentUpdate]);
 
     expect(updated.connection).toMatchObject({
       id: draft.connectionId,
@@ -4667,7 +4667,14 @@ describeEmbeddedPostgres("tool access service", () => {
         quarantineNewEntries: true,
       },
     });
-    expect(updated.connection.config).not.toHaveProperty("draftEditLease");
+    expect(concurrent.connection).toMatchObject({
+      id: draft.connectionId,
+      name: "PostHog concurrent retry",
+      config: {
+        url: "https://posthog.example.test/project/three",
+        quarantineNewEntries: true,
+      },
+    });
   });
 
   it("fails closed when a draft update crosses company, source, application, or status boundaries", async () => {

@@ -133,7 +133,6 @@ const MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH = 16_384;
 const OAUTH_REFRESH_LEASE_MS = 120_000;
 const OAUTH_REFRESH_LEASE_WAIT_MS = 30_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
-const APP_DRAFT_EDIT_LEASE_MS = 15 * 60_000;
 
 type OAuthProviderEndpoints = {
   provider: string;
@@ -426,11 +425,6 @@ const TOOL_EXAMPLES: ToolExampleDefinition[] = [
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
   return {};
-}
-
-function withoutAppDraftEditLease(config: Record<string, unknown>): Record<string, unknown> {
-  const { draftEditLease: _draftEditLease, ...rest } = config;
-  return rest;
 }
 
 export function googleSheetsRobotEmailFromEnv(
@@ -4831,13 +4825,28 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
+    if (input.connectionId) {
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`tool_app_draft_edit:${companyId}:${input.connectionId}`}, 0))`,
+        );
+        return connectGalleryAppLocked(companyId, input, actor);
+      });
+    }
+    return connectGalleryAppLocked(companyId, input, actor);
+  }
+
+  async function connectGalleryAppLocked(
+    companyId: string,
+    input: ConnectToolApp,
+    actor?: ActorInfo,
+  ): Promise<ConnectToolAppResult> {
     const galleryEntry = input.galleryKey ? getConnectableAppDefinition(input.galleryKey) : null;
     if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
     const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
     let editableConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
-    let editableConnectionObservedConfig: Record<string, unknown> | null = null;
     if (input.connectionId) {
       const [connection] = await db.select().from(toolConnections).where(and(
         eq(toolConnections.id, input.connectionId),
@@ -4883,12 +4892,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         });
       }
       existingApplication = application;
-      editableConnectionObservedConfig = connection.config;
-      editableConnectionPrevious = {
-        ...connection,
-        config: withoutAppDraftEditLease(connection.config),
-        transportConfig: withoutAppDraftEditLease(connection.transportConfig),
-      };
+      editableConnectionPrevious = connection;
     } else if (input.applicationId) {
       const [row] = await db.select().from(toolApplications).where(and(
         eq(toolApplications.id, input.applicationId),
@@ -4935,52 +4939,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let connectionRow: typeof toolConnections.$inferSelect | null = null;
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
     let result: ConnectToolAppResult | null = null;
-    let editableConnectionLease: { id: string; expiresAt: string } | null = null;
 
     try {
-      if (editableConnectionPrevious && editableConnectionObservedConfig) {
-        const currentLease = asRecord(editableConnectionObservedConfig.draftEditLease);
-        const currentLeaseId = typeof currentLease.id === "string" && currentLease.id
-          ? currentLease.id
-          : null;
-        const currentLeaseExpiresAt = typeof currentLease.expiresAt === "string"
-          ? Date.parse(currentLease.expiresAt)
-          : Number.NaN;
-        if (currentLeaseId && Number.isFinite(currentLeaseExpiresAt) && currentLeaseExpiresAt > Date.now()) {
-          throw conflict("This app connection draft is already being updated", {
-            code: "tool_connection_draft_update_in_progress",
-            retryable: true,
-          });
-        }
-
-        editableConnectionLease = {
-          id: randomUUID(),
-          expiresAt: new Date(Date.now() + APP_DRAFT_EDIT_LEASE_MS).toISOString(),
-        };
-        const claimedConfig = {
-          ...withoutAppDraftEditLease(editableConnectionObservedConfig),
-          draftEditLease: editableConnectionLease,
-        };
-        const [claimed] = await db.update(toolConnections)
-          .set({ config: claimedConfig, transportConfig: claimedConfig, updatedAt: now() })
-          .where(and(
-            eq(toolConnections.id, editableConnectionPrevious.id),
-            eq(toolConnections.companyId, companyId),
-            eq(toolConnections.applicationId, editableConnectionPrevious.applicationId),
-            eq(toolConnections.status, "draft"),
-            eq(toolConnections.enabled, false),
-            sql`${toolConnections.config} = ${JSON.stringify(editableConnectionObservedConfig)}::jsonb`,
-          ))
-          .returning();
-        if (!claimed) {
-          editableConnectionLease = null;
-          throw conflict("The app connection draft changed while it was being updated", {
-            code: "tool_connection_draft_changed",
-            retryable: true,
-          });
-        }
-      }
-
       const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry) : linkCredentialFields(credentialValues);
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
@@ -5080,18 +5040,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         revivedConnectionPrevious = archived ?? null;
       }
       if (editableConnectionPrevious) {
-        const guardedConfig = {
-          ...config,
-          draftEditLease: editableConnectionLease,
-        };
         [connectionRow] = await db.update(toolConnections).set({
           name,
           authKind: galleryEntry ? method!.auth : editableConnectionPrevious.authKind,
           transport,
           status: "draft",
           enabled: false,
-          config: guardedConfig,
-          transportConfig: guardedConfig,
+          config,
+          transportConfig: config,
           credentialRefs,
           credentialSecretRefs,
           healthStatus: "unchecked",
@@ -5106,7 +5062,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(toolConnections.companyId, companyId),
           eq(toolConnections.applicationId, applicationRow.id),
           eq(toolConnections.status, "draft"),
-          sql`${toolConnections.config} -> 'draftEditLease' ->> 'id' = ${editableConnectionLease!.id}`,
         )).returning();
         if (!connectionRow) {
           throw conflict("The app connection draft changed while it was being updated", {
@@ -5205,14 +5160,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       }
     } catch (error) {
       const connectionPrevious = editableConnectionPrevious ?? revivedConnectionPrevious;
-      if ((connectionRow || editableConnectionLease) && connectionPrevious) {
-        const restoreGuard = editableConnectionLease
-          ? and(
-              eq(toolConnections.id, connectionPrevious.id),
-              eq(toolConnections.companyId, companyId),
-              sql`${toolConnections.config} -> 'draftEditLease' ->> 'id' = ${editableConnectionLease.id}`,
-            )
-          : eq(toolConnections.id, connectionPrevious.id);
+      if (connectionRow && connectionPrevious) {
         const [restored] = await db.update(toolConnections).set({
           name: connectionPrevious.name,
           authKind: connectionPrevious.authKind,
@@ -5230,7 +5178,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           lastCatalogRefreshAt: connectionPrevious.lastCatalogRefreshAt,
           lastError: connectionPrevious.lastError,
           updatedAt: connectionPrevious.updatedAt,
-        }).where(restoreGuard).returning().catch(() => []);
+        }).where(eq(toolConnections.id, connectionPrevious.id)).returning().catch(() => []);
         if (restored) await syncCredentialBindings(restored).catch(() => undefined);
       } else if (connectionRow) {
         await db.delete(toolConnections).where(eq(toolConnections.id, connectionRow.id)).catch(() => undefined);
@@ -5270,26 +5218,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     if (!result) throw new Error("App connection setup completed without a result");
     if (editableConnectionPrevious) {
-      const latest = await getConnectionRow(editableConnectionPrevious.id, companyId);
-      const [cleared] = await db.update(toolConnections)
-        .set({
-          config: withoutAppDraftEditLease(latest.config),
-          transportConfig: withoutAppDraftEditLease(latest.transportConfig),
-          updatedAt: now(),
-        })
-        .where(and(
-          eq(toolConnections.id, editableConnectionPrevious.id),
-          eq(toolConnections.companyId, companyId),
-          sql`${toolConnections.config} -> 'draftEditLease' ->> 'id' = ${editableConnectionLease!.id}`,
-        ))
-        .returning();
-      if (!cleared) {
-        throw conflict("The app connection draft changed while it was being updated", {
-          code: "tool_connection_draft_changed",
-          retryable: true,
-        });
-      }
-      result = { ...result, connectionId: cleared.id, connection: toConnection(cleared) };
       const retainedSecretIds = new Set([
         ...credentialRefs.map((ref) => ref.secretId),
         ...credentialSecretRefs.map((ref) => ref.secretId),
