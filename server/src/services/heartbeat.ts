@@ -17580,6 +17580,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        // Issue wakes are serialized by the source-row lock above. Recheck an
+        // idempotency key inside that lock so concurrent callers cannot both
+        // pass an earlier advisory lookup and create separate runs. Keep
+        // skipped requests retryable because they never dispatched work.
+        if (opts.idempotencyKey?.startsWith("issue_disposition_repair:")) {
+          const existingIdempotentWake = await tx
+            .select({ run: heartbeatRuns })
+            .from(agentWakeupRequests)
+            .leftJoin(heartbeatRuns, eq(heartbeatRuns.wakeupRequestId, agentWakeupRequests.id))
+            .where(and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+              ne(agentWakeupRequests.status, "skipped"),
+            ))
+            .orderBy(desc(agentWakeupRequests.requestedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existingIdempotentWake) {
+            return { kind: "idempotent" as const, run: existingIdempotentWake.run };
+          }
+        }
+
         if (worktreeExecutionCutoff && issue.createdAt < worktreeExecutionCutoff) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
@@ -18308,6 +18330,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "idempotent") return outcome.run;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;

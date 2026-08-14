@@ -3492,6 +3492,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
     } else {
       scheduledRun = await db.transaction(async (tx) => {
+        // Serialize every attempt for this source before the in-transaction
+        // idempotency recheck. This covers delayed attempts that bypass the
+        // normal heartbeat enqueue path and therefore do not acquire its lock.
+        await tx.execute(
+          sql`select id from issues where id = ${input.issue.id} and company_id = ${input.issue.companyId} for update`,
+        );
         const existing = await tx
           .select({ run: heartbeatRuns })
           .from(agentWakeupRequests)

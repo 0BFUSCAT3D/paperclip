@@ -4370,6 +4370,56 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairRun?.contextSnapshot).not.toHaveProperty("allowDeliverableWork");
   });
 
+  it("deduplicates concurrent immediate disposition-repair wakes inside the issue lock", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    const heartbeat = heartbeatService(db);
+    const idempotencyKey = `issue_disposition_repair:${issueId}:test-fingerprint:1`;
+    const wakeOptions = {
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "issue_disposition_repair",
+      idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      payload: {
+        issueId,
+        dispositionRepairFingerprint: "test-fingerprint",
+        dispositionRepairAttempt: 1,
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_disposition_repair",
+        retryReason: "issue_disposition_repair",
+        dispositionRepairFingerprint: "test-fingerprint",
+        dispositionRepairAttempt: 1,
+        bypassContinuationSummaryPark: true,
+      },
+    };
+
+    const [firstRun, secondRun] = await Promise.all([
+      heartbeat.wakeup(agentId, wakeOptions),
+      heartbeat.wakeup(agentId, wakeOptions),
+    ]);
+
+    expect(firstRun?.id).toBeTruthy();
+    expect(secondRun?.id).toBe(firstRun?.id);
+    const requests = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+      ));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.runId).toBe(firstRun?.id);
+  });
+
   it("does not reset disposition repair for prose but does reset for durable source state", async () => {
     const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
