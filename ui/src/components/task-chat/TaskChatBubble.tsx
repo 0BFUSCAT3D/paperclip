@@ -44,6 +44,7 @@ interface TaskChatBubbleProps {
   onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void;
   retryingFeedbackDeliveryCommentId?: string | null;
   failedFeedbackDeliveryRetryCommentId?: string | null;
+  feedbackDeliveryRetryErrorMessage?: string | null;
 }
 
 function initialsForName(name: string) {
@@ -79,6 +80,7 @@ export function TaskChatBubble({
   onRetryFeedbackDelivery,
   retryingFeedbackDeliveryCommentId,
   failedFeedbackDeliveryRetryCommentId,
+  feedbackDeliveryRetryErrorMessage,
 }: TaskChatBubbleProps) {
   // Clicking an embedded image opens the full-screen lightbox (with download);
   // arrow keys walk across the other images in the same bubble.
@@ -235,6 +237,8 @@ export function TaskChatBubble({
           }
           retryError={
             failedFeedbackDeliveryRetryCommentId === item.feedbackDelivery.sourceCommentId
+              ? feedbackDeliveryRetryErrorMessage ?? true
+              : false
           }
         />
       ) : null}

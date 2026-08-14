@@ -113,6 +113,7 @@ import {
   FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY,
 } from "../services/recovery/feedback-delivery.js";
+import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
@@ -10826,6 +10827,7 @@ export function issueRoutes(
       const states = await readStates();
       res.json({
         outcome: "not_exhausted",
+        reason: null,
         message: "This task has no exhausted feedback delivery to retry.",
         feedbackDelivery: states.values().next().value ?? null,
       } satisfies IssueFeedbackDeliveryRetryResponse);
@@ -10849,7 +10851,35 @@ export function issueRoutes(
     if (!targetAgentId || !rootWakeupRequestId) {
       res.json({
         outcome: "no_invokable_assignee",
+        reason: "missing",
         message: "This delivery has no agent to retry against. Reassign the task first.",
+        feedbackDelivery: (await readStates()).get(outstandingCommentIds[0] ?? "") ?? null,
+      } satisfies IssueFeedbackDeliveryRetryResponse);
+      return;
+    }
+
+    const targetAgent = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        reportsTo: agents.reportsTo,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(and(eq(agents.id, targetAgentId), eq(agents.companyId, issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    const invokability = await evaluateAgentInvokabilityFromDb(db, targetAgent);
+    if (!invokability.invokable) {
+      const message = invokability.reason === "paused"
+        ? "This delivery's agent is paused. Unpause the agent before retrying."
+        : invokability.reason === "pending_approval"
+          ? "This delivery's agent is waiting for approval. Approve or reassign the agent before retrying."
+          : "This delivery has no invokable agent to retry against. Reassign the task first.";
+      res.json({
+        outcome: "no_invokable_assignee",
+        reason: invokability.reason,
+        message,
         feedbackDelivery: (await readStates()).get(outstandingCommentIds[0] ?? "") ?? null,
       } satisfies IssueFeedbackDeliveryRetryResponse);
       return;
@@ -10862,6 +10892,7 @@ export function issueRoutes(
     if (alreadyInFlight) {
       res.json({
         outcome: "already_queued",
+        reason: null,
         message: "A delivery retry is already queued.",
         feedbackDelivery: statesBefore.get(outstandingCommentIds[0] ?? "") ?? null,
       } satisfies IssueFeedbackDeliveryRetryResponse);
@@ -10919,6 +10950,7 @@ export function issueRoutes(
     const projected = latestCommentId ? statesAfter.get(latestCommentId) ?? null : null;
     res.json({
       outcome: "queued",
+      reason: null,
       message: "Retrying feedback delivery.",
       // Deferred behind a live run still reads as in-flight to the operator, so
       // fall back to a synthetic in-flight projection rather than reporting a

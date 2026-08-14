@@ -650,6 +650,7 @@ export type {
   IssueExecutionDecision,
   IssueComment,
   IssueCommentFeedbackDelivery,
+  IssueFeedbackDeliveryRetryNoInvokableAssigneeReason,
   IssueFeedbackDeliveryRetryResponse,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,

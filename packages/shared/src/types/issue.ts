@@ -986,8 +986,22 @@ export interface IssueCommentFeedbackDelivery {
   batchedCommentCount: number;
 }
 
+export type IssueFeedbackDeliveryRetryNoInvokableAssigneeReason =
+  | "missing"
+  | "paused"
+  | "terminated"
+  | "pending_approval"
+  | "unknown_status"
+  | "manager_missing"
+  | "manager_company_mismatch"
+  | "manager_terminated"
+  | "reporting_cycle"
+  | "reporting_chain_too_deep";
+
 export interface IssueFeedbackDeliveryRetryResponse {
   outcome: "queued" | "already_queued" | "not_exhausted" | "no_invokable_assignee";
+  /** Present only when `outcome` is `no_invokable_assignee`. */
+  reason: IssueFeedbackDeliveryRetryNoInvokableAssigneeReason | null;
   message: string;
   feedbackDelivery: IssueCommentFeedbackDelivery | null;
 }

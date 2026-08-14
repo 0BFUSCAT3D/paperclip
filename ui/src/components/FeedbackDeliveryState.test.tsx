@@ -13,6 +13,7 @@ import {
   FeedbackDeliveryFooterStatus,
   FeedbackDeliveryNotice,
   feedbackDeliveryAnchorId,
+  feedbackDeliveryRetryErrorMessage,
   isIssueCommentFeedbackDelivery,
   useFeedbackDeliveryTransientSuccess,
 } from "./FeedbackDeliveryState";
@@ -316,6 +317,30 @@ describe("FeedbackDeliveryNotice — exhausted", () => {
     expect(
       node.querySelector<HTMLButtonElement>("[data-testid='feedback-delivery-retry']")?.disabled,
     ).toBe(false);
+  });
+
+  it("shows an actionable paused-agent retry failure inline", () => {
+    const message = feedbackDeliveryRetryErrorMessage({
+      outcome: "no_invokable_assignee",
+      reason: "paused",
+      message: "server fallback",
+      feedbackDelivery: delivery(),
+    });
+    const node = render(
+      <FeedbackDeliveryNotice delivery={delivery()} onRetry={() => {}} retryError={message} />,
+    );
+    expect(node.querySelector("[data-testid='feedback-delivery-retry-error']")?.textContent).toBe(
+      "The assigned agent is paused. Unpause the agent before retrying.",
+    );
+  });
+
+  it("keeps missing-assignee retry guidance distinct from paused guidance", () => {
+    expect(feedbackDeliveryRetryErrorMessage({
+      outcome: "no_invokable_assignee",
+      reason: "missing",
+      message: "This delivery has no agent to retry against. Reassign the task first.",
+      feedbackDelivery: delivery(),
+    })).toBe("This delivery has no agent to retry against. Reassign the task first.");
   });
 
   it("hides retry from a viewer without the authority to trigger it", () => {

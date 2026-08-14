@@ -46,6 +46,7 @@ interface TaskChatThreadViewProps {
   onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void;
   retryingFeedbackDeliveryCommentId?: string | null;
   failedFeedbackDeliveryRetryCommentId?: string | null;
+  feedbackDeliveryRetryErrorMessage?: string | null;
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
@@ -65,6 +66,7 @@ function renderItem(
   onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void,
   retryingFeedbackDeliveryCommentId?: string | null,
   failedFeedbackDeliveryRetryCommentId?: string | null,
+  feedbackDeliveryRetryErrorMessage?: string | null,
 ) {
   switch (item.kind) {
     case "message": {
@@ -82,6 +84,7 @@ function renderItem(
           onRetryFeedbackDelivery={onRetryFeedbackDelivery}
           retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId}
           failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId}
+          feedbackDeliveryRetryErrorMessage={feedbackDeliveryRetryErrorMessage}
           attachedTurn={
             item.attachedTurn ? (
               <TaskChatTurn
@@ -152,6 +155,7 @@ export function TaskChatThreadView({
   onRetryFeedbackDelivery,
   retryingFeedbackDeliveryCommentId,
   failedFeedbackDeliveryRetryCommentId,
+  feedbackDeliveryRetryErrorMessage,
   tail,
   contentKey,
   className,
@@ -176,6 +180,7 @@ export function TaskChatThreadView({
             onRetryFeedbackDelivery,
             retryingFeedbackDeliveryCommentId,
             failedFeedbackDeliveryRetryCommentId,
+            feedbackDeliveryRetryErrorMessage,
           )}
         </div>
       ))}

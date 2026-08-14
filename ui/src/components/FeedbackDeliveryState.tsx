@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { CircleCheck, RefreshCw } from "lucide-react";
-import type { IssueCommentFeedbackDelivery } from "@paperclipai/shared";
+import type {
+  IssueCommentFeedbackDelivery,
+  IssueFeedbackDeliveryRetryResponse,
+} from "@paperclipai/shared";
 
 import { InlineBanner } from "@/components/InlineBanner";
 import { SystemNotice } from "@/components/SystemNotice";
@@ -18,6 +21,19 @@ export const FEEDBACK_DELIVERY_RETRYING_REVEAL_MS = 400;
 
 /** How long the ephemeral "Delivered after retry" confirmation stays visible. */
 export const FEEDBACK_DELIVERY_TRANSIENT_SUCCESS_MS = 5000;
+
+export function feedbackDeliveryRetryErrorMessage(
+  response: IssueFeedbackDeliveryRetryResponse,
+) {
+  if (response.outcome !== "no_invokable_assignee") return response.message;
+  if (response.reason === "paused") {
+    return "The assigned agent is paused. Unpause the agent before retrying.";
+  }
+  if (response.reason === "pending_approval") {
+    return "The assigned agent is waiting for approval. Approve or reassign it before retrying.";
+  }
+  return response.message;
+}
 
 const FEEDBACK_DELIVERY_STATES = [
   "retrying",
@@ -232,13 +248,13 @@ export function FeedbackDeliveryNotice({
   delivery,
   onRetry,
   retryPending = false,
-  retryError = false,
+  retryError = null,
   className,
 }: {
   delivery: IssueCommentFeedbackDelivery;
   onRetry?: (commentId: string) => void;
   retryPending?: boolean;
-  retryError?: boolean;
+  retryError?: string | boolean | null;
   className?: string;
 }) {
   const anchorId = feedbackDeliveryAnchorId(delivery.sourceCommentId);
@@ -349,7 +365,9 @@ export function FeedbackDeliveryNotice({
           </p>
           {retryError ? (
             <p data-testid="feedback-delivery-retry-error" className="font-medium">
-              Couldn&apos;t start another retry. Try again.
+              {typeof retryError === "string"
+                ? retryError
+                : "Couldn't start another retry. Try again."}
             </p>
           ) : null}
         </div>

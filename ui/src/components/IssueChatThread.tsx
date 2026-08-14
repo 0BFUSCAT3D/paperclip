@@ -222,6 +222,7 @@ interface IssueChatMessageContext {
   retryingFeedbackDeliveryCommentId?: string | null;
   /** Comment id whose last retry request failed, so the banner can say so inline. */
   failedFeedbackDeliveryRetryCommentId?: string | null;
+  feedbackDeliveryRetryErrorMessage?: string | null;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction:
@@ -547,6 +548,7 @@ interface IssueChatThreadProps {
   onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void;
   retryingFeedbackDeliveryCommentId?: string | null;
   failedFeedbackDeliveryRetryCommentId?: string | null;
+  feedbackDeliveryRetryErrorMessage?: string | null;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
@@ -1479,6 +1481,7 @@ function IssueChatUserMessage({
     onRetryFeedbackDelivery,
     retryingFeedbackDeliveryCommentId,
     failedFeedbackDeliveryRetryCommentId,
+    feedbackDeliveryRetryErrorMessage,
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
@@ -1687,7 +1690,11 @@ function IssueChatUserMessage({
             delivery={feedbackDelivery}
             onRetry={onRetryFeedbackDelivery}
             retryPending={retryingFeedbackDeliveryCommentId === feedbackDelivery.sourceCommentId}
-            retryError={failedFeedbackDeliveryRetryCommentId === feedbackDelivery.sourceCommentId}
+            retryError={
+              failedFeedbackDeliveryRetryCommentId === feedbackDelivery.sourceCommentId
+                ? feedbackDeliveryRetryErrorMessage ?? true
+                : false
+            }
           />
         ) : null}
       </div>
@@ -4440,6 +4447,7 @@ export function IssueChatThread({
   onRetryFeedbackDelivery,
   retryingFeedbackDeliveryCommentId = null,
   failedFeedbackDeliveryRetryCommentId = null,
+  feedbackDeliveryRetryErrorMessage = null,
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
@@ -5021,6 +5029,7 @@ export function IssueChatThread({
       onRetryFeedbackDelivery: stableOnRetryFeedbackDelivery,
       retryingFeedbackDeliveryCommentId,
       failedFeedbackDeliveryRetryCommentId,
+      feedbackDeliveryRetryErrorMessage,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
       onRejectInteraction: stableOnRejectInteraction,
@@ -5053,6 +5062,7 @@ export function IssueChatThread({
       stableOnRetryFeedbackDelivery,
       retryingFeedbackDeliveryCommentId,
       failedFeedbackDeliveryRetryCommentId,
+      feedbackDeliveryRetryErrorMessage,
       stableOnImageClick,
       stableOnAcceptInteraction,
       stableOnRejectInteraction,

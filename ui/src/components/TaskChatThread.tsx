@@ -139,6 +139,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onRetryFeedbackDelivery,
     retryingFeedbackDeliveryCommentId,
     failedFeedbackDeliveryRetryCommentId,
+    feedbackDeliveryRetryErrorMessage,
   } = props;
 
   const liveWorkLinks = useMemo(
@@ -687,6 +688,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             onRetryFeedbackDelivery={onRetryFeedbackDelivery}
             retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId}
             failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId}
+            feedbackDeliveryRetryErrorMessage={feedbackDeliveryRetryErrorMessage}
             tail={tailRunId || bottomBlockerLinks ? (
               <>
                 {tailRunId ? (
