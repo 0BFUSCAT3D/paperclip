@@ -6648,10 +6648,11 @@ export function issueRoutes(
 
         const updateFields: Record<string, unknown> = { status: sourceIssueStatus };
         if (!safeHandBack) {
-          await assertAgentInReviewReviewPath({
+          await assertInReviewReviewPath({
             existing: lockedIssue,
             updateFields,
-            actorType: req.actor.type,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
             actorAgentId: actor.agentId,
             actorRunId: actor.runId,
           });
