@@ -10446,6 +10446,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           mergedContext.commentId = orderedCommentIds.at(-1);
           mergedContext.wakeCommentId = orderedCommentIds.at(-1);
         }
+        // The queued run now owns the feedback-delivery obligation. Preserve
+        // its retry identity even when the queued context came from a newer,
+        // unrelated wake so terminal disposition can recover a failed merge.
+        mergedContext.wakeReason = FEEDBACK_DELIVERY_RETRY_WAKE_REASON;
+        mergedContext.retryReason = FEEDBACK_DELIVERY_RETRY_REASON;
+        mergedContext.retryOfRunId = input.run.id;
         mergedContext.feedbackDeliveryRootWakeupRequestId = input.delivery.rootWakeupRequestId;
         mergedContext.feedbackDeliverySourceRunId = input.run.id;
         mergedContext.feedbackDeliveryRetryGeneration = 1;
@@ -10487,6 +10493,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           mergedDeferredContext.commentId = orderedCommentIds.at(-1);
           mergedDeferredContext.wakeCommentId = orderedCommentIds.at(-1);
         }
+        mergedDeferredContext.wakeReason = FEEDBACK_DELIVERY_RETRY_WAKE_REASON;
+        mergedDeferredContext.retryReason = FEEDBACK_DELIVERY_RETRY_REASON;
+        mergedDeferredContext.retryOfRunId = input.run.id;
         mergedDeferredContext.feedbackDeliveryRootWakeupRequestId = input.delivery.rootWakeupRequestId;
         mergedDeferredContext.feedbackDeliverySourceRunId = input.run.id;
         mergedDeferredContext.feedbackDeliveryRetryGeneration = 1;

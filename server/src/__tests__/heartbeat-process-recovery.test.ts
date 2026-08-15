@@ -1922,6 +1922,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(2);
     const coalescedRun = runs.find((run) => run.id === secondRunId);
     expect(coalescedRun?.contextSnapshot).toMatchObject({
+      wakeReason: "feedback_delivery_retry",
+      retryReason: "feedback_delivery_retry",
+      retryOfRunId: fixture.runId,
       feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
       feedbackDeliveryRetryGeneration: 1,
       wakeCommentIds: [first.commentId, secondCommentId],
