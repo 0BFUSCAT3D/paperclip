@@ -115,6 +115,7 @@ export interface IssueRecoveryActionCardProps {
 }
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
+  feedback_delivery: "Feedback Delivery",
   missing_disposition: "Missing Disposition",
   stranded_assigned_issue: "Stranded Task",
   workspace_validation: "Workspace Validation",
@@ -124,6 +125,8 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
+  feedback_delivery:
+    "Paperclip could not confirm that the latest human feedback reached the task's assignee.",
   missing_disposition:
     "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
   stranded_assigned_issue:
