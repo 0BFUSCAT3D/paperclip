@@ -9,7 +9,11 @@ import {
   type RuntimeSpanRunner,
   type StartupSpanContext,
 } from "./acpx-engine/startup-timing.js";
-import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import {
+  createCommandManagedRuntimeClient,
+  type CommandManagedRuntimeRunner,
+} from "./command-managed-runtime.js";
+import type { SandboxSyncOperation } from "./sandbox-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 
@@ -50,7 +54,6 @@ const MAX_BACKSTOP_WRITE_ATTEMPTS = 3;
 // The delay between two 504 backstop write attempts. It is short, so all retries
 // finish well under the in-sandbox 30s response deadline.
 const BACKSTOP_WRITE_RETRY_MS = 50;
-const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
@@ -309,14 +312,6 @@ function requireSuccessfulResult(action: string, result: RunProcessResult): RunP
   throw new Error(buildRunnerFailureMessage(action, result));
 }
 
-function base64Chunks(body: string): string[] {
-  const out: string[] = [];
-  for (let offset = 0; offset < body.length; offset += REMOTE_WRITE_BASE64_CHUNK_SIZE) {
-    out.push(body.slice(offset, offset + REMOTE_WRITE_BASE64_CHUNK_SIZE));
-  }
-  return out;
-}
-
 async function pathExists(filePath: string): Promise<boolean> {
   return await fs.stat(filePath).then(() => true).catch(() => false);
 }
@@ -557,6 +552,36 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   const runChecked = async (action: string, script: string) =>
     requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs, shellCommand));
 
+  // Wrap the runner so every managed-runtime exec (the sync fallback transfer
+  // and each finalize rename) rides the bridge control-plane channel and
+  // bypasses the persistent session, exactly like `runShell` above. In streamed
+  // mode the agent holds the single serialized session for the whole run; a
+  // stdin write on that session queues behind the agent command that never
+  // returns — a deadlock. The native `syncIn`/`syncOut` verbs are provider RPCs
+  // that run one-shot execs of their own, so they stay session-safe without the
+  // wrapper; delegate them straight to the runner.
+  const bridgeRunner: CommandManagedRuntimeRunner = {
+    supportsSingleStreamStdinProgress: input.runner.supportsSingleStreamStdinProgress,
+    execute: (execInput) =>
+      input.runner.execute({
+        ...execInput,
+        env: { ...execInput.env, [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE },
+        bypassSession: true,
+      }),
+    ...(input.runner.syncIn ? { syncIn: (operations) => input.runner.syncIn!(operations) } : {}),
+    ...(input.runner.syncOut ? { syncOut: (operations) => input.runner.syncOut!(operations) } : {}),
+  };
+  // One managed-runtime client backs the stdin file transfer. Its `syncIn` uses
+  // the provider-native upload when the provider advertises both sync verbs
+  // (e.g. Daytona: raw bytes, no base64-over-exec), and falls through to the
+  // generic sync fallback otherwise.
+  const managedClient = createCommandManagedRuntimeClient({
+    runner: bridgeRunner,
+    commandCwd: input.remoteCwd,
+    timeoutMs,
+    shellCommand,
+  });
+
   return {
     makeDir: async (remotePath) => {
       await runChecked(`mkdir ${remotePath}`, `mkdir -p ${shellQuote(remotePath)}`);
@@ -595,30 +620,38 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64").toString("utf8");
     },
     writeTextFile: async (remotePath, body) => {
-      const remoteDir = path.posix.dirname(remotePath);
-      // Two temporary paths that do NOT end in `.json`, so a `.json`-only
-      // reader (the stdin poller) never lists them. The base64 upload lands in
-      // `tempPath`. The decode result lands in `decodedPath`. An atomic rename
-      // then moves the complete decoded content onto the final `.json` path.
-      // A direct `> remotePath` redirect truncates the final path before the
-      // decode writes it, so a reader can see an empty or partial file.
-      const tempPath = `${remotePath}.paperclip-upload.b64`;
-      const decodedPath = `${remotePath}.paperclip-upload.decoded`;
-      await runChecked(
-        `prepare upload ${remotePath}`,
-        `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(tempPath)} ${shellQuote(decodedPath)} && : > ${shellQuote(tempPath)}`,
-      );
-      const base64Body = toBuffer(Buffer.from(body, "utf8")).toString("base64");
-      for (const chunk of base64Chunks(base64Body)) {
-        await runChecked(
-          `append upload chunk ${remotePath}`,
-          `printf '%s' ${shellQuote(chunk)} >> ${shellQuote(tempPath)}`,
-        );
+      // Send one stdin file with the provider-native upload seam, then one
+      // finalize rename. The upload targets a temp name that does NOT end in
+      // `.json`, so the `.json`-only stdin poller never lists it — even a
+      // provider whose upload is not itself atomic can only expose the temp
+      // name, never the final path. One `mv -f` post-upload command then renames
+      // the complete file onto the final `.json` path in an atomic same-directory
+      // rename, so the poller only ever lists the fully-written file.
+      //
+      // On a provider with native transfer (e.g. Daytona) the upload is raw
+      // bytes with zero base64-over-exec round trips. A provider without native
+      // transfer falls through the generic sync fallback, which streams the body
+      // in large decoded chunks and costs far fewer execs than the prior per-32-
+      // KiB base64 append loop for a large stdin payload.
+      const remoteTempPath = `${remotePath}.paperclip-stdin-upload.${randomUUID()}`;
+      const hostStageDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-syncin-"));
+      const hostStagePath = path.join(hostStageDir, "stdin-payload");
+      try {
+        await fs.writeFile(hostStagePath, body, "utf8");
+        const operation: SandboxSyncOperation = {
+          operationId: `stdin-${randomUUID()}`,
+          files: [{ kind: "file", sourcePath: hostStagePath, targetPath: remoteTempPath }],
+          // The rename runs in-sandbox after the upload lands. It carries no
+          // `cwd`, so it uses the runtime's stable command cwd; both paths are
+          // absolute and shell-quoted.
+          postUploadCommands: [
+            { command: `mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}` },
+          ],
+        };
+        await managedClient.syncIn!([operation]);
+      } finally {
+        await fs.rm(hostStageDir, { recursive: true, force: true }).catch(() => undefined);
       }
-      await runChecked(
-        `finalize upload ${remotePath}`,
-        `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(decodedPath)} && mv ${shellQuote(decodedPath)} ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}`,
-      );
     },
     writeResponseFile: async (responsePath, body, options = {}) => {
       const responseDir = path.posix.dirname(responsePath);

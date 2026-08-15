@@ -1,9 +1,8 @@
-import { execFile as execFileCallback, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -12,9 +11,8 @@ import {
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
 import { createCommandManagedSandboxCallbackBridgeQueueClient } from "./sandbox-callback-bridge.js";
+import type { SandboxSyncOperation } from "./sandbox-managed-runtime.js";
 import { runChildProcess, type RunProcessResult } from "./server-utils.js";
-
-const execFile = promisify(execFileCallback);
 
 // Regression coverage for the stdin file race (parent PAP-4037): the host sends
 // each ACP message as a file in the sandbox stdin directory, and a poller in
@@ -324,7 +322,10 @@ describe("stdin file race (parent PAP-4037)", () => {
     // rename would land first; the per-session chain must keep the send order.
     const finalizeOrder: string[] = [];
     const runner = createLocalSandboxRunner(async (script) => {
-      const finalizeMatch = /base64 -d[\s\S]*mv '[^']*\.decoded' '([^']+\.json)'/.exec(script);
+      // The stdin file transfer now finalizes with one post-upload rename that
+      // moves a non-`.json` temp onto the final `.json` path. Detect that rename
+      // (the send-order-relevant event), not the earlier decode/transfer execs.
+      const finalizeMatch = /^mv -f '[^']*' '([^']+\.json)'$/.exec(script);
       if (finalizeMatch) {
         const remotePath = finalizeMatch[1];
         if (remotePath.endsWith("000000000001.json")) await delay(300);
@@ -422,7 +423,10 @@ describe("stdin file race (parent PAP-4037)", () => {
     const finalizeStarted: string[] = [];
     const finalizeOrder: string[] = [];
     const runner = createLocalSandboxRunner(async (script) => {
-      const finalizeMatch = /base64 -d[\s\S]*mv '[^']*\.decoded' '([^']+\.json)'/.exec(script);
+      // The stdin file transfer now finalizes with one post-upload rename that
+      // moves a non-`.json` temp onto the final `.json` path. Detect that rename
+      // (the send-order-relevant event), not the earlier decode/transfer execs.
+      const finalizeMatch = /^mv -f '[^']*' '([^']+\.json)'$/.exec(script);
       if (finalizeMatch) {
         const name = path.posix.basename(finalizeMatch[1]);
         finalizeStarted.push(name);
@@ -494,8 +498,11 @@ describe("stdin file race (parent PAP-4037)", () => {
   // ---- Host atomic-write tests ------------------------------------------
 
   // A runner that executes each bridge shell script on the local filesystem,
-  // so the test exercises the real command-managed `writeTextFile` script.
+  // so the test exercises the real command-managed `writeTextFile` script. It
+  // feeds `stdin` to the child, because the native-sync fallback streams the
+  // file body to `base64 -d` through stdin.
   function createLocalShellRunner(scripts: string[]) {
+    let counter = 0;
     return {
       execute: async (input: {
         command: string;
@@ -504,39 +511,22 @@ describe("stdin file race (parent PAP-4037)", () => {
         env?: Record<string, string>;
         stdin?: string;
         timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
       }): Promise<RunProcessResult> => {
+        counter += 1;
         const args = input.args ?? [];
         if ((input.command === "sh" || input.command === "bash") && args[0] === "-c" && typeof args[1] === "string") {
           scripts.push(args[1]);
         }
         const command = input.command === "sh" ? "/bin/sh" : input.command === "bash" ? "/bin/bash" : input.command;
-        try {
-          const result = await execFile(command, args, {
-            cwd: input.cwd,
-            env: { ...process.env, ...input.env },
-            maxBuffer: 32 * 1024 * 1024,
-          });
-          return {
-            exitCode: 0,
-            signal: null,
-            timedOut: false,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            pid: null,
-            startedAt: null,
-          };
-        } catch (error) {
-          const err = error as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: string | number | null };
-          return {
-            exitCode: typeof err.code === "number" ? err.code : null,
-            signal: null,
-            timedOut: false,
-            stdout: err.stdout ?? "",
-            stderr: err.stderr ?? "",
-            pid: null,
-            startedAt: null,
-          };
-        }
+        return runChildProcess(`stdin-shell-run-${counter}`, command, args, {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
       },
     };
   }
@@ -564,14 +554,22 @@ describe("stdin file race (parent PAP-4037)", () => {
     const entries = await readdir(stdinDir);
     expect(entries).toEqual(["000000000001.json"]);
 
-    // The finalize script renames a non-`.json` temporary file onto the final
-    // path. It never redirects the decode output straight into the `.json`
-    // file, so a reader never sees an empty or partial `.json` file.
-    const finalizeScript = scripts.find((script) => script.includes("base64 -d"));
+    // The final `.json` path only ever appears through one atomic rename that
+    // moves a non-`.json` temp onto it. No script redirects a write straight
+    // into the final path, so a `.json`-only reader never sees an empty or
+    // partial file.
+    expect(scripts.every((script) => !script.includes(`> '${jsonPath}'`))).toBe(true);
+    const finalizeScript = scripts.find(
+      (script) => script.startsWith("mv -f '") && script.endsWith(`' '${jsonPath}'`),
+    );
     expect(finalizeScript).toBeDefined();
-    expect(finalizeScript).toContain(`mv `);
-    expect(finalizeScript).not.toContain(`> '${jsonPath}'`);
-    expect(finalizeScript).toContain(`> '${jsonPath}.paperclip-upload.decoded'`);
+    const renameSource = finalizeScript!.slice(
+      "mv -f '".length,
+      finalizeScript!.length - `' '${jsonPath}'`.length,
+    );
+    // The rename source is a temp name that the `.json`-only poller never lists.
+    expect(renameSource.endsWith(".json")).toBe(false);
+    expect(renameSource.startsWith(`${jsonPath}.paperclip-stdin-upload.`)).toBe(true);
   });
 
   it("never exposes a partial .json file under a concurrent reader (command-managed host write)", async () => {
@@ -619,5 +617,148 @@ describe("stdin file race (parent PAP-4037)", () => {
     // saw an empty or partial `.json` file.
     expect(readerErrors).toEqual([]);
     expect(observedComplete).toBeGreaterThan(0);
+  });
+
+  // ---- Transport round-trip count (parent PAP-4332) ---------------------
+
+  // The prior host write base64-encoded the body and appended it to a remote
+  // temp file in 32-KiB chunks, then decoded and renamed. Count its execs for
+  // one body, so the new-path tests can prove they cost strictly fewer.
+  function priorAppendLoopExecCount(byteLength: number): number {
+    const base64Length = Math.ceil(byteLength / 3) * 4;
+    const chunkCount = Math.ceil(base64Length / (32 * 1024));
+    // prepare temp + one append per chunk + finalize (decode + rename).
+    return 2 + chunkCount;
+  }
+
+  it("sends one stdin file with a native upload and zero base64 transfer execs", async () => {
+    const remoteRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-native-"));
+    cleanupDirs.push(remoteRoot);
+    const stdinDir = path.join(remoteRoot, "stdin");
+    await mkdir(stdinDir, { recursive: true });
+
+    // A runner that advertises both native sync verbs. `syncIn` places each file
+    // with a raw-byte copy (the provider-native upload) and runs the ordered
+    // post-upload commands in-sandbox. It never routes a transfer through
+    // `execute`, so a base64-over-exec transfer would show up as an execute call.
+    let executeCalls = 0;
+    const syncInOps: SandboxSyncOperation[][] = [];
+    const runner = {
+      execute: async (input: { command: string; args?: string[]; cwd?: string; stdin?: string; timeoutMs?: number }) => {
+        executeCalls += 1;
+        return runChildProcess("native-exec", input.command === "sh" ? "/bin/sh" : input.command, input.args ?? [], {
+          cwd: input.cwd ?? remoteRoot,
+          env: {},
+          stdin: input.stdin,
+          timeoutSec: 30,
+          graceSec: 5,
+          onLog: async () => {},
+        });
+      },
+      syncIn: async (operations: SandboxSyncOperation[]) => {
+        syncInOps.push(operations);
+        for (const operation of operations) {
+          for (const mapping of operation.files) {
+            await mkdir(path.posix.dirname(mapping.targetPath), { recursive: true });
+            // Raw-byte upload: no base64, no exec for the transfer itself.
+            await copyFile(mapping.sourcePath, mapping.targetPath);
+          }
+          for (const command of operation.postUploadCommands ?? []) {
+            const result = await runChildProcess("native-postupload", "/bin/sh", ["-c", command.command], {
+              cwd: command.cwd ?? remoteRoot,
+              env: {},
+              timeoutSec: 30,
+              graceSec: 5,
+              onLog: async () => {},
+            });
+            if (result.exitCode !== 0) throw new Error(`post-upload command failed: ${command.command}`);
+          }
+        }
+        return {
+          operations: operations.map((operation) => ({
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          })),
+        };
+      },
+      syncOut: async () => ({ operations: [] }),
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: remoteRoot,
+      timeoutMs: 30_000,
+    });
+
+    const jsonPath = path.join(stdinDir, "000000000001.json");
+    const body = `${JSON.stringify({ type: "stdin", data: Buffer.from("x".repeat(128 * 1024), "utf8").toString("base64") })}\n`;
+    await client.writeTextFile(jsonPath, body);
+
+    // One stdin write drives exactly one native sync operation.
+    expect(syncInOps).toHaveLength(1);
+    expect(syncInOps[0]).toHaveLength(1);
+    const operation = syncInOps[0][0];
+    // One file mapping (the stdin body), sent to a non-`.json` temp target.
+    expect(operation.files).toHaveLength(1);
+    expect(operation.files[0].kind).toBe("file");
+    expect(operation.files[0].targetPath.endsWith(".json")).toBe(false);
+    expect(operation.files[0].targetPath.startsWith(`${jsonPath}.paperclip-stdin-upload.`)).toBe(true);
+    // Exactly one finalize command: the rename onto the final `.json` path.
+    expect(operation.postUploadCommands).toHaveLength(1);
+    expect(operation.postUploadCommands![0].command.startsWith("mv -f '")).toBe(true);
+    expect(operation.postUploadCommands![0].command.endsWith(`' '${jsonPath}'`)).toBe(true);
+    // Zero execs for the transfer: the bytes rode the native upload.
+    expect(executeCalls).toBe(0);
+    // The final file holds the complete body and no temp remains.
+    expect(await readFile(jsonPath, "utf8")).toBe(body);
+    expect(await readdir(stdinDir)).toEqual(["000000000001.json"]);
+  });
+
+  it("sends one stdin file through the sync fallback in fewer execs than the prior append loop", async () => {
+    const remoteRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-fallback-"));
+    cleanupDirs.push(remoteRoot);
+    const stdinDir = path.join(remoteRoot, "stdin");
+    await mkdir(stdinDir, { recursive: true });
+
+    // A runner without native sync verbs, so the stdin write falls through the
+    // generic sync fallback. Count every exec it runs.
+    const scripts: string[] = [];
+    const inner = createLocalShellRunner(scripts);
+    let executeCalls = 0;
+    const runner = {
+      execute: async (input: Parameters<typeof inner.execute>[0]) => {
+        executeCalls += 1;
+        return inner.execute(input);
+      },
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: remoteRoot,
+      timeoutMs: 30_000,
+    });
+
+    const jsonPath = path.join(stdinDir, "000000000001.json");
+    // A payload larger than 64 KiB, so the prior append loop needed many chunk
+    // execs. The fallback streams it in one large decoded chunk instead.
+    const body = "x".repeat(128 * 1024);
+    await client.writeTextFile(jsonPath, body);
+
+    const priorExecs = priorAppendLoopExecCount(Buffer.byteLength(body, "utf8"));
+    // The fallback costs strictly fewer execs than the prior 32-KiB append loop.
+    expect(executeCalls).toBeLessThan(priorExecs);
+    // Concretely: prepare + one decoded chunk + rename + temp cleanup in the
+    // writeFile transfer, plus the one finalize rename = 5 execs.
+    expect(executeCalls).toBe(5);
+    // The fallback keeps atomicity: the final path only appears via a rename and
+    // no exec redirects a write straight into it.
+    expect(scripts.every((script) => !script.includes(`> '${jsonPath}'`))).toBe(true);
+    expect(
+      scripts.some((script) => script.startsWith("mv -f '") && script.endsWith(`' '${jsonPath}'`)),
+    ).toBe(true);
+    // The final file holds the complete body and no temp remains.
+    expect(await readFile(jsonPath, "utf8")).toBe(body);
+    expect(await readdir(stdinDir)).toEqual(["000000000001.json"]);
   });
 });
