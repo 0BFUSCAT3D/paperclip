@@ -113,7 +113,7 @@ import {
   FEEDBACK_DELIVERY_RECOVERY_CAUSE,
   FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY,
-  hasCompleteFeedbackDispositionCoverage,
+  remainingFeedbackDispositionCommentIds,
   readFeedbackDeliveryRunContext,
 } from "../services/recovery/feedback-delivery.js";
 import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
@@ -5020,12 +5020,12 @@ export function issueRoutes(
     }
 
     const handledCommentIds = [...new Set(requested.handledCommentIds)];
-    if (!hasCompleteFeedbackDispositionCoverage({
+    if (remainingFeedbackDispositionCommentIds({
       deliveryCommentIds: delivery.commentIds,
       handledCommentIds,
-    })) {
+    }) === null) {
       res.status(422).json({
-        error: "Feedback disposition must cover every comment in the current run's feedback batch and no others",
+        error: "Feedback disposition must cover at least one comment in the current run's feedback batch and no others",
       });
       return { ok: false };
     }

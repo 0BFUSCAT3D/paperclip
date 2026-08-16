@@ -8,6 +8,7 @@ import {
   decideStrandedFeedbackDeliveryBackstop,
   hasCompleteFeedbackDispositionCoverage,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
+  remainingFeedbackDispositionCommentIds,
   readFeedbackDeliveryRunContext,
   type StrandedFeedbackDeliveryBackstopProbe,
 } from "./feedback-delivery.js";
@@ -183,6 +184,23 @@ describe("feedback disposition coverage", () => {
       deliveryCommentIds: ["comment-1"],
       handledCommentIds: ["comment-1", "comment-2"],
     })).toBe(false);
+  });
+
+  it("returns only unhandled comments for a valid partial disposition", () => {
+    expect(remainingFeedbackDispositionCommentIds({
+      deliveryCommentIds: ["comment-1", "comment-2", "comment-3"],
+      handledCommentIds: ["comment-2"],
+    })).toEqual(["comment-1", "comment-3"]);
+  });
+
+  it.each([
+    ["an empty receipt", []],
+    ["a receipt containing another delivery's comment", ["comment-1", "comment-3"]],
+  ])("rejects %s", (_label, handledCommentIds) => {
+    expect(remainingFeedbackDispositionCommentIds({
+      deliveryCommentIds: ["comment-1", "comment-2"],
+      handledCommentIds,
+    })).toBeNull();
   });
 });
 

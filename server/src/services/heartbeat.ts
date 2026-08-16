@@ -238,9 +238,9 @@ import {
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
   carriesExplicitFeedbackResume,
-  hasCompleteFeedbackDispositionCoverage,
   isEligibleFeedbackDeliveryWake,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
+  remainingFeedbackDispositionCommentIds,
   readFeedbackDeliveryRetryGeneration,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
@@ -10227,10 +10227,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           disposition?.kind !== "feedback_delivery"
           || disposition.rootWakeupRequestId !== delivery.rootWakeupRequestId
         ) return false;
-        return hasCompleteFeedbackDispositionCoverage({
+        return remainingFeedbackDispositionCommentIds({
           deliveryCommentIds: delivery.commentIds,
           handledCommentIds: disposition.handledCommentIds,
-        });
+        }) !== null;
       }) ?? null);
     if (!comment) return null;
     const disposition = comment.metadata?.feedbackDisposition;
@@ -10313,13 +10313,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const existing = await recoveryActions.getActiveForIssue(input.run.companyId, issue.id);
-    if (
+    const reusedExisting = Boolean(
       existing?.kind === FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND
       && existing.cause === FEEDBACK_DELIVERY_RECOVERY_CAUSE
-      && existing.fingerprint === input.delivery.fingerprint
-    ) {
-      return { kind: "recovery" as const, action: existing, reusedExisting: true };
-    }
+      && existing.fingerprint === input.delivery.fingerprint,
+    );
 
     const action = await recoveryActions.upsertSourceScoped({
       companyId: input.run.companyId,
@@ -10374,7 +10372,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         gateErrorCode: input.gateErrorCode ?? null,
       },
     });
-    return { kind: "recovery" as const, action, reusedExisting: false };
+    return { kind: "recovery" as const, action, reusedExisting };
   }
 
   async function enqueueFeedbackDeliveryRetry(input: {
@@ -10673,8 +10671,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!delivery) return { kind: "not_applicable" as const };
 
     const handlingEvidence = await findFeedbackHandlingEvidence(input.run, delivery);
+    const remainingCommentIds = handlingEvidence
+      ? remainingFeedbackDispositionCommentIds({
+          deliveryCommentIds: delivery.commentIds,
+          handledCommentIds: handlingEvidence.sourceCommentIds,
+        })
+      : delivery.commentIds;
+    // Persisted dispositions were validated when the comment was created. Be
+    // defensive if legacy or directly seeded metadata does not satisfy that
+    // contract: it must not suppress delivery.
+    const hasValidHandlingEvidence = Boolean(handlingEvidence && remainingCommentIds !== null);
+    const fullyHandled = hasValidHandlingEvidence && remainingCommentIds?.length === 0;
+    const pendingDelivery = hasValidHandlingEvidence && remainingCommentIds
+      ? { ...delivery, commentIds: remainingCommentIds }
+      : delivery;
 
-    if (input.run.status === "succeeded" && handlingEvidence) {
+    if (input.run.status === "succeeded" && handlingEvidence && fullyHandled) {
       const activeAction = await recoveryActions.getActiveForIssue(
         input.run.companyId,
         delivery.issueId,
@@ -10749,7 +10761,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { kind: "handled" as const, delivery, handlingEvidence };
     }
 
-    if (handlingEvidence) {
+    if (handlingEvidence && fullyHandled) {
       return { kind: "handled" as const, delivery, handlingEvidence };
     }
 
@@ -10757,17 +10769,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       input.run.errorCode === "process_lost" &&
       !input.run.processPid &&
       !input.run.processGroupId;
-    const automaticReplayExhausted = delivery.generation >= FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES;
+    const automaticReplayExhausted = pendingDelivery.generation >= FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES;
     if (automaticReplayExhausted) {
       const recovery = await ensureFeedbackDeliveryRecovery({
         run: input.run,
         agent: input.agent,
-        delivery,
+        delivery: pendingDelivery,
       });
-      return { kind: "recovery" as const, delivery, recovery };
+      return { kind: "recovery" as const, delivery: pendingDelivery, recovery };
     }
     const successfulWithoutHandlingEvidence = input.run.status === "succeeded";
-    if (!preLaunchProcessLoss && !successfulWithoutHandlingEvidence && !input.existingRetryRun) {
+    if (
+      !preLaunchProcessLoss
+      && !successfulWithoutHandlingEvidence
+      && !hasValidHandlingEvidence
+      && !input.existingRetryRun
+    ) {
       return { kind: "not_applicable" as const };
     }
 
@@ -10789,24 +10806,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const recovery = await ensureFeedbackDeliveryRecovery({
         run: input.run,
         agent: input.agent,
-        delivery,
+        delivery: pendingDelivery,
         gateReason: gate.reason,
         gateErrorCode: gate.errorCode,
       });
-      return { kind: "recovery" as const, delivery, recovery };
+      return { kind: "recovery" as const, delivery: pendingDelivery, recovery };
     }
 
     if (input.existingRetryRun) {
       const retryContext: Record<string, unknown> = {
         ...parseObject(input.existingRetryRun.contextSnapshot),
-        feedbackDeliveryRootWakeupRequestId: delivery.rootWakeupRequestId,
+        feedbackDeliveryRootWakeupRequestId: pendingDelivery.rootWakeupRequestId,
         feedbackDeliverySourceRunId: input.run.id,
         feedbackDeliveryRetryGeneration: 1,
-        [WAKE_COMMENT_IDS_KEY]: delivery.commentIds,
+        [WAKE_COMMENT_IDS_KEY]: pendingDelivery.commentIds,
       };
-      if (delivery.commentIds.length > 0) {
-        retryContext.commentId = delivery.commentIds.at(-1);
-        retryContext.wakeCommentId = delivery.commentIds.at(-1);
+      if (pendingDelivery.commentIds.length > 0) {
+        retryContext.commentId = pendingDelivery.commentIds.at(-1);
+        retryContext.wakeCommentId = pendingDelivery.commentIds.at(-1);
       }
       const updatedRetry = await db
         .update(heartbeatRuns)
@@ -10816,26 +10833,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? input.existingRetryRun!);
       await logFeedbackRetryQueuedOnce({
         run: input.run,
-        delivery,
+        delivery: pendingDelivery,
         retryRunId: updatedRetry.id,
         retryWakeupRequestId: updatedRetry.wakeupRequestId,
         disposition: "queued",
       });
-      return { kind: "retry" as const, delivery, run: updatedRetry, disposition: "queued" as const };
+      return {
+        kind: "retry" as const,
+        delivery: pendingDelivery,
+        run: updatedRetry,
+        disposition: "queued" as const,
+      };
     }
 
-    const retry = await enqueueFeedbackDeliveryRetry({ run: input.run, agent: input.agent, delivery });
+    const retry = await enqueueFeedbackDeliveryRetry({
+      run: input.run,
+      agent: input.agent,
+      delivery: pendingDelivery,
+    });
     if (retry.kind === "suppressed") {
-      return { kind: "suppressed" as const, delivery, reason: "state_changed" };
+      return { kind: "suppressed" as const, delivery: pendingDelivery, reason: "state_changed" };
     }
     await logFeedbackRetryQueuedOnce({
       run: input.run,
-      delivery,
+      delivery: pendingDelivery,
       retryRunId: retry.run.id,
       retryWakeupRequestId: retry.wakeupRequestId,
       disposition: retry.kind,
     });
-    return { kind: "retry" as const, delivery, run: retry.run, disposition: retry.kind };
+    return {
+      kind: "retry" as const,
+      delivery: pendingDelivery,
+      run: retry.run,
+      disposition: retry.kind,
+    };
   }
 
   async function applyPostRunDisposition(input: {

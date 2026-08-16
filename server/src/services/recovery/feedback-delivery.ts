@@ -81,15 +81,33 @@ export function hasCompleteFeedbackDispositionCoverage(input: {
   deliveryCommentIds: string[];
   handledCommentIds: string[];
 }) {
+  const remaining = remainingFeedbackDispositionCommentIds(input);
+  return remaining !== null && remaining.length === 0;
+}
+
+/**
+ * Valid receipts acknowledge a non-empty subset of the batch and never IDs
+ * from another delivery. Returning the ordered remainder lets terminalization
+ * durably advance partially handled batches without replaying completed work.
+ */
+export function remainingFeedbackDispositionCommentIds(input: {
+  deliveryCommentIds: string[];
+  handledCommentIds: string[];
+}): string[] | null {
   const deliveryIds = new Set(
     input.deliveryCommentIds.map(readNonEmptyString).filter((value): value is string => Boolean(value)),
   );
   const handledIds = new Set(
     input.handledCommentIds.map(readNonEmptyString).filter((value): value is string => Boolean(value)),
   );
-  return deliveryIds.size > 0
-    && handledIds.size === deliveryIds.size
-    && [...deliveryIds].every((commentId) => handledIds.has(commentId));
+  if (
+    deliveryIds.size === 0
+    || handledIds.size === 0
+    || [...handledIds].some((commentId) => !deliveryIds.has(commentId))
+  ) {
+    return null;
+  }
+  return [...deliveryIds].filter((commentId) => !handledIds.has(commentId));
 }
 
 export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {

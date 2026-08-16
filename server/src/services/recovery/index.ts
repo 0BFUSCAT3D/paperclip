@@ -44,6 +44,7 @@ export {
   hasCompleteFeedbackDispositionCoverage,
   isEligibleFeedbackDeliveryWake,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
+  remainingFeedbackDispositionCommentIds,
   readFeedbackDeliveryRetryGeneration,
   readFeedbackDeliveryRunContext,
   readFeedbackDeliveryWakeCommentIds,

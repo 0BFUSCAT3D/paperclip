@@ -1849,6 +1849,102 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("retries only the unhandled comments after a partial feedback disposition", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled the remaining feedback.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId: handledCommentId } = await prepareFeedbackWake(fixture);
+    const outstandingCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: outstandingCommentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "responsible-user",
+      body: "Please also handle this follow-up.",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: fixture.issueId,
+          taskId: fixture.issueId,
+          wakeReason: "issue_commented",
+          commentId: outstandingCommentId,
+          wakeCommentId: outstandingCommentId,
+          wakeCommentIds: [handledCommentId, outstandingCommentId],
+        },
+      })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: fixture.runId,
+      body: "Handled the first part of the feedback batch.",
+      metadata: {
+        version: 1,
+        feedbackDisposition: {
+          kind: "feedback_delivery",
+          rootWakeupRequestId: fixture.wakeupRequestId,
+          handledCommentIds: [handledCommentId],
+        },
+        sections: [{
+          title: "Feedback disposition",
+          rows: [{ type: "key_value", label: "Handled comment", value: handledCommentId }],
+        }],
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback retry did not start")), 3_000)),
+    ]);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, fixture.agentId),
+        eq(heartbeatRuns.retryOfRunId, fixture.runId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
+      feedbackDeliveryRetryGeneration: 1,
+      wakeCommentIds: [outstandingCommentId],
+      commentId: outstandingCommentId,
+      wakeCommentId: outstandingCommentId,
+    });
+
+    if (!releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+    releaseAdapter();
+    if (retryRun) await heartbeat.waitForRunExecutionDrain(retryRun.id);
+  });
+
   it("keeps feedback exhausted when a successful replay posts an ordinary run comment", async () => {
     let releaseAdapter: (() => void) | null = null;
     const adapterStarted = new Promise<void>((resolve) => {
