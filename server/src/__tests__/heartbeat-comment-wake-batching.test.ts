@@ -490,14 +490,27 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       expect(firstRun).not.toBeNull();
+      if (!firstRun?.wakeupRequestId) throw new Error("Expected first feedback run to retain its wake request");
       await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       await db.insert(issueComments).values({
         companyId,
         issueId,
         authorAgentId: agentId,
-        createdByRunId: firstRun?.id ?? null,
+        createdByRunId: firstRun.id,
         body: "Heartbeat acknowledged",
+        metadata: {
+          version: 1,
+          feedbackDisposition: {
+            kind: "feedback_delivery",
+            rootWakeupRequestId: firstRun.wakeupRequestId,
+            handledCommentIds: [comment1.id],
+          },
+          sections: [{
+            title: "Feedback disposition",
+            rows: [{ type: "key_value", label: "Handled comment", value: comment1.id }],
+          }],
+        },
       });
 
       const comment2 = await db
