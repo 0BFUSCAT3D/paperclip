@@ -775,6 +775,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
       const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
+      const promotedRunId = typeof promotedPayload.idempotencyKey === "string"
+        ? promotedPayload.idempotencyKey
+        : null;
+      if (!promotedRunId) throw new Error("Expected promoted gateway payload to include its run id");
       expect(promotedPayload.paperclip).toBeUndefined();
       const promotedWake = parseWakePayloadFromMessage(promotedPayload.message);
       expect(promotedWake).toMatchObject({
@@ -789,7 +793,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
+        return statusesByRunId.get(firstRun.id) === "cancelled"
+          && statusesByRunId.get(promotedRunId) === "succeeded";
       }, 90_000);
     } finally {
       gateway.releaseFirstWait();
