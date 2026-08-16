@@ -10208,53 +10208,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function findFeedbackHandlingEvidence(
     run: typeof heartbeatRuns.$inferSelect,
-    issueId: string,
+    delivery: FeedbackDeliveryContext,
   ) {
-    const [comment, documentRevision, workProduct, issueActivity] = await Promise.all([
-      findRunIssueComment(run.id, run.companyId, issueId),
-      db
-        .select({ id: documentRevisions.id })
-        .from(documentRevisions)
-        .innerJoin(issueDocuments, eq(issueDocuments.documentId, documentRevisions.documentId))
-        .where(and(
-          eq(documentRevisions.companyId, run.companyId),
-          eq(documentRevisions.createdByRunId, run.id),
-          eq(issueDocuments.companyId, run.companyId),
-          eq(issueDocuments.issueId, issueId),
-          // This system-maintained document is refreshed automatically during
-          // run finalization; it does not prove the agent handled the feedback.
-          sql`${issueDocuments.key} != ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY}`,
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({ id: issueWorkProducts.id })
-        .from(issueWorkProducts)
-        .where(and(
-          eq(issueWorkProducts.companyId, run.companyId),
-          eq(issueWorkProducts.issueId, issueId),
-          eq(issueWorkProducts.createdByRunId, run.id),
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({ id: activityLog.id, action: activityLog.action })
-        .from(activityLog)
-        .where(and(
-          eq(activityLog.companyId, run.companyId),
-          eq(activityLog.entityType, "issue"),
-          eq(activityLog.entityId, issueId),
-          eq(activityLog.runId, run.id),
-          inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-    ]);
-    if (comment) return { kind: "comment", id: comment.id } as const;
-    if (documentRevision) return { kind: "document_revision", id: documentRevision.id } as const;
-    if (workProduct) return { kind: "work_product", id: workProduct.id } as const;
-    if (issueActivity) return { kind: "issue_activity", id: issueActivity.id, action: issueActivity.action } as const;
-    return null;
+    const comment = await findRunIssueComment(run.id, run.companyId, delivery.issueId);
+    if (!comment) return null;
+    // A feedback-delivery run's own persisted context is the durable association
+    // between its disposition comment and the exact feedback batch it received.
+    // Other same-run issue activity is intentionally insufficient: it can be
+    // unrelated to one or more outstanding human comments.
+    return {
+      kind: "comment",
+      id: comment.id,
+      rootWakeupRequestId: delivery.rootWakeupRequestId,
+      sourceCommentIds: delivery.commentIds,
+    } as const;
   }
 
   async function logFeedbackRetryQueuedOnce(input: {
@@ -10684,7 +10651,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const delivery = await readFeedbackDeliveryContext(input.run);
     if (!delivery) return { kind: "not_applicable" as const };
 
-    const handlingEvidence = await findFeedbackHandlingEvidence(input.run, delivery.issueId);
+    const handlingEvidence = await findFeedbackHandlingEvidence(input.run, delivery);
 
     if (input.run.status === "succeeded" && handlingEvidence) {
       const activeAction = await recoveryActions.getActiveForIssue(
@@ -10694,7 +10661,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (
         activeAction
         && isSuccessfulFeedbackDeliveryRecoveryMatch({
-          hasHandlingEvidence: true,
+          handlingEvidence,
           run: input.run,
           action: activeAction,
         })

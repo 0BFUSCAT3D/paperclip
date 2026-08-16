@@ -78,7 +78,10 @@ export function buildFeedbackDeliveryManualRetryIdempotencyKey(input: {
 }
 
 export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
-  hasHandlingEvidence: boolean;
+  handlingEvidence: {
+    rootWakeupRequestId: string;
+    sourceCommentIds: string[];
+  } | null;
   run: {
     companyId: string;
     status: string;
@@ -93,7 +96,7 @@ export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
     evidence: unknown;
   };
 }) {
-  if (input.run.status !== "succeeded" || !input.hasHandlingEvidence) return false;
+  if (input.run.status !== "succeeded" || !input.handlingEvidence) return false;
   if (
     input.action.kind !== FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND
     || input.action.cause !== FEEDBACK_DELIVERY_RECOVERY_CAUSE
@@ -111,11 +114,22 @@ export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
     : {};
   const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
   const rootWakeupRequestId = readNonEmptyString(context.feedbackDeliveryRootWakeupRequestId);
+  const outstandingCommentIds = Array.isArray(evidence.outstandingCommentIds)
+    ? evidence.outstandingCommentIds.map(readNonEmptyString).filter((value): value is string => Boolean(value))
+    : [];
+  const handledCommentIds = new Set(
+    input.handlingEvidence.sourceCommentIds
+      .map(readNonEmptyString)
+      .filter((value): value is string => Boolean(value)),
+  );
   return Boolean(
     issueId
     && rootWakeupRequestId
     && input.action.sourceIssueId === issueId
     && readNonEmptyString(evidence.rootWakeupRequestId) === rootWakeupRequestId
+    && input.handlingEvidence.rootWakeupRequestId === rootWakeupRequestId
+    && outstandingCommentIds.length > 0
+    && outstandingCommentIds.every((commentId) => handledCommentIds.has(commentId))
   );
 }
 

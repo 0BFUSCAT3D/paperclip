@@ -105,12 +105,16 @@ describe("successful feedback delivery recovery matching", () => {
     kind: "feedback_delivery",
     status: "active",
     cause: "feedback_delivery_exhausted",
-    evidence: { rootWakeupRequestId: ROOT_WAKE_ID },
+    evidence: { rootWakeupRequestId: ROOT_WAKE_ID, outstandingCommentIds: ["comment-1", "comment-2"] },
+  };
+  const matchingHandlingEvidence = {
+    rootWakeupRequestId: ROOT_WAKE_ID,
+    sourceCommentIds: ["comment-1", "comment-2"],
   };
 
   it("matches only a successful run for the same company, issue, and root wake", () => {
     expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
-      hasHandlingEvidence: true,
+      handlingEvidence: matchingHandlingEvidence,
       run: matchingRun,
       action: matchingAction,
     })).toBe(true);
@@ -118,7 +122,18 @@ describe("successful feedback delivery recovery matching", () => {
 
   it("rejects a successful run without same-run handling evidence", () => {
     expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
-      hasHandlingEvidence: false,
+      handlingEvidence: null,
+      run: matchingRun,
+      action: matchingAction,
+    })).toBe(false);
+  });
+
+  it("rejects evidence that does not cover every outstanding source comment", () => {
+    expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
+      handlingEvidence: {
+        ...matchingHandlingEvidence,
+        sourceCommentIds: ["comment-1"],
+      },
       run: matchingRun,
       action: matchingAction,
     })).toBe(false);
@@ -146,7 +161,7 @@ describe("successful feedback delivery recovery matching", () => {
     ["resolved action", { action: { ...matchingAction, status: "resolved" } }],
   ])("rejects a %s", (_label, overrides) => {
     expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
-      hasHandlingEvidence: true,
+      handlingEvidence: matchingHandlingEvidence,
       run: "run" in overrides ? overrides.run : matchingRun,
       action: "action" in overrides ? overrides.action : matchingAction,
     })).toBe(false);
