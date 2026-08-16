@@ -2130,7 +2130,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("coalesces a recovered feedback wake ahead of a newer queued comment without another handler", async () => {
+  it("defers a recovered feedback wake behind a newer queued comment from another root", async () => {
     let releaseAdapter: (() => void) | null = null;
     const adapterStarted = new Promise<void>((resolve) => {
       mockAdapterExecute.mockImplementationOnce(async () => {
@@ -2212,7 +2212,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
     await Promise.race([
       adapterStarted,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("coalesced retry did not start")), 3_000)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("newer comment run did not start")), 3_000)),
     ]);
 
     const runs = await db
@@ -2220,13 +2220,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, fixture.agentId));
     expect(runs).toHaveLength(2);
-    const coalescedRun = runs.find((run) => run.id === secondRunId);
-    expect(coalescedRun?.contextSnapshot).toMatchObject({
-      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
-      feedbackDeliveryRetryGeneration: 1,
-      wakeCommentIds: [first.commentId, secondCommentId],
+    const newerCommentRun = runs.find((run) => run.id === secondRunId);
+    expect(newerCommentRun?.contextSnapshot).toMatchObject({
+      wakeCommentIds: [secondCommentId],
       commentId: secondCommentId,
       wakeCommentId: secondCommentId,
+    });
+    expect(newerCommentRun?.contextSnapshot).not.toHaveProperty("feedbackDeliveryRootWakeupRequestId");
+    const deferredRetry = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, fixture.companyId),
+        eq(agentWakeupRequests.agentId, fixture.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const deferredContext = (
+      deferredRetry?.payload as Record<string, unknown> | null
+    )?._paperclipWakeContext as Record<string, unknown> | undefined;
+    expect(deferredContext).toMatchObject({
+      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
+      feedbackDeliveryRetryGeneration: 1,
+      wakeCommentIds: [first.commentId],
+      commentId: first.commentId,
+      wakeCommentId: first.commentId,
     });
     const auditRows = await db
       .select()
@@ -2238,18 +2256,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(auditRows).toHaveLength(1);
     expect(auditRows[0]?.details).toMatchObject({
       retryRunId: secondRunId,
-      disposition: "coalesced",
+      retryWakeupRequestId: deferredRetry?.id,
+      disposition: "deferred",
       sourceCommentIds: [first.commentId],
     });
 
-    if (!releaseAdapter) throw new Error("coalesced feedback run did not reach the adapter");
+    if (!releaseAdapter) throw new Error("newer comment run did not reach the adapter");
     await db.insert(issueComments).values({
       companyId: fixture.companyId,
       issueId: fixture.issueId,
       authorType: "agent",
       authorAgentId: fixture.agentId,
       createdByRunId: secondRunId,
-      body: "Applied both feedback comments in order.",
+      body: "Applied the newer feedback comment.",
     });
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
     releaseAdapter();
