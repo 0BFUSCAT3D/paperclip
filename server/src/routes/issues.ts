@@ -2767,7 +2767,12 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
-  const feedbackDeliveryStatesSvc = feedbackDeliveryCommentStateService(db);
+  // Build this query service only for the two feedback-delivery routes that
+  // use it. Most issue routes do not read delivery state, so route setup must
+  // not couple them to this optional read model.
+  const listFeedbackDeliveryForIssue = (
+    input: Parameters<ReturnType<typeof feedbackDeliveryCommentStateService>["listForIssue"]>[0],
+  ) => feedbackDeliveryCommentStateService(db).listForIssue(input);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -10779,7 +10784,7 @@ export function issueRoutes(
     // banner to act on, and the run reference stays gated behind the same
     // board/user authority that guards run detail.
     const isOperatorViewer = req.actor.type !== "agent";
-    const feedbackDeliveryByComment = await feedbackDeliveryStatesSvc.listForIssue({
+    const feedbackDeliveryByComment = await listFeedbackDeliveryForIssue({
       companyId: issue.companyId,
       issueId: issue.id,
       viewerCanRetry: isOperatorViewer,
@@ -10812,7 +10817,7 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const readStates = () =>
-      feedbackDeliveryStatesSvc.listForIssue({
+      listFeedbackDeliveryForIssue({
         companyId: issue.companyId,
         issueId: issue.id,
         viewerCanRetry: true,
