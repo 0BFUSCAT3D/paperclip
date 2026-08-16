@@ -89,6 +89,7 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   type IssueFeedbackDeliveryRetryResponse,
+  type IssueCommentMetadata,
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
@@ -112,6 +113,7 @@ import {
   FEEDBACK_DELIVERY_RECOVERY_CAUSE,
   FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY,
+  readFeedbackDeliveryRunContext,
 } from "../services/recovery/feedback-delivery.js";
 import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -4977,6 +4979,72 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  async function resolveFeedbackDispositionMetadata(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ): Promise<{ ok: true; metadata: IssueCommentMetadata | null } | { ok: false }> {
+    const requested = req.body.feedbackDisposition as { handledCommentIds: string[] } | undefined;
+    if (!requested) return { ok: true, metadata: null };
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) {
+      res.status(403).json({ error: "Feedback dispositions require an authenticated agent run" });
+      return { ok: false };
+    }
+    const actorAgentId = req.actor.agentId;
+    const actorRunId = req.actor.runId;
+
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, actorRunId),
+        eq(heartbeatRuns.companyId, issue.companyId),
+        eq(heartbeatRuns.agentId, actorAgentId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const delivery = run ? readFeedbackDeliveryRunContext({ companyId: issue.companyId, run }) : null;
+    if (!delivery || delivery.issueId !== issue.id) {
+      res.status(422).json({ error: "The current run is not a feedback-delivery run for this issue" });
+      return { ok: false };
+    }
+
+    const handledCommentIds = [...new Set(requested.handledCommentIds)];
+    const deliveredCommentIds = new Set(delivery.commentIds);
+    if (handledCommentIds.some((commentId) => !deliveredCommentIds.has(commentId))) {
+      res.status(422).json({
+        error: "Feedback disposition comment ids must belong to the current run's feedback batch",
+      });
+      return { ok: false };
+    }
+
+    return {
+      ok: true,
+      metadata: {
+        version: 1,
+        feedbackDisposition: {
+          kind: "feedback_delivery",
+          rootWakeupRequestId: delivery.rootWakeupRequestId,
+          handledCommentIds,
+        },
+        sections: [{
+          title: "Feedback disposition",
+          rows: [
+            { type: "key_value", label: "Root wake", value: delivery.rootWakeupRequestId },
+            { type: "key_value", label: "Handled comments", value: handledCommentIds.join(", ") },
+          ],
+        }],
+      },
+    };
   }
 
   async function assertExplicitResumeIntentAllowed(
@@ -11836,6 +11904,8 @@ export function issueRoutes(
       presentation: req.body.presentation,
       metadata: req.body.metadata,
     })) return;
+    const feedbackDisposition = await resolveFeedbackDispositionMetadata(req, res, issue);
+    if (!feedbackDisposition.ok) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
 
     const actor = getActorInfo(req);
@@ -12099,7 +12169,7 @@ export function issueRoutes(
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
+        metadata: req.body.metadata ?? feedbackDisposition.metadata,
         sourceTrust,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
@@ -12190,7 +12260,7 @@ export function issueRoutes(
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
+        metadata: req.body.metadata ?? feedbackDisposition.metadata,
         authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });

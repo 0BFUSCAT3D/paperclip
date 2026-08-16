@@ -10210,17 +10210,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     delivery: FeedbackDeliveryContext,
   ) {
-    const comment = await findRunIssueComment(run.id, run.companyId, delivery.issueId);
+    const comment = await db
+      .select({ id: issueComments.id, metadata: issueComments.metadata })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, run.companyId),
+        eq(issueComments.issueId, delivery.issueId),
+        eq(issueComments.createdByRunId, run.id),
+        isNull(issueComments.deletedAt),
+      ))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+      .then((rows) => rows.find((row) => {
+        const disposition = row.metadata?.feedbackDisposition;
+        if (
+          disposition?.kind !== "feedback_delivery"
+          || disposition.rootWakeupRequestId !== delivery.rootWakeupRequestId
+        ) return false;
+        const handledIds = new Set(disposition.handledCommentIds);
+        return delivery.commentIds.length > 0
+          && delivery.commentIds.every((commentId) => handledIds.has(commentId));
+      }) ?? null);
     if (!comment) return null;
-    // A feedback-delivery run's own persisted context is the durable association
-    // between its disposition comment and the exact feedback batch it received.
-    // Other same-run issue activity is intentionally insufficient: it can be
-    // unrelated to one or more outstanding human comments.
+    const disposition = comment.metadata?.feedbackDisposition;
+    if (!disposition) return null;
+    // Only an explicit, persisted disposition can acknowledge feedback. Ordinary
+    // run comments and other same-run issue activity can be unrelated.
     return {
       kind: "comment",
       id: comment.id,
-      rootWakeupRequestId: delivery.rootWakeupRequestId,
-      sourceCommentIds: delivery.commentIds,
+      rootWakeupRequestId: disposition.rootWakeupRequestId,
+      sourceCommentIds: disposition.handledCommentIds,
     } as const;
   }
 

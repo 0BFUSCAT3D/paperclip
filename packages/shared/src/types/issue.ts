@@ -1098,6 +1098,11 @@ export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
   authorizationReason?: string | null;
+  feedbackDisposition?: {
+    kind: "feedback_delivery";
+    rootWakeupRequestId: string;
+    handledCommentIds: string[];
+  } | null;
   sections: IssueCommentMetadataSection[];
 }
 

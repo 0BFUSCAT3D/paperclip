@@ -1798,6 +1798,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       authorAgentId: fixture.agentId,
       createdByRunId: retryRun.id,
       body: "Applied the requested feedback.",
+      metadata: {
+        version: 1,
+        feedbackDisposition: {
+          kind: "feedback_delivery",
+          rootWakeupRequestId: fixture.wakeupRequestId,
+          handledCommentIds: [commentId],
+        },
+        sections: [{
+          title: "Feedback disposition",
+          rows: [{ type: "key_value", label: "Handled comment", value: commentId }],
+        }],
+      },
     });
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
     releaseAdapter();
@@ -1837,7 +1849,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("keeps feedback exhausted when a successful replay records no handling evidence", async () => {
+  it("keeps feedback exhausted when a successful replay posts an ordinary run comment", async () => {
     let releaseAdapter: (() => void) | null = null;
     const adapterStarted = new Promise<void>((resolve) => {
       mockAdapterExecute.mockImplementationOnce(async () => {
@@ -1879,6 +1891,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ))
       .then((rows) => rows[0] ?? null);
     if (!retryRun || !releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: retryRun.id,
+      body: "Unrelated status update.",
+    });
 
     releaseAdapter();
     expect((await waitForRunToSettle(heartbeat, retryRun.id, 5_000))?.status).toBe("succeeded");
