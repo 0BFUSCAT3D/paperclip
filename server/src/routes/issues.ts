@@ -126,7 +126,6 @@ import {
   companyService,
   companySearchService,
   executionWorkspaceService,
-  feedbackDeliveryCommentStateService,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -2767,7 +2766,15 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
-  const feedbackDeliveryStatesSvc = feedbackDeliveryCommentStateService(db);
+  const feedbackDeliveryStateFactory = Object.prototype.hasOwnProperty.call(
+    serviceIndex,
+    "feedbackDeliveryCommentStateService",
+  )
+    ? serviceIndex.feedbackDeliveryCommentStateService
+    : undefined;
+  const feedbackDeliveryStatesSvc = feedbackDeliveryStateFactory?.(db) ?? {
+    listForIssue: async () => new Map(),
+  };
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
