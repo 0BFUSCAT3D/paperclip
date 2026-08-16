@@ -6580,15 +6580,17 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-https-backfill-${randomUUID()}`;
 
     const reservePort = async () => {
-      const probe = net.createServer();
-      await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-      const address = probe.address();
-      const port = typeof address === "object" && address ? address.port : null;
-      await new Promise<void>((resolve, reject) => {
-        probe.close((error) => error ? reject(error) : resolve());
-      });
-      if (!port) throw new Error("Failed to reserve HTTPS backfill test port");
-      return port;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const probe = net.createServer();
+        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        const address = probe.address();
+        const port = typeof address === "object" && address ? address.port : null;
+        await new Promise<void>((resolve, reject) => {
+          probe.close((error) => error ? reject(error) : resolve());
+        });
+        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
+      }
+      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
     };
     const isLoopbackPortFree = async (port: number) => {
       const probe = net.createServer();

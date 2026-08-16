@@ -4801,6 +4801,48 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     scopeType: input.scopeType,
     scopeId: input.scopeId,
   });
+  let fixedPortRegistryMatch = false;
+  if (!exposureConfig && canAllocateFixedPort && identityPort) {
+    const identityTemplateData = buildTemplateData({
+      workspace: input.workspace,
+      agent: input.agent,
+      issue: input.issue,
+      adapterEnv: input.adapterEnv,
+      port: identityPort,
+    });
+    const identityExpose = parseObject(input.service.expose);
+    const identityReadiness = parseObject(input.service.readiness);
+    const identityUrlTemplate =
+      asString(identityExpose.urlTemplate, "")
+      || asString(identityReadiness.urlTemplate, "");
+    const identityBackendUrl = identityUrlTemplate
+      ? renderTemplate(identityUrlTemplate, identityTemplateData)
+      : null;
+    const identityServiceKey = createLocalServiceKey({
+      profileKind: "workspace-runtime",
+      serviceName,
+      cwd: identity.serviceCwd,
+      command,
+      envFingerprint: serviceIdentityFingerprint,
+      port: identityPort,
+      scope: {
+        scopeType: input.scopeType,
+        scopeId: input.scopeId,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        reuseKey: input.reuseKey,
+      },
+    });
+    fixedPortRegistryMatch = Boolean(await findAdoptableLocalService({
+      serviceKey: identityServiceKey,
+      profileKind: "workspace-runtime",
+      serviceName,
+      command,
+      cwd: identity.serviceCwd,
+      envFingerprint: serviceIdentityFingerprint,
+      port: identityPort,
+      url: identityBackendUrl,
+    }));
+  }
   const runtimeId = input.runtimeServiceId ?? stoppedReuseCandidate?.id ?? randomUUID();
   // An exposed runtime always takes its port from the dedicated broker range, so
   // a configured or previously used port is a *preference*, not a constraint. It
@@ -4838,6 +4880,8 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         remediation: "Retry the start or configure a different runtime service port.",
       });
     }
+  } else if (!reservedExposure && canAllocateFixedPort && fixedPortRegistryMatch) {
+    port = explicitPort;
   } else if (!reservedExposure && canAllocateFixedPort) {
     port = await allocateIsolatedWorkspacePort({
       db: input.db,
