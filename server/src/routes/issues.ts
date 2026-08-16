@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, like, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   approvals,
   companyMemberships,
@@ -113,6 +114,7 @@ import {
   FEEDBACK_DELIVERY_RECOVERY_CAUSE,
   FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY,
+  nextFeedbackDeliveryManualRetryAttempt,
   remainingFeedbackDispositionCommentIds,
   readFeedbackDeliveryRunContext,
 } from "../services/recovery/feedback-delivery.js";
@@ -10978,6 +10980,18 @@ export function issueRoutes(
     }
 
     const latestCommentId = outstandingCommentIds.at(-1) ?? null;
+    const manualRetryKeyPrefix = `${activeAction.fingerprint}:manual:`;
+    const priorManualRetryKeys = await db
+      .select({ idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, issue.companyId),
+        like(agentWakeupRequests.idempotencyKey, `${manualRetryKeyPrefix}%`),
+      ));
+    const manualRetryAttempt = nextFeedbackDeliveryManualRetryAttempt({
+      fingerprint: activeAction.fingerprint,
+      existingIdempotencyKeys: priorManualRetryKeys.map((row) => row.idempotencyKey),
+    });
     const deliveryContext = {
       issueId: issue.id,
       taskId: issue.id,
@@ -10994,7 +11008,7 @@ export function issueRoutes(
       payload: deliveryContext,
       idempotencyKey: buildFeedbackDeliveryManualRetryIdempotencyKey({
         fingerprint: activeAction.fingerprint,
-        attempt: (activeAction.attemptCount ?? 0) + 1,
+        attempt: manualRetryAttempt,
       }),
       requestedByActorType: actor.actorType === "user" ? "user" : "system",
       requestedByActorId: actor.actorId,

@@ -77,6 +77,26 @@ export function buildFeedbackDeliveryManualRetryIdempotencyKey(input: {
   return `${input.fingerprint}:manual:${input.attempt}`;
 }
 
+/**
+ * Allocate from durable wake keys rather than the recovery-action counter.
+ * Concurrent requests observe the same next value and collapse at the unique
+ * index; a later request advances even if a failed wake never updated its
+ * recovery action.
+ */
+export function nextFeedbackDeliveryManualRetryAttempt(input: {
+  fingerprint: string;
+  existingIdempotencyKeys: Array<string | null>;
+}) {
+  const prefix = `${input.fingerprint}:manual:`;
+  let maxAttempt = 0;
+  for (const key of input.existingIdempotencyKeys) {
+    if (!key?.startsWith(prefix)) continue;
+    const attempt = Number(key.slice(prefix.length));
+    if (Number.isSafeInteger(attempt) && attempt > maxAttempt) maxAttempt = attempt;
+  }
+  return maxAttempt + 1;
+}
+
 export function hasCompleteFeedbackDispositionCoverage(input: {
   deliveryCommentIds: string[];
   handledCommentIds: string[];

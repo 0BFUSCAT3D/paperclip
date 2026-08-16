@@ -8,6 +8,7 @@ import {
   decideStrandedFeedbackDeliveryBackstop,
   hasCompleteFeedbackDispositionCoverage,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
+  nextFeedbackDeliveryManualRetryAttempt,
   remainingFeedbackDispositionCommentIds,
   readFeedbackDeliveryRunContext,
   type StrandedFeedbackDeliveryBackstopProbe,
@@ -201,6 +202,31 @@ describe("feedback disposition coverage", () => {
       deliveryCommentIds: ["comment-1", "comment-2"],
       handledCommentIds,
     })).toBeNull();
+  });
+});
+
+describe("manual feedback retry attempts", () => {
+  it("advances past durable failed wakes instead of relying on the recovery-action counter", () => {
+    const fingerprint = "feedback_delivery:company:issue:agent:root";
+    expect(nextFeedbackDeliveryManualRetryAttempt({
+      fingerprint,
+      existingIdempotencyKeys: [
+        `${fingerprint}:manual:2`,
+        `${fingerprint}:manual:5`,
+        `${fingerprint}:manual:not-a-number`,
+        "feedback_delivery:other:manual:99",
+        null,
+      ],
+    })).toBe(6);
+  });
+
+  it("gives concurrent requests the same first attempt for database deduplication", () => {
+    const input = {
+      fingerprint: "feedback_delivery:company:issue:agent:root",
+      existingIdempotencyKeys: [],
+    };
+    expect(nextFeedbackDeliveryManualRetryAttempt(input)).toBe(1);
+    expect(nextFeedbackDeliveryManualRetryAttempt(input)).toBe(1);
   });
 });
 
