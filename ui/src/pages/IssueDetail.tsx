@@ -100,6 +100,7 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
+import { feedbackDeliveryRetryErrorMessage } from "../components/FeedbackDeliveryState";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
@@ -962,6 +963,7 @@ type IssueDetailChatTabProps = {
   onRetryFeedbackDelivery?: (commentId: string) => void;
   retryingFeedbackDeliveryCommentId?: string | null;
   failedFeedbackDeliveryRetryCommentId?: string | null;
+  feedbackDeliveryRetryErrorMessage?: string | null;
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
@@ -1070,6 +1072,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onRetryFeedbackDelivery,
   retryingFeedbackDeliveryCommentId,
   failedFeedbackDeliveryRetryCommentId,
+  feedbackDeliveryRetryErrorMessage,
   recoveryAction,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
@@ -1349,6 +1352,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onRetryFeedbackDelivery={onRetryFeedbackDelivery}
         retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId ?? null}
         failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId ?? null}
+        feedbackDeliveryRetryErrorMessage={feedbackDeliveryRetryErrorMessage ?? null}
         onResolveRecoveryAction={onResolveRecoveryAction}
         onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
         reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
@@ -4196,6 +4200,8 @@ export function IssueDetail() {
     useState<string | null>(null);
   const [retryingFeedbackDeliveryCommentId, setRetryingFeedbackDeliveryCommentId] =
     useState<string | null>(null);
+  const [feedbackDeliveryRetryFailureMessage, setFeedbackDeliveryRetryFailureMessage] =
+    useState<string | null>(null);
   const retryFeedbackDelivery = useMutation({
     // The commentId is carried so the banner that was pressed owns the pending
     // and error state; the request itself is scoped to the issue's one open
@@ -4204,6 +4210,7 @@ export function IssueDetail() {
     onMutate: (input) => {
       setRetryingFeedbackDeliveryCommentId(input.commentId);
       setFailedFeedbackDeliveryRetryCommentId(null);
+      setFeedbackDeliveryRetryFailureMessage(null);
     },
     onSuccess: (result, variables) => {
       // The delivery state lives on the comment, so the thread is the cache that
@@ -4212,10 +4219,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       if (result.outcome === "queued" || result.outcome === "already_queued") return;
       setFailedFeedbackDeliveryRetryCommentId(variables.commentId);
+      setFeedbackDeliveryRetryFailureMessage(feedbackDeliveryRetryErrorMessage(result));
       pushToast({ title: "Couldn't retry delivery", body: result.message, tone: "error" });
     },
     onError: (err, variables) => {
       setFailedFeedbackDeliveryRetryCommentId(variables.commentId);
+      setFeedbackDeliveryRetryFailureMessage(
+        err instanceof Error ? err.message : "Unable to retry feedback delivery.",
+      );
       pushToast({
         title: "Couldn't retry delivery",
         body: err instanceof Error ? err.message : "Unable to retry feedback delivery.",
@@ -5263,6 +5274,7 @@ export function IssueDetail() {
               onRetryFeedbackDelivery={handleRetryFeedbackDelivery}
               retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId}
               failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId}
+              feedbackDeliveryRetryErrorMessage={feedbackDeliveryRetryFailureMessage}
               onResolveRecoveryAction={handleResolveRecoveryAction}
               onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
               reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}
