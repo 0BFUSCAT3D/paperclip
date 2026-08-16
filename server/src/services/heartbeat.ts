@@ -127,7 +127,13 @@ import {
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
 } from "./issue-rewake-throttle.js";
-import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
+import {
+  logActivity,
+  publishActivity,
+  publishPluginDomainEvent,
+  type ActivityPublication,
+  type LogActivityInput,
+} from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
   buildWorkspaceReadyMetadata,
@@ -233,6 +239,7 @@ import {
   buildFeedbackDeliveryRetryIdempotencyKey,
   carriesExplicitFeedbackResume,
   isEligibleFeedbackDeliveryWake,
+  isSuccessfulFeedbackDeliveryRecoveryMatch,
   readFeedbackDeliveryRetryGeneration,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
@@ -10673,6 +10680,84 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }) {
     const delivery = await readFeedbackDeliveryContext(input.run);
     if (!delivery) return { kind: "not_applicable" as const };
+
+    if (input.run.status === "succeeded") {
+      const activeAction = await recoveryActions.getActiveForIssue(
+        input.run.companyId,
+        delivery.issueId,
+      );
+      if (
+        activeAction
+        && isSuccessfulFeedbackDeliveryRecoveryMatch({ run: input.run, action: activeAction })
+      ) {
+        const postCommitActivityPublications: ActivityPublication[] = [];
+        const resolvedAction = await db.transaction(async (tx) => {
+          const resolved = await recoveryActions.resolveActiveForIssue(
+            {
+              companyId: input.run.companyId,
+              sourceIssueId: delivery.issueId,
+              actionId: activeAction.id,
+              kind: FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND,
+              cause: FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+              status: "resolved",
+              outcome: "restored",
+              resolutionNote: "Automatically resolved after the matching feedback delivery run succeeded.",
+            },
+            tx,
+          );
+          if (!resolved) return null;
+
+          await logActivity(
+            tx as unknown as Db,
+            {
+              companyId: input.run.companyId,
+              actorType: "system",
+              actorId: "heartbeat",
+              agentId: input.run.agentId,
+              runId: input.run.id,
+              action: "issue.recovery_action_resolved",
+              entityType: "issue",
+              entityId: delivery.issueId,
+              details: {
+                source: "successful_feedback_delivery",
+                recoveryActionId: resolved.id,
+                recoveryActionStatus: resolved.status,
+                outcome: resolved.outcome,
+                sourceIssueStatus: null,
+                resolutionNote: resolved.resolutionNote,
+                sourceRunId: input.run.id,
+                rootWakeupRequestId: delivery.rootWakeupRequestId,
+              },
+            },
+            postCommitActivityPublications,
+          );
+          return resolved;
+        });
+        for (const publication of postCommitActivityPublications) publishActivity(publication);
+
+        if (resolvedAction) {
+          await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: "Successful feedback delivery resolved its recovery action",
+            payload: {
+              recoveryActionId: resolvedAction.id,
+              rootWakeupRequestId: delivery.rootWakeupRequestId,
+            },
+          });
+        }
+      }
+
+      // A successful replay is the terminal delivery signal. It must not be
+      // followed by another exhaustion action merely because the agent chose a
+      // non-comment disposition (for example, a document revision).
+      return {
+        kind: "handled" as const,
+        delivery,
+        handlingEvidence: { kind: "successful_run" as const, id: input.run.id },
+      };
+    }
 
     const handlingEvidence = await findFeedbackHandlingEvidence(input.run, delivery.issueId);
     if (handlingEvidence) {

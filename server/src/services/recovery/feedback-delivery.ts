@@ -77,6 +77,47 @@ export function buildFeedbackDeliveryManualRetryIdempotencyKey(input: {
   return `${input.fingerprint}:manual:${input.attempt}`;
 }
 
+export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
+  run: {
+    companyId: string;
+    status: string;
+    contextSnapshot: unknown;
+  };
+  action: {
+    companyId: string;
+    sourceIssueId: string;
+    kind: string;
+    status: string;
+    cause: string;
+    evidence: unknown;
+  };
+}) {
+  if (input.run.status !== "succeeded") return false;
+  if (
+    input.action.kind !== FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND
+    || input.action.cause !== FEEDBACK_DELIVERY_RECOVERY_CAUSE
+    || (input.action.status !== "active" && input.action.status !== "escalated")
+    || input.action.companyId !== input.run.companyId
+  ) {
+    return false;
+  }
+
+  const context = typeof input.run.contextSnapshot === "object" && input.run.contextSnapshot !== null
+    ? input.run.contextSnapshot as Record<string, unknown>
+    : {};
+  const evidence = typeof input.action.evidence === "object" && input.action.evidence !== null
+    ? input.action.evidence as Record<string, unknown>
+    : {};
+  const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+  const rootWakeupRequestId = readNonEmptyString(context.feedbackDeliveryRootWakeupRequestId);
+  return Boolean(
+    issueId
+    && rootWakeupRequestId
+    && input.action.sourceIssueId === issueId
+    && readNonEmptyString(evidence.rootWakeupRequestId) === rootWakeupRequestId
+  );
+}
+
 export function readFeedbackDeliveryWakeCommentIds(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): string[] {

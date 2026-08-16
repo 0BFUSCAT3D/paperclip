@@ -6,6 +6,7 @@ import {
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
   decideStrandedFeedbackDeliveryBackstop,
+  isSuccessfulFeedbackDeliveryRecoveryMatch,
   readFeedbackDeliveryRunContext,
   type StrandedFeedbackDeliveryBackstopProbe,
 } from "./feedback-delivery.js";
@@ -87,6 +88,59 @@ const FINGERPRINT = buildFeedbackDeliveryFingerprint({
   issueId: ISSUE_ID,
   agentId: AGENT_ID,
   rootWakeupRequestId: ROOT_WAKE_ID,
+});
+
+describe("successful feedback delivery recovery matching", () => {
+  const matchingRun = {
+    companyId: COMPANY_ID,
+    status: "succeeded",
+    contextSnapshot: {
+      issueId: ISSUE_ID,
+      feedbackDeliveryRootWakeupRequestId: ROOT_WAKE_ID,
+    },
+  };
+  const matchingAction = {
+    companyId: COMPANY_ID,
+    sourceIssueId: ISSUE_ID,
+    kind: "feedback_delivery",
+    status: "active",
+    cause: "feedback_delivery_exhausted",
+    evidence: { rootWakeupRequestId: ROOT_WAKE_ID },
+  };
+
+  it("matches only a successful run for the same company, issue, and root wake", () => {
+    expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
+      run: matchingRun,
+      action: matchingAction,
+    })).toBe(true);
+  });
+
+  it.each([
+    ["non-successful run", { run: { ...matchingRun, status: "failed" } }],
+    ["different company", { run: { ...matchingRun, companyId: "company-2" } }],
+    ["different issue", {
+      run: {
+        ...matchingRun,
+        contextSnapshot: { ...matchingRun.contextSnapshot, issueId: "issue-2" },
+      },
+    }],
+    ["different root wake", {
+      run: {
+        ...matchingRun,
+        contextSnapshot: {
+          ...matchingRun.contextSnapshot,
+          feedbackDeliveryRootWakeupRequestId: "wake-root-2",
+        },
+      },
+    }],
+    ["non-feedback action", { action: { ...matchingAction, kind: "process_lost" } }],
+    ["resolved action", { action: { ...matchingAction, status: "resolved" } }],
+  ])("rejects a %s", (_label, overrides) => {
+    expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
+      run: "run" in overrides ? overrides.run : matchingRun,
+      action: "action" in overrides ? overrides.action : matchingAction,
+    })).toBe(false);
+  });
 });
 
 describe("stranded feedback delivery backstop", () => {
