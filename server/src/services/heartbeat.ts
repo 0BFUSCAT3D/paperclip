@@ -238,6 +238,7 @@ import {
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
   carriesExplicitFeedbackResume,
+  collectFeedbackDispositionHandledCommentIds,
   isEligibleFeedbackDeliveryWake,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
   remainingFeedbackDispositionCommentIds,
@@ -10211,7 +10212,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     delivery: FeedbackDeliveryContext,
   ) {
-    const comment = await db
+    const comments = await db
       .select({ id: issueComments.id, metadata: issueComments.metadata })
       .from(issueComments)
       .where(and(
@@ -10221,7 +10222,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         isNull(issueComments.deletedAt),
       ))
       .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
-      .then((rows) => rows.find((row) => {
+      .then((rows) => rows.filter((row) => {
         const disposition = row.metadata?.feedbackDisposition;
         if (
           disposition?.kind !== "feedback_delivery"
@@ -10231,17 +10232,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           deliveryCommentIds: delivery.commentIds,
           handledCommentIds: disposition.handledCommentIds,
         }) !== null;
-      }) ?? null);
-    if (!comment) return null;
-    const disposition = comment.metadata?.feedbackDisposition;
-    if (!disposition) return null;
+      }));
+    if (comments.length === 0) return null;
+    const handledCommentIds = collectFeedbackDispositionHandledCommentIds({
+      deliveryCommentIds: delivery.commentIds,
+      rootWakeupRequestId: delivery.rootWakeupRequestId,
+      dispositions: comments.map((comment) => comment.metadata?.feedbackDisposition),
+    });
     // Only an explicit, persisted disposition can acknowledge feedback. Ordinary
-    // run comments and other same-run issue activity can be unrelated.
+    // run comments and other same-run issue activity can be unrelated. A run may
+    // post several partial receipts, so combine all valid receipts for this root.
     return {
       kind: "comment",
-      id: comment.id,
-      rootWakeupRequestId: disposition.rootWakeupRequestId,
-      sourceCommentIds: disposition.handledCommentIds,
+      id: comments[0]!.id,
+      rootWakeupRequestId: delivery.rootWakeupRequestId,
+      sourceCommentIds: handledCommentIds,
     } as const;
   }
 

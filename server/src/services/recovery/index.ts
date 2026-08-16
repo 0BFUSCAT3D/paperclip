@@ -40,6 +40,7 @@ export {
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
   carriesExplicitFeedbackResume,
+  collectFeedbackDispositionHandledCommentIds,
   decideStrandedFeedbackDeliveryBackstop,
   hasCompleteFeedbackDispositionCoverage,
   isEligibleFeedbackDeliveryWake,

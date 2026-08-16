@@ -130,6 +130,26 @@ export function remainingFeedbackDispositionCommentIds(input: {
   return [...deliveryIds].filter((commentId) => !handledIds.has(commentId));
 }
 
+export function collectFeedbackDispositionHandledCommentIds(input: {
+  deliveryCommentIds: string[];
+  rootWakeupRequestId: string;
+  dispositions: Array<{
+    rootWakeupRequestId: string;
+    handledCommentIds: string[];
+  } | null | undefined>;
+}) {
+  const handledIds = new Set<string>();
+  for (const disposition of input.dispositions) {
+    if (!disposition || disposition.rootWakeupRequestId !== input.rootWakeupRequestId) continue;
+    if (remainingFeedbackDispositionCommentIds({
+      deliveryCommentIds: input.deliveryCommentIds,
+      handledCommentIds: disposition.handledCommentIds,
+    }) === null) continue;
+    for (const commentId of disposition.handledCommentIds) handledIds.add(commentId);
+  }
+  return input.deliveryCommentIds.filter((commentId) => handledIds.has(commentId));
+}
+
 export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
   handlingEvidence: {
     rootWakeupRequestId: string;

@@ -5,6 +5,7 @@ import {
   STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
+  collectFeedbackDispositionHandledCommentIds,
   decideStrandedFeedbackDeliveryBackstop,
   hasCompleteFeedbackDispositionCoverage,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
@@ -202,6 +203,18 @@ describe("feedback disposition coverage", () => {
       deliveryCommentIds: ["comment-1", "comment-2"],
       handledCommentIds,
     })).toBeNull();
+  });
+
+  it("combines complementary partial receipts from one run", () => {
+    expect(collectFeedbackDispositionHandledCommentIds({
+      deliveryCommentIds: ["comment-1", "comment-2", "comment-3"],
+      rootWakeupRequestId: "wake-root",
+      dispositions: [
+        { rootWakeupRequestId: "wake-root", handledCommentIds: ["comment-1"] },
+        { rootWakeupRequestId: "wake-root", handledCommentIds: ["comment-3"] },
+        { rootWakeupRequestId: "other-root", handledCommentIds: ["comment-2"] },
+      ],
+    })).toEqual(["comment-1", "comment-3"]);
   });
 });
 
