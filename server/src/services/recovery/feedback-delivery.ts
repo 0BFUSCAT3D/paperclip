@@ -78,6 +78,7 @@ export function buildFeedbackDeliveryManualRetryIdempotencyKey(input: {
 }
 
 export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
+  hasHandlingEvidence: boolean;
   run: {
     companyId: string;
     status: string;
@@ -92,7 +93,7 @@ export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
     evidence: unknown;
   };
 }) {
-  if (input.run.status !== "succeeded") return false;
+  if (input.run.status !== "succeeded" || !input.hasHandlingEvidence) return false;
   if (
     input.action.kind !== FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND
     || input.action.cause !== FEEDBACK_DELIVERY_RECOVERY_CAUSE

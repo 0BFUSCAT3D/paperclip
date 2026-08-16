@@ -110,9 +110,18 @@ describe("successful feedback delivery recovery matching", () => {
 
   it("matches only a successful run for the same company, issue, and root wake", () => {
     expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
+      hasHandlingEvidence: true,
       run: matchingRun,
       action: matchingAction,
     })).toBe(true);
+  });
+
+  it("rejects a successful run without same-run handling evidence", () => {
+    expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
+      hasHandlingEvidence: false,
+      run: matchingRun,
+      action: matchingAction,
+    })).toBe(false);
   });
 
   it.each([
@@ -137,6 +146,7 @@ describe("successful feedback delivery recovery matching", () => {
     ["resolved action", { action: { ...matchingAction, status: "resolved" } }],
   ])("rejects a %s", (_label, overrides) => {
     expect(isSuccessfulFeedbackDeliveryRecoveryMatch({
+      hasHandlingEvidence: true,
       run: "run" in overrides ? overrides.run : matchingRun,
       action: "action" in overrides ? overrides.action : matchingAction,
     })).toBe(false);

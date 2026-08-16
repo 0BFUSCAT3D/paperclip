@@ -10221,6 +10221,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(documentRevisions.createdByRunId, run.id),
           eq(issueDocuments.companyId, run.companyId),
           eq(issueDocuments.issueId, issueId),
+          // This system-maintained document is refreshed automatically during
+          // run finalization; it does not prove the agent handled the feedback.
+          sql`${issueDocuments.key} != ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY}`,
         ))
         .limit(1)
         .then((rows) => rows[0] ?? null),
@@ -10681,14 +10684,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const delivery = await readFeedbackDeliveryContext(input.run);
     if (!delivery) return { kind: "not_applicable" as const };
 
-    if (input.run.status === "succeeded") {
+    const handlingEvidence = await findFeedbackHandlingEvidence(input.run, delivery.issueId);
+
+    if (input.run.status === "succeeded" && handlingEvidence) {
       const activeAction = await recoveryActions.getActiveForIssue(
         input.run.companyId,
         delivery.issueId,
       );
       if (
         activeAction
-        && isSuccessfulFeedbackDeliveryRecoveryMatch({ run: input.run, action: activeAction })
+        && isSuccessfulFeedbackDeliveryRecoveryMatch({
+          hasHandlingEvidence: true,
+          run: input.run,
+          action: activeAction,
+        })
       ) {
         const postCommitActivityPublications: ActivityPublication[] = [];
         const resolvedAction = await db.transaction(async (tx) => {
@@ -10749,17 +10758,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      // A successful replay is the terminal delivery signal. It must not be
-      // followed by another exhaustion action merely because the agent chose a
-      // non-comment disposition (for example, a document revision).
-      return {
-        kind: "handled" as const,
-        delivery,
-        handlingEvidence: { kind: "successful_run" as const, id: input.run.id },
-      };
+      return { kind: "handled" as const, delivery, handlingEvidence };
     }
 
-    const handlingEvidence = await findFeedbackHandlingEvidence(input.run, delivery.issueId);
     if (handlingEvidence) {
       return { kind: "handled" as const, delivery, handlingEvidence };
     }
@@ -10777,7 +10778,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
       return { kind: "recovery" as const, delivery, recovery };
     }
-    if (!preLaunchProcessLoss && !input.existingRetryRun) {
+    const successfulWithoutHandlingEvidence = input.run.status === "succeeded";
+    if (!preLaunchProcessLoss && !successfulWithoutHandlingEvidence && !input.existingRetryRun) {
       return { kind: "not_applicable" as const };
     }
 
@@ -18577,6 +18579,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return { kind: "skipped" as const };
         }
 
+        // The issue row lock serializes concurrent delivery requests for this
+        // task. Resolve an existing idempotent wake inside the same transaction
+        // so two callers cannot both pass a read-before-write check and enqueue
+        // duplicate runs.
+        if (opts.idempotencyKey) {
+          const existingWakeup = await tx
+            .select({ runId: agentWakeupRequests.runId })
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+              notInArray(agentWakeupRequests.status, ["skipped", "cancelled"]),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (existingWakeup) {
+            const existingRun = existingWakeup.runId
+              ? await tx
+                  .select()
+                  .from(heartbeatRuns)
+                  .where(and(
+                    eq(heartbeatRuns.id, existingWakeup.runId),
+                    eq(heartbeatRuns.companyId, agent.companyId),
+                  ))
+                  .then((rows) => rows[0] ?? null)
+              : null;
+            return { kind: "idempotent" as const, run: existingRun };
+          }
+        }
+
         if (worktreeExecutionCutoff && issue.createdAt < worktreeExecutionCutoff) {
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
@@ -19305,6 +19337,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "idempotent") return outcome.run;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;

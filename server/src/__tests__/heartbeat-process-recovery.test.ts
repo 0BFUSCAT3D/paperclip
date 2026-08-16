@@ -1563,6 +1563,67 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("deduplicates concurrent issue wakes with the same feedback-delivery key", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled one idempotent feedback wake.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedAssignedTodoNoRunFixture();
+    const heartbeat = heartbeatService(db);
+    const idempotencyKey = `feedback_delivery:${fixture.companyId}:${fixture.issueId}:${fixture.agentId}:manual:1`;
+    const wakeOptions = {
+      source: "on_demand" as const,
+      triggerDetail: "manual" as const,
+      reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      idempotencyKey,
+      requestedByActorType: "user" as const,
+      requestedByActorId: "responsible-user",
+      contextSnapshot: {
+        issueId: fixture.issueId,
+        taskId: fixture.issueId,
+        feedbackDeliveryOperatorRequested: true,
+      },
+    };
+
+    const [first, second] = await Promise.all([
+      heartbeat.wakeup(fixture.agentId, wakeOptions),
+      heartbeat.wakeup(fixture.agentId, wakeOptions),
+    ]);
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback wake did not start")), 3_000)),
+    ]);
+
+    expect(first?.id).toBeTruthy();
+    expect(second?.id).toBe(first?.id);
+    expect(await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey))).toHaveLength(1);
+    expect(await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId))).toHaveLength(1);
+
+    if (!releaseAdapter) throw new Error("feedback wake did not reach the adapter");
+    releaseAdapter();
+    await heartbeat.waitForRunExecutionDrain(first?.id ?? "");
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
@@ -1774,6 +1835,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       sourceRunId: retryRun.id,
       outcome: "restored",
     });
+  });
+
+  it("keeps feedback exhausted when a successful replay records no handling evidence", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId } = await prepareFeedbackWake(fixture);
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback retry did not start")), 3_000)),
+    ]);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, fixture.agentId),
+        sql`${heartbeatRuns.id} <> ${fixture.runId}`,
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!retryRun || !releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+
+    releaseAdapter();
+    expect((await waitForRunToSettle(heartbeat, retryRun.id, 5_000))?.status).toBe("succeeded");
+    await heartbeat.waitForRunExecutionDrain(retryRun.id);
+
+    const recovery = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recovery).toMatchObject({
+      kind: "feedback_delivery",
+      status: "active",
+      cause: "feedback_delivery_exhausted",
+      evidence: {
+        rootWakeupRequestId: fixture.wakeupRequestId,
+        outstandingCommentIds: [commentId],
+        retryGeneration: 1,
+      },
+    });
+    expect(await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, retryRun.id),
+        eq(activityLog.action, "issue.recovery_action_resolved"),
+      ))).toHaveLength(0);
   });
 
   it("creates one source-scoped recovery action when the feedback replay is exhausted", async () => {
