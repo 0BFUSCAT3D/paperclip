@@ -77,6 +77,21 @@ export function buildFeedbackDeliveryManualRetryIdempotencyKey(input: {
   return `${input.fingerprint}:manual:${input.attempt}`;
 }
 
+export function hasCompleteFeedbackDispositionCoverage(input: {
+  deliveryCommentIds: string[];
+  handledCommentIds: string[];
+}) {
+  const deliveryIds = new Set(
+    input.deliveryCommentIds.map(readNonEmptyString).filter((value): value is string => Boolean(value)),
+  );
+  const handledIds = new Set(
+    input.handledCommentIds.map(readNonEmptyString).filter((value): value is string => Boolean(value)),
+  );
+  return deliveryIds.size > 0
+    && handledIds.size === deliveryIds.size
+    && [...deliveryIds].every((commentId) => handledIds.has(commentId));
+}
+
 export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
   handlingEvidence: {
     rootWakeupRequestId: string;

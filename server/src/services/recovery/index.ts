@@ -41,6 +41,7 @@ export {
   buildFeedbackDeliveryRetryIdempotencyKey,
   carriesExplicitFeedbackResume,
   decideStrandedFeedbackDeliveryBackstop,
+  hasCompleteFeedbackDispositionCoverage,
   isEligibleFeedbackDeliveryWake,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
   readFeedbackDeliveryRetryGeneration,

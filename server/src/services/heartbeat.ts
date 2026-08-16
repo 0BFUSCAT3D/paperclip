@@ -238,6 +238,7 @@ import {
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
   carriesExplicitFeedbackResume,
+  hasCompleteFeedbackDispositionCoverage,
   isEligibleFeedbackDeliveryWake,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
   readFeedbackDeliveryRetryGeneration,
@@ -10226,9 +10227,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           disposition?.kind !== "feedback_delivery"
           || disposition.rootWakeupRequestId !== delivery.rootWakeupRequestId
         ) return false;
-        const handledIds = new Set(disposition.handledCommentIds);
-        return delivery.commentIds.length > 0
-          && delivery.commentIds.every((commentId) => handledIds.has(commentId));
+        return hasCompleteFeedbackDispositionCoverage({
+          deliveryCommentIds: delivery.commentIds,
+          handledCommentIds: disposition.handledCommentIds,
+        });
       }) ?? null);
     if (!comment) return null;
     const disposition = comment.metadata?.feedbackDisposition;

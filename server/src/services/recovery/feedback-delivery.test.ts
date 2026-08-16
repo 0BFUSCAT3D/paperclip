@@ -6,6 +6,7 @@ import {
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
   decideStrandedFeedbackDeliveryBackstop,
+  hasCompleteFeedbackDispositionCoverage,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
   readFeedbackDeliveryRunContext,
   type StrandedFeedbackDeliveryBackstopProbe,
@@ -164,6 +165,23 @@ describe("successful feedback delivery recovery matching", () => {
       handlingEvidence: matchingHandlingEvidence,
       run: "run" in overrides ? overrides.run : matchingRun,
       action: "action" in overrides ? overrides.action : matchingAction,
+    })).toBe(false);
+  });
+});
+
+describe("feedback disposition coverage", () => {
+  it("requires the handled ids to exactly cover the delivered batch", () => {
+    expect(hasCompleteFeedbackDispositionCoverage({
+      deliveryCommentIds: ["comment-1", "comment-2"],
+      handledCommentIds: ["comment-2", "comment-1"],
+    })).toBe(true);
+    expect(hasCompleteFeedbackDispositionCoverage({
+      deliveryCommentIds: ["comment-1", "comment-2"],
+      handledCommentIds: ["comment-1"],
+    })).toBe(false);
+    expect(hasCompleteFeedbackDispositionCoverage({
+      deliveryCommentIds: ["comment-1"],
+      handledCommentIds: ["comment-1", "comment-2"],
     })).toBe(false);
   });
 });
