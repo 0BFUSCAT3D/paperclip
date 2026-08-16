@@ -237,12 +237,14 @@ import {
   FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
+  canCoalesceFeedbackDeliveryRetry,
   carriesExplicitFeedbackResume,
   collectFeedbackDispositionHandledCommentIds,
   isEligibleFeedbackDeliveryWake,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
   remainingFeedbackDispositionCommentIds,
   readFeedbackDeliveryRetryGeneration,
+  readFeedbackDeliveryRunContext,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
@@ -10483,6 +10485,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       const liveContext = parseObject(liveRun?.contextSnapshot);
+      const liveDelivery = liveRun
+        ? readFeedbackDeliveryRunContext({ companyId: input.run.companyId, run: liveRun })
+        : null;
       if (
         liveRun &&
         readNonEmptyString(liveContext.feedbackDeliveryRootWakeupRequestId) ===
@@ -10498,8 +10503,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (
         liveRun &&
-        liveRun.agentId === input.run.agentId &&
-        liveRun.status !== "running"
+        canCoalesceFeedbackDeliveryRetry({
+          sourceAgentId: input.run.agentId,
+          liveAgentId: liveRun.agentId,
+          liveStatus: liveRun.status,
+          sourceRootWakeupRequestId: input.delivery.rootWakeupRequestId,
+          liveRootWakeupRequestId: liveDelivery?.rootWakeupRequestId ?? null,
+        })
       ) {
         const mergedContext = mergeCoalescedContextSnapshot(retryContext, parseObject(liveRun.contextSnapshot));
         const orderedCommentIds = await orderCommentIds(mergeWakeCommentIds(retryContext, liveRun.contextSnapshot));
@@ -10532,6 +10542,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(agentWakeupRequests.agentId, input.run.agentId),
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
           sql`${agentWakeupRequests.payload} ->> 'issueId' = ${input.delivery.issueId}`,
+          sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'feedbackDeliveryRootWakeupRequestId' = ${input.delivery.rootWakeupRequestId}`,
         ))
         .orderBy(asc(agentWakeupRequests.requestedAt), asc(agentWakeupRequests.id))
         .limit(1)

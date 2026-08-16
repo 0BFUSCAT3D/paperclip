@@ -39,6 +39,7 @@ export {
   STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
+  canCoalesceFeedbackDeliveryRetry,
   carriesExplicitFeedbackResume,
   collectFeedbackDispositionHandledCommentIds,
   decideStrandedFeedbackDeliveryBackstop,

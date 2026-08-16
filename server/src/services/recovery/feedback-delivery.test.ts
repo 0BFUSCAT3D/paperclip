@@ -5,6 +5,7 @@ import {
   STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
+  canCoalesceFeedbackDeliveryRetry,
   collectFeedbackDispositionHandledCommentIds,
   decideStrandedFeedbackDeliveryBackstop,
   hasCompleteFeedbackDispositionCoverage,
@@ -240,6 +241,27 @@ describe("manual feedback retry attempts", () => {
     };
     expect(nextFeedbackDeliveryManualRetryAttempt(input)).toBe(1);
     expect(nextFeedbackDeliveryManualRetryAttempt(input)).toBe(1);
+  });
+});
+
+describe("feedback retry coalescing", () => {
+  const base = {
+    sourceAgentId: "agent-1",
+    liveAgentId: "agent-1",
+    liveStatus: "queued",
+    sourceRootWakeupRequestId: "wake-root-1",
+    liveRootWakeupRequestId: "wake-root-1" as string | null,
+  };
+
+  it("coalesces queued work for the same delivery root", () => {
+    expect(canCoalesceFeedbackDeliveryRetry(base)).toBe(true);
+  });
+
+  it("keeps a different user wake in a separate delivery lane", () => {
+    expect(canCoalesceFeedbackDeliveryRetry({
+      ...base,
+      liveRootWakeupRequestId: "wake-root-2",
+    })).toBe(false);
   });
 });
 

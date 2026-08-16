@@ -97,6 +97,21 @@ export function nextFeedbackDeliveryManualRetryAttempt(input: {
   return maxAttempt + 1;
 }
 
+export function canCoalesceFeedbackDeliveryRetry(input: {
+  sourceAgentId: string;
+  liveAgentId: string;
+  liveStatus: string;
+  sourceRootWakeupRequestId: string;
+  liveRootWakeupRequestId: string | null;
+}) {
+  return input.liveAgentId === input.sourceAgentId
+    && input.liveStatus !== "running"
+    && (
+      input.liveRootWakeupRequestId === null
+      || input.liveRootWakeupRequestId === input.sourceRootWakeupRequestId
+    );
+}
+
 export function hasCompleteFeedbackDispositionCoverage(input: {
   deliveryCommentIds: string[];
   handledCommentIds: string[];
