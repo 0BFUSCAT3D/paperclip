@@ -16,6 +16,7 @@ import { checkDedupSearch } from './check-pr-dedup-search.mjs';
 import { checkTestCoverage } from './check-pr-test-coverage.mjs';
 import { checkLockfile } from './check-pr-lockfile.mjs';
 import { checkDependencies } from './check-pr-dependencies.mjs';
+import { checkCoauthors, fetchAllPullRequestCommits } from './check-pr-coauthors.mjs';
 
 const COMMENT_SIGNATURE = '— commitperclip';
 
@@ -100,9 +101,10 @@ async function main() {
   }
 
   // Fetch PR data once — gates use this, no redundant API calls
-  const [pr, files] = await Promise.all([
+  const [pr, files, commits] = await Promise.all([
     ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`, GH_TOKEN),
     fetchAllPullRequestFiles(ghFetch, GH_REPO, prNumber, GH_TOKEN),
+    fetchAllPullRequestCommits(ghFetch, GH_REPO, prNumber, GH_TOKEN),
   ]);
 
   const prBody = pr.body ?? '';
@@ -120,6 +122,7 @@ async function main() {
       Promise.resolve(checkLockfile(files, author, branch)),
       checkDependencies(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
     ]);
+  const coauthorResult = checkCoauthors(commits, author);
 
   const allFailures = [
     ...templateResult.failures,
@@ -128,7 +131,10 @@ async function main() {
     ...testResult.failures,
     ...lockfileResult.failures,
   ];
-  const informational = depsResult.informational ?? [];
+  const informational = [
+    ...(depsResult.informational ?? []),
+    ...coauthorResult.informational,
+  ];
   const allPassed = allFailures.length === 0;
 
   const commentBody = buildComment(author, allFailures, informational);
