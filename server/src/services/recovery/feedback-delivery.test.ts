@@ -263,6 +263,13 @@ describe("feedback retry coalescing", () => {
       liveRootWakeupRequestId: "wake-root-2",
     })).toBe(false);
   });
+
+  it("keeps queued non-feedback work in a separate delivery lane", () => {
+    expect(canCoalesceFeedbackDeliveryRetry({
+      ...base,
+      liveRootWakeupRequestId: null,
+    })).toBe(false);
+  });
 });
 
 describe("stranded feedback delivery backstop", () => {

@@ -106,10 +106,7 @@ export function canCoalesceFeedbackDeliveryRetry(input: {
 }) {
   return input.liveAgentId === input.sourceAgentId
     && input.liveStatus !== "running"
-    && (
-      input.liveRootWakeupRequestId === null
-      || input.liveRootWakeupRequestId === input.sourceRootWakeupRequestId
-    );
+    && input.liveRootWakeupRequestId === input.sourceRootWakeupRequestId;
 }
 
 export function hasCompleteFeedbackDispositionCoverage(input: {
