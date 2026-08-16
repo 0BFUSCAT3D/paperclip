@@ -6055,6 +6055,31 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(actionsAfter).toHaveLength(0);
   });
 
+  it("atomically claims one stranded-feedback replay across concurrent recovery sweeps", async () => {
+    const { companyId, issueId } = await seedStrandedFeedbackReviewFixture({
+      interactionStatus: "expired",
+    });
+    const firstHeartbeat = heartbeatService(db);
+    const secondHeartbeat = heartbeatService(db);
+
+    const results = await Promise.all([
+      firstHeartbeat.reconcileStrandedAssignedIssues(),
+      secondHeartbeat.reconcileStrandedAssignedIssues(),
+    ]);
+
+    expect(results.reduce((sum, result) => sum + result.strandedFeedbackRequeued, 0)).toBe(1);
+    const replayWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, FEEDBACK_DELIVERY_RETRY_WAKE_REASON),
+        sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+      ));
+    expect(replayWakes).toHaveLength(1);
+    expect(replayWakes[0]?.idempotencyKey).toMatch(/^feedback_delivery:.*:generation:1$/);
+  });
+
   it("opens one explicit recovery action when stranded feedback replay is exhausted", async () => {
     const { companyId, agentId, issueId, runId, rootWakeupRequestId, commentId } =
       await seedStrandedFeedbackReviewFixture({ retryGeneration: 1, interactionStatus: "expired" });

@@ -91,6 +91,7 @@ import {
   STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
   buildFeedbackDeliveryRetryIdempotencyKey,
   decideStrandedFeedbackDeliveryBackstop,
+  isFeedbackDeliveryIdempotencyConflict,
   readFeedbackDeliveryRunContext,
   type StrandedFeedbackDeliveryBackstopDecision,
 } from "./feedback-delivery.js";
@@ -3966,6 +3967,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       requestedByActorType: "system",
       requestedByActorId: null,
       contextSnapshot: decision.contextSnapshot,
+    }).catch((error: unknown) => {
+      // Startup, periodic, and terminal-run recovery can race after their
+      // read-side probes. The partial unique index is the durable claim; the
+      // loser treats that conflict as an already-queued generation.
+      if (isFeedbackDeliveryIdempotencyConflict(error)) return null;
+      throw error;
     });
     if (!queued) {
       return { outcome: "skipped", reason: "replay_wake_not_queued" };

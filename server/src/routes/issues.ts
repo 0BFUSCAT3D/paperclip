@@ -112,6 +112,7 @@ import {
   FEEDBACK_DELIVERY_RECOVERY_CAUSE,
   FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY,
+  isFeedbackDeliveryIdempotencyConflict,
 } from "../services/recovery/feedback-delivery.js";
 import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -10914,6 +10915,7 @@ export function issueRoutes(
       [FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY]: outstandingCommentIds,
       ...(latestCommentId ? { commentId: latestCommentId, wakeCommentId: latestCommentId } : {}),
     };
+    let duplicateRetryClaim = false;
     await heartbeat.wakeup(targetAgentId, {
       source: "on_demand",
       triggerDetail: "manual",
@@ -10933,7 +10935,24 @@ export function issueRoutes(
           "An operator asked Paperclip to deliver human feedback on this task again. Handle the outstanding "
           + "comment(s) now and record a valid disposition.",
       },
+    }).catch((error: unknown) => {
+      if (isFeedbackDeliveryIdempotencyConflict(error)) {
+        duplicateRetryClaim = true;
+        return null;
+      }
+      throw error;
     });
+
+    if (duplicateRetryClaim) {
+      const states = await readStates();
+      res.json({
+        outcome: "already_queued",
+        reason: null,
+        message: "A delivery retry is already queued.",
+        feedbackDelivery: states.get(outstandingCommentIds[0] ?? "") ?? null,
+      } satisfies IssueFeedbackDeliveryRetryResponse);
+      return;
+    }
 
     await logActivity(db, {
       companyId: issue.companyId,

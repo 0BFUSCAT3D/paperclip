@@ -6,6 +6,7 @@ import {
   buildFeedbackDeliveryFingerprint,
   buildFeedbackDeliveryRetryIdempotencyKey,
   decideStrandedFeedbackDeliveryBackstop,
+  isFeedbackDeliveryIdempotencyConflict,
   isSuccessfulFeedbackDeliveryRecoveryMatch,
   readFeedbackDeliveryRunContext,
   type StrandedFeedbackDeliveryBackstopProbe,
@@ -16,6 +17,19 @@ const ISSUE_ID = "issue-1";
 const AGENT_ID = "agent-1";
 const ROOT_WAKE_ID = "wake-root-1";
 const COMMENT_ID = "comment-1";
+
+it("recognizes only feedback-delivery atomic claim conflicts", () => {
+  expect(isFeedbackDeliveryIdempotencyConflict({
+    cause: {
+      code: "23505",
+      constraint_name: "agent_wakeup_requests_feedback_delivery_idempotency_uq",
+    },
+  })).toBe(true);
+  expect(isFeedbackDeliveryIdempotencyConflict({
+    code: "23505",
+    constraint_name: "some_other_unique_index",
+  })).toBe(false);
+});
 
 const openProbe: StrandedFeedbackDeliveryBackstopProbe = {
   hasActiveExecutionPath: false,

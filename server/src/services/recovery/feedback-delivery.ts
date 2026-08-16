@@ -6,6 +6,8 @@ export const FEEDBACK_DELIVERY_RECOVERY_CAUSE = "feedback_delivery_exhausted";
 export const FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND = "feedback_delivery" as const;
 export const FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES = 1;
 export const FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
+export const FEEDBACK_DELIVERY_IDEMPOTENCY_INDEX =
+  "agent_wakeup_requests_feedback_delivery_idempotency_uq";
 
 export const STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE = "issue.stranded_feedback_delivery_backstop";
 export const STRANDED_FEEDBACK_DELIVERY_BACKSTOP_INSTRUCTION =
@@ -75,6 +77,34 @@ export function buildFeedbackDeliveryManualRetryIdempotencyKey(input: {
   attempt: number;
 }) {
   return `${input.fingerprint}:manual:${input.attempt}`;
+}
+
+export function isFeedbackDeliveryIdempotencyConflict(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    const constraint = candidate.constraint ?? candidate.constraint_name;
+    if (
+      candidate.code === "23505"
+      && (
+        constraint === FEEDBACK_DELIVERY_IDEMPOTENCY_INDEX
+        || (
+          typeof candidate.message === "string"
+          && candidate.message.includes(FEEDBACK_DELIVERY_IDEMPOTENCY_INDEX)
+        )
+      )
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
 }
 
 export function isSuccessfulFeedbackDeliveryRecoveryMatch(input: {
