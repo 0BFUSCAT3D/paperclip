@@ -165,6 +165,11 @@ describe("WorkspaceGitOperationScheduler", () => {
     const scheduler = createWorkspaceGitOperationScheduler({ runner, defaultCacheTtlMs: 0 });
 
     const first = scheduler.run(scanInput(workspace, "same"));
+    // Wait for the first request to register as the single-flight leader before
+    // the alias request starts. Both requests call fs.realpath concurrently, so
+    // without this barrier the symlink alias can resolve first and become the
+    // leader. That race makes the leader and joiner order non-deterministic.
+    await vi.waitFor(() => expect(scheduler.snapshot().inFlightCount).toBe(1));
     const joined = scheduler.run(scanInput(alias, "same"));
     await vi.waitFor(() => expect(scheduler.snapshot().totals.singleFlightJoins).toBe(1));
     expect(calls).toBe(1);
