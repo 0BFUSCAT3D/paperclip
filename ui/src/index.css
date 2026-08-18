@@ -1510,6 +1510,73 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 1em;
 }
 
+/* ── Code syntax roles ──
+   Each alias points at a token that already exists and already carries a
+   `.dark` override, so one definition covers both modes. A custom property
+   resolves at its use site, so `.dark` swaps these automatically.
+
+   The mapping is BORROWED. `--status-task-icon-*` and `--chip-match-title-fg`
+   name task-status and search-chip concerns, not syntax roles. Paperclip has
+   no syntax palette, and these were the only hues carrying a real per-mode
+   value: the fixed `--status-task-*` hues go dim on the dark code surface.
+   The coupling is deliberate and confined to this one block. To mint a real
+   palette later, repoint these eight aliases — no rule below changes. */
+:root {
+  --code-syntax-keyword: var(--status-task-icon-in_review);
+  --code-syntax-string: var(--status-task-icon-done);
+  --code-syntax-number: var(--chip-match-title-fg);
+  --code-syntax-identifier: var(--foreground);
+  --code-syntax-punctuation: var(--muted-foreground);
+  --code-syntax-comment: var(--muted-foreground);
+  --code-syntax-added: var(--status-task-icon-done);
+  --code-syntax-removed: var(--destructive);
+}
+
+/* highlight.js token classes, emitted by rehype-highlight. No highlight.js
+   stylesheet is imported, so these rules are the only source of colour. */
+.paperclip-markdown :is(pre, code) :is(.hljs-keyword, .hljs-built_in, .hljs-literal, .hljs-type, .hljs-meta, .hljs-selector-tag) {
+  color: var(--code-syntax-keyword);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-string, .hljs-regexp, .hljs-symbol, .hljs-char, .hljs-quote) {
+  color: var(--code-syntax-string);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-number, .hljs-title, .hljs-name, .hljs-section, .hljs-link, .hljs-attr, .hljs-attribute, .hljs-selector-id, .hljs-selector-class) {
+  color: var(--code-syntax-number);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-variable, .hljs-params, .hljs-property, .hljs-subst, .hljs-template-variable) {
+  color: var(--code-syntax-identifier);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-operator, .hljs-punctuation, .hljs-tag, .hljs-bullet) {
+  color: var(--code-syntax-punctuation);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-comment, .hljs-doctag) {
+  color: var(--code-syntax-comment);
+  font-style: italic;
+}
+
+/* ```diff fences. The row tinting from the design is not implemented, so
+   the +/- lines are carried by colour alone here. */
+.paperclip-markdown :is(pre, code) .hljs-addition {
+  color: var(--code-syntax-added);
+}
+
+.paperclip-markdown :is(pre, code) .hljs-deletion {
+  color: var(--code-syntax-removed);
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-emphasis) {
+  font-style: italic;
+}
+
+.paperclip-markdown :is(pre, code) :is(.hljs-strong) {
+  font-weight: 600;
+}
+
 .paperclip-markdown pre code {
   font-size: inherit;
   color: inherit;
