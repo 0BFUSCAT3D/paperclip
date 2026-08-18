@@ -1,5 +1,19 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  nativeFinalizationResultSchema,
+  nativeFinalizationResultV1Schema,
+  nativeReportedWorkDispositionSchema,
+  type NativeFinalizationResultInput,
+} from "./validators/native-finalization.js";
+export {
+  NATIVE_FINALIZATION_SCHEMA,
+  type NativeFinalizationResult,
+  type NativeFinalizationResultV1,
+  type NativeReportedWorkDisposition,
+  type NativeRuntimeMode,
+  type NativeRunTerminalState,
+} from "./types/native-finalization.js";
+export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
   commentOnIssueDecisionEffectSchema,
@@ -1597,7 +1611,6 @@ export {
 } from "./types/smoke-lab.js";
 
 export type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "./types/server-info.js";
-
 export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
