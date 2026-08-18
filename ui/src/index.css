@@ -1408,7 +1408,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   padding: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: var(--muted);
+  background: var(--code-surface);
   color: var(--foreground);
   overflow-x: auto;
 }
@@ -1487,16 +1487,16 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
    both modes. Override prose CSS variables so prose-invert can't revert to
    defaults. */
 .paperclip-markdown {
-  --tw-prose-pre-bg: var(--muted);
+  --tw-prose-pre-bg: var(--code-surface);
   --tw-prose-pre-code: var(--foreground);
-  --tw-prose-invert-pre-bg: var(--muted);
+  --tw-prose-invert-pre-bg: var(--code-surface);
   --tw-prose-invert-pre-code: var(--foreground);
 }
 
 .paperclip-markdown pre {
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-lg) !important;
-  background-color: var(--muted) !important;
+  background-color: var(--code-surface) !important;
   color: var(--foreground) !important;
   padding: 0.5rem 0.65rem !important;
   margin: 0.4rem 0 !important;
@@ -1508,6 +1508,25 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown code {
   font-family: var(--font-mono);
   font-size: 1em;
+}
+
+/* ── Code block surface ──
+   The block must separate from whatever it sits on, and that is not always
+   the page. It also renders inside agent bubbles, whose fill --bubble-agent
+   is oklch(0.97 0 0) in light — the same value as --muted, which made the
+   block vanish into the bubble and read as one flat slab. The bubble fill
+   also changes per variant, and the "hairline" variant IS var(--background),
+   so no fixed token separates in every case.
+
+   A translucent tint shifts whatever is beneath it instead of replacing it,
+   so one value holds on the page and in every bubble variant, in both modes.
+   Light darkens toward the ink; dark lifts toward it. */
+:root {
+  --code-surface: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+
+.dark {
+  --code-surface: color-mix(in oklab, var(--foreground) 9%, transparent);
 }
 
 /* ── Code syntax roles ──

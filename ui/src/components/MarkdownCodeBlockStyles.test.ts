@@ -28,7 +28,7 @@ describe("markdown code block styles", () => {
   it("rides theme tokens for the rendered code block surface", () => {
     const block = cssBlock(".paperclip-markdown pre");
 
-    expect(block).toContain("background-color: var(--muted)");
+    expect(block).toContain("background-color: var(--code-surface)");
     expect(block).toContain("color: var(--foreground)");
     expect(block).toContain("border: 1px solid var(--border)");
     expect(block).toContain("border-radius: var(--radius-lg)");
@@ -37,7 +37,7 @@ describe("markdown code block styles", () => {
   it("rides theme tokens for the editor content code block surface", () => {
     const block = cssBlock(".paperclip-mdxeditor-content pre");
 
-    expect(block).toContain("background: var(--muted)");
+    expect(block).toContain("background: var(--code-surface)");
     expect(block).toContain("color: var(--foreground)");
     expect(block).toContain("border: 1px solid var(--border)");
     expect(block).toContain("border-radius: var(--radius-lg)");
@@ -46,9 +46,9 @@ describe("markdown code block styles", () => {
   it("points the normal and inverted prose variables at the same tokens", () => {
     const block = cssBlock(".paperclip-markdown");
 
-    expect(block).toContain("--tw-prose-pre-bg: var(--muted)");
+    expect(block).toContain("--tw-prose-pre-bg: var(--code-surface)");
     expect(block).toContain("--tw-prose-pre-code: var(--foreground)");
-    expect(block).toContain("--tw-prose-invert-pre-bg: var(--muted)");
+    expect(block).toContain("--tw-prose-invert-pre-bg: var(--code-surface)");
     expect(block).toContain("--tw-prose-invert-pre-code: var(--foreground)");
   });
 
@@ -108,5 +108,24 @@ describe("code syntax palette", () => {
     ]) {
       expect(stylesheet, `${cls} must be mapped`).toContain(cls);
     }
+  });
+});
+
+describe("code block surface separation", () => {
+  it("defines the surface as a translucent tint in both modes", () => {
+    // A fixed token cannot work: --bubble-agent is oklch(0.97 0 0) in light,
+    // identical to --muted, and its "hairline" variant is var(--background).
+    // A tint shifts whatever is beneath it, so it separates everywhere.
+    expect(stylesheet).toMatch(/--code-surface:\s*color-mix\(in oklab, var\(--foreground\) \d+%, transparent\)/);
+
+    const darkBlock = stylesheet.slice(stylesheet.indexOf(".dark {"));
+    expect(darkBlock).toContain("--code-surface:");
+  });
+
+  it("never pins the code surface to the agent bubble fill", () => {
+    const preBlock = cssBlock(".paperclip-markdown pre");
+
+    expect(preBlock).not.toContain("var(--muted)");
+    expect(preBlock).not.toContain("var(--bubble-agent)");
   });
 });
