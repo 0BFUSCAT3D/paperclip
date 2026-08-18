@@ -75,23 +75,45 @@ if [ -z "$out_file" ]; then
   out_file="${repo_dir}/releases/beta/v${beta_version}.md"
 fi
 
-# Range start: the newest stable tag reachable from the source commit —
-# not the newest by version, which can sit on a divergent lineage (a
-# stable cut from a candidate branch, or a source that predates it) and
-# would produce an empty or wrong range. Before the first reachable
-# stable, fall back to the nearest beta tag strictly before the source;
-# with no marker at all, cover the source commit's full history.
-range_start="$(git -C "$repo_dir" describe --tags --match 'v[0-9]*' --abbrev=0 "$source_sha" 2>/dev/null || true)"
-range_label="$range_start"
+# Range start: walk stable tags newest-first and take the first whose
+# merge-base with the source is a proper ancestor of the source. A stable
+# cut from a candidate branch is not itself an ancestor of master, but
+# its merge-base with the source is the promoted source commit — exactly
+# the point the shipped stable's content diverges from. A stable that
+# already contains the source (promoting an older commit) is skipped so
+# the range never collapses to empty. Before the first stable, fall back
+# to the nearest beta tag strictly before the source; with no marker at
+# all, cover the source commit's full history.
+range_start=""
+range_label=""
+range_cmd_start=""
+while IFS= read -r stable_tag; do
+  [ -n "$stable_tag" ] || continue
+  mb="$(git -C "$repo_dir" merge-base "$stable_tag" "$source_sha" 2>/dev/null || true)"
+  [ -n "$mb" ] || continue
+  if [ "$mb" != "$source_sha" ]; then
+    range_start="$mb"
+    if [ "$mb" = "$(git -C "$repo_dir" rev-parse "${stable_tag}^{commit}")" ]; then
+      range_label="$stable_tag"
+      range_cmd_start="$stable_tag"
+    else
+      range_label="${stable_tag} (merge-base ${mb:0:9})"
+      range_cmd_start="${mb:0:9}"
+    fi
+    break
+  fi
+done < <(git -C "$repo_dir" tag -l 'v[0-9]*' --sort=-v:refname)
 if [ -z "$range_start" ]; then
   range_start="$(git -C "$repo_dir" describe --tags --match 'beta/v*' --abbrev=0 "${source_sha}^" 2>/dev/null || true)"
   range_label="$range_start"
+  range_cmd_start="$range_start"
 fi
 if [ -n "$range_start" ]; then
   range="${range_start}..${source_sha}"
 else
   range="$source_sha"
   range_label="the beginning of history"
+  range_cmd_start="the beginning of history"
   release_info "No stable or prior beta tag found; drafting from full history."
 fi
 
@@ -114,7 +136,7 @@ conventional='^(feat|fix)(\([^)]*\))?!?: '
 mkdir -p "$(dirname "$out_file")"
 {
   printf '# Paperclip stable draft — from beta %s\n\n' "$beta_version"
-  printf '> Auto-generated at beta publish from `git log %s..%s`.\n' "${range_label}" "${source_sha:0:9}"
+  printf '> Auto-generated at beta publish from `git log %s..%s` (baseline: %s).\n' "${range_cmd_start}" "${source_sha:0:9}" "${range_label}"
   printf '> Edit freely during the soak: rewrite for release-notes voice,\n'
   printf '> fold noise, and call out anything a self-hoster must act on.\n'
   printf '> The stable promotion reads this file from master and publishes\n'
