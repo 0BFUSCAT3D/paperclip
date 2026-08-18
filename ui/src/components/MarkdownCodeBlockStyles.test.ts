@@ -68,3 +68,45 @@ describe("markdown code block styles", () => {
     expect(codeBlockActionStyle.backgroundColor).not.toContain("--muted");
   });
 });
+
+describe("code syntax palette", () => {
+  const aliases = [
+    "--code-syntax-keyword",
+    "--code-syntax-string",
+    "--code-syntax-number",
+    "--code-syntax-identifier",
+    "--code-syntax-punctuation",
+    "--code-syntax-comment",
+    "--code-syntax-added",
+    "--code-syntax-removed",
+  ];
+
+  it("defines every syntax role as an alias of an existing token", () => {
+    for (const alias of aliases) {
+      const declaration = new RegExp(`${alias}:\\s*var\\(--[a-z0-9_-]+\\)`, "i");
+      expect(stylesheet, `${alias} must be defined as var(--existing-token)`).toMatch(declaration);
+    }
+  });
+
+  it("holds the borrowed-token coupling in the alias layer only", () => {
+    // The syntax rules must reference the aliases, never the borrowed tokens
+    // directly. That keeps repointing to a real palette a one-block edit.
+    const syntaxRules = stylesheet.slice(stylesheet.indexOf(".paperclip-markdown :is(pre, code)"));
+
+    expect(syntaxRules).not.toContain("--status-task-icon-");
+    expect(syntaxRules).not.toContain("--chip-match-title-fg");
+  });
+
+  it("maps the highlight.js token classes the renderer emits", () => {
+    for (const cls of [
+      ".hljs-keyword",
+      ".hljs-string",
+      ".hljs-number",
+      ".hljs-comment",
+      ".hljs-addition",
+      ".hljs-deletion",
+    ]) {
+      expect(stylesheet, `${cls} must be mapped`).toContain(cls);
+    }
+  });
+});
