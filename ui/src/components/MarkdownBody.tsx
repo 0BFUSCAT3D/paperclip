@@ -231,7 +231,7 @@ const codeBlockActionsStyle: React.CSSProperties = {
   gap: "0.25rem",
 };
 
-const codeBlockActionStyle: React.CSSProperties = {
+export const codeBlockActionStyle: React.CSSProperties = {
   position: "static",
   opacity: 1,
   display: "inline-flex",
