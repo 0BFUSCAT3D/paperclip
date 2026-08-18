@@ -65,6 +65,17 @@ function toMs(value: Date | string | null | undefined): number {
 const SETTLING_TAIL_MAX_MS = 15_000;
 const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 
+function systemNoticeReferencesRecoveryAction(item: TaskChatMessageItem, actionId: string): boolean {
+  if (item.author !== "system") return false;
+  return item.metadata?.sections.some((section) =>
+    section.rows.some((row) =>
+      row.type === "key_value" &&
+      row.label.trim().toLowerCase() === "recovery action" &&
+      row.value === actionId,
+    ),
+  ) ?? false;
+}
+
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 
 /**
@@ -136,6 +147,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     blockedBy = [],
     blockerAttention,
     liveIssueIds,
+    recoveryAction,
+    onResolveRecoveryAction,
   } = props;
 
   const liveWorkLinks = useMemo(
@@ -612,6 +625,34 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [interruptingQueuedRunId, onInterruptQueued],
   );
 
+  const renderSystemNoticeAction = useCallback(
+    (item: TaskChatMessageItem) => {
+      if (
+        !recoveryAction ||
+        recoveryAction.kind !== "stranded_assigned_issue" ||
+        recoveryAction.status === "resolved" ||
+        recoveryAction.status === "cancelled" ||
+        !onResolveRecoveryAction ||
+        !systemNoticeReferencesRecoveryAction(item, recoveryAction.id)
+      ) {
+        return null;
+      }
+
+      return (
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          data-testid="task-chat-recovery-try-again"
+          onClick={() => onResolveRecoveryAction("todo")}
+        >
+          Try again
+        </Button>
+      );
+    },
+    [onResolveRecoveryAction, recoveryAction],
+  );
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
@@ -680,6 +721,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
+            renderSystemNoticeAction={renderSystemNoticeAction}
             renderQueuedAction={renderQueuedAction}
             tail={tailRunId || bottomBlockerLinks ? (
               <>
