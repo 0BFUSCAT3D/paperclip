@@ -281,6 +281,16 @@ describeEmbeddedPostgres("agent run-header attribution (auth middleware + routes
 
     expect(res.status).toBe(201);
 
+    // The supersede sweep bails on `comment.createdByRunId` *and*, since this
+    // fix, on a null `authorUserId`. The run-id guard predates this change, so
+    // asserting only that the interaction survived would pass with or without
+    // the fix and prove nothing. Pin the actor identity too: that is the half
+    // this change is responsible for, and the half that fails without it.
+    const [comment] = await commentsFor(issueId);
+    expect(comment.authorType).toBe("agent");
+    expect(comment.authorUserId).toBeNull();
+    expect(comment.createdByRunId).toBe(runId);
+
     const [interaction] = await db
       .select()
       .from(issueThreadInteractions)
@@ -367,5 +377,104 @@ describeEmbeddedPostgres("agent run-header attribution (auth middleware + routes
     const [comment] = await commentsFor(issueId);
     expect(comment.authorType).toBe("user");
     expect(comment.authorAgentId).toBeNull();
+  });
+
+  /**
+   * Attribution is not only a provenance concern. `resolveInteractionAuthorization`
+   * short-circuits on `actor.type === "user"` with `allow_human`, *above* the
+   * `human_only`, governed-action and addressee checks. So while every agent run
+   * presented as `local-board`, an agent run took the human branch and those gates
+   * did not merely mis-record the actor — they did not apply at all.
+   *
+   * These two cover the downstream halves reported from REEA-8 and REEA-1: an
+   * agent-performed withdrawal recorded as a board withdrawal, and `human_only`
+   * being unenforceable against agents.
+   */
+  async function seedPendingAskUserQuestionsWithPolicy(
+    companyId: string,
+    issueId: string,
+    policy: "anyone" | "human_only",
+    createdByAgentId: string | null,
+  ) {
+    const [row] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: policy,
+      effectiveResolverPolicy: policy,
+      createdByAgentId,
+      payload: {
+        version: 1,
+        supersedeOnUserComment: false,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope should I take?",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      } as never,
+    }).returning();
+    return row.id;
+  }
+
+  it("records an agent-run withdrawal as the agent, not as a board withdrawal", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent("WDRW");
+    const issueId = await seedIssue(companyId, "WDRW", agentId);
+    const runId = await seedRun(companyId, agentId, issueId);
+    const interactionId = await seedPendingAskUserQuestionsWithPolicy(
+      companyId,
+      issueId,
+      "anyone",
+      agentId,
+    );
+
+    const res = await request(app())
+      .post(`/api/issues/${issueId}/interactions/${interactionId}/withdraw`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ reason: "Superseded by a better question." });
+
+    expect(res.status).toBe(200);
+
+    const [interaction] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    // Previously `resolvedByUserId: "local-board"` with both agent fields null,
+    // which made an agent's withdrawal indistinguishable from the board's.
+    expect(interaction.resolvedByAgentId).toBe(agentId);
+    expect(interaction.resolvedByRunId).toBe(runId);
+    expect(interaction.resolvedByUserId).toBeNull();
+  });
+
+  it("refuses to let an agent run resolve a human_only interaction", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent("HONLY");
+    const issueId = await seedIssue(companyId, "HONLY", agentId);
+    const runId = await seedRun(companyId, agentId, issueId);
+    const interactionId = await seedPendingAskUserQuestionsWithPolicy(
+      companyId,
+      issueId,
+      "human_only",
+      agentId,
+    );
+
+    const res = await request(app())
+      .post(`/api/issues/${issueId}/interactions/${interactionId}/respond`)
+      .set("X-Paperclip-Run-Id", runId)
+      .send({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] });
+
+    // The gate exists precisely to keep agent-invented data out of a decision.
+    // While agent runs resolved to the board actor it was inert, and the answer
+    // was then stored as if the board had given it.
+    expect(res.status).toBe(403);
+
+    const [interaction] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(interaction.status).toBe("pending");
+    expect(interaction.resolvedByAgentId).toBeNull();
+    expect(interaction.resolvedByUserId).toBeNull();
   });
 });
