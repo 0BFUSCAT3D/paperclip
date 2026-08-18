@@ -19,6 +19,7 @@ import {
   userSecretDefinitions,
 } from "@paperclipai/db";
 import type {
+  ActorAuthSource,
   AgentApiKeyScope,
   AgentEnvConfig,
   CompanySecretBindingTarget,
@@ -585,7 +586,10 @@ type SecretConsumerContext = {
   responsibleUserId?: string | null;
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
-  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+  // `run_header` is recorded here for audit only. Agent secret *reads* require
+  // `agent_jwt` (see resolveSecretValueForAgentAccess / listAgentSecretAccess),
+  // so a run-header-attributed actor can never resolve a secret value.
+  actorSource?: Exclude<ActorAuthSource, "none">;
   issueId?: string | null;
   heartbeatRunId?: string | null;
   pluginId?: string | null;

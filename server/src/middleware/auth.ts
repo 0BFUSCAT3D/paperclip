@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -11,6 +11,7 @@ import {
   companyMemberships,
   heartbeatRuns,
   instanceUserRoles,
+  issues,
 } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
@@ -70,6 +71,115 @@ function invalidAgentTokenMessage(token: string) {
     // Malformed and incorrectly signed tokens share the generic failure below.
   }
   return "Agent token did not verify; obtain fresh credentials and retry";
+}
+
+// A finished run must not keep authenticating: `X-Paperclip-Run-Id` is not a
+// secret, so requiring a non-terminal run is what bounds the window in which the
+// header carries any authority at all.
+//
+// Deliberately the same set as HEARTBEAT_RUN_TERMINAL_STATUSES in
+// services/heartbeat.ts, duplicated rather than imported because pulling the
+// heartbeat service into the auth middleware would invert the dependency. Keep
+// the two in sync: a terminal status added there and missed here fails *open*
+// (the finished run keeps authenticating), so re-check this list whenever run
+// statuses change.
+const LOCAL_TRUSTED_RUN_TERMINAL_STATUSES = [
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+] as const;
+
+/**
+ * Resolve the agent behind an `X-Paperclip-Run-Id` header on a credential-less
+ * request in `local_trusted` mode.
+ *
+ * Background (REEA-11): `local_trusted` gives every unauthenticated request the
+ * implicit `local-board` board actor. Agent runs that have no injected
+ * `PAPERCLIP_API_KEY` therefore wrote to the API *as the board*, which made an
+ * agent's own status comment indistinguishable from a human one. Two things
+ * broke downstream, both of which key off actor type rather than the comment
+ * body: the self-comment wake suppression in `POST /issues/:id/comments` stopped
+ * firing (agent woke itself, unbounded), and `supersedeOnUserComment` expired
+ * the agent's own pending `ask_user_questions` before the board ever saw it.
+ *
+ * Attributing the run here fixes every mis-attributed write at once rather than
+ * per endpoint. This is a privilege *reduction* — the request drops implicit
+ * instance-admin board rights and picks up the narrower agent actor, subject to
+ * the same agent-status and scope checks the JWT path applies. The board UI does
+ * not send this header, so board traffic is unaffected.
+ */
+async function resolveLocalTrustedRunActor(
+  db: Db,
+  runId: string | null | undefined,
+): Promise<
+  | {
+    agentId: string;
+    companyId: string;
+    runId: string;
+    responsibleUserId: string | null;
+    keyScope: ReturnType<typeof normalizeAgentApiKeyScope>;
+  }
+  | null
+> {
+  const normalizedRunId = normalizeOptionalString(runId);
+  if (!normalizedRunId || !isUuidLike(normalizedRunId)) return null;
+
+  const run = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+      agentStatus: agents.status,
+      agentCompanyId: agents.companyId,
+    })
+    .from(heartbeatRuns)
+    .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+    .where(
+      and(
+        eq(heartbeatRuns.id, normalizedRunId),
+        notInArray(heartbeatRuns.status, [...LOCAL_TRUSTED_RUN_TERMINAL_STATUSES]),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+
+  if (!run) return null;
+  // Defense in depth: a run row whose agent drifted to another company must not
+  // authenticate, mirroring the JWT and key paths above.
+  if (run.agentCompanyId !== run.companyId) return null;
+  if (run.agentStatus === "terminated" || run.agentStatus === "pending_approval") return null;
+
+  return {
+    agentId: run.agentId,
+    companyId: run.companyId,
+    runId: run.id,
+    responsibleUserId: normalizeOptionalString(run.responsibleUserId),
+    keyScope: await resolveLocalTrustedRunKeyScope(db, run.contextSnapshot),
+  };
+}
+
+/**
+ * Mirror the scope the heartbeat would have signed into this run's JWT
+ * (`localAgentJwtScope` in services/heartbeat.ts). A `skill_test` run is scoped
+ * to its own issue, so resolving it from the run context keeps the header path
+ * from silently handing a skill-test run the broader `standard` scope.
+ */
+async function resolveLocalTrustedRunKeyScope(db: Db, contextSnapshot: Record<string, unknown> | null) {
+  const issueId = typeof contextSnapshot?.issueId === "string" ? contextSnapshot.issueId : null;
+  if (!issueId || !isUuidLike(issueId)) return normalizeAgentApiKeyScope({ kind: "standard" });
+
+  const issue = await db
+    .select({ workMode: issues.workMode })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0] ?? null);
+
+  return issue?.workMode === "skill_test"
+    ? normalizeAgentApiKeyScope({ kind: "skill_test", issueId })
+    : normalizeAgentApiKeyScope({ kind: "standard" });
 }
 
 async function resolveLegacyRunResponsibleUserId(
@@ -264,6 +374,39 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
             source: "session",
+          };
+          next();
+          return;
+        }
+      }
+      // A credential-less request that names a live run is an agent run without
+      // an injected PAPERCLIP_API_KEY. Attribute it to that run's agent instead
+      // of leaving it on the implicit board actor — see
+      // resolveLocalTrustedRunActor (REEA-11).
+      if (opts.deploymentMode === "local_trusted" && runIdHeader) {
+        let runActor: Awaited<ReturnType<typeof resolveLocalTrustedRunActor>> = null;
+        try {
+          runActor = await resolveLocalTrustedRunActor(db, runIdHeader);
+        } catch (err) {
+          logger.warn(
+            { err, runId: runIdHeader, method: req.method, url: req.originalUrl },
+            "Failed to resolve run-attributed actor from X-Paperclip-Run-Id; falling back to implicit board actor",
+          );
+        }
+        if (runActor) {
+          req.actor = {
+            type: "agent",
+            agentId: runActor.agentId,
+            companyId: runActor.companyId,
+            keyId: undefined,
+            keyScope: runActor.keyScope,
+            runId: runActor.runId,
+            onBehalfOfUserId: runActor.responsibleUserId,
+            onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
+              companyId: runActor.companyId,
+              userId: runActor.responsibleUserId,
+            }),
+            source: "run_header",
           };
           next();
           return;

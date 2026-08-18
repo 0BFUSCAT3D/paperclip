@@ -798,6 +798,7 @@ export type {
   AgentChainOfCommandEntry,
   AgentDetail,
   ClearAgentErrorResponse,
+  ActorAuthSource,
   AgentPermissions,
   AgentInstructionsBundleMode,
   AgentInstructionsFileSummary,

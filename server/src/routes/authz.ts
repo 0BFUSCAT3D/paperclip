@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import type { SecretBindingTargetType } from "@paperclipai/shared";
+import type { ActorAuthSource, SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
@@ -201,7 +201,7 @@ export function getActorInfo(req: Request): (
     agentId: string | null;
     runId: string | null;
     agentApiKeyId: string | null;
-    actorSource: "agent_key" | "agent_jwt";
+    actorSource: "agent_key" | "agent_jwt" | "run_header";
   }
   | {
     actorType: "user";
@@ -215,7 +215,10 @@ export function getActorInfo(req: Request): (
 ) {
   assertAuthenticated(req);
   if (req.actor.type === "agent") {
-    const actorSource = req.actor.source === "agent_jwt" ? "agent_jwt" : "agent_key";
+    const actorSource =
+      req.actor.source === "agent_jwt" || req.actor.source === "run_header"
+        ? req.actor.source
+        : "agent_key";
     return {
       actorType: "agent" as const,
       actorId: req.actor.agentId ?? "unknown-agent",
@@ -256,7 +259,7 @@ export type ActorSecretContext = {
   consumerId: string;
   actorType: "agent" | "user";
   actorId: string | null;
-  actorSource: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+  actorSource: Exclude<ActorAuthSource, "none">;
   responsibleUserId: string | null;
 };
 
