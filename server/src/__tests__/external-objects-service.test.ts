@@ -256,6 +256,38 @@ describe("GitHub external object provider", () => {
     expect(JSON.stringify(result)).not.toContain("authorization");
   });
 
+  it("preserves the pull-request head repository identity for fork checks", async () => {
+    const fetch = vi.fn(async () => response({
+      state: "open",
+      draft: false,
+      merged: false,
+      title: "Fork contribution",
+      head: {
+        ref: "feature/fork-change",
+        sha: "a".repeat(40),
+        repo: { full_name: "contributor/app-fork" },
+      },
+    }));
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({
+          headRef: "feature/fork-change",
+          headSha: "a".repeat(40),
+          headRepositoryFullName: "contributor/app-fork",
+        }),
+      }),
+    });
+  });
+
   it.each([
     [
       "open",

@@ -190,6 +190,7 @@ function sampleOutput(
     healthStatus: "unknown",
     summary: null,
     createdByRunId: null,
+    lastModifiedByRunId: null,
     createdAt: new Date(opts.createdAt),
     updatedAt: new Date(opts.createdAt),
     metadata: {

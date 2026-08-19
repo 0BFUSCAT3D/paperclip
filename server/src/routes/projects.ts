@@ -39,6 +39,13 @@ import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
+const PROJECT_WORKSPACE_REPOSITORY_IDENTITY_KEYS = [
+  "repoUrl",
+  "repoRef",
+  "defaultRef",
+  "remoteProvider",
+  "remoteWorkspaceRef",
+] as const;
 
 export function projectRoutes(db: Db) {
   const router = Router();
@@ -58,6 +65,24 @@ export function projectRoutes(db: Db) {
     await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
       allowedDrivers: ["local", "ssh", "sandbox"],
     });
+  }
+
+  function assertProjectWorkspaceRepositoryIdentityAllowed(
+    req: Request,
+    input: Record<string, unknown> | null | undefined,
+    existing?: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent" || !input) return;
+    const changesRepositoryIdentity = PROJECT_WORKSPACE_REPOSITORY_IDENTITY_KEYS.some((key) =>
+      existing
+        ? input[key] !== undefined && input[key] !== existing[key]
+        : input[key] != null
+    );
+    if (changesRepositoryIdentity) {
+      throw forbidden("Agents cannot configure project workspace repository identity.", {
+        code: "project_workspace_repository_identity_board_only",
+      });
+    }
   }
 
   function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
@@ -158,6 +183,7 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
+    assertProjectWorkspaceRepositoryIdentityAllowed(req, workspace as Record<string, unknown> | undefined);
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -286,6 +312,7 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    assertProjectWorkspaceRepositoryIdentityAllowed(req, req.body);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectWorkspaceCommandPaths(req.body),
@@ -328,11 +355,16 @@ export function projectRoutes(db: Db) {
         req,
         collectProjectWorkspaceCommandPaths(req.body),
       );
-      const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
-      if (!workspaceExists) {
+      const existingWorkspace = (await svc.listWorkspaces(id)).find((workspace) => workspace.id === workspaceId);
+      if (!existingWorkspace) {
         res.status(404).json({ error: "Project workspace not found" });
         return;
       }
+      assertProjectWorkspaceRepositoryIdentityAllowed(
+        req,
+        req.body,
+        existingWorkspace as unknown as Record<string, unknown>,
+      );
       const workspace = await svc.updateWorkspace(id, workspaceId, req.body);
       if (!workspace) {
         res.status(422).json({ error: "Invalid project workspace payload" });

@@ -26,6 +26,7 @@ import {
   // Issue
   createIssueSchema,
   updateIssueSchema,
+  approveIssueReviewEvidenceSchema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
@@ -2245,6 +2246,28 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/execution-review-evidence",
+  tags: ["issues"],
+  summary: "Record artifact-bound agent review evidence",
+  description: "Independently verifies one open GitHub pull-request head and advances only to the configured final user approval stage. This does not ship or merge code.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(approveIssueReviewEvidenceSchema),
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
   },
 });
 

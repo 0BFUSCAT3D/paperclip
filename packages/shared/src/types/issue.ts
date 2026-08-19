@@ -742,9 +742,58 @@ export interface IssueExecutionDecision {
   actorUserId: string | null;
   outcome: IssueExecutionDecisionOutcome;
   body: string;
+  reviewCycleId: string | null;
+  requestIdempotencyKey: string | null;
+  artifactWorkProductId: string | null;
+  artifactRevision: string | null;
+  artifactLocatorFingerprint: string | null;
+  reviewerAgentIdSnapshot: string | null;
+  reviewerRunIdSnapshot: string | null;
+  reviewerActorSourceSnapshot: "agent_key" | "agent_jwt" | null;
+  directorUserIdSnapshot: string | null;
+  artifactSnapshot: IssueExecutionArtifactSnapshot | null;
   createdByRunId: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueExecutionArtifactSnapshot {
+  kind: "github_pull_request";
+  provider: "github";
+  canonicalRef: string;
+  locatorFingerprint: string;
+  configuredRepository: {
+    owner: string;
+    repo: string;
+    repoUrl: string;
+  };
+  headRef: string;
+  headSha: string;
+  observedState: "open" | "merged";
+  observedAt: string;
+  workProductTrust: "implicit_standard" | "promoted";
+  reviewer: {
+    agentId: string;
+    runId: string;
+    actorSource: "agent_key" | "agent_jwt";
+  };
+  director: {
+    userId: string;
+  };
+}
+
+export interface IssueExecutionReviewEvidenceReceipt {
+  decisionId: string;
+  reviewCycleId: string;
+  workProductId: string;
+  artifactRevision: string;
+  artifactSnapshot: IssueExecutionArtifactSnapshot;
+}
+
+export interface IssueExecutionReviewEvidenceResponse {
+  issue: Issue;
+  evidence: IssueExecutionReviewEvidenceReceipt;
+  replayed: boolean;
 }
 
 export type IssueWatchdogStatus = "active" | "disabled";

@@ -47,6 +47,7 @@ import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
+  parseGitHubRepositoryReference,
   setBoundedPullRequestCacheEntry,
   type GitHubPullRequestReference,
   type PullRequestMergeDetailsResolver,
@@ -232,18 +233,11 @@ export type ExecutionWorkspaceServiceOptions = {
   workspaceReaperCooldownDays?: number;
 };
 
-function parseGitHubRepository(repoUrl: string | null) {
-  if (!repoUrl) return null;
-  const match = /^(?:https?:\/\/(?:www\.)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i.exec(repoUrl.trim());
-  if (!match) return null;
-  return { owner: match[1]!.toLowerCase(), repo: match[2]!.toLowerCase() };
-}
-
-function pullRequestMatchesWorkspaceRepository(
+export function pullRequestMatchesWorkspaceRepository(
   reference: GitHubPullRequestReference,
   workspace: Pick<ExecutionWorkspaceRow, "repoUrl">,
 ) {
-  const repository = parseGitHubRepository(workspace.repoUrl);
+  const repository = parseGitHubRepositoryReference(workspace.repoUrl);
   return Boolean(
     repository
     && repository.owner === reference.owner.toLowerCase()

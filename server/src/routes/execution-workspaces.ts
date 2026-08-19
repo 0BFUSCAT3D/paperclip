@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
+import { forbidden } from "../errors.js";
 import {
   accessService,
   executionWorkspaceService,
@@ -707,6 +708,17 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+    if (
+      req.actor.type === "agent"
+      && (
+        (req.body.repoUrl !== undefined && req.body.repoUrl !== existing.repoUrl)
+        || (req.body.branchName !== undefined && req.body.branchName !== existing.branchName)
+      )
+    ) {
+      throw forbidden("Agents cannot change execution workspace repository identity.", {
+        code: "execution_workspace_repository_identity_board_only",
+      });
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({

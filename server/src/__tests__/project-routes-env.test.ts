@@ -81,7 +81,13 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "board-user",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+}) {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -89,13 +95,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "board-user",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", projectRoutes({} as any));
@@ -228,6 +228,101 @@ describe("project env routes", () => {
           envKeys: ["PLAIN_KEY"],
         },
       }),
+    );
+  });
+
+  it("denies project workspace repository identity changes by agents", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.listWorkspaces.mockResolvedValue([{
+      id: "workspace-1",
+      repoUrl: "https://github.com/acme/app.git",
+      repoRef: null,
+      defaultRef: "main",
+      remoteProvider: "github",
+      remoteWorkspaceRef: null,
+    }]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_jwt",
+      runId: "run-1",
+    });
+    const res = await request(app)
+      .patch("/api/projects/project-1/workspaces/workspace-1")
+      .send({ repoUrl: "https://github.com/attacker/unrelated.git" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("project_workspace_repository_identity_board_only");
+    expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("denies creation of agent-authored project workspace repository identity", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_jwt",
+      runId: "run-1",
+    });
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces")
+      .send({ name: "Injected", repoUrl: "https://github.com/attacker/unrelated.git" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("project_workspace_repository_identity_board_only");
+    expect(mockProjectService.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("allows board callers to create project workspace repository identity", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.createWorkspace.mockResolvedValue({
+      id: "workspace-1",
+      name: "Configured",
+      repoUrl: "https://github.com/acme/app.git",
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/projects/project-1/workspaces")
+      .send({ name: "Configured", repoUrl: "https://github.com/acme/app.git" });
+
+    expect(res.status).toBe(201);
+    expect(mockProjectService.createWorkspace).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ repoUrl: "https://github.com/acme/app.git" }),
+    );
+  });
+
+  it("allows board callers to change project workspace repository identity", async () => {
+    const workspace = {
+      id: "workspace-1",
+      repoUrl: "https://github.com/acme/app.git",
+      repoRef: null,
+      defaultRef: "main",
+      remoteProvider: "github",
+      remoteWorkspaceRef: null,
+    };
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.listWorkspaces.mockResolvedValue([workspace]);
+    mockProjectService.updateWorkspace.mockResolvedValue({
+      ...workspace,
+      repoUrl: "https://github.com/acme/replacement.git",
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .patch("/api/projects/project-1/workspaces/workspace-1")
+      .send({ repoUrl: "https://github.com/acme/replacement.git" });
+
+    expect(res.status).toBe(200);
+    expect(mockProjectService.updateWorkspace).toHaveBeenCalledWith(
+      "project-1",
+      "workspace-1",
+      expect.objectContaining({ repoUrl: "https://github.com/acme/replacement.git" }),
     );
   });
 });

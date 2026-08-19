@@ -28,6 +28,7 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     sourceTrust: row.sourceTrust ?? null,
     createdByRunId: row.createdByRunId ?? null,
+    lastModifiedByRunId: row.lastModifiedByRunId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -58,7 +59,11 @@ export function workProductService(db: Db) {
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
-            .set({ isPrimary: false, updatedAt: new Date() })
+            .set({
+              isPrimary: false,
+              lastModifiedByRunId: data.lastModifiedByRunId ?? null,
+              updatedAt: new Date(),
+            })
             .where(
               and(
                 eq(issueWorkProducts.companyId, companyId),
@@ -92,7 +97,11 @@ export function workProductService(db: Db) {
         if (patch.isPrimary === true) {
           await tx
             .update(issueWorkProducts)
-            .set({ isPrimary: false, updatedAt: new Date() })
+            .set({
+              isPrimary: false,
+              lastModifiedByRunId: patch.lastModifiedByRunId ?? null,
+              updatedAt: new Date(),
+            })
             .where(
               and(
                 eq(issueWorkProducts.companyId, existing.companyId),
@@ -146,6 +155,7 @@ export function workProductService(db: Db) {
         executionWorkspaceId: row.executionWorkspaceId ?? null,
         runtimeServiceId: row.runtimeServiceId ?? null,
         createdByRunId: row.createdByRunId ?? null,
+        lastModifiedByRunId: row.createdByRunId ?? null,
         sourceTrust: row.sourceTrust ?? null,
       }));
       // Chunked writes are wrapped in a single transaction so a large import

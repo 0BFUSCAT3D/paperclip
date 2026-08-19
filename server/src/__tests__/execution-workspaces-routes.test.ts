@@ -161,6 +161,57 @@ describe.sequential("execution workspace routes", () => {
     });
   });
 
+  it("denies repository identity changes by agents", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      repoUrl: "https://github.com/acme/app.git",
+      branchName: "feature/current",
+      status: "active",
+      metadata: null,
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_jwt",
+      runId: "run-1",
+    }))
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ repoUrl: "https://github.com/attacker/unrelated.git" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("execution_workspace_repository_identity_board_only");
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows board callers to change execution workspace repository identity", async () => {
+    const existing = {
+      id: "workspace-1",
+      companyId: "company-1",
+      repoUrl: "https://github.com/acme/app.git",
+      branchName: "feature/current",
+      status: "active",
+      metadata: null,
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existing);
+    mockExecutionWorkspaceService.update.mockResolvedValue({
+      ...existing,
+      repoUrl: "https://github.com/acme/replacement.git",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ repoUrl: "https://github.com/acme/replacement.git" });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledWith(
+      "workspace-1",
+      expect.objectContaining({ repoUrl: "https://github.com/acme/replacement.git" }),
+    );
+  });
+
   it("rejects invalid workspace overview pagination", async () => {
     const res = await request(createApp())
       .get("/api/companies/company-1/workspace-overview?limit=1000");

@@ -1106,6 +1106,36 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
   });
 
+  it("does not trust a board-claimed creator run as work-product modifier provenance", async () => {
+    const claimedRunId = "66666666-6666-4666-8666-666666666666";
+    const app = await createApp(
+      boardActor(),
+      createRunContextDb({}, [{
+        id: claimedRunId,
+        companyId,
+        agentId: ownerAgentId,
+        agentCompanyId: companyId,
+        contextSnapshot: {},
+      }]),
+    );
+
+    await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "artifact",
+      provider: "test",
+      title: "Board-submitted artifact",
+      createdByRunId: claimedRunId,
+    }).expect(201);
+
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issueId,
+      companyId,
+      expect.objectContaining({
+        createdByRunId: claimedRunId,
+        lastModifiedByRunId: null,
+      }),
+    );
+  }, 10_000);
+
   it.each([
     [
       "work product create",
@@ -1481,7 +1511,10 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       expect.objectContaining({
         assigneeAdapterOverrides: { modelProfile: "cheap" },
+        actorAgentId: null,
+        actorUserId: "board-user",
       }),
+      expect.any(Object),
     );
   });
 
@@ -1514,7 +1547,12 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
-      expect.objectContaining({ title: "Updated after commit" }),
+      expect.objectContaining({
+        title: "Updated after commit",
+        actorAgentId: ownerAgentId,
+        actorUserId: null,
+      }),
+      expect.any(Object),
     );
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
@@ -1663,7 +1701,10 @@ describe("agent issue mutation checkout ownership", () => {
       expect.objectContaining({
         status: "blocked",
         unblockDescriptor: { owner: "board", action: "Review the blocker" },
+        actorAgentId: null,
+        actorUserId: "board-user",
       }),
+      expect.any(Object),
     );
   });
 
@@ -1930,7 +1971,15 @@ describe("agent issue mutation checkout ownership", () => {
       const res = await request(app).patch(`/api/issues/${issueId}`).send({ status });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issueId,
+        expect.objectContaining({
+          status,
+          actorAgentId: peerAgentId,
+          actorUserId: null,
+        }),
+        expect.any(Object),
+      );
     });
 
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {
@@ -2114,7 +2163,12 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalledWith(
         issueId,
-        expect.objectContaining({ assigneeAgentId: peerAgentId }),
+        expect.objectContaining({
+          assigneeAgentId: peerAgentId,
+          actorAgentId: peerAgentId,
+          actorUserId: null,
+        }),
+        expect.any(Object),
       );
     });
 
