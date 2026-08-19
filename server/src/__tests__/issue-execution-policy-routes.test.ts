@@ -293,6 +293,685 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("does not let a board user mark done during an active agent review", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Active agent review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done", comment: "Ship it" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Only the active reviewer or approver");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let a board user remove the active policy while marking done", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Active governed review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done", executionPolicy: null, comment: "Remove the review and ship" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toEqual({ code: "execution_policy_decision_policy_change_denied" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let an agent remove existing execution policy governance", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Governed review",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done", executionPolicy: null, comment: "Bypass the review" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({ code: "execution_policy_governance_denied" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("lets the assignee agent update a monitor without changing existing governance", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{
+          id: "22222222-2222-4222-8222-222222222222",
+          type: "agent",
+          agentId: "44444444-4444-4444-8444-444444444444",
+        }],
+      }],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Governed work with monitor",
+      executionPolicy: policy,
+      executionState: null,
+      monitorNextCheckAt: null,
+      monitorWakeRequestedAt: null,
+      monitorLastTriggeredAt: null,
+      monitorAttemptCount: 0,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          ...policy,
+          monitor: {
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+            notes: "Wait for external QA.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({
+          stages: policy.stages,
+          monitor: expect.objectContaining({ scheduledBy: "assignee" }),
+        }),
+        monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("lets the assignee agent update a monitor on legacy governance without explicit ids", async () => {
+    const legacyPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{
+          type: "agent",
+          agentId: "44444444-4444-4444-8444-444444444444",
+        }],
+      }],
+    };
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Legacy governed work with monitor",
+      executionPolicy: legacyPolicy,
+      executionState: null,
+      monitorNextCheckAt: null,
+      monitorWakeRequestedAt: null,
+      monitorLastTriggeredAt: null,
+      monitorAttemptCount: 0,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          ...legacyPolicy,
+          monitor: {
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+            notes: "Wait for external QA.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({
+          monitor: expect.objectContaining({ scheduledBy: "assignee" }),
+        }),
+        monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("materializes legacy execution identities before starting a governed stage", async () => {
+    const legacyPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ type: "user", userId: "local-board" }],
+      }],
+    };
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Legacy governed handoff",
+      executionPolicy: legacyPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    const persistedPatch = mockIssueService.update.mock.calls[0]?.[1] as {
+      executionPolicy?: { stages?: Array<{ id?: string; participants?: Array<{ id?: string }> }> };
+      executionState?: { currentStageId?: string };
+    };
+    const persistedStage = persistedPatch.executionPolicy?.stages?.[0];
+    expect(persistedStage?.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(persistedStage?.participants?.[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(persistedPatch.executionState?.currentStageId).toBe(persistedStage?.id);
+  });
+
+  it("does not clear an active legacy stage during an exact-policy monitor update", async () => {
+    const legacyPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{
+          type: "agent",
+          agentId: "44444444-4444-4444-8444-444444444444",
+        }],
+      }],
+    };
+    const activePolicy = normalizeIssueExecutionPolicy(legacyPolicy)!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Active legacy governed review",
+      executionPolicy: legacyPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: activePolicy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+      monitorNextCheckAt: null,
+      monitorWakeRequestedAt: null,
+      monitorLastTriggeredAt: null,
+      monitorAttemptCount: 0,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          ...legacyPolicy,
+          monitor: {
+            nextCheckAt: "2026-12-01T12:00:00.000Z",
+            notes: "Do not dissolve the active stage.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toEqual({
+      code: "execution_policy_stage_identity_mismatch",
+      currentStageId: activePolicy.stages[0].id,
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not let a board assignee patch bypass a mismatched legacy stage decision", async () => {
+    const legacyPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{
+          type: "agent",
+          agentId: "44444444-4444-4444-8444-444444444444",
+        }],
+      }],
+    };
+    const activePolicy = normalizeIssueExecutionPolicy(legacyPolicy)!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Active legacy governed review",
+      executionPolicy: legacyPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: activePolicy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "done",
+        assigneeUserId: "local-board",
+        comment: "Bypass the missing stage identity.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toEqual({
+      code: "execution_policy_stage_identity_mismatch",
+      currentStageId: activePolicy.stages[0].id,
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "reassigns",
+      body: { assigneeAgentId: "55555555-5555-4555-8555-555555555555" },
+      expectedAssignees: {
+        assigneeAgentId: "55555555-5555-4555-8555-555555555555",
+      },
+    },
+    {
+      name: "unassigns",
+      body: { assigneeAgentId: null, assigneeUserId: null },
+      expectedAssignees: { assigneeAgentId: null, assigneeUserId: null },
+    },
+  ])("$name a mismatched legacy stage without restoring its return assignee", async ({ body, expectedAssignees }) => {
+    const legacyPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{
+          type: "agent",
+          agentId: "44444444-4444-4444-8444-444444444444",
+        }],
+      }],
+    };
+    const activePolicy = normalizeIssueExecutionPolicy(legacyPolicy)!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Active legacy governed review",
+      executionPolicy: legacyPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: activePolicy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_progress",
+        executionState: null,
+        ...expectedAssignees,
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("rejects a decision when the execution stage changed before the update lock", async () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Concurrent stage advance",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        returnAssignee: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({
+      ...issue,
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionState: {
+        ...issue.executionState,
+        currentStageId: policy.stages[1].id,
+        currentStageIndex: 1,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: "local-board" },
+        completedStageIds: [policy.stages[0].id],
+      },
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done", comment: "Review passed" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toEqual({
+      code: "execution_stage_stale",
+      expectedStageId: policy.stages[0].id,
+      currentStageId: policy.stages[1].id,
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a nonterminal update when governance appeared before the row lock", async () => {
+    const initialIssue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Initially ungoverned work",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+      }],
+    })!;
+    mockIssueService.getById.mockResolvedValue(initialIssue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue({
+      ...initialIssue,
+      status: "in_review",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "44444444-4444-4444-8444-444444444444" },
+        returnAssignee: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    });
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toEqual({
+      code: "execution_stage_stale",
+      expectedStageId: null,
+      currentStageId: policy.stages[0].id,
+    });
+    expect(mockDb.transaction).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("uses a stable fingerprint for stored policies without explicit ids", async () => {
+    const legacyPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+      }],
+    };
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      reviewPolicy: "anyone",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Legacy governed work",
+      executionPolicy: legacyPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ title: "Legacy governed work, renamed" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({ title: "Legacy governed work, renamed" }),
+      expect.anything(),
+    );
+  });
+
   it("rejects an agent-authored in_review transition without a review path", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -1010,6 +1689,7 @@ describe("issue execution policy routes", () => {
         actorAgentId: null,
         actorUserId: "local-board",
       }),
+      expect.anything(),
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(updatePatch.status).toBeUndefined();

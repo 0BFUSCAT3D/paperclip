@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  buildIssueMonitorClearedPatch,
+  buildIssueMonitorTriggeredPatch,
+  issueExecutionPolicyGovernanceEqual,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -567,6 +574,106 @@ describe("issue execution policy transitions", () => {
           commentBody: "Trying to bypass review",
         }),
       ).toThrow("Only the active reviewer or approver can advance");
+    });
+
+    it("board override cannot mark done during an active agent review", () => {
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { userId: boardUserId },
+          allowBoardOverride: true,
+          commentBody: "Trying to bypass review",
+        }),
+      ).toThrow("Only the active reviewer or approver can advance");
+    });
+
+    it("cannot remove execution governance in the same request as a stage approval", () => {
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy: null,
+          previousPolicy: policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { userId: boardUserId },
+          allowBoardOverride: true,
+          commentBody: "Removing the review and shipping",
+        }),
+      ).toThrow("Execution policy governance cannot change in the same request as a stage approval");
+    });
+
+    it("cannot remove downstream stages while approving the active stage", () => {
+      const approvalPolicy = makePolicy([
+        { type: "approval", participants: [{ type: "user", userId: boardUserId }] },
+        { type: "approval", participants: [{ type: "user", userId: ctoUserId }] },
+      ]);
+      const shortenedPolicy: IssueExecutionPolicy = {
+        ...approvalPolicy,
+        stages: [approvalPolicy.stages[0]],
+      };
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: null,
+            assigneeUserId: boardUserId,
+            executionPolicy: approvalPolicy,
+            executionState: {
+              status: "pending",
+              currentStageId: approvalPolicy.stages[0].id,
+              currentStageIndex: 0,
+              currentStageType: "approval",
+              currentParticipant: { type: "user", userId: boardUserId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy: shortenedPolicy,
+          previousPolicy: approvalPolicy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { userId: boardUserId },
+          allowBoardOverride: true,
+          commentBody: "Approving without the final approver",
+        }),
+      ).toThrow("Execution policy governance cannot change in the same request as a stage approval");
     });
 
     it("board override can cancel an active review without recording an approval decision", () => {
@@ -1570,6 +1677,93 @@ describe("issue execution policy transitions", () => {
       });
     });
 
+    it("does not approve when unchanged legacy governance normalizes to a different stage identity", () => {
+      const legacyPolicy = {
+        stages: [{
+          type: "review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        }],
+      };
+      const activePolicy = normalizeIssueExecutionPolicy(legacyPolicy)!;
+      const reloadedPolicy = normalizeIssueExecutionPolicy(legacyPolicy)!;
+
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: legacyPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: activePolicy.stages[0].id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: reloadedPolicy,
+        previousPolicy: reloadedPolicy,
+        executionPolicyGovernanceChanged: false,
+        requestedStatus: "done",
+        requestedAssigneePatch: { assigneeUserId: boardUserId },
+        actor: { userId: boardUserId },
+        commentBody: "Ship without the active reviewer",
+        allowBoardOverride: true,
+      })).toThrow("The active execution stage identity does not match the stored execution policy");
+    });
+
+    it.each([
+      {
+        name: "reassign",
+        requestedAssigneePatch: { assigneeAgentId: ctoAgentId },
+      },
+      {
+        name: "unassign",
+        requestedAssigneePatch: { assigneeAgentId: null, assigneeUserId: null },
+      },
+    ])("preserves a board $name while it clears a mismatched legacy stage", ({ requestedAssigneePatch }) => {
+      const legacyPolicy = {
+        stages: [{
+          type: "review",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        }],
+      };
+      const activePolicy = normalizeIssueExecutionPolicy(legacyPolicy)!;
+      const reloadedPolicy = normalizeIssueExecutionPolicy(legacyPolicy)!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: legacyPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: activePolicy.stages[0].id,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: reloadedPolicy,
+        previousPolicy: reloadedPolicy,
+        executionPolicyGovernanceChanged: false,
+        requestedAssigneePatch,
+        actor: { userId: boardUserId },
+        allowBoardOverride: true,
+      });
+
+      expect(result.patch).toEqual({ status: "in_progress", executionState: null });
+    });
+
     it("reassigns the active stage when the current participant is removed", () => {
       const policy = makePolicy([
         {
@@ -1675,7 +1869,9 @@ describe("issue execution policy transitions", () => {
 
     it("auto-clears a scheduled monitor when the issue moves to done", () => {
       const policy = normalizeIssueExecutionPolicy({
+        mode: "auto",
         stages: [],
+        maxReviewRounds: 5,
         monitor: {
           nextCheckAt: "2026-04-11T12:30:00.000Z",
           notes: "Check deployment",
@@ -1723,7 +1919,11 @@ describe("issue execution policy transitions", () => {
         actor: { agentId: coderAgentId },
       });
 
-      expect(result.patch.executionPolicy).toBeNull();
+      expect(issueExecutionPolicyGovernanceEqual(
+        result.patch.executionPolicy as IssueExecutionPolicy | null,
+        policy,
+      )).toBe(true);
+      expect((result.patch.executionPolicy as IssueExecutionPolicy).monitor).toBeUndefined();
       expect(result.patch.monitorNextCheckAt).toBeNull();
       expect(result.patch.executionState).toMatchObject({
         monitor: {
@@ -1731,6 +1931,43 @@ describe("issue execution policy transitions", () => {
           clearReason: "done",
         },
       });
+    });
+
+    it("preserves non-monitor governance when a monitor is triggered or cleared", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        mode: "auto",
+        stages: [],
+        maxReviewRounds: 5,
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Check deployment",
+          scheduledBy: "board",
+        },
+      })!;
+      const issue = {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: null,
+        monitorAttemptCount: 0,
+        monitorNextCheckAt: new Date("2026-04-11T12:30:00.000Z"),
+        monitorLastTriggeredAt: null,
+        monitorNotes: "Check deployment",
+        monitorScheduledBy: "board",
+      };
+
+      const patches = [
+        buildIssueMonitorTriggeredPatch({ issue, policy, triggeredAt: new Date("2026-04-11T12:30:00.000Z") }),
+        buildIssueMonitorClearedPatch({ issue, policy, clearReason: "manual" }),
+      ];
+      for (const patch of patches) {
+        expect(issueExecutionPolicyGovernanceEqual(
+          patch.executionPolicy as IssueExecutionPolicy | null,
+          policy,
+        )).toBe(true);
+        expect((patch.executionPolicy as IssueExecutionPolicy).monitor).toBeUndefined();
+      }
     });
 
     it("rejects explicitly scheduling a monitor on an invalid issue state", () => {

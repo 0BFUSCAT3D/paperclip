@@ -259,6 +259,10 @@ Invariants:
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
 - an `in_review -> done | cancelled` verdict is authorized against the current review policy while the issue row is locked; a policy change in the same request or a concurrent request cannot relax that verdict gate
+- execution-policy review and approval decisions are recomputed against the current execution policy, stage, participant, assignment, and monitor state while the issue row is locked; a stale decision request fails with `409 execution_stage_stale`
+- stored execution-policy stage and participant IDs are materialized before a legacy policy starts a stage; a pending stage with an identity that is absent from otherwise unchanged governance fails closed
+- an agent may install execution-policy governance on an ungoverned issue, but cannot remove or replace stored governance; an authorized assignee may still update monitor configuration without changing governance, and monitor trigger/clear transitions preserve every non-monitor governance field
+- board override may cancel or reassign a stage but cannot mark it `done` unless that board user is the active participant; execution-policy governance cannot change in the same request as a stage approval
 - accepting or rejecting the review-confirmation interaction locks the issue row before resolving the interaction and reauthorizes against the current review policy in that transaction
 - while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
