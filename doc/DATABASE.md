@@ -178,6 +178,14 @@ These rows are company-scoped and user-scoped. A missing row means the user is j
 
 Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
 
+## Artifact-bound execution review evidence
+
+An `issue_execution_decisions` row may record a review approval for one independently resolved GitHub pull-request head. These rows carry an all-or-none evidence tuple: review cycle and idempotency keys, the issue-scoped work product, exact head revision and locator fingerprint, immutable reviewer agent/run/source snapshots, the expected director user snapshot, and the structured artifact snapshot. The database constrains the work product to the same company and issue and rejects partial tuples. Ordinary execution decisions keep this tuple entirely null; a generic issue PATCH to `done` is not artifact review evidence.
+
+Reviewer, run, actor-source, and director values are copied into the evidence row and artifact snapshot so later nullable foreign-key cleanup does not silently rewrite the recorded provenance. `created_by_run_id` may still become null if its heartbeat run is deleted. This is not an independent compliance archive: deleting the issue cascades its execution decisions, and explicitly deleting an execution decision removes that evidence row.
+
+The review-evidence row records an observed open PR head and advances only from the agent review stage to the exact configured user approval stage. It does not approve the final stage, ship code, merge GitHub state, or claim database/GitHub atomicity. Any later shipping operation must independently resolve and compare the current PR artifact again.
+
 ## Decision training snapshot retention
 
 `decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.

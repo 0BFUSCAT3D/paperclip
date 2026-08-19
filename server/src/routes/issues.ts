@@ -29,6 +29,7 @@ import {
 import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
+  approveIssueReviewEvidenceSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
   withdrawIssueThreadInteractionSchema,
@@ -53,6 +54,7 @@ import {
   upsertIssueWatchdogSchema,
   linkIssueApprovalSchema,
   issueDocumentKeySchema,
+  issueExecutionArtifactSnapshotSchema,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
@@ -219,6 +221,16 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import {
+  createPullRequestMergeDetailsResolver,
+  type PullRequestMergeDetailsResolver,
+} from "../services/github-pull-request-merge.js";
+import {
+  findIssueExecutionReviewEvidenceReceipt,
+  recordIssueExecutionReviewEvidence,
+  recoverIssueExecutionReviewEvidenceReceipt,
+  type ReviewEvidenceAgentActor,
+} from "../services/issue-execution-review-evidence.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -1770,6 +1782,9 @@ function monitorPoliciesEqual(left: NormalizedExecutionPolicy | null, right: Nor
 
 type IssueExecutionTransitionInput = {
   status: string;
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  executionWorkspaceId?: string | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   responsibleUserId?: string | null;
@@ -1799,6 +1814,9 @@ function stableStructuralValue(value: unknown): unknown {
 function issueExecutionTransitionFingerprint(issue: IssueExecutionTransitionInput) {
   return JSON.stringify({
     status: issue.status,
+    projectId: issue.projectId ?? null,
+    projectWorkspaceId: issue.projectWorkspaceId ?? null,
+    executionWorkspaceId: issue.executionWorkspaceId ?? null,
     assigneeAgentId: issue.assigneeAgentId ?? null,
     assigneeUserId: issue.assigneeUserId ?? null,
     responsibleUserId: issue.responsibleUserId ?? null,
@@ -2865,6 +2883,7 @@ export function issueRoutes(
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
     issueListDiagnostics?: IssueListDiagnostics;
+    pullRequestMergeDetailsResolver?: PullRequestMergeDetailsResolver;
     approveToolActionRequest?: (input: {
       companyId: string;
       issueId: string;
@@ -2907,6 +2926,8 @@ export function issueRoutes(
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
+  const resolvePullRequestDetails = opts.pullRequestMergeDetailsResolver
+    ?? createPullRequestMergeDetailsResolver(db);
   const documentsSvc = documentService(db);
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
@@ -7704,6 +7725,7 @@ export function issueRoutes(
     const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, issue.companyId, req.body, "create");
     if (createdByRunId === undefined) return;
     createInput.createdByRunId = createdByRunId;
+    createInput.lastModifiedByRunId = req.actor.type === "agent" ? createdByRunId : null;
     if (requiresPaperclipAttachmentMetadata(createInput)) {
       createInput.metadata = await canonicalizePaperclipArtifactMetadata({
         issue,
@@ -7807,7 +7829,7 @@ export function issueRoutes(
         }
         return tx
           .update(issueWorkProducts)
-          .set(markPromoted)
+          .set({ ...markPromoted, lastModifiedByRunId: actor.runId ?? null })
           .where(and(
             eq(issueWorkProducts.id, req.body.sourceArtifactId),
             eq(issueWorkProducts.issueId, issue.id),
@@ -7840,6 +7862,7 @@ export function issueRoutes(
           },
           sourceTrust: promotionTrust,
           createdByRunId: actor.runId ?? null,
+          lastModifiedByRunId: actor.runId ?? null,
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -7894,6 +7917,20 @@ export function issueRoutes(
     const createdByRunId = await resolveWorkProductCreatedByRunId(req, res, existing.companyId, req.body, "update");
     if (createdByRunId === undefined && Object.prototype.hasOwnProperty.call(req.body, "createdByRunId")) return;
     if (createdByRunId !== undefined) patch.createdByRunId = createdByRunId;
+    const evidenceCriticalKeys = new Set([
+      "projectId",
+      "executionWorkspaceId",
+      "type",
+      "provider",
+      "url",
+      "status",
+      "isPrimary",
+      "sourceTrust",
+      "createdByRunId",
+    ]);
+    if (Object.keys(req.body).some((key) => evidenceCriticalKeys.has(key))) {
+      patch.lastModifiedByRunId = actor.runId ?? null;
+    }
     if (requiresPaperclipAttachmentMetadata(patch, existing)) {
       if (patch.metadata !== undefined) {
         patch.metadata = await canonicalizePaperclipArtifactMetadata({
@@ -9089,6 +9126,57 @@ export function issueRoutes(
         comment: result.comment,
         wakeQueued,
       });
+    },
+  );
+
+  router.post(
+    "/issues/:id/execution-review-evidence",
+    validate(approveIssueReviewEvidenceSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!existing) return;
+      const actorInfo = getActorInfo(req);
+      if (actorInfo.actorType !== "agent" || !actorInfo.agentId || !actorInfo.runId) {
+        throw forbidden("Artifact review evidence requires the active agent reviewer and its persisted run.", {
+          code: "execution_review_evidence_agent_run_required",
+        });
+      }
+      const actor: ReviewEvidenceAgentActor = {
+        actorType: "agent",
+        actorId: actorInfo.actorId,
+        agentId: actorInfo.agentId,
+        runId: actorInfo.runId,
+        agentApiKeyId: actorInfo.agentApiKeyId,
+        actorSource: actorInfo.actorSource,
+      };
+      const receipt = await findIssueExecutionReviewEvidenceReceipt({
+        db,
+        companyId: existing.companyId,
+        issueId: existing.id,
+        idempotencyKey: req.body.idempotencyKey,
+      });
+      if (receipt) {
+        res.status(200).json({
+          issue: existing,
+          evidence: recoverIssueExecutionReviewEvidenceReceipt({ row: receipt, request: req.body, actor }),
+          replayed: true,
+        });
+        return;
+      }
+      if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+      if (!(await assertApprovalMutationAllowedByRunContext(req, res, existing))) return;
+      const result = await recordIssueExecutionReviewEvidence({
+        db,
+        issueService: svc,
+        activityLogger: logActivity,
+        existing,
+        actor,
+        request: req.body,
+        resolver: resolvePullRequestDetails,
+        assertSnapshotCurrent: assertExecutionTransitionSnapshotCurrent,
+      });
+      res.status(result.replayed ? 200 : 201).json(result);
     },
   );
 

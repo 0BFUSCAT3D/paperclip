@@ -8,12 +8,18 @@ export type GitHubPullRequestReference = {
   number: number;
 };
 
-export type PullRequestMergeState = "merged" | "open" | "unknown";
+export type GitHubRepositoryReference = {
+  owner: string;
+  repo: string;
+};
+
+export type PullRequestMergeState = "merged" | "open" | "closed" | "unknown";
 
 export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
   headSha: string | null;
+  headRepositoryFullName?: string | null;
 };
 
 export type PullRequestMergeStateResolver = (
@@ -44,6 +50,14 @@ export function setBoundedPullRequestCacheEntry<T>(
 
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
 const GITHUB_PULL_REQUEST_SHORTHAND_PATTERN = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9][0-9]*)\b/g;
+const GITHUB_REPOSITORY_URL_PATTERN = /^(?:https?:\/\/(?:www\.)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i;
+
+export function parseGitHubRepositoryReference(repoUrl: string | null | undefined): GitHubRepositoryReference | null {
+  if (!repoUrl) return null;
+  const match = GITHUB_REPOSITORY_URL_PATTERN.exec(repoUrl.trim());
+  if (!match) return null;
+  return { owner: match[1]!.toLowerCase(), repo: match[2]!.toLowerCase() };
+}
 
 function addPullRequestReference(
   references: Map<string, GitHubPullRequestReference>,
@@ -95,12 +109,20 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
     });
     if (!result.ok) return { state: "unknown", headRef: null, headSha: null };
     const data = readRecord(result.snapshot.data);
+    const state = result.snapshot.statusKey === "merged" || data?.merged === true
+      ? "merged"
+      : result.snapshot.statusKey === "open" && data?.state === "open"
+        ? "open"
+        : result.snapshot.statusKey === "closed" || data?.state === "closed"
+          ? "closed"
+          : "unknown";
     return {
-      state: result.snapshot.statusKey === "merged" || data?.merged === true
-        ? "merged"
-        : "open",
+      state,
       headRef: typeof data?.headRef === "string" ? data.headRef : null,
       headSha: typeof data?.headSha === "string" ? data.headSha : null,
+      headRepositoryFullName: typeof data?.headRepositoryFullName === "string"
+        ? data.headRepositoryFullName
+        : null,
     };
   };
 }

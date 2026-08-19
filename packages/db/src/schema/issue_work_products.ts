@@ -1,10 +1,12 @@
 import {
   boolean,
+  foreignKey,
   index,
   jsonb,
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
@@ -21,7 +23,7 @@ export const issueWorkProducts = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
-    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+    issueId: uuid("issue_id").notNull(),
     executionWorkspaceId: uuid("execution_workspace_id")
       .references(() => executionWorkspaces.id, { onDelete: "set null" }),
     runtimeServiceId: uuid("runtime_service_id")
@@ -39,6 +41,7 @@ export const issueWorkProducts = pgTable(
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    lastModifiedByRunId: uuid("last_modified_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -62,5 +65,15 @@ export const issueWorkProducts = pgTable(
       table.companyId,
       table.updatedAt,
     ),
+    scopedIdentityUq: uniqueIndex("issue_work_products_scoped_identity_uq").on(
+      table.id,
+      table.companyId,
+      table.issueId,
+    ),
+    issueScopeFk: foreignKey({
+      columns: [table.issueId, table.companyId],
+      foreignColumns: [issues.id, issues.companyId],
+      name: "issue_work_products_issue_scope_fk",
+    }).onDelete("cascade"),
   }),
 );

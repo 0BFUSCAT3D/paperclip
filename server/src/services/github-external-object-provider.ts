@@ -196,6 +196,9 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const authorLogin = asNestedString(body, "user", "login");
   const headRef = asNestedString(body, "head", "ref");
   const headSha = asNestedString(body, "head", "sha");
+  const head = asRecord(body.head);
+  const headRepository = head ? asRecord(head.repo) : null;
+  const headRepositoryFullName = headRepository ? asString(headRepository.full_name) : null;
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
 
@@ -254,6 +257,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
+      ...(headRepositoryFullName ? { headRepositoryFullName } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
     },

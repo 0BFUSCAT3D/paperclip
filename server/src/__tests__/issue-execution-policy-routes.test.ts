@@ -53,13 +53,24 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: mockDbInsertValues })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  insert: mockDbInsert,
+  transaction: vi.fn(async (callback: (tx: {
+    select: typeof mockDbSelect;
+    insert: typeof mockDbInsert;
+  }) => Promise<unknown>) => callback({ select: mockDbSelect, insert: mockDbInsert })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockPullRequestMergeDetailsResolver = vi.hoisted(() => vi.fn(async () => ({
+  state: "open" as const,
+  headRef: "codex/reviewed-change",
+  headSha: "abcdef0123456789abcdef0123456789abcdef01",
+  headRepositoryFullName: "acme/reeve",
+})));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   listForIssue: vi.fn(async () => []),
@@ -177,9 +188,203 @@ async function createApp(actor?: TestActor) {
     };
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any, {
+    pullRequestMergeDetailsResolver: mockPullRequestMergeDetailsResolver,
+  }));
   app.use(errorHandler);
   return app;
+}
+
+function mockSelectRowsOnce(rows: unknown[]) {
+  mockDbSelectWhere.mockImplementationOnce(() => ({
+    for: () => Promise.resolve(rows),
+    then: (
+      onFulfilled: (value: unknown[]) => unknown,
+      onRejected?: (reason: unknown) => unknown,
+    ) => Promise.resolve(rows).then(onFulfilled, onRejected),
+  }));
+}
+
+function reviewEvidenceFixture() {
+  const reviewerAgentId = "44444444-4444-4444-8444-444444444444";
+  const builderAgentId = "33333333-3333-4333-8333-333333333333";
+  const reviewerRunId = "55555555-5555-4555-8555-555555555555";
+  const builderRunId = "66666666-6666-4666-8666-666666666666";
+  const projectId = "77777777-7777-4777-8777-777777777777";
+  const executionWorkspaceId = "88888888-8888-4888-8888-888888888888";
+  const projectWorkspaceId = "99999999-9999-4999-8999-999999999999";
+  const policy = normalizeIssueExecutionPolicy({
+    stages: [
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: reviewerAgentId }],
+      },
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        type: "approval",
+        participants: [{ type: "user", userId: "director" }],
+      },
+    ],
+  })!;
+  const issue = {
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    companyId: "company-1",
+    projectId,
+    projectWorkspaceId,
+    executionWorkspaceId,
+    status: "in_review",
+    reviewPolicy: "anyone",
+    assigneeAgentId: reviewerAgentId,
+    assigneeUserId: null,
+    executionRunId: reviewerRunId,
+    createdByUserId: "director",
+    identifier: "PAP-1002",
+    title: "Artifact-bound review",
+    executionPolicy: policy,
+    executionState: {
+      status: "pending",
+      currentStageId: policy.stages[0].id,
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerAgentId },
+      returnAssignee: { type: "agent", agentId: builderAgentId },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    },
+  };
+  const workProduct = {
+    id: "12121212-1212-4121-8121-121212121212",
+    companyId: issue.companyId,
+    projectId,
+    issueId: issue.id,
+    executionWorkspaceId,
+    type: "pull_request",
+    provider: "github",
+    url: "https://github.com/acme/reeve/pull/42",
+    status: "ready_for_review",
+    isPrimary: true,
+    sourceTrust: null,
+    createdByRunId: builderRunId,
+    lastModifiedByRunId: builderRunId,
+    updatedAt: new Date("2026-08-19T08:00:00.000Z"),
+  };
+  const workspace = {
+    id: executionWorkspaceId,
+    companyId: issue.companyId,
+    projectId,
+    projectWorkspaceId,
+    sourceIssueId: issue.id,
+    repoUrl: "https://github.com/acme/reeve.git",
+    branchName: "codex/reviewed-change",
+  };
+  const reviewerRun = {
+    id: reviewerRunId,
+    companyId: issue.companyId,
+    agentId: reviewerAgentId,
+    status: "running",
+    finishedAt: null,
+    contextSnapshot: { issueId: issue.id, executionWorkspaceId },
+  };
+  const builderRun = {
+    id: builderRunId,
+    companyId: issue.companyId,
+    agentId: builderAgentId,
+    contextSnapshot: { issueId: issue.id, executionWorkspaceId },
+  };
+  const projectWorkspace = {
+    id: projectWorkspaceId,
+    companyId: issue.companyId,
+    projectId,
+    repoUrl: "https://github.com/acme/reeve.git",
+    updatedAt: new Date("2026-08-19T07:55:00.000Z"),
+  };
+  const payload = {
+    idempotencyKey: "13131313-1313-4131-8131-131313131313",
+    comment: "Reviewed this exact pull-request revision.",
+    workProductId: workProduct.id,
+    expectedHeadSha: "abcdef0123456789abcdef0123456789abcdef01",
+    expectedDirectorUserId: "director",
+  };
+  const actor = {
+    type: "agent" as const,
+    agentId: reviewerAgentId,
+    companyId: issue.companyId,
+    runId: reviewerRunId,
+  };
+  return { actor, builderRun, issue, payload, policy, projectWorkspace, reviewerRun, workProduct, workspace };
+}
+
+function queueReviewEvidenceReads(fixture: ReturnType<typeof reviewEvidenceFixture>) {
+  // Receipt lookup, mutation authorization, and the status-only guard.
+  mockSelectRowsOnce([]);
+  mockSelectRowsOnce([]);
+  mockSelectRowsOnce([fixture.reviewerRun]);
+  // Pre-resolve live reviewer and immutable local locator.
+  mockSelectRowsOnce([fixture.reviewerRun]);
+  mockSelectRowsOnce([fixture.workProduct]);
+  mockSelectRowsOnce([fixture.workspace]);
+  mockSelectRowsOnce([fixture.projectWorkspace]);
+  // Under-lock idempotency and local revalidation.
+  mockSelectRowsOnce([]);
+  mockSelectRowsOnce([fixture.reviewerRun]);
+  mockSelectRowsOnce([fixture.workProduct]);
+  mockSelectRowsOnce([fixture.workspace]);
+  mockSelectRowsOnce([fixture.projectWorkspace]);
+  mockSelectRowsOnce([fixture.builderRun]);
+}
+
+function persistedReviewEvidenceReceipt(
+  fixture: ReturnType<typeof reviewEvidenceFixture>,
+  overrides: Record<string, unknown> = {},
+) {
+  const locatorFingerprint = "a".repeat(64);
+  return {
+    id: "14141414-1414-4141-8141-141414141414",
+    companyId: fixture.issue.companyId,
+    issueId: fixture.issue.id,
+    stageId: fixture.policy.stages[0].id,
+    stageType: "review",
+    actorAgentId: fixture.actor.agentId,
+    actorUserId: null,
+    outcome: "approved",
+    body: fixture.payload.comment,
+    reviewCycleId: "15151515-1515-4151-8151-151515151515",
+    requestIdempotencyKey: fixture.payload.idempotencyKey,
+    artifactWorkProductId: fixture.workProduct.id,
+    artifactRevision: fixture.payload.expectedHeadSha,
+    artifactLocatorFingerprint: locatorFingerprint,
+    reviewerAgentIdSnapshot: fixture.actor.agentId,
+    reviewerRunIdSnapshot: fixture.actor.runId,
+    reviewerActorSourceSnapshot: "agent_key",
+    directorUserIdSnapshot: fixture.payload.expectedDirectorUserId,
+    artifactSnapshot: {
+      kind: "github_pull_request",
+      provider: "github",
+      canonicalRef: "github:acme/reeve#42",
+      locatorFingerprint,
+      configuredRepository: {
+        owner: "acme",
+        repo: "reeve",
+        repoUrl: fixture.workspace.repoUrl,
+      },
+      headRef: fixture.workspace.branchName,
+      headSha: fixture.payload.expectedHeadSha,
+      observedState: "open",
+      observedAt: "2026-08-19T08:05:00.000Z",
+      workProductTrust: "implicit_standard",
+      reviewer: {
+        agentId: fixture.actor.agentId,
+        runId: fixture.actor.runId,
+        actorSource: "agent_key",
+      },
+      director: { userId: fixture.payload.expectedDirectorUserId },
+    },
+    createdByRunId: fixture.actor.runId,
+    createdAt: new Date("2026-08-19T08:05:00.000Z"),
+    ...overrides,
+  };
 }
 
 describe("issue execution policy routes", () => {
@@ -190,6 +395,9 @@ describe("issue execution policy routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockDbSelectWhere.mockReset();
+    mockDbSelectFrom.mockReset();
+    mockDbSelect.mockReset();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -199,6 +407,12 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockPullRequestMergeDetailsResolver.mockResolvedValue({
+      state: "open",
+      headRef: "codex/reviewed-change",
+      headSha: "abcdef0123456789abcdef0123456789abcdef01",
+      headRepositoryFullName: "acme/reeve",
+    });
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
@@ -332,6 +546,285 @@ describe("issue execution policy routes", () => {
 
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("Only the active reviewer or approver");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("records review evidence only for the independently resolved pull-request head", async () => {
+    const fixture = reviewEvidenceFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...fixture.issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    const app = await createApp(fixture.actor);
+    queueReviewEvidenceReads(fixture);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.replayed).toBe(false);
+    expect(res.body.evidence).toMatchObject({
+      workProductId: fixture.workProduct.id,
+      artifactRevision: "abcdef0123456789abcdef0123456789abcdef01",
+      artifactSnapshot: {
+        canonicalRef: "github:acme/reeve#42",
+        headRef: "codex/reviewed-change",
+        reviewer: {
+          agentId: fixture.actor.agentId,
+          runId: fixture.actor.runId,
+          actorSource: "agent_key",
+        },
+        director: { userId: "director" },
+      },
+    });
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      fixture.issue.id,
+      expect.objectContaining({
+        status: "in_review",
+        assigneeUserId: "director",
+      }),
+      expect.anything(),
+    );
+    expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+      issueId: fixture.issue.id,
+      stageId: fixture.policy.stages[0].id,
+      stageType: "review",
+      artifactWorkProductId: fixture.workProduct.id,
+      artifactRevision: "abcdef0123456789abcdef0123456789abcdef01",
+      requestIdempotencyKey: fixture.payload.idempotencyKey,
+      reviewerAgentIdSnapshot: fixture.actor.agentId,
+      reviewerRunIdSnapshot: fixture.actor.runId,
+      directorUserIdSnapshot: "director",
+    }));
+  });
+
+  it("rejects stale pull-request review evidence before mutating the issue", async () => {
+    const fixture = reviewEvidenceFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    queueReviewEvidenceReads(fixture);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send({
+        ...fixture.payload,
+        comment: "Reviewed an old head.",
+        expectedHeadSha: "1111111111111111111111111111111111111111",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toMatchObject({
+      code: "execution_review_evidence_revision_stale",
+      currentHeadSha: "abcdef0123456789abcdef0123456789abcdef01",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it("rejects self-review even when the active agent matches the review stage", async () => {
+    const fixture = reviewEvidenceFixture();
+    fixture.issue.executionState.returnAssignee = {
+      type: "agent",
+      agentId: fixture.actor.agentId,
+    };
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details?.code).toBe("execution_review_evidence_reviewer_mismatch");
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent other than the exact active reviewer", async () => {
+    const fixture = reviewEvidenceFixture();
+    const wrongActor = {
+      ...fixture.actor,
+      agentId: "16161616-1616-4161-8161-161616161616",
+      runId: "17171717-1717-4171-8171-171717171717",
+    };
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(wrongActor);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("cannot mutate another agent's issue");
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+  });
+
+  it("rejects a director identity other than the exact final typed participant", async () => {
+    const fixture = reviewEvidenceFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send({ ...fixture.payload, expectedDirectorUserId: "wrong-director" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details?.code).toBe("execution_review_evidence_director_mismatch");
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+  });
+
+  it("requires a persisted reviewer run for the exact issue workspace", async () => {
+    const fixture = reviewEvidenceFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("execution_review_evidence_run_mismatch");
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+  });
+
+  it("rejects a historical reviewer run that is not the issue execution run", async () => {
+    const fixture = reviewEvidenceFixture();
+    fixture.issue.executionRunId = "18181818-1818-4181-8181-181818181818";
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([fixture.reviewerRun]);
+    mockSelectRowsOnce([fixture.reviewerRun]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("execution_review_evidence_run_mismatch");
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+  });
+
+  it("rejects review evidence when the authenticated agent omits its run", async () => {
+    const fixture = reviewEvidenceFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    const app = await createApp({ ...fixture.actor, runId: null });
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details?.code).toBe("execution_review_evidence_agent_run_required");
+    expect(mockDbSelect).not.toHaveBeenCalled();
+  });
+
+  it("rejects a quarantined pull-request work product", async () => {
+    const fixture = reviewEvidenceFixture();
+    fixture.workProduct.sourceTrust = {
+      preset: "low_trust_review",
+      disposition: "quarantined",
+      sourceIssueId: fixture.issue.id,
+      sourceRunId: fixture.builderRun.id,
+      sourceAgentId: fixture.builderRun.agentId,
+    };
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([]);
+    mockSelectRowsOnce([fixture.reviewerRun]);
+    mockSelectRowsOnce([fixture.workProduct]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details?.code).toBe("execution_review_evidence_work_product_invalid");
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+  });
+
+  it("rejects a pull request from a repository unrelated to the issue workspace", async () => {
+    const fixture = reviewEvidenceFixture();
+    fixture.workspace.repoUrl = "https://github.com/acme/unrelated.git";
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    queueReviewEvidenceReads(fixture);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details?.code).toBe("execution_review_evidence_repository_mismatch");
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+  });
+
+  it("replays an equivalent idempotent request without advancing the stage again", async () => {
+    const fixture = reviewEvidenceFixture();
+    const receipt = persistedReviewEvidenceReceipt(fixture);
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    mockSelectRowsOnce([receipt]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.replayed).toBe(true);
+    expect(res.body.evidence).toMatchObject({
+      decisionId: receipt.id,
+      reviewCycleId: receipt.reviewCycleId,
+      workProductId: fixture.workProduct.id,
+      artifactRevision: fixture.payload.expectedHeadSha,
+    });
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when an idempotent receipt contains only part of the evidence tuple", async () => {
+    const fixture = reviewEvidenceFixture();
+    const receipt = persistedReviewEvidenceReceipt(fixture, { artifactSnapshot: null });
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    const app = await createApp(fixture.actor);
+    mockSelectRowsOnce([receipt]);
+
+    const res = await request(app)
+      .post(`/api/issues/${fixture.issue.id}/execution-review-evidence`)
+      .send(fixture.payload);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details?.code).toBe("execution_review_evidence_corrupt");
+    expect(mockDb.transaction).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 

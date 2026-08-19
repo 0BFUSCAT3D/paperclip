@@ -570,6 +570,41 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorkspaceSettingsSchema>;
 
+export const issueExecutionArtifactSnapshotSchema = z.object({
+  kind: z.literal("github_pull_request"),
+  provider: z.literal("github"),
+  canonicalRef: z.string().min(1),
+  locatorFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  configuredRepository: z.object({
+    owner: z.string().min(1),
+    repo: z.string().min(1),
+    repoUrl: z.string().min(1),
+  }).strict(),
+  headRef: z.string().min(1),
+  headSha: z.string().regex(/^[0-9a-f]{40,64}$/),
+  observedState: z.enum(["open", "merged"]),
+  observedAt: z.string().datetime(),
+  workProductTrust: z.enum(["implicit_standard", "promoted"]),
+  reviewer: z.object({
+    agentId: z.string().uuid(),
+    runId: z.string().uuid(),
+    actorSource: z.enum(["agent_key", "agent_jwt"]),
+  }).strict(),
+  director: z.object({
+    userId: z.string().trim().min(1),
+  }).strict(),
+}).strict();
+
+export const approveIssueReviewEvidenceSchema = z.object({
+  idempotencyKey: z.string().uuid(),
+  comment: multilineTextSchema.pipe(z.string().min(1)),
+  workProductId: z.string().uuid(),
+  expectedHeadSha: z.string().trim().toLowerCase().regex(/^[0-9a-f]{40,64}$/),
+  expectedDirectorUserId: z.string().trim().min(1),
+}).strict();
+
+export type ApproveIssueReviewEvidence = z.infer<typeof approveIssueReviewEvidenceSchema>;
+
 export const stalledReviewDecisionSchema = z.object({
   action: z.enum(["approve", "request_changes", "send_back"]),
   note: multilineTextSchema.pipe(z.string().min(1)).optional(),

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  approveIssueReviewEvidenceSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -62,6 +63,24 @@ describe("issue validators", () => {
       reviewInteractionId: "11111111-1111-4111-8111-111111111111",
     }).reviewInteractionId).toBe("11111111-1111-4111-8111-111111111111");
     expect(updateIssueSchema.safeParse({ reviewInteractionId: "interaction-1" }).success).toBe(false);
+  });
+
+  it("accepts only an exact commit revision for artifact-bound review approval", () => {
+    expect(approveIssueReviewEvidenceSchema.parse({
+      idempotencyKey: "22222222-2222-4222-8222-222222222222",
+      comment: "Reviewed the current pull request head.",
+      workProductId: "11111111-1111-4111-8111-111111111111",
+      expectedHeadSha: "ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+      expectedDirectorUserId: "director",
+    }).expectedHeadSha).toBe("abcdef0123456789abcdef0123456789abcdef01");
+
+    expect(approveIssueReviewEvidenceSchema.safeParse({
+      idempotencyKey: "22222222-2222-4222-8222-222222222222",
+      comment: "Looks good.",
+      workProductId: "11111111-1111-4111-8111-111111111111",
+      expectedHeadSha: "main",
+      expectedDirectorUserId: "director",
+    }).success).toBe(false);
   });
 
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
