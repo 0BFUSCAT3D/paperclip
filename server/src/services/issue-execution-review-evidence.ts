@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  agents,
   executionWorkspaces,
   heartbeatRuns,
   issueExecutionDecisions,
@@ -187,6 +188,19 @@ export type ReviewEvidenceAgentActor = {
   actorSource: "agent_key" | "agent_jwt";
 };
 
+export async function lockIssueExecutionReviewEvidenceBuilderAgent(
+  dbOrTx: Db,
+  companyId: string,
+  builderAgentId: string,
+) {
+  return dbOrTx
+    .select({ id: agents.id })
+    .from(agents)
+    .where(and(eq(agents.id, builderAgentId), eq(agents.companyId, companyId)))
+    .for("share")
+    .then((rows) => rows[0] ?? null);
+}
+
 function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -340,7 +354,15 @@ export async function recordIssueExecutionReviewEvidence(input: {
 }) {
   const { db, existing, actor, request } = input;
   const svc = input.issueService;
-  assertReviewStageBinding(existing, actor, request);
+  const preflightBinding = assertReviewStageBinding(existing, actor, request);
+  const expectedBuilderAgentId = preflightBinding.state.returnAssignee?.type === "agent"
+    ? preflightBinding.state.returnAssignee.agentId
+    : null;
+  if (!expectedBuilderAgentId) {
+    throw unprocessable("The review stage has no agent builder provenance to preserve.", {
+      code: "execution_review_evidence_builder_provenance_invalid",
+    });
+  }
   const preflightReviewerRun = await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, actor.runId),
     eq(heartbeatRuns.companyId, existing.companyId),
@@ -436,6 +458,20 @@ export async function recordIssueExecutionReviewEvidence(input: {
   const decisionId = randomUUID();
   const reviewCycleId = randomUUID();
   return db.transaction(async (tx) => {
+    // Agent deletion takes the agent row first and then scans durable evidence.
+    // Take the same lock first so either deletion wins and this evidence fails,
+    // or evidence commits before deletion evaluates its dependency guard.
+    const lockedBuilderAgent = await lockIssueExecutionReviewEvidenceBuilderAgent(
+      tx as unknown as Db,
+      existing.companyId,
+      expectedBuilderAgentId,
+    );
+    if (!lockedBuilderAgent) {
+      throw unprocessable("The review artifact builder no longer exists in the issue company.", {
+        code: "execution_review_evidence_builder_agent_missing",
+        builderAgentId: expectedBuilderAgentId,
+      });
+    }
     const lockedIssue = await svc.getByIdForUpdate(existing.id, tx);
     if (!lockedIssue) throw notFound("Issue not found");
     const racedReceipt = await findIssueExecutionReviewEvidenceReceipt({
@@ -536,6 +572,7 @@ export async function recordIssueExecutionReviewEvidence(input: {
     if (
       !builderRun
       || !builderAgentId
+      || builderAgentId !== lockedBuilderAgent.id
       || builderRun.agentId !== builderAgentId
       || readNonEmptyString(builderRun.contextSnapshot?.issueId) !== lockedIssue.id
       || readNonEmptyString(builderRun.contextSnapshot?.executionWorkspaceId) !== workspace.id

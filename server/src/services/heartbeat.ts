@@ -19089,6 +19089,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
+    // A governed activation persists its queued run transactionally outside
+    // enqueueWakeup. Expose the native runner kick separately; durability comes
+    // from the queued rows, while this only reduces dispatch latency.
+    startNextQueuedRunForAgent,
     waitForRunExecutionDrain: async (
       runId: string,
       options: { timeoutMs?: number; intervalMs?: number } = {},

@@ -1351,7 +1351,7 @@ async function addCompanyMemberRemovalAccess(
   );
 }
 
-async function loadCompanyUserDirectory(db: Db, companyId: string) {
+export async function loadCompanyUserDirectory(db: Db, companyId: string) {
   const members = await db
     .select({
       principalId: companyMemberships.principalId,

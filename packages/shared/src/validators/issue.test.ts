@@ -4,6 +4,9 @@ import {
   addIssueCommentSchema,
   approveIssueReviewEvidenceSchema,
   createIssueSchema,
+  reserveGovernedIssueV1Schema,
+  activateGovernedIssueV1Schema,
+  governedIssueLifecycleIssueV1Schema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
@@ -56,6 +59,89 @@ describe("issue validators", () => {
       .toBe("not_creator");
     expect(updateIssueSchema.parse({ reviewPolicy: null }).reviewPolicy).toBeNull();
     expect(updateIssueSchema.safeParse({ reviewPolicy: "creator_only" }).success).toBe(false);
+  });
+
+  it("uses strict dedicated schemas for governed reservation and activation", () => {
+    const issue = {
+      title: "Governed create",
+      reviewPolicy: "not_creator" as const,
+      executionPolicy: {
+        stages: [{ type: "review" as const, participants: [{ type: "user" as const, userId: "director" }] }],
+      },
+    };
+    expect(reserveGovernedIssueV1Schema.parse({ idempotencyKey: "reeve-build:42", issue }))
+      .toMatchObject({ idempotencyKey: "reeve-build:42", issue: { title: "Governed create" } });
+    expect(reserveGovernedIssueV1Schema.safeParse({
+      idempotencyKey: "reeve-build:42",
+      issue: { ...issue, status: "backlog" },
+    }).success).toBe(false);
+    expect(activateGovernedIssueV1Schema.safeParse({
+      version: 1,
+      expectedIssueId: "11111111-1111-4111-8111-111111111111",
+      expectedIssueUpdatedAt: "2026-08-19T12:00:00.000Z",
+      expectedEnvelopeSha256: "a".repeat(64),
+      builderAgentId: "22222222-2222-4222-8222-222222222222",
+      issue,
+    }).success).toBe(true);
+  });
+
+  it("uses a strict materialized issue projection for governed lifecycle receipts", () => {
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      projectId: null,
+      projectWorkspaceId: null,
+      goalId: null,
+      parentId: null,
+      title: "Immutable activation",
+      description: null,
+      status: "todo" as const,
+      workMode: "standard" as const,
+      harnessKind: null,
+      priority: "high" as const,
+      reviewPolicy: "not_creator" as const,
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: "director",
+      responsibleUserId: "director",
+      issueNumber: 42,
+      identifier: "PAP-42",
+      requestDepth: 0,
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionPolicy: {
+        mode: "normal" as const,
+        commentRequired: true as const,
+        stages: [{
+          id: "33333333-3333-4333-8333-333333333333",
+          type: "review" as const,
+          approvalsNeeded: 1 as const,
+          participants: [{
+            id: "44444444-4444-4444-8444-444444444444",
+            type: "agent" as const,
+            agentId: "55555555-5555-4555-8555-555555555555",
+            userId: null,
+          }],
+        }],
+      },
+      executionState: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+      createdAt: "2026-08-19T12:00:00.000Z",
+      updatedAt: "2026-08-19T12:01:00.000Z",
+    };
+    expect(governedIssueLifecycleIssueV1Schema.safeParse(issue).success).toBe(true);
+    expect(governedIssueLifecycleIssueV1Schema.safeParse({ ...issue, liveRuntimeField: true }).success)
+      .toBe(false);
+    expect(governedIssueLifecycleIssueV1Schema.safeParse({
+      ...issue,
+      executionPolicy: {
+        ...issue.executionPolicy,
+        stages: [{ ...issue.executionPolicy.stages[0], id: undefined }],
+      },
+    }).success).toBe(false);
   });
 
   it("accepts only UUID review interaction bindings on update", () => {

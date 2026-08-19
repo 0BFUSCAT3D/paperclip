@@ -111,7 +111,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     return { agentId, companyId, issueId, runId };
   }
 
-  it("removes agent-owned issue comments and run-linked activity before deleting the agent", async () => {
+  it("preserves agent-owned audit records when a durable execution decision depends on the agent", async () => {
     const { agentId, companyId, issueId, runId } = await seedFixture();
 
     await db.insert(issueComments).values({
@@ -146,13 +146,21 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       createdByRunId: runId,
     });
 
-    const removed = await agentService(db).remove(agentId);
+    await expect(agentService(db).remove(agentId)).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_execution_audit_dependency",
+        agentId,
+        decisionReferences: [expect.objectContaining({ issueId })],
+      },
+    });
 
-    expect(removed?.id).toBe(agentId);
-    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
-    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
-    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
-    await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(1);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(1);
+    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(1);
+    await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(1);
+    await expect(db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId)))
+      .resolves.toHaveLength(1);
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {

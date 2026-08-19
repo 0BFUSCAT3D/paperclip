@@ -516,6 +516,116 @@ export const createIssueSchema = withCreateIssueStatusDefault(
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
+/**
+ * The content/scope envelope protected by the governed reservation CAS.
+ * Status and assignees are intentionally absent: reservation always persists
+ * `backlog` + unassigned and only the activation endpoint may add the builder.
+ */
+export const governedIssueEnvelopeSchema = z.object({
+  projectId: z.string().uuid().optional().nullable(),
+  projectWorkspaceId: z.string().uuid().optional().nullable(),
+  goalId: z.string().uuid().optional().nullable(),
+  parentId: z.string().uuid().optional().nullable(),
+  title: z.string().min(1),
+  description: multilineTextSchema.optional().nullable(),
+  workMode: z.enum(ISSUE_WORK_MODES).optional().default("standard"),
+  harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
+  priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
+  reviewPolicy: z.literal("not_creator"),
+  requestDepth: issueRequestDepthInputSchema.optional().default(0),
+  billingCode: z.string().optional().nullable(),
+  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  executionPolicy: issueExecutionPolicySchema.extend({
+    stages: z.array(issueExecutionStageSchema).min(1),
+  }),
+  executionWorkspaceId: z.string().uuid().optional().nullable(),
+  executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+}).strict();
+
+export const reserveGovernedIssueV1Schema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(255),
+  issue: governedIssueEnvelopeSchema,
+}).strict();
+
+export const activateGovernedIssueV1Schema = z.object({
+  version: z.literal(1),
+  expectedIssueId: z.string().uuid(),
+  expectedIssueUpdatedAt: z.string().datetime(),
+  expectedEnvelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  builderAgentId: z.string().uuid(),
+  issue: governedIssueEnvelopeSchema,
+}).strict();
+
+/**
+ * Immutable issue projection used by the governed reservation lifecycle.
+ *
+ * This deliberately excludes mutable runtime/read-model decorations (labels,
+ * relations, live runs, attention, etc.). Once activation succeeds the exact
+ * projection is stored with the durable receipt and returned on every replay.
+ */
+const governedIssueLifecycleParticipantV1Schema = z.object({
+  id: z.string().uuid(),
+  type: z.enum(["agent", "user"]),
+  agentId: z.string().uuid().nullable(),
+  userId: z.string().nullable(),
+}).strict().superRefine((participant, ctx) => {
+  if (participant.type === "agent" && (!participant.agentId || participant.userId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent lifecycle participants require only agentId" });
+  }
+  if (participant.type === "user" && (!participant.userId || participant.agentId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "User lifecycle participants require only userId" });
+  }
+});
+
+const governedIssueLifecycleExecutionPolicyV1Schema = issueExecutionPolicySchema.extend({
+  commentRequired: z.literal(true),
+  stages: z.array(z.object({
+    id: z.string().uuid(),
+    type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
+    approvalsNeeded: z.literal(1),
+    participants: z.array(governedIssueLifecycleParticipantV1Schema).min(1),
+  }).strict()).min(1),
+}).strict();
+
+export const governedIssueLifecycleIssueV1Schema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().min(1),
+  projectId: z.string().uuid().nullable(),
+  projectWorkspaceId: z.string().uuid().nullable(),
+  goalId: z.string().uuid().nullable(),
+  parentId: z.string().uuid().nullable(),
+  title: z.string().min(1),
+  description: z.string().nullable(),
+  status: z.enum(ISSUE_STATUSES),
+  workMode: z.enum(ISSUE_WORK_MODES),
+  harnessKind: z.enum(ISSUE_HARNESS_KINDS).nullable(),
+  priority: z.enum(ISSUE_PRIORITIES),
+  reviewPolicy: z.literal("not_creator"),
+  assigneeAgentId: z.string().uuid().nullable(),
+  assigneeUserId: z.string().nullable(),
+  createdByAgentId: z.string().uuid().nullable(),
+  createdByUserId: z.string().nullable(),
+  responsibleUserId: z.string().nullable(),
+  issueNumber: z.number().int().nullable(),
+  identifier: z.string().nullable(),
+  requestDepth: z.number().int().nonnegative(),
+  billingCode: z.string().nullable(),
+  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.nullable(),
+  executionPolicy: governedIssueLifecycleExecutionPolicyV1Schema,
+  executionState: issueExecutionStateSchema.nullable(),
+  executionWorkspaceId: z.string().uuid().nullable(),
+  executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).nullable(),
+  executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.nullable(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+export type GovernedIssueEnvelope = z.infer<typeof governedIssueEnvelopeSchema>;
+export type ReserveGovernedIssueV1 = z.infer<typeof reserveGovernedIssueV1Schema>;
+export type ActivateGovernedIssueV1 = z.infer<typeof activateGovernedIssueV1Schema>;
+export type GovernedIssueLifecycleIssueV1 = z.infer<typeof governedIssueLifecycleIssueV1Schema>;
+
 export const upsertIssueWatchdogSchema = z.object({
   agentId: z.string().uuid(),
   instructions: multilineTextSchema.optional().nullable(),

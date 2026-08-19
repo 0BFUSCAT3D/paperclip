@@ -44,6 +44,21 @@ export const issueExecutionDecisions = pgTable(
       table.artifactWorkProductId,
       table.artifactRevision,
     ),
+    actorAgentIdx: index("issue_execution_decisions_company_actor_agent_idx").on(
+      table.companyId,
+      table.actorAgentId,
+      table.createdAt,
+    ),
+    reviewerAgentSnapshotIdx: index("issue_execution_decisions_company_reviewer_agent_snapshot_idx").on(
+      table.companyId,
+      table.reviewerAgentIdSnapshot,
+      table.createdAt,
+    ),
+    artifactWorkProductIdx: index("issue_execution_decisions_company_artifact_work_product_idx").on(
+      table.companyId,
+      table.artifactWorkProductId,
+      table.createdAt,
+    ),
     artifactEvidenceShapeCheck: check("issue_execution_decisions_artifact_evidence_shape_check", sql`(
       ${table.reviewCycleId} is null
       and ${table.requestIdempotencyKey} is null

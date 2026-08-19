@@ -65,6 +65,14 @@ export const issueWorkProducts = pgTable(
       table.companyId,
       table.updatedAt,
     ),
+    companyCreatedByRunIdx: index("issue_work_products_company_created_by_run_idx").on(
+      table.companyId,
+      table.createdByRunId,
+    ),
+    companyLastModifiedByRunIdx: index("issue_work_products_company_last_modified_by_run_idx").on(
+      table.companyId,
+      table.lastModifiedByRunId,
+    ),
     scopedIdentityUq: uniqueIndex("issue_work_products_scoped_identity_uq").on(
       table.id,
       table.companyId,

@@ -19,6 +19,7 @@ import {
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { capabilityRoutes } from "./routes/capabilities.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -410,6 +411,7 @@ export async function createApp(
       databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
+  api.use("/capabilities", capabilityRoutes());
   api.use(openApiRoutes());
   api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
