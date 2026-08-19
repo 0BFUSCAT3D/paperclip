@@ -186,6 +186,56 @@ Reviewer, run, actor-source, and director values are copied into the evidence ro
 
 The review-evidence row records an observed open PR head and advances only from the agent review stage to the exact configured user approval stage. It does not approve the final stage, ship code, merge GitHub state, or claim database/GitHub atomicity. Any later shipping operation must independently resolve and compare the current PR artifact again.
 
+## Execution-policy participant integrity
+
+Issue creation and mutation validate typed execution-policy participants in the
+same transaction as the issue write. Agent participants must exist in the issue
+company and remain invokable with a healthy organization chain; user
+participants must resolve to real users with active membership in that company.
+For issues using `reviewPolicy: not_creator`, review participants must be
+independent of the creator and stored return assignee. Before review starts,
+the current assignee is also treated as an author; during active review the
+workflow-controlled reviewer assignee is not. A self-review-only stage is
+rejected and is never auto-skipped into approval. Governed current and return
+agent assignees must also remain invokable.
+
+Participant validation takes agent row locks that serialize with agent deletion.
+Deletion is rejected while a nonterminal issue policy/state references the agent
+or the agent is the current assignee of a governed nonterminal issue, and while
+any durable execution decision/evidence row depends on it. Artifact evidence
+also protects the builder whose heartbeat run created or last modified the bound
+work product, including after the issue is terminal. Legacy invalid policies
+remain readable, but a later issue mutation must repair or clear the policy
+before it can commit.
+
+Authenticated board and agent callers can preflight these guarantees through
+`GET /api/capabilities`. The response is a versioned declaration of exact
+artifact-bound review evidence, atomic participant validation, and audit-safe
+agent deletion support; capability reads do not create issues or wake agents.
+
+Versioned governed issue creation uses `governed_issue_reservations`. A
+reservation binds one company-scoped idempotency key to an exact normalized
+issue envelope and creates the issue in `backlog` without an assignee or wake.
+It stores a deterministic hash of the pre-materialization request intent
+separately from the normalized envelope hash, so an ID-less retry resolves the
+same reservation even though policy stage identities are server-generated. The
+normalized envelope hash and issue `updated_at` form the activation CAS.
+Conditional activation locks the reservation and issue, rechecks the exact
+stored envelope and participants, assigns an invokable builder, moves the issue
+to `todo`, and records both a wakeup request and queued heartbeat run in the same
+transaction. The immutable activation receipt makes exact retries idempotent;
+it also stores the strict activation-time issue projection, so later progress
+cannot rewrite the receipt returned on replay. An immediate runner failure does
+not lose the durable queued wake. Generic issue mutation paths and a database
+guard reject assignment, status, checkout, release, or envelope changes while a
+reservation remains unactivated.
+
+The capability advertises the dedicated reservation, read-only lookup, and
+activation endpoint templates. These versioned routes are the contract boundary
+for governed clients; the generic issue create and PATCH routes remain available
+for existing clients but are not a substitute for reservation CAS and durable
+activation receipts.
+
 ## Decision training snapshot retention
 
 `decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.

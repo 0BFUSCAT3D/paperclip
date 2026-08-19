@@ -1,5 +1,11 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  PAPERCLIP_CAPABILITIES_API_PATH,
+  PAPERCLIP_CAPABILITIES_CONTRACT_VERSION,
+  PAPERCLIP_CAPABILITIES_V1,
+  type PaperclipCapabilitiesResponseV1,
+} from "./capabilities.js";
+export {
   decisionEffectStalenessSchema,
   decisionOptionStyleSchema,
   commentOnIssueDecisionEffectSchema,
@@ -1762,6 +1768,10 @@ export {
   type CompanySearchQuery,
   createIssueSchema,
   createIssueInputSchema,
+  governedIssueEnvelopeSchema,
+  reserveGovernedIssueV1Schema,
+  activateGovernedIssueV1Schema,
+  governedIssueLifecycleIssueV1Schema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,
   resolveCreateIssueStatusDefault,
@@ -1872,6 +1882,10 @@ export {
   previewIssueTreeControlSchema,
   releaseIssueTreeHoldSchema,
   type CreateIssue,
+  type GovernedIssueEnvelope,
+  type ReserveGovernedIssueV1,
+  type ActivateGovernedIssueV1,
+  type GovernedIssueLifecycleIssueV1,
   type CreateChildIssue,
   type CreateAcceptedPlanDecomposition,
   type CreateIssueLabel,

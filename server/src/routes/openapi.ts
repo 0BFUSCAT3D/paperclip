@@ -26,6 +26,9 @@ import {
   // Issue
   createIssueSchema,
   updateIssueSchema,
+  reserveGovernedIssueV1Schema,
+  activateGovernedIssueV1Schema,
+  governedIssueLifecycleIssueV1Schema,
   approveIssueReviewEvidenceSchema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
@@ -535,6 +538,10 @@ const responses = {
   },
   conflict: {
     description: "Conflict",
+    content: { "application/json": { schema: ErrorSchema } },
+  },
+  preconditionFailed: {
+    description: "Precondition failed",
     content: { "application/json": { schema: ErrorSchema } },
   },
   unprocessable: {
@@ -1136,6 +1143,76 @@ const healthServerInfoSchema = z.object({
   ]),
 }).strict();
 
+const PaperclipCapabilitiesSchema = z.object({
+  contractVersion: z.literal(1),
+  features: z.object({
+    artifactBoundExecutionReviewEvidence: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      artifactKind: z.literal("github_pull_request"),
+      endpoint: z.literal("/api/issues/{issueId}/execution-review-evidence"),
+      bindsExactHeadRevision: z.literal(true),
+    }).strict(),
+    executionPolicyParticipantValidation: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      atomic: z.literal(true),
+      companyScoped: z.literal(true),
+      activeAgentRequired: z.literal(true),
+      participantAgentInvokableRequired: z.literal(true),
+      invokableAgentStatuses: z.tuple([
+        z.literal("active"),
+        z.literal("idle"),
+        z.literal("running"),
+        z.literal("error"),
+      ]),
+      governedAssigneeInvokableRequired: z.literal(true),
+      typedUserMembershipRequired: z.literal(true),
+      independentNotCreatorReviewRequired: z.literal(true),
+      createIdempotencyLookupEndpoint: z.literal(
+        "/api/companies/{companyId}/issues/by-create-idempotency-key/{encodedKey}",
+      ),
+    }).strict(),
+    governedIssueReservationActivation: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      reservationEndpoint: z.literal("/api/v1/companies/{companyId}/governed-issue-reservations"),
+      reservationLookupEndpoint: z.literal(
+        "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}",
+      ),
+      activationEndpoint: z.literal(
+        "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}/activation",
+      ),
+      reservationMethod: z.literal("POST"),
+      activationMethod: z.literal("PUT"),
+      reservationStatus: z.literal("backlog"),
+      reservationUnassigned: z.literal(true),
+      exactEnvelopeCas: z.literal(true),
+      durableWakeReceipt: z.literal(true),
+    }).strict(),
+    executionAuditAgentDeleteProtection: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      nonterminalPolicyAndStateReferencesProtected: z.literal(true),
+      nonterminalGovernedAssigneeProtected: z.literal(true),
+      durableDecisionEvidenceProtected: z.literal(true),
+      artifactBuilderProvenanceProtected: z.literal(true),
+    }).strict(),
+  }).strict(),
+}).strict();
+
+registry.registerPath({
+  method: "get",
+  path: "/api/capabilities",
+  tags: ["system"],
+  summary: "Read the versioned server capability contract",
+  responses: {
+    200: r.ok(PaperclipCapabilitiesSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/health",
@@ -1252,6 +1329,17 @@ registry.registerPath({
   summary: "Create a company",
   request: { body: jsonBody(createCompanySchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issues/by-create-idempotency-key/{idempotencyKey}",
+  tags: ["issues"],
+  summary: "Read an issue by its create idempotency key",
+  request: {
+    params: z.object({ companyId: z.string(), idempotencyKey: z.string().min(1).max(255) }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -2184,6 +2272,117 @@ registry.registerPath({
 
 // ─── Issues ──────────────────────────────────────────────────────────────────
 
+const GovernedIssueReservationReceiptSchema = z.object({
+  idempotencyKey: z.string(),
+  issueId: z.string().uuid(),
+  requestIntentSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  envelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  reservedIssueUpdatedAt: z.string().datetime(),
+  createdAt: z.string().datetime(),
+}).strict();
+
+const GovernedIssueActivationReceiptSchema = z.object({
+  version: z.literal(1),
+  idempotencyKey: z.string(),
+  issueId: z.string().uuid(),
+  builderAgentId: z.string().uuid(),
+  envelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  activationSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  activatedAt: z.string().datetime(),
+  issueUpdatedAt: z.string().datetime(),
+  issueSnapshot: governedIssueLifecycleIssueV1Schema,
+  wake: z.object({
+    durable: z.literal(true),
+    idempotencyKey: z.string(),
+    requestId: z.string().uuid(),
+    runId: z.string().uuid(),
+    status: z.literal("queued"),
+  }).strict(),
+}).strict();
+
+const GovernedIssueReservationResponseSchema = z.object({
+  version: z.literal(1),
+  replayed: z.boolean().optional(),
+  state: z.enum(["reserved", "activated"]),
+  reservation: GovernedIssueReservationReceiptSchema,
+  activationReceipt: GovernedIssueActivationReceiptSchema.nullable(),
+  issue: governedIssueLifecycleIssueV1Schema,
+}).strict();
+
+const GovernedIssueActivationResponseSchema = z.object({
+  version: z.literal(1),
+  replayed: z.boolean(),
+  issue: governedIssueLifecycleIssueV1Schema,
+  activationReceipt: GovernedIssueActivationReceiptSchema,
+}).strict();
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/companies/{companyId}/governed-issue-reservations",
+  tags: ["issues"],
+  summary: "Reserve an exact governed issue without assigning or waking a builder",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(reserveGovernedIssueV1Schema),
+  },
+  responses: {
+    200: r.ok(GovernedIssueReservationResponseSchema),
+    201: r.ok(GovernedIssueReservationResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/companies/{companyId}/governed-issue-reservations/{idempotencyKey}",
+  tags: ["issues"],
+  summary: "Read a governed issue reservation or durable activation receipt",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+  },
+  responses: {
+    200: r.ok(GovernedIssueReservationResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v1/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/activation",
+  tags: ["issues"],
+  summary: "Conditionally activate a reservation and durably queue exactly one builder wake",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+    body: jsonBody(activateGovernedIssueV1Schema),
+  },
+  responses: {
+    200: r.ok(GovernedIssueActivationResponseSchema),
+    201: r.ok(GovernedIssueActivationResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
+    422: r.unprocessable,
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/issues",
@@ -2206,7 +2405,14 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createIssueSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: r.conflict,
+    412: r.preconditionFailed,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
@@ -2227,7 +2433,15 @@ registry.registerPath({
     params: z.object({ id: z.string() }),
     body: jsonBody(updateIssueSchema.partial()),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

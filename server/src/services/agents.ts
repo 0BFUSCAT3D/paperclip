@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -12,7 +12,9 @@ import {
   costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
+  governedIssueReservations,
   issueExecutionDecisions,
+  issueWorkProducts,
   issues,
   issueComments,
 } from "@paperclipai/db";
@@ -55,6 +57,8 @@ function hashToken(token: string) {
 function createToken() {
   return `pcp_${randomBytes(24).toString("hex")}`;
 }
+
+const AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT = 20;
 
 const CONFIG_REVISION_FIELDS = [
   "name",
@@ -944,13 +948,181 @@ export function agentService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
-        await tx
-          .select({ id: agents.id })
+        const lockedAgent = await tx
+          .select()
           .from(agents)
           .where(eq(agents.id, id))
-          .for("update");
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedAgent) return null;
+        const lockedBuiltInMarker = readBuiltInAgentMarker(lockedAgent.metadata);
+        if (lockedBuiltInMarker) {
+          throw conflict("Built-in agents cannot be deleted; pause them instead", {
+            code: "built_in_agent_undeletable",
+            key: lockedBuiltInMarker.key,
+            featureKeys: lockedBuiltInMarker.featureKeys,
+          });
+        }
+
+        const executionReferencePredicate = sql<boolean>`(
+          jsonb_path_exists(
+            coalesce(${issues.executionPolicy}, '{}'::jsonb),
+            '$.**.agentId ? (@ == $agent)',
+            jsonb_build_object('agent', to_jsonb(${id}::text))
+          )
+          or jsonb_path_exists(
+            coalesce(${issues.executionState}, '{}'::jsonb),
+            '$.**.agentId ? (@ == $agent)',
+            jsonb_build_object('agent', to_jsonb(${id}::text))
+          )
+          or (
+            ${issues.assigneeAgentId} = ${id}
+            and jsonb_typeof(coalesce(${issues.executionPolicy} -> 'stages', '[]'::jsonb)) = 'array'
+            and jsonb_array_length(coalesce(${issues.executionPolicy} -> 'stages', '[]'::jsonb)) > 0
+          )
+        )`;
+        const nonterminalExecutionReferenceRows = await tx
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            status: issues.status,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, lockedAgent.companyId),
+            notInArray(issues.status, ["done", "cancelled"]),
+            executionReferencePredicate,
+          ))
+          .orderBy(issues.createdAt, issues.id)
+          .limit(AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT + 1);
+        const nonterminalExecutionReferenceCount = nonterminalExecutionReferenceRows.length;
+        const nonterminalExecutionReferences = nonterminalExecutionReferenceRows
+          .slice(0, AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT);
+
+        const durableDecisionRows = await tx
+          .select({
+            id: issueExecutionDecisions.id,
+            issueId: issueExecutionDecisions.issueId,
+            artifactWorkProductId: issueExecutionDecisions.artifactWorkProductId,
+          })
+          .from(issueExecutionDecisions)
+          .where(and(
+            eq(issueExecutionDecisions.companyId, lockedAgent.companyId),
+            or(
+              eq(issueExecutionDecisions.actorAgentId, id),
+              eq(issueExecutionDecisions.reviewerAgentIdSnapshot, id),
+            ),
+          ))
+          .orderBy(issueExecutionDecisions.createdAt, issueExecutionDecisions.id)
+          .limit(AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT + 1);
+        const durableDecisionCount = durableDecisionRows.length;
+        const durableDecisions = durableDecisionRows.slice(0, AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT);
+
+        const builderEvidencePredicate = sql<boolean>`exists (
+          select 1
+          from ${issueWorkProducts} evidence_work_product
+          join ${heartbeatRuns} builder_run
+            on builder_run.id = evidence_work_product.created_by_run_id
+            or builder_run.id = evidence_work_product.last_modified_by_run_id
+          where evidence_work_product.id = ${issueExecutionDecisions.artifactWorkProductId}
+            and evidence_work_product.company_id = ${lockedAgent.companyId}
+            and builder_run.company_id = ${lockedAgent.companyId}
+            and builder_run.agent_id = ${id}
+        )`;
+        const durableBuilderEvidenceRows = await tx
+          .select({
+            id: issueExecutionDecisions.id,
+            issueId: issueExecutionDecisions.issueId,
+            artifactWorkProductId: issueExecutionDecisions.artifactWorkProductId,
+          })
+          .from(issueExecutionDecisions)
+          .where(and(
+            eq(issueExecutionDecisions.companyId, lockedAgent.companyId),
+            isNotNull(issueExecutionDecisions.artifactWorkProductId),
+            builderEvidencePredicate,
+          ))
+          .orderBy(issueExecutionDecisions.createdAt, issueExecutionDecisions.id)
+          .limit(AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT + 1);
+        const durableBuilderEvidenceCount = durableBuilderEvidenceRows.length;
+        const durableBuilderEvidence = durableBuilderEvidenceRows
+          .slice(0, AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT);
+
+        const governedActivationRows = await tx
+          .select({
+            id: governedIssueReservations.id,
+            issueId: governedIssueReservations.issueId,
+          })
+          .from(governedIssueReservations)
+          .where(and(
+            eq(governedIssueReservations.companyId, lockedAgent.companyId),
+            eq(governedIssueReservations.builderAgentId, id),
+          ))
+          .orderBy(governedIssueReservations.createdAt, governedIssueReservations.id)
+          .limit(AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT + 1);
+        const governedActivationCount = governedActivationRows.length;
+        const governedActivationReferences = governedActivationRows
+          .slice(0, AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT);
+        if (
+          nonterminalExecutionReferences.length > 0
+          || durableDecisions.length > 0
+          || durableBuilderEvidence.length > 0
+          || governedActivationReferences.length > 0
+        ) {
+          const decisionReferences = [
+            ...durableDecisions.map((decision) => ({
+              id: decision.id,
+              issueId: decision.issueId,
+              artifactWorkProductId: decision.artifactWorkProductId,
+              dependencyRole: "decision_actor_or_reviewer" as const,
+            })),
+            ...durableBuilderEvidence
+              .filter((builderDecision) => !durableDecisions.some((decision) => decision.id === builderDecision.id))
+              .map((decision) => ({
+                id: decision.id,
+                issueId: decision.issueId,
+                artifactWorkProductId: decision.artifactWorkProductId,
+                dependencyRole: "artifact_builder_provenance" as const,
+              })),
+          ];
+          throw conflict(
+            "Agent cannot be deleted while execution policy, state, or decision evidence depends on it",
+            {
+              code: "agent_execution_audit_dependency",
+              agentId: id,
+              issueReferences: nonterminalExecutionReferences.map((issue) => ({
+                issueId: issue.id,
+                identifier: issue.identifier,
+                status: issue.status,
+              })),
+              decisionReferences,
+              activationReferences: governedActivationReferences.map((reservation) => ({
+                reservationId: reservation.id,
+                issueId: reservation.issueId,
+                dependencyRole: "governed_activation_builder" as const,
+              })),
+              dependencyCounts: {
+                nonterminalIssueReferences: nonterminalExecutionReferenceCount,
+                directDecisionReferences: durableDecisionCount,
+                artifactBuilderReferences: durableBuilderEvidenceCount,
+                governedActivationReferences: governedActivationCount,
+              },
+              diagnosticsTruncated:
+                nonterminalExecutionReferenceCount > AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT
+                || durableDecisionCount > AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT
+                || durableBuilderEvidenceCount > AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT
+                || governedActivationCount > AGENT_EXECUTION_DEPENDENCY_SAMPLE_LIMIT,
+              dependencyCountSemantics:
+                "exact_when_not_truncated_otherwise_sample_plus_one_lower_bound" as const,
+              repair:
+                nonterminalExecutionReferences.length > 0
+                  ? "Repair or clear the nonterminal issue execution policy before deleting this agent. Durable decisions and artifact provenance cannot be erased by agent deletion."
+                  : "Durable execution decisions and artifact builder provenance cannot be erased by agent deletion; terminate the agent instead.",
+            },
+          );
+        }
+
         await issueThreadInteractionService(tx as unknown as Db)
-          .cancelPendingForDeletedAddressee(existing.companyId, id);
+          .cancelPendingForDeletedAddressee(lockedAgent.companyId, id);
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
         await tx
           .update(issues)

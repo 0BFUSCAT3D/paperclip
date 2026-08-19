@@ -14,6 +14,7 @@ import {
   documentRevisions,
   documents,
   goals,
+  governedIssueReservations,
   heartbeatRuns,
   routineRuns,
   executionWorkspaces,
@@ -54,6 +55,7 @@ import type {
   IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
+  GovernedIssueEnvelope,
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
@@ -87,7 +89,14 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  buildInitialIssueMonitorFields,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
+import {
+  assertIssueExecutionPolicyParticipants,
+} from "./issue-execution-policy-participants.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -131,6 +140,11 @@ import {
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import {
+  assertGovernedReservationIssueUnchanged,
+  assertIssueNotPendingGovernedReservation,
+  governedIssueReservedSnapshot,
+} from "./governed-issue-contract.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -668,6 +682,11 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
+  governanceReservation?: {
+    requestIntentSha256: string;
+    envelopeSha256: string;
+    envelope: GovernedIssueEnvelope;
+  };
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
@@ -5054,6 +5073,11 @@ export function issueService(db: Db) {
       throw unprocessable("Issue cannot be blocked by itself");
     }
 
+    // Blocker edges are part of the reserved issue's execution conditions even
+    // though they live outside the issues row. Keep the service-level failure
+    // explicit; the database trigger below is the race/direct-SQL backstop.
+    await assertIssueNotPendingGovernedReservation(dbOrTx as Db, issueId);
+
     if (deduped.length > 0) {
       const lockedIssueIds = [issueId, ...deduped].sort();
       await dbOrTx.execute(
@@ -5956,6 +5980,24 @@ export function issueService(db: Db) {
       return getIssueByIdentifier(identifier);
     },
 
+    getByCreateIdempotencyKey: async (companyId: string, rawIdempotencyKey: string) => {
+      const idempotencyKey = rawIdempotencyKey.trim();
+      if (!idempotencyKey || idempotencyKey.length > 255) return null;
+      const retentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+      const row = await db
+        .select({ issueId: issueCreateIdempotencyKeys.issueId })
+        .from(issueCreateIdempotencyKeys)
+        .where(and(
+          eq(issueCreateIdempotencyKeys.companyId, companyId),
+          eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+          gte(issueCreateIdempotencyKeys.createdAt, retentionCutoff),
+        ))
+        .orderBy(desc(issueCreateIdempotencyKeys.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row ? getIssueByUuid(row.issueId) : null;
+    },
+
     getCurrentScheduledRetry: async (issueId: string) => {
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -6623,6 +6665,11 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+      if (blockParentUntilDone) {
+        // Fail before creating the child when the requested helper would mutate
+        // a parent whose governed activation envelope has already been reserved.
+        await db.transaction((tx) => assertIssueNotPendingGovernedReservation(tx as unknown as Db, parent.id));
+      }
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -6951,6 +6998,7 @@ export function issueService(db: Db) {
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
+        governanceReservation,
         onDeduplicated,
         ...issueData
       } = data;
@@ -6985,9 +7033,51 @@ export function issueService(db: Db) {
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
         }
 
+        const existingGovernanceReservation = governanceReservation && idempotencyKey
+          ? await tx
+            .select()
+            .from(governedIssueReservations)
+            .where(and(
+              eq(governedIssueReservations.companyId, companyId),
+              eq(governedIssueReservations.idempotencyKey, idempotencyKey),
+            ))
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+          : null;
+        if (
+          existingGovernanceReservation
+          && existingGovernanceReservation.requestIntentSha256 !== governanceReservation?.requestIntentSha256
+        ) {
+          throw conflict("Governed issue reservation key was already used with different request intent", {
+            code: "governed_issue_reservation_idempotency_conflict",
+            idempotencyKey,
+            reservationRequestIntentSha256: existingGovernanceReservation.requestIntentSha256,
+            requestIntentSha256: governanceReservation?.requestIntentSha256,
+          });
+        }
+
         let existingIssue: typeof issues.$inferSelect | undefined;
         let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
-        if (idempotencyKey) {
+        if (existingGovernanceReservation) {
+          existingIssue = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.id, existingGovernanceReservation.issueId),
+              eq(issues.companyId, companyId),
+            ))
+            .for("update")
+            .then((rows) => rows[0]);
+          if (!existingIssue) {
+            throw conflict("Governed issue reservation target no longer exists", {
+              code: "governed_issue_reservation_target_missing",
+              idempotencyKey,
+              issueId: existingGovernanceReservation.issueId,
+            });
+          }
+          deduplicationReason = "idempotency_key";
+        }
+        if (idempotencyKey && !existingIssue) {
           const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
           await tx.execute(sql`
             delete from ${issueCreateIdempotencyKeys}
@@ -7030,6 +7120,55 @@ export function issueService(db: Db) {
           if (existingIssue) deduplicationReason = "recent_open_title";
         }
         if (existingIssue) {
+          if (existingGovernanceReservation) {
+            if (!existingGovernanceReservation.activatedAt) {
+              assertGovernedReservationIssueUnchanged({
+                issue: existingIssue,
+                reservedIssueSnapshot: existingGovernanceReservation.reservedIssueSnapshot,
+              });
+            }
+            onDeduplicated?.("idempotency_key");
+            const [enriched] = await withIssueLabels(tx, [existingIssue]);
+            const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+            return withRelations;
+          }
+          if (deduplicationReason === "idempotency_key") {
+            existingIssue = await tx
+              .select()
+              .from(issues)
+              .where(and(eq(issues.id, existingIssue.id), eq(issues.companyId, companyId)))
+              .for("update")
+              .then((rows) => rows[0]);
+            if (!existingIssue) {
+              throw conflict("The idempotent issue replay target no longer exists", {
+                code: "issue_create_idempotency_target_missing",
+                idempotencyKey,
+              });
+            }
+            const replayPolicy = normalizeIssueExecutionPolicy(existingIssue.executionPolicy ?? null);
+            const replayState = parseIssueExecutionState(existingIssue.executionState);
+            if (existingIssue.executionState != null && replayPolicy?.stages.length && !replayState) {
+              throw unprocessable("Invalid execution state must be repaired before this governed issue can be replayed", {
+                code: "execution_policy_state_repair_required",
+              });
+            }
+            await assertIssueExecutionPolicyParticipants(tx as unknown as Db, {
+              companyId,
+              reviewPolicy: existingIssue.reviewPolicy,
+              executionPolicy: replayPolicy,
+              executionState: replayState,
+              assigneeAgentId: existingIssue.assigneeAgentId,
+              assigneeUserId: existingIssue.assigneeUserId,
+              createdByAgentId: existingIssue.createdByAgentId,
+              createdByUserId: existingIssue.createdByUserId,
+            });
+            if (governanceReservation) {
+              throw conflict("Issue create idempotency key is not a governed reservation", {
+                code: "governed_issue_reservation_key_collision",
+                idempotencyKey,
+              });
+            }
+          }
           if (idempotencyKey) {
             await tx
               .insert(issueCreateIdempotencyKeys)
@@ -7041,6 +7180,19 @@ export function issueService(db: Db) {
           const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
           return withRelations;
         }
+
+        const normalizedExecutionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
+        await assertIssueExecutionPolicyParticipants(tx as unknown as Db, {
+          companyId,
+          reviewPolicy: issueData.reviewPolicy ?? null,
+          executionPolicy: normalizedExecutionPolicy,
+          executionState: null,
+          assigneeAgentId: issueData.assigneeAgentId ?? null,
+          assigneeUserId: issueData.assigneeUserId ?? null,
+          createdByAgentId: issueData.createdByAgentId ?? null,
+          createdByUserId: issueData.createdByUserId ?? null,
+        });
+        issueData.executionPolicy = normalizedExecutionPolicy as unknown as Record<string, unknown> | null;
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -7232,6 +7384,24 @@ export function issueService(db: Db) {
             companyId,
             idempotencyKey,
             issueId: issue.id,
+          });
+        }
+        if (governanceReservation) {
+          if (!idempotencyKey) {
+            throw unprocessable("Governed issue reservations require an idempotency key", {
+              code: "governed_issue_reservation_idempotency_required",
+            });
+          }
+          await tx.insert(governedIssueReservations).values({
+            companyId,
+            idempotencyKey,
+            issueId: issue.id,
+            contractVersion: 1,
+            requestIntentSha256: governanceReservation.requestIntentSha256,
+            envelopeSha256: governanceReservation.envelopeSha256,
+            envelope: governanceReservation.envelope as unknown as Record<string, unknown>,
+            reservedIssueSnapshot: governedIssueReservedSnapshot(issue),
+            reservedIssueUpdatedAt: issue.updatedAt,
           });
         }
         if (watchdog) {
@@ -7546,6 +7716,9 @@ export function issueService(db: Db) {
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
+      const {
+        ...dataWithoutGovernancePrecondition
+      } = data;
       const existing = await dbOrTx
         .select()
         .from(issues)
@@ -7559,7 +7732,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         ...issueData
-      } = data;
+      } = dataWithoutGovernancePrecondition;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7703,6 +7876,7 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        await assertIssueNotPendingGovernedReservation(tx as unknown as Db, id);
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -7713,6 +7887,37 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        const finalExecutionPolicy = issueData.executionPolicy !== undefined
+          ? normalizeIssueExecutionPolicy(issueData.executionPolicy)
+          : normalizeIssueExecutionPolicy(receiptExisting.executionPolicy ?? null);
+        const rawFinalExecutionState = issueData.executionState !== undefined
+          ? issueData.executionState
+          : receiptExisting.executionState;
+        const finalExecutionState = parseIssueExecutionState(rawFinalExecutionState);
+        if (rawFinalExecutionState != null && finalExecutionPolicy?.stages.length && !finalExecutionState) {
+          throw unprocessable("Invalid execution state must be repaired before this governed issue can be mutated", {
+            code: "execution_policy_state_repair_required",
+          });
+        }
+        await assertIssueExecutionPolicyParticipants(tx as unknown as Db, {
+          companyId: receiptExisting.companyId,
+          reviewPolicy: issueData.reviewPolicy !== undefined
+            ? issueData.reviewPolicy
+            : receiptExisting.reviewPolicy,
+          executionPolicy: finalExecutionPolicy,
+          executionState: finalExecutionState,
+          assigneeAgentId: issueData.assigneeAgentId !== undefined
+            ? issueData.assigneeAgentId
+            : receiptExisting.assigneeAgentId,
+          assigneeUserId: issueData.assigneeUserId !== undefined
+            ? issueData.assigneeUserId
+            : receiptExisting.assigneeUserId,
+          createdByAgentId: receiptExisting.createdByAgentId,
+          createdByUserId: receiptExisting.createdByUserId,
+        });
+        if (issueData.executionPolicy !== undefined) {
+          patch.executionPolicy = finalExecutionPolicy as unknown as Record<string, unknown> | null;
+        }
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
@@ -8043,6 +8248,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      await db.transaction((tx) => assertIssueNotPendingGovernedReservation(tx as unknown as Db, id));
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
@@ -8389,6 +8595,7 @@ export function issueService(db: Db) {
 
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
       db.transaction(async (tx) => {
+        await assertIssueNotPendingGovernedReservation(tx as unknown as Db, id);
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
         );

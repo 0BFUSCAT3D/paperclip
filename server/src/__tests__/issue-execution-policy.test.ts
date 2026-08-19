@@ -1285,7 +1285,7 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.assigneeAgentId).toBe(qaAgentId);
     });
 
-    it("skips a self-review-only stage and completes the workflow", () => {
+    it("refuses to auto-skip a self-review-only stage", () => {
       const policy = makePolicy([
         {
           type: "review",
@@ -1293,7 +1293,7 @@ describe("issue execution policy transitions", () => {
         },
       ]);
 
-      const result = applyIssueExecutionPolicyTransition({
+      expect(() => applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_progress",
           assigneeAgentId: coderAgentId,
@@ -1306,22 +1306,10 @@ describe("issue execution policy transitions", () => {
         requestedAssigneePatch: {},
         actor: { agentId: coderAgentId },
         commentBody: "Done",
-      });
-
-      expect(result.patch).toMatchObject({
-        executionState: {
-          status: "completed",
-          currentStageType: null,
-          currentParticipant: null,
-          returnAssignee: { type: "agent", agentId: coderAgentId },
-          completedStageIds: [policy.stages[0].id],
-        },
-      });
-      expect(result.patch.status).toBeUndefined();
-      expect(result.patch.assigneeAgentId).toBeUndefined();
+      })).toThrow("execution stages cannot be auto-skipped");
     });
 
-    it("skips a self-review-only review stage and advances to approval", () => {
+    it("does not reach approval when the review stage has no independent participant", () => {
       const policy = makePolicy([
         {
           type: "review",
@@ -1333,7 +1321,7 @@ describe("issue execution policy transitions", () => {
         },
       ]);
 
-      const result = applyIssueExecutionPolicyTransition({
+      expect(() => applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_progress",
           assigneeAgentId: coderAgentId,
@@ -1346,20 +1334,7 @@ describe("issue execution policy transitions", () => {
         requestedAssigneePatch: {},
         actor: { agentId: coderAgentId },
         commentBody: "Done",
-      });
-
-      expect(result.patch).toMatchObject({
-        status: "in_review",
-        assigneeAgentId: null,
-        assigneeUserId: ctoUserId,
-        executionState: {
-          status: "pending",
-          currentStageType: "approval",
-          currentParticipant: { type: "user", userId: ctoUserId },
-          returnAssignee: { type: "agent", agentId: coderAgentId },
-          completedStageIds: [policy.stages[0].id],
-        },
-      });
+      })).toThrow("execution stages cannot be auto-skipped");
     });
   });
 

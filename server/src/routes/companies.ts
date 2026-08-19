@@ -60,6 +60,7 @@ import {
   logActivity,
   workTimelineService,
 } from "../services/index.js";
+import { ensureLocalTrustedBoardPrincipal } from "../services/local-trusted-board-principal.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
@@ -1123,6 +1124,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       ...req.body,
       defaultResponsibleUserId: req.body.defaultResponsibleUserId ?? ownerPrincipalId,
     });
+    if (req.actor.source === "local_implicit") {
+      await ensureLocalTrustedBoardPrincipal(db);
+    }
     await access.ensureMembership(company.id, "user", ownerPrincipalId, "owner", "active");
     await access.ensureRoleDefaultGrants(
       company.id,

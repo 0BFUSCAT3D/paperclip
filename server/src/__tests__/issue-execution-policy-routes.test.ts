@@ -6,9 +6,11 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdForUpdate: vi.fn(),
+  getByCreateIdempotencyKey: vi.fn(),
   findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
+  create: vi.fn(),
   createChild: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -18,12 +20,18 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
+  startNextQueuedRunForAgent: vi.fn(async () => undefined),
   wakeup: vi.fn(async () => undefined),
   triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+}));
+
+const mockGovernedIssueContractService = vi.hoisted(() => ({
+  getReservation: vi.fn(),
+  activate: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -114,6 +122,39 @@ function registerModuleMocks() {
     }),
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
+    governedIssueContractService: () => mockGovernedIssueContractService,
+    governedIssueEnvelopeSha256: vi.fn(() => "a".repeat(64)),
+    governedIssueSha256: vi.fn(() => "c".repeat(64)),
+    governedIssueReservationResponseIssue: (reservation: any) => reservation.activatedAt
+      ? reservation.activatedIssueSnapshot
+      : reservation.reservedIssueSnapshot,
+    serializeGovernedIssueReservation: (reservation: any) => ({
+      idempotencyKey: reservation.idempotencyKey,
+      issueId: reservation.issueId,
+      requestIntentSha256: reservation.requestIntentSha256,
+      envelopeSha256: reservation.envelopeSha256,
+      reservedIssueUpdatedAt: reservation.reservedIssueUpdatedAt.toISOString(),
+      createdAt: reservation.createdAt.toISOString(),
+    }),
+    serializeGovernedIssueActivationReceipt: (reservation: any) => reservation.activatedAt ? ({
+      version: 1,
+      idempotencyKey: reservation.idempotencyKey,
+      issueId: reservation.issueId,
+      builderAgentId: reservation.builderAgentId,
+      envelopeSha256: reservation.envelopeSha256,
+      activationSha256: reservation.activationSha256,
+      activatedAt: reservation.activatedAt.toISOString(),
+      issueUpdatedAt: reservation.activatedIssueUpdatedAt.toISOString(),
+      issueSnapshot: reservation.activatedIssueSnapshot,
+      wake: {
+        durable: true,
+        idempotencyKey: `governed_issue_activation:v1:${reservation.id}`,
+        requestId: reservation.wakeupRequestId,
+        runId: reservation.heartbeatRunId,
+        status: "queued",
+      },
+    }) : null,
+    GOVERNED_ISSUE_LIFECYCLE_VERSION: 1,
     environmentService: () => ({
       getById: vi.fn(async () => null),
     }),
@@ -169,6 +210,12 @@ type TestActor =
       agentId: string;
       companyId: string;
       runId: string | null;
+      source?: "agent_key" | "agent_jwt";
+      keyId?: string;
+      keyScope?:
+        | { kind: "standard" }
+        | { kind: "task_bridge"; parentIssueId?: string }
+        | { kind: "skill_test"; issueId: string };
     };
 
 async function createApp(actor?: TestActor) {
@@ -326,7 +373,8 @@ function queueReviewEvidenceReads(fixture: ReturnType<typeof reviewEvidenceFixtu
   mockSelectRowsOnce([fixture.workProduct]);
   mockSelectRowsOnce([fixture.workspace]);
   mockSelectRowsOnce([fixture.projectWorkspace]);
-  // Under-lock idempotency and local revalidation.
+  // Under-lock builder-agent serialization, idempotency, and local revalidation.
+  mockSelectRowsOnce([{ id: fixture.builderRun.agentId }]);
   mockSelectRowsOnce([]);
   mockSelectRowsOnce([fixture.reviewerRun]);
   mockSelectRowsOnce([fixture.workProduct]);
@@ -547,6 +595,46 @@ describe("issue execution policy routes", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("Only the active reviewer or approver");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("propagates the reservation guard through generic PATCH without waking", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      parentId: null,
+      status: "backlog",
+      reviewPolicy: "not_creator",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-RESERVED",
+      title: "Reserved only",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getByIdForUpdate.mockResolvedValue(issue);
+    const app = await createApp();
+    const { conflict } = await import("../errors.js");
+    mockIssueService.update.mockRejectedValue(conflict(
+      "Governed issue reservation must be activated through its versioned activation endpoint",
+      { code: "governed_issue_reservation_activation_required", issueId: issue.id },
+    ));
+
+    const res = await request(app)
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        status: "todo",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      details: { code: "governed_issue_reservation_activation_required", issueId: issue.id },
+    });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.startNextQueuedRunForAgent).not.toHaveBeenCalled();
   });
 
   it("records review evidence only for the independently resolved pull-request head", async () => {
@@ -2190,6 +2278,361 @@ describe("issue execution policy routes", () => {
     expect(updatePatch.assigneeUserId).toBeUndefined();
     expect(updatePatch.executionState).toBeUndefined();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("reserves a governed backlog issue without a wake, then activates it through the dedicated CAS route", async () => {
+    const builderAgentId = "44444444-4444-4444-8444-444444444444";
+    const reviewerAgentId = "55555555-5555-4555-8555-555555555555";
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const stagedIssue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectWorkspaceId: null,
+      status: "backlog",
+      workMode: "standard",
+      harnessKind: null,
+      priority: "high",
+      projectId: null,
+      goalId: null,
+      parentId: null,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      responsibleUserId: "local-board",
+      reviewPolicy: "not_creator",
+      issueNumber: 2001,
+      identifier: "PAP-2001",
+      title: "Staged governed work",
+      description: null,
+      requestDepth: 0,
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionPolicy: policy,
+      executionState: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+      hiddenAt: null,
+      createdAt: new Date("2026-08-19T12:00:00.000Z"),
+      updatedAt: new Date("2026-08-19T12:00:00.000Z"),
+    };
+    const reservation = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      companyId: "company-1",
+      idempotencyKey: "reeve-build:ingress-42",
+      issueId: stagedIssue.id,
+      requestIntentSha256: "c".repeat(64),
+      envelopeSha256: "a".repeat(64),
+      reservedIssueSnapshot: {
+        ...stagedIssue,
+        hiddenAt: undefined,
+        createdAt: stagedIssue.createdAt.toISOString(),
+        updatedAt: stagedIssue.updatedAt.toISOString(),
+      },
+      reservedIssueUpdatedAt: stagedIssue.updatedAt,
+      createdAt: new Date("2026-08-19T12:00:00.000Z"),
+      activatedAt: null,
+    };
+    mockIssueService.create.mockResolvedValue(stagedIssue);
+    mockGovernedIssueContractService.getReservation.mockResolvedValue(reservation);
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    const app = await createApp();
+
+    const createRes = await request(app)
+      .post("/api/v1/companies/company-1/governed-issue-reservations")
+      .send({
+        idempotencyKey: reservation.idempotencyKey,
+        issue: {
+          title: stagedIssue.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+      });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body).toMatchObject({
+      version: 1,
+      replayed: false,
+      state: "reserved",
+      activationReceipt: null,
+      reservation: {
+        idempotencyKey: reservation.idempotencyKey,
+        issueId: stagedIssue.id,
+        envelopeSha256: "a".repeat(64),
+      },
+    });
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        status: "backlog",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        idempotencyKey: reservation.idempotencyKey,
+        executionPolicy: policy,
+        governanceReservation: expect.objectContaining({ envelopeSha256: "a".repeat(64) }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.startNextQueuedRunForAgent).not.toHaveBeenCalled();
+
+    mockIssueService.getById.mockResolvedValue(stagedIssue);
+    mockAccessService.decide.mockResolvedValueOnce({ allowed: false });
+    const deniedLookup = await request(app)
+      .get(`/api/v1/companies/company-1/governed-issue-reservations/${encodeURIComponent(reservation.idempotencyKey)}`);
+    expect(deniedLookup.status).toBe(404);
+    expect(deniedLookup.body).toEqual({ error: "Governed issue reservation not found" });
+
+    mockAccessService.decide.mockResolvedValueOnce({ allowed: true });
+    const allowedLookup = await request(app)
+      .get(`/api/v1/companies/company-1/governed-issue-reservations/${encodeURIComponent(reservation.idempotencyKey)}`);
+    expect(allowedLookup.status).toBe(200);
+    expect(allowedLookup.body.issue).toMatchObject({ id: stagedIssue.id, status: "backlog" });
+
+    const activatedIssue = {
+      ...stagedIssue,
+      status: "todo",
+      assigneeAgentId: builderAgentId,
+      updatedAt: new Date("2026-08-19T12:01:00.000Z"),
+    };
+    const activatedReservation = {
+      ...reservation,
+      builderAgentId,
+      activationSha256: "b".repeat(64),
+      activatedAt: new Date("2026-08-19T12:01:00.000Z"),
+      activatedIssueUpdatedAt: activatedIssue.updatedAt,
+      activatedIssueSnapshot: {
+        ...activatedIssue,
+        hiddenAt: undefined,
+        createdAt: activatedIssue.createdAt.toISOString(),
+        updatedAt: activatedIssue.updatedAt.toISOString(),
+      },
+      wakeupRequestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      heartbeatRunId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    };
+    mockIssueService.getById.mockResolvedValue(stagedIssue);
+    mockGovernedIssueContractService.activate.mockResolvedValue({
+      reservation: activatedReservation,
+      issue: activatedReservation.activatedIssueSnapshot,
+      replayed: false,
+      needsDispatch: true,
+    });
+    mockHeartbeatService.startNextQueuedRunForAgent.mockRejectedValueOnce(
+      new Error("simulated immediate dispatcher failure"),
+    );
+
+    const activateRes = await request(app)
+      .put(`/api/v1/companies/company-1/governed-issue-reservations/${encodeURIComponent(reservation.idempotencyKey)}/activation`)
+      .send({
+        version: 1,
+        expectedIssueId: stagedIssue.id,
+        expectedIssueUpdatedAt: stagedIssue.updatedAt.toISOString(),
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        builderAgentId,
+        issue: {
+          title: stagedIssue.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+      });
+
+    expect(activateRes.status).toBe(201);
+    expect(mockGovernedIssueContractService.activate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        idempotencyKey: reservation.idempotencyKey,
+        expectedIssueId: stagedIssue.id,
+        expectedIssueUpdatedAt: stagedIssue.updatedAt.toISOString(),
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        builderAgentId,
+      }),
+    );
+    expect(mockHeartbeatService.startNextQueuedRunForAgent).toHaveBeenCalledTimes(1);
+    expect(activateRes.body.activationReceipt).toMatchObject({
+      builderAgentId,
+      issueUpdatedAt: activatedIssue.updatedAt.toISOString(),
+      issueSnapshot: { id: stagedIssue.id, status: "todo", assigneeAgentId: builderAgentId },
+      wake: { durable: true, requestId: activatedReservation.wakeupRequestId, runId: activatedReservation.heartbeatRunId },
+    });
+    expect(activateRes.body.issue).toEqual(activateRes.body.activationReceipt.issueSnapshot);
+
+    const progressedLiveIssue = {
+      ...activatedIssue,
+      status: "in_review",
+      updatedAt: new Date("2026-08-19T12:05:00.000Z"),
+    };
+    mockIssueService.getById.mockResolvedValue(progressedLiveIssue);
+    mockGovernedIssueContractService.activate.mockResolvedValue({
+      reservation: activatedReservation,
+      issue: activatedReservation.activatedIssueSnapshot,
+      replayed: true,
+      needsDispatch: false,
+    });
+    const replayRes = await request(app)
+      .put(`/api/v1/companies/company-1/governed-issue-reservations/${encodeURIComponent(reservation.idempotencyKey)}/activation`)
+      .send({
+        version: 1,
+        expectedIssueId: stagedIssue.id,
+        expectedIssueUpdatedAt: stagedIssue.updatedAt.toISOString(),
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        builderAgentId,
+        issue: {
+          title: stagedIssue.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+      });
+    expect(replayRes.status).toBe(200);
+    expect(replayRes.body.issue).toEqual(replayRes.body.activationReceipt.issueSnapshot);
+    expect(replayRes.body.issue).toMatchObject({ status: "todo", assigneeAgentId: builderAgentId });
+    expect(replayRes.body.issue.updatedAt).toBe(activatedIssue.updatedAt.toISOString());
+  });
+
+  it("reads an issue by create idempotency key without creating or waking", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      parentId: null,
+      identifier: "PAP-2002",
+      title: "Existing Reeve filing",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    };
+    mockIssueService.getByCreateIdempotencyKey.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .get("/api/companies/company-1/issues/by-create-idempotency-key/reeve-build%3Aingress-42");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ issue: expect.objectContaining({ id: issue.id }) });
+    expect(mockIssueService.getByCreateIdempotencyKey).toHaveBeenCalledWith(
+      "company-1",
+      "reeve-build:ingress-42",
+    );
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("allows an authorized agent to read an issue by create idempotency key", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      parentId: null,
+      identifier: "PAP-2003",
+      title: "Authorized replay lookup",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+    };
+    mockIssueService.getByCreateIdempotencyKey.mockResolvedValue(issue);
+    const actor = {
+      type: "agent" as const,
+      agentId: issue.assigneeAgentId,
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_key" as const,
+      keyScope: { kind: "standard" as const },
+    };
+
+    const res = await request(await createApp(actor))
+      .get("/api/companies/company-1/issues/by-create-idempotency-key/reeve-build%3Aauthorized");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ issue: expect.objectContaining({ id: issue.id }) });
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      actor,
+      action: "issue:read",
+      resource: expect.objectContaining({ issueId: issue.id }),
+    }));
+  });
+
+  it.each([
+    {
+      name: "unrelated standard agent",
+      actor: {
+        type: "agent" as const,
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+        source: "agent_key" as const,
+        keyScope: { kind: "standard" as const },
+      },
+    },
+    {
+      name: "task-bridge key",
+      actor: {
+        type: "agent" as const,
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+        source: "agent_key" as const,
+        keyId: "66666666-6666-4666-8666-666666666666",
+        keyScope: { kind: "task_bridge" as const, parentIssueId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+      },
+    },
+    {
+      name: "skill-test token",
+      actor: {
+        type: "agent" as const,
+        agentId: "44444444-4444-4444-8444-444444444444",
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+        source: "agent_jwt" as const,
+        keyScope: { kind: "skill_test" as const, issueId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+      },
+    },
+  ])("returns a non-oracular 404 for $name outside the issue boundary", async ({ actor }) => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      parentId: null,
+      identifier: "PAP-HIDDEN",
+      title: "Hidden replay lookup",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+    };
+    mockIssueService.getByCreateIdempotencyKey.mockResolvedValue(issue);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "issue:read",
+      reason: "deny_policy_restricted",
+      explanation: "Outside scoped issue boundary.",
+    });
+    const app = await createApp(actor);
+
+    const hidden = await request(app)
+      .get("/api/companies/company-1/issues/by-create-idempotency-key/reeve-build%3Ahidden");
+    mockIssueService.getByCreateIdempotencyKey.mockResolvedValueOnce(null);
+    const absent = await request(app)
+      .get("/api/companies/company-1/issues/by-create-idempotency-key/reeve-build%3Aabsent");
+
+    expect(hidden.status).toBe(404);
+    expect(absent.status).toBe(404);
+    expect(hidden.body).toEqual({ error: "Issue not found" });
+    expect(absent.body).toEqual(hidden.body);
   });
 
   it("triggers a scheduled monitor immediately from the dedicated route", async () => {

@@ -22,6 +22,7 @@ const apiPrefixes: Record<string, string> = {
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
+  "capabilities.ts": "/api/capabilities",
   "cloud.ts": "/api/cloud",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -108,7 +109,7 @@ function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
     return routePath;
   }
-  if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
+  if ((file === "companies.ts" || file === "health.ts" || file === "capabilities.ts") && routePath === "/") {
     return prefix;
   }
   if (file === "companies.ts" || file === "health.ts") {
@@ -295,6 +296,29 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/invites/{token}/accept"].post.responses["202"]).toBeDefined();
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/import"].post.responses["202"]).toBeDefined();
+    const governedReservation = spec.paths[
+      "/api/v1/companies/{companyId}/governed-issue-reservations"
+    ].post;
+    const governedActivation = spec.paths[
+      "/api/v1/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/activation"
+    ].put;
+    expect(governedReservation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
+    expect(governedActivation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
+    expect(governedActivation.responses["201"].content["application/json"].schema.properties.activationReceipt)
+      .toBeDefined();
+    const reservationResponse = governedReservation.responses["201"].content["application/json"].schema;
+    const activationResponse = governedActivation.responses["201"].content["application/json"].schema;
+    expect(reservationResponse.properties.reservation.properties.requestIntentSha256).toBeDefined();
+    expect(reservationResponse.properties.issue.additionalProperties).toBe(false);
+    expect(activationResponse.properties.issue.additionalProperties).toBe(false);
+    expect(activationResponse.properties.activationReceipt.properties.issueSnapshot.additionalProperties)
+      .toBe(false);
+    for (const code of ["409", "412", "422"]) {
+      expect(governedReservation.responses[code]).toBeDefined();
+      expect(governedActivation.responses[code]).toBeDefined();
+      expect(spec.paths["/api/companies/{companyId}/issues"].post.responses[code]).toBeDefined();
+      expect(spec.paths["/api/issues/{id}"].patch.responses[code]).toBeDefined();
+    }
   });
 
   it("publishes the Claude browser-code grammar and strict setup-token response shapes", () => {
