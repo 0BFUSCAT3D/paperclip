@@ -61,6 +61,7 @@ import {
   listCurrentRuntimeServicesForProjectWorkspaces,
   selectConfiguredRuntimeServiceRows,
 } from "./workspace-runtime-read-model.js";
+import { assertWorkspaceArtifactDirectorShipMutationAllowed } from "./artifact-director-ship-guards.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -2847,12 +2848,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
-      const row = await db
-        .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date() })
-        .where(eq(executionWorkspaces.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        await assertWorkspaceArtifactDirectorShipMutationAllowed(tx as unknown as Db, id);
+        return tx.update(executionWorkspaces)
+          .set({ ...patch, updatedAt: new Date() })
+          .where(eq(executionWorkspaces.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
       return row ? toExecutionWorkspace(row) : null;
     },
 
@@ -3212,6 +3215,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     > => {
       return db.transaction(async (tx) => {
         await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
+        await assertWorkspaceArtifactDirectorShipMutationAllowed(tx as unknown as Db, input.id);
         const fresh = await tx
           .select()
           .from(executionWorkspaces)
@@ -3256,6 +3260,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!archived) return null;
+        if (fresh.mode === "shared_workspace") {
+          await tx.update(issues).set({
+            executionWorkspaceId: null,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(issues.companyId, fresh.companyId),
+            eq(issues.executionWorkspaceId, fresh.id),
+          ));
+        }
         return {
           outcome: "archived",
           workspace: toExecutionWorkspace(archived),

@@ -32,6 +32,10 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import {
+  assertProjectWorkspaceArtifactDirectorShipMutationAllowed,
+  assertProjectWorkspaceFanoutArtifactDirectorShipMutationAllowed,
+} from "./artifact-director-ship-guards.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -931,6 +935,15 @@ export function projectService(db: Db) {
 
       const shouldBePrimary = data.isPrimary === true || existing.length === 0;
       const created = await db.transaction(async (tx) => {
+        const workspaceIds = await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.companyId, project.companyId),
+            eq(projectWorkspaces.projectId, projectId),
+          )).then((rows) => rows.map((row) => row.id));
+        await assertProjectWorkspaceFanoutArtifactDirectorShipMutationAllowed(
+          tx as unknown as Db,
+          workspaceIds,
+        );
         if (shouldBePrimary) {
           await tx
             .update(projectWorkspaces)
@@ -1049,6 +1062,12 @@ export function projectService(db: Db) {
       }
 
       const updated = await db.transaction(async (tx) => {
+        const workspaceIds = await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.companyId, existing.companyId),
+            eq(projectWorkspaces.projectId, projectId),
+          )).then((rows) => rows.map((row) => row.id));
+        await assertProjectWorkspaceFanoutArtifactDirectorShipMutationAllowed(tx as unknown as Db, workspaceIds);
         if (data.isPrimary === true) {
           await tx
             .update(projectWorkspaces)
@@ -1143,6 +1162,12 @@ export function projectService(db: Db) {
       if (!existing) return null;
 
       const removed = await db.transaction(async (tx) => {
+        const workspaceIds = await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.companyId, existing.companyId),
+            eq(projectWorkspaces.projectId, projectId),
+          )).then((rows) => rows.map((row) => row.id));
+        await assertProjectWorkspaceFanoutArtifactDirectorShipMutationAllowed(tx as unknown as Db, workspaceIds);
         const row = await tx
           .delete(projectWorkspaces)
           .where(eq(projectWorkspaces.id, workspaceId))

@@ -27,6 +27,22 @@ describe("GET /api/capabilities", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual(PAPERCLIP_CAPABILITIES_V1);
+    expect(response.body.features.artifactBoundDirectorShip).toEqual({
+      supported: true,
+      version: 1,
+      artifactKind: "github_pull_request",
+      candidateEndpoint: "/api/v1/issues/{issueId}/artifact-director-ship-candidate",
+      confirmationEndpoint: "/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}",
+      lookupEndpoint: "/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}",
+      confirmationMethod: "PUT",
+      mergeMethod: "merge",
+      exactHeadCas: true,
+      durableIntentBeforeMerge: true,
+      crossSystemReconciliation: true,
+      preIntentMergedReceiptForbidden: true,
+      genericFinalApprovalQuarantined: true,
+      durableCompletionReceipt: true,
+    });
   });
 
   it("does not expose the contract to anonymous callers", async () => {

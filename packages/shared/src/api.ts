@@ -21,6 +21,8 @@ export const API = {
   environmentCustomImageSetupSessionFinish: `${API_PREFIX}/environment-custom-image-setup-sessions/:sessionId/finish`,
   environmentCustomImageSetupSessionCancel: `${API_PREFIX}/environment-custom-image-setup-sessions/:sessionId/cancel`,
   issues: `${API_PREFIX}/issues`,
+  artifactDirectorShipCandidate: `${API_PREFIX}/v1/issues/:issueId/artifact-director-ship-candidate`,
+  artifactDirectorShipOperation: `${API_PREFIX}/v1/issues/:issueId/artifact-director-ships/:idempotencyKey`,
   stalledReviewDecision: `${API_PREFIX}/issues/:issueId/stalled-review-decision`,
   issueExecutionReviewEvidence: `${API_PREFIX}/issues/:issueId/execution-review-evidence`,
   issueWatchdog: `${API_PREFIX}/issues/:issueId/watchdog`,

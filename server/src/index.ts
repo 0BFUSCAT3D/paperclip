@@ -87,6 +87,9 @@ import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { ensureLocalTrustedBoardPrincipal } from "./services/local-trusted-board-principal.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
+import { reconcileArtifactDirectorShips } from "./services/artifact-director-ship.js";
+import { createGitHubPullRequestMergeExecutor } from "./services/github-pull-request-merge-executor.js";
+import { createPullRequestMergeDetailsResolver } from "./services/github-pull-request-merge.js";
 import {
   coordinateHeartbeatSchedulerShutdown,
   finalizeServerShutdown,
@@ -970,6 +973,35 @@ export async function startServer(): Promise<StartedServer> {
     trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
 
+  const artifactDirectorShipResolver = createPullRequestMergeDetailsResolver(db as any);
+  const artifactDirectorShipMergeExecutor = createGitHubPullRequestMergeExecutor(db as any);
+  let artifactDirectorShipSweepInProgress = false;
+  const runArtifactDirectorShipSweep = async () => {
+    if (artifactDirectorShipSweepInProgress) return { scanned: 0 };
+    artifactDirectorShipSweepInProgress = true;
+    try {
+      return await reconcileArtifactDirectorShips({
+        db: db as any,
+        resolver: artifactDirectorShipResolver,
+        mergeExecutor: artifactDirectorShipMergeExecutor,
+        limit: 25,
+      });
+    } finally {
+      artifactDirectorShipSweepInProgress = false;
+    }
+  };
+  const scheduleArtifactDirectorShipSweep = () => {
+    if (heartbeatSchedulerStopped) return;
+    trackHeartbeatSchedulerWork(runArtifactDirectorShipSweep()
+      .then((result) => {
+        if (result.scanned > 0) logger.info(result, "artifact director Ship reconciler scanned durable operations");
+      })
+      .catch((err) => logger.error({ err }, "artifact director Ship reconciliation failed")));
+  };
+  void runArtifactDirectorShipSweep().catch((err) => {
+    logger.error({ err }, "startup artifact director Ship reconciliation failed");
+  });
+
   if (heartbeat) {
     const secretProposals = createSecretProposalsService(db as any);
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
@@ -1270,6 +1302,7 @@ export async function startServer(): Promise<StartedServer> {
         scheduleTerminalWorkspaceSweep();
         scheduleAdapterLoginReaperSweep();
         scheduleEnvironmentLeaseCleanupSweep();
+        scheduleArtifactDirectorShipSweep();
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines
@@ -1415,6 +1448,7 @@ export async function startServer(): Promise<StartedServer> {
     startHeartbeatSchedulerInterval(() => {
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
+      scheduleArtifactDirectorShipSweep();
     });
   }
   

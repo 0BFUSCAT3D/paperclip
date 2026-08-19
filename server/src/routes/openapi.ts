@@ -30,6 +30,10 @@ import {
   activateGovernedIssueV1Schema,
   governedIssueLifecycleIssueV1Schema,
   approveIssueReviewEvidenceSchema,
+  artifactDirectorShipCandidateResponseV1Schema,
+  artifactDirectorShipReconciliationResponseV1Schema,
+  artifactDirectorShipResponseV1Schema,
+  confirmArtifactDirectorShipV1Schema,
   stalledReviewDecisionSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
@@ -1152,6 +1156,22 @@ const PaperclipCapabilitiesSchema = z.object({
       artifactKind: z.literal("github_pull_request"),
       endpoint: z.literal("/api/issues/{issueId}/execution-review-evidence"),
       bindsExactHeadRevision: z.literal(true),
+    }).strict(),
+    artifactBoundDirectorShip: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      artifactKind: z.literal("github_pull_request"),
+      candidateEndpoint: z.literal("/api/v1/issues/{issueId}/artifact-director-ship-candidate"),
+      confirmationEndpoint: z.literal("/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}"),
+      lookupEndpoint: z.literal("/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}"),
+      confirmationMethod: z.literal("PUT"),
+      mergeMethod: z.literal("merge"),
+      exactHeadCas: z.literal(true),
+      durableIntentBeforeMerge: z.literal(true),
+      crossSystemReconciliation: z.literal(true),
+      preIntentMergedReceiptForbidden: z.literal(true),
+      genericFinalApprovalQuarantined: z.literal(true),
+      durableCompletionReceipt: z.literal(true),
     }).strict(),
     executionPolicyParticipantValidation: z.object({
       supported: z.literal(true),
@@ -2481,6 +2501,64 @@ registry.registerPath({
     403: r.forbidden,
     404: r.notFound,
     409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/issues/{issueId}/artifact-director-ship-candidate",
+  tags: ["issues"],
+  summary: "Build an exact artifact-bound director Ship candidate",
+  description: "Freshly verifies the reviewed open GitHub pull-request head and every bound provenance snapshot. This read does not create durable merge intent.",
+  request: { params: z.object({ issueId: z.string().uuid() }) },
+  responses: {
+    200: r.ok(artifactDirectorShipCandidateResponseV1Schema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}",
+  tags: ["issues"],
+  summary: "Read a durable artifact-bound director Ship operation",
+  request: {
+    params: z.object({ issueId: z.string().uuid(), idempotencyKey: z.string().uuid() }),
+  },
+  responses: {
+    200: r.ok(artifactDirectorShipResponseV1Schema),
+    202: r.ok(artifactDirectorShipReconciliationResponseV1Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}",
+  tags: ["issues"],
+  summary: "Confirm and reconcile an exact artifact-bound director Ship operation",
+  description: "Persists durable intent before invoking the exact-head merge CAS. Active or ambiguous operations return 202; completed operations return 200.",
+  request: {
+    params: z.object({ issueId: z.string().uuid(), idempotencyKey: z.string().uuid() }),
+    body: jsonBody(confirmArtifactDirectorShipV1Schema),
+  },
+  responses: {
+    200: r.ok(artifactDirectorShipResponseV1Schema),
+    202: r.ok(artifactDirectorShipReconciliationResponseV1Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
     422: r.unprocessable,
   },
 });

@@ -36,6 +36,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { secretService } from "../services/secrets.js";
+import { assertProjectWorkspaceFanoutArtifactDirectorShipMutationAllowed } from "../services/artifact-director-ship-guards.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
@@ -422,6 +423,14 @@ export function projectRoutes(db: Db) {
       projectWorkspaceId: workspace.id,
     });
 
+    return db.transaction(async (shipTx) => {
+      const projectWorkspaceIds = project.workspaces.map((entry) => entry.id);
+      await assertProjectWorkspaceFanoutArtifactDirectorShipMutationAllowed(
+        shipTx as unknown as Db,
+        projectWorkspaceIds,
+      );
+      const fencedSvc = projectService(shipTx as unknown as Db);
+
     const workspaceCwd = workspace.cwd;
     if (!workspaceCwd) {
       res.status(422).json({ error: "Project workspace needs a local path before Paperclip can run workspace commands" });
@@ -609,7 +618,7 @@ export function projectRoutes(db: Db) {
               action,
               serviceIndex: selectedServiceIndex,
             });
-        await svc.updateWorkspace(project.id, workspace.id, {
+        await fencedSvc.updateWorkspace(project.id, workspace.id, {
           runtimeConfig: {
             desiredState: nextRuntimeState.desiredState,
             serviceStates: nextRuntimeState.serviceStates,
@@ -636,7 +645,7 @@ export function projectRoutes(db: Db) {
       },
     });
 
-    const updatedWorkspace = (await svc.listWorkspaces(project.id)).find((entry) => entry.id === workspace.id) ?? workspace;
+    const updatedWorkspace = (await fencedSvc.listWorkspaces(project.id)).find((entry) => entry.id === workspace.id) ?? workspace;
 
     await logActivity(db, {
       companyId: project.companyId,
@@ -660,6 +669,7 @@ export function projectRoutes(db: Db) {
     res.json({
       workspace: updatedWorkspace,
       operation,
+    });
     });
   }
 

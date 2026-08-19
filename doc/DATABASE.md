@@ -186,6 +186,14 @@ Reviewer, run, actor-source, and director values are copied into the evidence ro
 
 The review-evidence row records an observed open PR head and advances only from the agent review stage to the exact configured user approval stage. It does not approve the final stage, ship code, merge GitHub state, or claim database/GitHub atomicity. Any later shipping operation must independently resolve and compare the current PR artifact again.
 
+## Artifact-bound director Ship operations
+
+`issue_artifact_director_shipments` is the durable bridge between the final director approval and GitHub's non-transactional merge API. A board user who is the exact snapshotted final director first builds a read-only candidate. Confirmation writes immutable intent before any provider call, acquires an expiring lease, and moves through `prepared`, `merge_in_flight`, `reconcile_required` or `merge_observed`, then `completed` or `stale`. Database transactions never span GitHub network calls.
+
+Every attempt freshly compares the same-repository, non-fork pull request, branch, exact reviewed head SHA, policy, evidence, work product, execution workspace, project workspace, builder provenance, locator fingerprint, and director identity. A pull request found merged before durable intent is rejected and can never produce a Ship receipt. After intent, ambiguous responses are reconciled only from a fresh exact-head merged observation; bounded startup and periodic scans recover due rows and expired leases.
+
+Completion is one database transaction: it locks the shipment and all bound governance rows, records the exact final approval, updates the issue and work product, writes activity and a cross-checked receipt, and marks the shipment complete. Active shipments quarantine competing issue, work-product, execution-workspace, and project-workspace mutations. Generic or structured approval paths cannot bypass Ship. Completed shipment foreign keys continue to protect the issue and work product from deletion so the receipt remains durable.
+
 ## Execution-policy participant integrity
 
 Issue creation and mutation validate typed execution-policy participants in the

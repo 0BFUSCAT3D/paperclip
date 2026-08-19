@@ -1,4 +1,24 @@
 export { decisionEffectTargetIssueIds } from "./decision.js";
+export {
+  ARTIFACT_DIRECTOR_SHIP_VERSION,
+  ARTIFACT_DIRECTOR_SHIP_RECONCILIATION_HTTP_STATUS,
+  ARTIFACT_DIRECTOR_SHIP_STATES,
+  ARTIFACT_DIRECTOR_SHIP_ERROR_CODES,
+  ARTIFACT_DIRECTOR_SHIP_CANDIDATE_API_PATH,
+  ARTIFACT_DIRECTOR_SHIP_OPERATION_API_PATH,
+  ARTIFACT_DIRECTOR_SHIP_CANDIDATE_ENDPOINT,
+  ARTIFACT_DIRECTOR_SHIP_OPERATION_ENDPOINT,
+  type ArtifactDirectorShipState,
+  type ArtifactDirectorShipErrorCode,
+  type ArtifactDirectorShipCandidateV1,
+  type ArtifactDirectorShipCandidateHashInputV1,
+  artifactDirectorShipCandidateHashInputV1,
+  type ArtifactDirectorShipCandidateResponseV1,
+  type ConfirmArtifactDirectorShipV1,
+  type ArtifactDirectorShipOperationV1,
+  type ArtifactDirectorShipReceiptV1,
+  type ArtifactDirectorShipResponseV1,
+} from "./artifact-director-ship.js";
 export type {
   Company,
   InteractionResolverGovernance,

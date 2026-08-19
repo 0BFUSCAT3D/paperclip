@@ -199,6 +199,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
   const head = asRecord(body.head);
   const headRepository = head ? asRecord(head.repo) : null;
   const headRepositoryFullName = headRepository ? asString(headRepository.full_name) : null;
+  const mergeCommitSha = asString(body.merge_commit_sha);
   const baseRef = asNestedString(body, "base", "ref");
   const reviewDecision = asString(body.review_decision);
 
@@ -258,6 +259,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),
       ...(headRepositoryFullName ? { headRepositoryFullName } : {}),
+      ...(mergeCommitSha ? { mergeCommitSha: mergeCommitSha.toLowerCase() } : {}),
       ...(baseRef ? { baseRef } : {}),
       ...(reviewDecision ? { reviewDecision } : {}),
     },

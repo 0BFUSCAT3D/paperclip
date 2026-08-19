@@ -1,6 +1,24 @@
 export const PAPERCLIP_CAPABILITIES_API_PATH = "/api/capabilities" as const;
 export const PAPERCLIP_CAPABILITIES_CONTRACT_VERSION = 1 as const;
 
+/** Phase-2 descriptor. Do not add this to the live capability response until its routes are mounted. */
+export const ARTIFACT_BOUND_DIRECTOR_SHIP_CAPABILITY_V1 = {
+  supported: true,
+  version: 1,
+  artifactKind: "github_pull_request",
+  candidateEndpoint: "/api/v1/issues/{issueId}/artifact-director-ship-candidate",
+  confirmationEndpoint: "/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}",
+  lookupEndpoint: "/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}",
+  confirmationMethod: "PUT",
+  mergeMethod: "merge",
+  exactHeadCas: true,
+  durableIntentBeforeMerge: true,
+  crossSystemReconciliation: true,
+  preIntentMergedReceiptForbidden: true,
+  genericFinalApprovalQuarantined: true,
+  durableCompletionReceipt: true,
+} as const;
+
 export interface PaperclipCapabilitiesResponseV1 {
   contractVersion: typeof PAPERCLIP_CAPABILITIES_CONTRACT_VERSION;
   features: {
@@ -11,6 +29,7 @@ export interface PaperclipCapabilitiesResponseV1 {
       endpoint: "/api/issues/{issueId}/execution-review-evidence";
       bindsExactHeadRevision: true;
     };
+    artifactBoundDirectorShip: typeof ARTIFACT_BOUND_DIRECTOR_SHIP_CAPABILITY_V1;
     executionPolicyParticipantValidation: {
       supported: true;
       version: 1;
@@ -58,6 +77,7 @@ export const PAPERCLIP_CAPABILITIES_V1: PaperclipCapabilitiesResponseV1 = {
       endpoint: "/api/issues/{issueId}/execution-review-evidence",
       bindsExactHeadRevision: true,
     },
+    artifactBoundDirectorShip: ARTIFACT_BOUND_DIRECTOR_SHIP_CAPABILITY_V1,
     executionPolicyParticipantValidation: {
       supported: true,
       version: 1,
