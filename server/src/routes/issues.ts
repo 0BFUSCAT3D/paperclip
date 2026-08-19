@@ -30,6 +30,7 @@ import {
   addIssueCommentSchema,
   acceptIssueThreadInteractionSchema,
   approveIssueReviewEvidenceSchema,
+  confirmArtifactDirectorShipV1Schema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
   withdrawIssueThreadInteractionSchema,
@@ -240,6 +241,16 @@ import {
   recoverIssueExecutionReviewEvidenceReceipt,
   type ReviewEvidenceAgentActor,
 } from "../services/issue-execution-review-evidence.js";
+import {
+  buildArtifactDirectorShipCandidate,
+  confirmArtifactDirectorShip,
+  getArtifactDirectorShipOperation,
+} from "../services/artifact-director-ship.js";
+import { assertWorkProductArtifactDirectorShipMutationAllowed } from "../services/artifact-director-ship-guards.js";
+import {
+  createGitHubPullRequestMergeExecutor,
+  type GitHubPullRequestMergeExecutor,
+} from "../services/github-pull-request-merge-executor.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -2894,6 +2905,7 @@ export function issueRoutes(
     issueListDiagnostics?: IssueListDiagnostics;
     governedActivationWakeDispatcher?: (agentId: string) => Promise<unknown>;
     pullRequestMergeDetailsResolver?: PullRequestMergeDetailsResolver;
+    pullRequestMergeExecutor?: GitHubPullRequestMergeExecutor;
     approveToolActionRequest?: (input: {
       companyId: string;
       issueId: string;
@@ -2945,6 +2957,8 @@ export function issueRoutes(
   const workProductsSvc = workProductService(db);
   const resolvePullRequestDetails = opts.pullRequestMergeDetailsResolver
     ?? createPullRequestMergeDetailsResolver(db);
+  const executePullRequestMerge = opts.pullRequestMergeExecutor
+    ?? createGitHubPullRequestMergeExecutor(db);
   const documentsSvc = documentService(db);
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
@@ -7827,6 +7841,7 @@ export function issueRoutes(
       promotedAt,
     });
     const product = await db.transaction(async (tx) => {
+      await assertWorkProductArtifactDirectorShipMutationAllowed(tx as unknown as Db, { issueId: issue.id });
       const markPromoted = { sourceTrust: promotionTrust, updatedAt: promotedAt };
       const updatedSource = await (async () => {
         if (req.body.sourceArtifactKind === "issue") {
@@ -9445,6 +9460,69 @@ export function issueRoutes(
         assertSnapshotCurrent: assertExecutionTransitionSnapshotCurrent,
       });
       res.status(result.replayed ? 200 : 201).json(result);
+    },
+  );
+
+  router.get(
+    "/v1/issues/:issueId/artifact-director-ship-candidate",
+    async (req, res) => {
+      assertBoard(req);
+      const issueId = req.params.issueId as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+      if (!existing) return;
+      const actor = getActorInfo(req);
+      if (actor.actorType !== "user") throw forbidden("Board access required");
+      const candidate = await buildArtifactDirectorShipCandidate({
+        db,
+        issueId,
+        actor: { userId: actor.actorId, actorSource: actor.actorSource },
+        resolver: resolvePullRequestDetails,
+      });
+      res.json({ version: 1, candidate });
+    },
+  );
+
+  router.get(
+    "/v1/issues/:issueId/artifact-director-ships/:idempotencyKey",
+    async (req, res) => {
+      assertBoard(req);
+      const idempotencyKey = z.string().uuid().parse(req.params.idempotencyKey);
+      const issueId = req.params.issueId as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+      if (!existing) return;
+      const actor = getActorInfo(req);
+      if (actor.actorType !== "user") throw forbidden("Board access required");
+      const result = await getArtifactDirectorShipOperation({
+        db,
+        issueId,
+        idempotencyKey,
+        actor: { userId: actor.actorId, actorSource: actor.actorSource },
+      });
+      res.status(result.state === "completed" || result.state === "stale" ? 200 : 202).json(result);
+    },
+  );
+
+  router.put(
+    "/v1/issues/:issueId/artifact-director-ships/:idempotencyKey",
+    validate(confirmArtifactDirectorShipV1Schema),
+    async (req, res) => {
+      assertBoard(req);
+      const idempotencyKey = z.string().uuid().parse(req.params.idempotencyKey);
+      const issueId = req.params.issueId as string;
+      const existing = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+      if (!existing) return;
+      const actor = getActorInfo(req);
+      if (actor.actorType !== "user") throw forbidden("Board access required");
+      const result = await confirmArtifactDirectorShip({
+        db,
+        issueId,
+        idempotencyKey,
+        actor: { userId: actor.actorId, actorSource: actor.actorSource },
+        request: req.body,
+        resolver: resolvePullRequestDetails,
+        mergeExecutor: executePullRequestMerge,
+      });
+      res.status(result.state === "completed" ? 200 : 202).json(result);
     },
   );
 

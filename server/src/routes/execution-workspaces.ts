@@ -46,6 +46,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { runExclusiveWorkspaceRuntimeControl } from "../services/workspace-operations.js";
+import { assertWorkspaceArtifactDirectorShipMutationAllowed } from "../services/artifact-director-ship-guards.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
@@ -160,6 +161,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+
+    return db.transaction(async (shipTx) => {
+      await assertWorkspaceArtifactDirectorShipMutationAllowed(shipTx as unknown as Db, id);
+      const fencedSvc = executionWorkspaceService(shipTx as unknown as Db);
 
     const authorization = await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
       companyId: existing.companyId,
@@ -313,7 +318,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           action: "stop",
           serviceIndex: selectedServiceIndex,
         });
-        await svc.update(existing!.id, {
+        await fencedSvc.update(existing!.id, {
           metadata: mergeExecutionWorkspaceConfig(existing!.metadata as Record<string, unknown> | null, {
             desiredState: failedDesiredState.desiredState,
             serviceStates: failedDesiredState.serviceStates,
@@ -512,7 +517,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           desiredState: nextRuntimeState.desiredState,
           serviceStates: nextRuntimeState.serviceStates,
         });
-        await svc.update(existing.id, { metadata });
+        await fencedSvc.update(existing.id, { metadata });
 
         return {
           status: "succeeded",
@@ -572,7 +577,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       },
     });
 
-    const workspace = await svc.getById(id);
+    const workspace = await fencedSvc.getById(id);
     if (!workspace) {
       res.status(404).json({ error: "Execution workspace not found" });
       return;
@@ -608,6 +613,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     res.json({
       workspace,
       operation,
+    });
     });
   }
 
@@ -707,6 +713,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
+    await assertWorkspaceArtifactDirectorShipMutationAllowed(db, id);
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     if (
       req.actor.type === "agent"
@@ -800,21 +807,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       // Closing the workspace ends the lane, so the runtime-control lease is released
       // outright rather than waiting for owner-eligibility or TTL recovery.
       await runtimeLeases.release({ executionWorkspaceId: existing.id, force: true });
-
-      if (existing.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({
-            executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.companyId, existing.companyId),
-              eq(issues.executionWorkspaceId, existing.id),
-            ),
-          );
-      }
 
       try {
         const projectWorkspace = existing.projectWorkspaceId

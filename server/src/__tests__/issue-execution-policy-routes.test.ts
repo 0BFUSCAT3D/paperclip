@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { buildReviewEvidenceLocatorFingerprint } from "../services/issue-execution-review-evidence.ts";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -202,7 +203,7 @@ type TestActor =
       type: "board";
       userId: string;
       companyIds: string[];
-      source: "local_implicit";
+      source: "local_implicit" | "session";
       isInstanceAdmin: boolean;
     }
   | {
@@ -435,6 +436,61 @@ function persistedReviewEvidenceReceipt(
   };
 }
 
+function directorShipCandidateFixture() {
+  const fixture = reviewEvidenceFixture();
+  const decision = persistedReviewEvidenceReceipt(fixture);
+  const locatorFingerprint = buildReviewEvidenceLocatorFingerprint({
+    workProduct: {
+      ...fixture.workProduct,
+      projectId: fixture.workProduct.projectId,
+      executionWorkspaceId: fixture.workProduct.executionWorkspaceId,
+      createdByRunId: fixture.workProduct.createdByRunId,
+      lastModifiedByRunId: fixture.workProduct.lastModifiedByRunId,
+    },
+    workspace: {
+      ...fixture.workspace,
+      repoUrl: fixture.workspace.repoUrl,
+      branchName: fixture.workspace.branchName,
+      projectWorkspaceId: fixture.workspace.projectWorkspaceId,
+    },
+    projectWorkspace: { ...fixture.projectWorkspace, repoUrl: fixture.projectWorkspace.repoUrl },
+  });
+  Object.assign(decision, {
+    artifactLocatorFingerprint: locatorFingerprint,
+    artifactSnapshot: {
+      ...decision.artifactSnapshot,
+      locatorFingerprint,
+    },
+  });
+  const issue = {
+    ...fixture.issue,
+    assigneeAgentId: null,
+    assigneeUserId: "director",
+    executionState: {
+      ...fixture.issue.executionState,
+      currentStageId: fixture.policy.stages[1].id,
+      currentStageIndex: 1,
+      currentStageType: "approval",
+      currentParticipant: { type: "user", userId: "director" },
+      completedStageIds: [fixture.policy.stages[0].id],
+      lastDecisionId: decision.id,
+      lastDecisionOutcome: "approved",
+    },
+    updatedAt: new Date("2026-08-19T08:06:00.000Z"),
+  };
+  return { ...fixture, issue, decision, locatorFingerprint };
+}
+
+function queueDirectorShipCandidateReads(fixture: ReturnType<typeof directorShipCandidateFixture>) {
+  mockSelectRowsOnce([fixture.issue]);
+  mockSelectRowsOnce([{ role: "owner" }]);
+  mockSelectRowsOnce([fixture.decision]);
+  mockSelectRowsOnce([fixture.workProduct]);
+  mockSelectRowsOnce([fixture.workspace]);
+  mockSelectRowsOnce([fixture.projectWorkspace]);
+  mockSelectRowsOnce([fixture.builderRun]);
+}
+
 describe("issue execution policy routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -635,6 +691,93 @@ describe("issue execution policy routes", () => {
     });
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockHeartbeatService.startNextQueuedRunForAgent).not.toHaveBeenCalled();
+  });
+
+  it("builds an exact artifact-bound director Ship candidate for the configured director", async () => {
+    const fixture = directorShipCandidateFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    const app = await createApp({
+      type: "board",
+      userId: "director",
+      companyIds: [fixture.issue.companyId],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+    queueDirectorShipCandidateReads(fixture);
+
+    const res = await request(app)
+      .get(`/api/v1/issues/${fixture.issue.id}/artifact-director-ship-candidate`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      version: 1,
+      candidate: {
+        policySha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        candidateSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        issue: { id: fixture.issue.id, currentStageId: fixture.policy.stages[1].id },
+        review: {
+          decisionId: fixture.decision.id,
+          reviewCycleId: fixture.decision.reviewCycleId,
+          workProductId: fixture.workProduct.id,
+          headSha: fixture.payload.expectedHeadSha,
+          locatorFingerprint: fixture.locatorFingerprint,
+        },
+        artifact: {
+          canonicalRef: "github:acme/reeve#42",
+          owner: "acme",
+          repo: "reeve",
+          number: 42,
+          headSha: fixture.payload.expectedHeadSha,
+        },
+        director: { userId: "director", actorSource: "local_implicit" },
+      },
+    });
+  });
+
+  it("rejects a pull request already merged before durable Ship intent", async () => {
+    const fixture = directorShipCandidateFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    mockPullRequestMergeDetailsResolver.mockResolvedValueOnce({
+      state: "merged",
+      headRef: fixture.workspace.branchName,
+      headSha: fixture.payload.expectedHeadSha,
+      headRepositoryFullName: "acme/reeve",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "director",
+      companyIds: [fixture.issue.companyId],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    });
+    queueDirectorShipCandidateReads(fixture);
+
+    const res = await request(app)
+      .get(`/api/v1/issues/${fixture.issue.id}/artifact-director-ship-candidate`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details?.code).toBe("artifact_director_ship_preintent_merge_rejected");
+  });
+
+  it("hides cross-company Ship candidates and rejects agent callers", async () => {
+    const fixture = directorShipCandidateFixture();
+    mockIssueService.getById.mockResolvedValue(fixture.issue);
+    const crossCompanyApp = await createApp({
+      type: "board",
+      userId: "director",
+      companyIds: ["other-company"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const hidden = await request(crossCompanyApp)
+      .get(`/api/v1/issues/${fixture.issue.id}/artifact-director-ship-candidate`);
+    expect(hidden.status).toBe(404);
+
+    const agentApp = await createApp(fixture.actor);
+    const denied = await request(agentApp)
+      .get(`/api/v1/issues/${fixture.issue.id}/artifact-director-ship-candidate`);
+    expect(denied.status).toBe(403);
+    expect(mockPullRequestMergeDetailsResolver).not.toHaveBeenCalled();
   });
 
   it("records review evidence only for the independently resolved pull-request head", async () => {

@@ -34,6 +34,11 @@ export const issueExecutionDecisions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    scopedIdentityUq: uniqueIndex("issue_execution_decisions_scoped_identity_uq").on(
+      table.id,
+      table.companyId,
+      table.issueId,
+    ),
     companyIssueIdx: index("issue_execution_decisions_company_issue_idx").on(table.companyId, table.issueId),
     stageIdx: index("issue_execution_decisions_stage_idx").on(table.issueId, table.stageId, table.createdAt),
     requestIdempotencyUq: uniqueIndex("issue_execution_decisions_request_idempotency_uq")

@@ -313,6 +313,15 @@ describe("openapi routes", () => {
     expect(activationResponse.properties.issue.additionalProperties).toBe(false);
     expect(activationResponse.properties.activationReceipt.properties.issueSnapshot.additionalProperties)
       .toBe(false);
+    const shipCandidate = spec.paths["/api/v1/issues/{issueId}/artifact-director-ship-candidate"].get;
+    const shipOperation = spec.paths["/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}"];
+    expect(shipCandidate.responses["200"].content["application/json"].schema.additionalProperties).toBe(false);
+    expect(shipOperation.put.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
+    expect(shipOperation.put.responses["202"].content["application/json"].schema.oneOf).toHaveLength(4);
+    expect(shipOperation.get.responses["202"].content["application/json"].schema.oneOf).toHaveLength(4);
+    for (const code of ["409", "412", "422"]) {
+      expect(shipOperation.put.responses[code]).toBeDefined();
+    }
     for (const code of ["409", "412", "422"]) {
       expect(governedReservation.responses[code]).toBeDefined();
       expect(governedActivation.responses[code]).toBeDefined();

@@ -145,6 +145,10 @@ import {
   assertIssueNotPendingGovernedReservation,
   governedIssueReservedSnapshot,
 } from "./governed-issue-contract.js";
+import {
+  assertArtifactDirectorShipIssueMutationsAllowed,
+  assertIssueArtifactDirectorShipMutationAllowed,
+} from "./artifact-director-ship-guards.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -5073,10 +5077,23 @@ export function issueService(db: Db) {
       throw unprocessable("Issue cannot be blocked by itself");
     }
 
+    const existingBlockerIds = await dbOrTx.select({ id: issueRelations.issueId })
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+      )).then((rows: Array<{ id: string }>) => rows.map((row) => row.id));
+    await assertArtifactDirectorShipIssueMutationsAllowed(
+      dbOrTx as Db,
+      [issueId, ...deduped, ...existingBlockerIds],
+    );
+
     // Blocker edges are part of the reserved issue's execution conditions even
     // though they live outside the issues row. Keep the service-level failure
     // explicit; the database trigger below is the race/direct-SQL backstop.
     await assertIssueNotPendingGovernedReservation(dbOrTx as Db, issueId);
+    await assertIssueArtifactDirectorShipMutationAllowed(dbOrTx as Db, issueId, {});
 
     if (deduped.length > 0) {
       const lockedIssueIds = [issueId, ...deduped].sort();
@@ -5131,6 +5148,7 @@ export function issueService(db: Db) {
     expectedCheckoutRunId: string;
   }) {
     return db.transaction(async (tx) => {
+      await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, input.issueId, {});
       const lockedIssue = await tx
         .select({
           id: issues.id,
@@ -5231,6 +5249,7 @@ export function issueService(db: Db) {
     actorRunId: string;
   }) {
     return db.transaction(async (tx) => {
+      await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, input.issueId, {});
       await tx.execute(
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
@@ -5274,6 +5293,7 @@ export function issueService(db: Db) {
 
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
+      await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, issueId, {});
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
@@ -5322,6 +5342,7 @@ export function issueService(db: Db) {
   // assigned or what status the issue is currently in.
   async function clearCheckoutRunIfTerminal(issueId: string): Promise<boolean> {
     return db.transaction(async (tx) => {
+      await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, issueId, {});
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
@@ -6665,11 +6686,6 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
-      if (blockParentUntilDone) {
-        // Fail before creating the child when the requested helper would mutate
-        // a parent whose governed activation envelope has already been reserved.
-        await db.transaction((tx) => assertIssueNotPendingGovernedReservation(tx as unknown as Db, parent.id));
-      }
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -6691,16 +6707,19 @@ export function issueService(db: Db) {
       });
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
-          .select({ blockerIssueId: issueRelations.issueId })
-          .from(issueRelations)
-          .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
-        await syncBlockedByIssueIds(
-          parent.id,
-          parent.companyId,
-          [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
-          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
-        );
+        await db.transaction(async (tx) => {
+          const existingBlockers = await tx
+            .select({ blockerIssueId: issueRelations.issueId })
+            .from(issueRelations)
+            .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
+          await syncBlockedByIssueIds(
+            parent.id,
+            parent.companyId,
+            [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
+            { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            tx,
+          );
+        });
         [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
       }
 
@@ -7877,6 +7896,7 @@ export function issueService(db: Db) {
 
       const runUpdate = async (tx: any) => {
         await assertIssueNotPendingGovernedReservation(tx as unknown as Db, id);
+        await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, id, issueData);
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -8197,6 +8217,7 @@ export function issueService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, id, {});
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)
@@ -8248,7 +8269,6 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await db.transaction((tx) => assertIssueNotPendingGovernedReservation(tx as unknown as Db, id));
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
@@ -8294,27 +8314,30 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        await assertIssueNotPendingGovernedReservation(tx as unknown as Db, id);
+        await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, id, {});
+        return tx.update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
@@ -8342,24 +8365,26 @@ export function issueService(db: Db) {
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        const adopted = await db.transaction(async (tx) => {
+          await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, id, {});
+          return tx.update(issues)
+            .set({
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.status, "in_progress"),
+                eq(issues.assigneeAgentId, agentId),
+                isNull(issues.checkoutRunId),
+                or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        });
         if (adopted) return adopted;
       }
 
@@ -8393,7 +8418,8 @@ export function issueService(db: Db) {
         current.executionRunId !== checkoutRunId &&
         (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
       ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
+        const expectedExecutionRunId = current.executionRunId;
+        const stale = await isTerminalOrMissingHeartbeatRun(expectedExecutionRunId);
         if (stale) {
           const now = new Date();
           const adoptionSet: Record<string, unknown> = {
@@ -8408,19 +8434,21 @@ export function issueService(db: Db) {
           if (current.status !== "in_progress") {
             adoptionSet.startedAt = now;
           }
-          const adopted = await db
-            .update(issues)
-            .set(adoptionSet)
-            .where(
-              and(
-                eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
-                eq(issues.executionRunId, current.executionRunId),
-                or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
+          const adopted = await db.transaction(async (tx) => {
+            await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, id, {});
+            return tx.update(issues)
+              .set(adoptionSet)
+              .where(
+                and(
+                  eq(issues.id, id),
+                  inArray(issues.status, expectedStatuses),
+                  eq(issues.executionRunId, expectedExecutionRunId),
+                  or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
+                ),
+              )
+              .returning()
+              .then((rows) => rows[0] ?? null);
+          });
           if (adopted) {
             const [enriched] = await withIssueLabels(db, [adopted]);
             return enriched;
@@ -8596,6 +8624,7 @@ export function issueService(db: Db) {
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
       db.transaction(async (tx) => {
         await assertIssueNotPendingGovernedReservation(tx as unknown as Db, id);
+        await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, id, {});
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
         );
@@ -8650,6 +8679,7 @@ export function issueService(db: Db) {
 
     adminForceRelease: async (id: string, options: { clearAssignee?: boolean } = {}) =>
       db.transaction(async (tx) => {
+        await assertIssueArtifactDirectorShipMutationAllowed(tx as unknown as Db, id, {});
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
         );

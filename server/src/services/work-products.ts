@@ -4,6 +4,7 @@ import { issueWorkProducts } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { insertRowsInChunks } from "./batch-insert.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
+import { assertWorkProductArtifactDirectorShipMutationAllowed } from "./artifact-director-ship-guards.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 
@@ -56,6 +57,7 @@ export function workProductService(db: Db) {
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
       const row = await db.transaction(async (tx) => {
+        await assertWorkProductArtifactDirectorShipMutationAllowed(tx as unknown as Db, { issueId });
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -87,6 +89,7 @@ export function workProductService(db: Db) {
 
     update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
       const row = await db.transaction(async (tx) => {
+        await assertWorkProductArtifactDirectorShipMutationAllowed(tx as unknown as Db, { workProductId: id });
         const existing = await tx
           .select()
           .from(issueWorkProducts)
@@ -169,11 +172,13 @@ export function workProductService(db: Db) {
     },
 
     remove: async (id: string) => {
-      const row = await db
-        .delete(issueWorkProducts)
-        .where(eq(issueWorkProducts.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        await assertWorkProductArtifactDirectorShipMutationAllowed(tx as unknown as Db, { workProductId: id });
+        return tx.delete(issueWorkProducts)
+          .where(eq(issueWorkProducts.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
       return row ? toIssueWorkProduct(row) : null;
     },
   };
