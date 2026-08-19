@@ -46,6 +46,7 @@ type TransitionInput = {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
   previousPolicy?: IssueExecutionPolicy | null;
+  executionPolicyGovernanceChanged?: boolean;
   requestedStatus?: string;
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
@@ -325,12 +326,8 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
-    mode: policy.mode,
-    commentRequired: policy.commentRequired,
-    stages: policy.stages,
-  };
+  const { monitor: _monitor, ...withoutMonitor } = policy;
+  return normalizeIssueExecutionPolicy(withoutMonitor);
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
@@ -345,6 +342,106 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
       scheduledBy,
     },
   };
+}
+
+function executionPolicyGovernance(policy: IssueExecutionPolicy | null) {
+  if (!policy) return null;
+  const governance = {
+    mode: policy.mode,
+    commentRequired: policy.commentRequired,
+    stages: policy.stages,
+    reviewPreset: policy.reviewPreset ?? null,
+    authorizationPolicy: policy.authorizationPolicy ?? null,
+    maxReviewRounds: policy.maxReviewRounds ?? null,
+  };
+  const hasGovernance =
+    governance.mode !== "normal" ||
+    governance.commentRequired !== true ||
+    governance.stages.length > 0 ||
+    governance.reviewPreset !== null ||
+    governance.authorizationPolicy !== null ||
+    governance.maxReviewRounds !== null;
+  return hasGovernance ? governance : null;
+}
+
+export function issueExecutionPolicyHasGovernance(policy: IssueExecutionPolicy | null) {
+  return executionPolicyGovernance(policy) !== null;
+}
+
+export function issueExecutionPolicyGovernanceEqual(
+  left: IssueExecutionPolicy | null,
+  right: IssueExecutionPolicy | null,
+) {
+  return JSON.stringify(executionPolicyGovernance(left)) === JSON.stringify(executionPolicyGovernance(right));
+}
+
+function executionPolicyInputGovernance(input: unknown) {
+  if (input == null) return null;
+  const parsed = issueExecutionPolicySchema.safeParse(input);
+  if (!parsed.success) {
+    throw unprocessable("Invalid execution policy", parsed.error.flatten());
+  }
+
+  const stages = parsed.data.stages
+    .map((stage) => {
+      const participants = stage.participants
+        .map((participant) => ({
+          id: participant.id ?? null,
+          type: participant.type,
+          agentId: participant.type === "agent" ? participant.agentId ?? null : null,
+          userId: participant.type === "user" ? participant.userId ?? null : null,
+        }))
+        .filter((participant) => (participant.type === "agent" ? Boolean(participant.agentId) : Boolean(participant.userId)));
+      const dedupedParticipants: typeof participants = [];
+      const seen = new Set<string>();
+      for (const participant of participants) {
+        const key = participant.type === "agent" ? `agent:${participant.agentId}` : `user:${participant.userId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        dedupedParticipants.push(participant);
+      }
+      if (dedupedParticipants.length === 0) return null;
+      return {
+        id: stage.id ?? null,
+        type: stage.type,
+        approvalsNeeded: 1 as const,
+        participants: dedupedParticipants,
+      };
+    })
+    .filter((stage): stage is NonNullable<typeof stage> => stage !== null);
+
+  const governance = {
+    mode: parsed.data.mode ?? "normal",
+    commentRequired: true,
+    stages,
+    reviewPreset: parsed.data.reviewPreset ?? null,
+    authorizationPolicy: parsed.data.authorizationPolicy ?? null,
+    maxReviewRounds: parsed.data.maxReviewRounds ?? null,
+  };
+  const hasGovernance =
+    governance.mode !== "normal" ||
+    governance.stages.length > 0 ||
+    governance.reviewPreset !== null ||
+    governance.authorizationPolicy !== null ||
+    governance.maxReviewRounds !== null;
+  return hasGovernance ? governance : null;
+}
+
+export function issueExecutionPolicyInputGovernanceEqual(left: unknown, right: unknown) {
+  return JSON.stringify(executionPolicyInputGovernance(left)) === JSON.stringify(executionPolicyInputGovernance(right));
+}
+
+export function issueExecutionPolicyNeedsIdentityMaterialization(input: unknown) {
+  if (input == null) return false;
+  const parsed = issueExecutionPolicySchema.safeParse(input);
+  if (!parsed.success) {
+    throw unprocessable("Invalid execution policy", parsed.error.flatten());
+  }
+  return parsed.data.stages.some((stage) => {
+    const participants = stage.participants.filter((participant) =>
+      participant.type === "agent" ? Boolean(participant.agentId) : Boolean(participant.userId));
+    return participants.length > 0 && (stage.id == null || participants.some((participant) => participant.id == null));
+  });
 }
 
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {
@@ -401,7 +498,14 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (
+    stages.length === 0 &&
+    !monitor &&
+    !reviewPreset &&
+    !authorizationPolicy &&
+    parsed.data.mode === "normal" &&
+    parsed.data.maxReviewRounds == null
+  ) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -674,6 +778,18 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     ? existingState?.reviewRequest ?? null
     : input.reviewRequest;
 
+  if (
+    requestedStatus === "done" &&
+    existingState?.status === PENDING_STATUS &&
+    input.previousPolicy !== undefined &&
+    (input.executionPolicyGovernanceChanged ??
+      !issueExecutionPolicyGovernanceEqual(input.previousPolicy, input.policy))
+  ) {
+    throw unprocessable("Execution policy governance cannot change in the same request as a stage approval", {
+      code: "execution_policy_decision_policy_change_denied",
+    });
+  }
+
   if (!input.policy) {
     if (existingState) {
       patch.executionState = null;
@@ -696,12 +812,36 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   }
 
   if (existingState?.currentStageId && !currentStage) {
-    clearExecutionStatePatch({
-      patch,
-      issueStatus: input.issue.status,
-      requestedStatus,
-      returnAssignee: existingState.returnAssignee,
-    });
+    const boardMayRecoverDriftedStage =
+      input.allowBoardOverride === true &&
+      ((requestedAssigneePatchProvided && requestedStatus !== "done") ||
+        (requestedStatus !== undefined &&
+          requestedStatus !== "done" &&
+          requestedStatus !== "in_review" &&
+          requestedStatus !== "in_progress"));
+    if (
+      existingState.status === PENDING_STATUS &&
+      input.executionPolicyGovernanceChanged === false &&
+      !boardMayRecoverDriftedStage
+    ) {
+      throw unprocessable("The active execution stage identity does not match the stored execution policy", {
+        code: "execution_policy_stage_identity_mismatch",
+        currentStageId: existingState.currentStageId,
+      });
+    }
+    if (input.allowBoardOverride && requestedAssigneePatchProvided) {
+      patch.executionState = null;
+      if (requestedStatus === undefined && input.issue.status === "in_review") {
+        patch.status = "in_progress";
+      }
+    } else {
+      clearExecutionStatePatch({
+        patch,
+        issueStatus: input.issue.status,
+        requestedStatus,
+        returnAssignee: existingState.returnAssignee,
+      });
+    }
     return { patch };
   }
 
@@ -841,6 +981,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       if (
         input.allowBoardOverride &&
         requestedStatus &&
+        requestedStatus !== "done" &&
         requestedStatus !== "in_review" &&
         requestedStatus !== "in_progress"
       ) {
@@ -909,8 +1050,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(currentAssignee, currentParticipant) ||
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
-    if (input.allowBoardOverride && attemptedStageAdvance) {
-      if (requestedStatus !== undefined && requestedStatus !== "in_review") {
+    if (input.allowBoardOverride && attemptedStageAdvance && requestedStatus !== "done") {
+      if (
+        requestedStatus !== undefined &&
+        requestedStatus !== "done" &&
+        requestedStatus !== "in_review"
+      ) {
         patch.executionState = null;
         return { patch };
       }

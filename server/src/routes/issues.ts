@@ -209,6 +209,10 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  issueExecutionPolicyGovernanceEqual,
+  issueExecutionPolicyHasGovernance,
+  issueExecutionPolicyInputGovernanceEqual,
+  issueExecutionPolicyNeedsIdentityMaterialization,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -1762,6 +1766,81 @@ function summarizeIssueReferenceActivityDetails(input:
 
 function monitorPoliciesEqual(left: NormalizedExecutionPolicy | null, right: NormalizedExecutionPolicy | null) {
   return JSON.stringify(left?.monitor ?? null) === JSON.stringify(right?.monitor ?? null);
+}
+
+type IssueExecutionTransitionInput = {
+  status: string;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  responsibleUserId?: string | null;
+  createdByUserId?: string | null;
+  executionPolicy?: unknown;
+  executionState?: unknown;
+  monitorNextCheckAt?: unknown;
+  monitorWakeRequestedAt?: unknown;
+  monitorLastTriggeredAt?: unknown;
+  monitorAttemptCount?: number | null;
+  monitorNotes?: string | null;
+  monitorScheduledBy?: string | null;
+};
+
+function stableStructuralValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(stableStructuralValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+      .map(([key, entryValue]) => [key, stableStructuralValue(entryValue)]),
+  );
+}
+
+function issueExecutionTransitionFingerprint(issue: IssueExecutionTransitionInput) {
+  return JSON.stringify({
+    status: issue.status,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    responsibleUserId: issue.responsibleUserId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    executionPolicy: stableStructuralValue(issue.executionPolicy ?? null),
+    executionState: parseIssueExecutionState(issue.executionState),
+    monitorNextCheckAt: stableStructuralValue(issue.monitorNextCheckAt ?? null),
+    monitorWakeRequestedAt: stableStructuralValue(issue.monitorWakeRequestedAt ?? null),
+    monitorLastTriggeredAt: stableStructuralValue(issue.monitorLastTriggeredAt ?? null),
+    monitorAttemptCount: issue.monitorAttemptCount ?? null,
+    monitorNotes: issue.monitorNotes ?? null,
+    monitorScheduledBy: issue.monitorScheduledBy ?? null,
+  });
+}
+
+function assertExecutionTransitionSnapshotCurrent(
+  expected: IssueExecutionTransitionInput,
+  current: IssueExecutionTransitionInput,
+) {
+  if (issueExecutionTransitionFingerprint(expected) === issueExecutionTransitionFingerprint(current)) return;
+  throw conflict("The execution stage changed while this request was in progress. Retry against the current issue.", {
+    code: "execution_stage_stale",
+    expectedStageId: parseIssueExecutionState(expected.executionState)?.currentStageId ?? null,
+    currentStageId: parseIssueExecutionState(current.executionState)?.currentStageId ?? null,
+  });
+}
+
+function assertAgentExecutionPolicyGovernancePreserved(
+  req: Request,
+  previousPolicy: NormalizedExecutionPolicy | null,
+  nextPolicy: NormalizedExecutionPolicy | null,
+  governanceUnchanged = issueExecutionPolicyGovernanceEqual(previousPolicy, nextPolicy),
+) {
+  if (
+    req.actor.type !== "agent" ||
+    req.body.executionPolicy === undefined ||
+    !issueExecutionPolicyHasGovernance(previousPolicy) ||
+    governanceUnchanged
+  ) return;
+  throw forbidden("Agents cannot remove or replace existing execution policy governance", {
+    code: "execution_policy_governance_denied",
+  });
 }
 
 function applyActorMonitorScheduledBy(
@@ -9071,10 +9150,6 @@ export function issueRoutes(
     const reviewVerdictRequested =
       existing.status === "in_review"
       && (updateFields.status === "done" || updateFields.status === "cancelled");
-    const reviewPolicySensitiveMutationRequested =
-      req.body.reviewPolicy !== undefined
-      || updateFields.status === "done"
-      || updateFields.status === "cancelled";
     if (
       (reviewVerdictRequested || reviewPolicyChangeRequested)
       && existing.reviewPolicy != null
@@ -9283,10 +9358,27 @@ export function issueRoutes(
       );
     }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+    if (
+      updateFields.executionPolicy === undefined &&
+      previousExecutionPolicy &&
+      issueExecutionPolicyNeedsIdentityMaterialization(existing.executionPolicy ?? null)
+    ) {
+      updateFields.executionPolicy = previousExecutionPolicy;
+    }
     const nextExecutionPolicy =
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    const executionPolicyGovernanceChanged = !issueExecutionPolicyInputGovernanceEqual(
+      existing.executionPolicy ?? null,
+      req.body.executionPolicy === undefined ? existing.executionPolicy ?? null : req.body.executionPolicy,
+    );
+    assertAgentExecutionPolicyGovernancePreserved(
+      req,
+      previousExecutionPolicy,
+      nextExecutionPolicy,
+      !executionPolicyGovernanceChanged,
+    );
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
@@ -9299,10 +9391,12 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined && monitorChanged,
     );
 
+    const requestedUpdateFields = { ...updateFields };
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
       previousPolicy: previousExecutionPolicy,
+      executionPolicyGovernanceChanged,
       requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
         assigneeAgentId: normalizedAssigneeAgentId,
@@ -9485,27 +9579,99 @@ export function issueRoutes(
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
-    const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
-      if (tx) {
-        return shouldCollectCompletionPublication
-          ? svc.update(id, issueUpdateData, tx, postCommitActivityPublications)
-          : svc.update(id, issueUpdateData, tx);
-      }
+    const updateIssue = (
+      data: typeof issueUpdateData,
+      tx: Parameters<typeof svc.update>[2],
+    ) => {
       return shouldCollectCompletionPublication
-        ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
-        : svc.update(id, issueUpdateData);
+        ? svc.update(id, data, tx, postCommitActivityPublications)
+        : svc.update(id, data, tx);
     };
-    const assertLockedReviewPolicyAllowsMutation = async (
+    const prepareLockedIssueUpdate = async (
       tx: Parameters<typeof svc.update>[2],
     ) => {
       const lockedExisting = await svc.getByIdForUpdate(id, tx);
-      if (!lockedExisting) return false;
+      if (!lockedExisting) return null;
+      assertExecutionTransitionSnapshotCurrent(existing, lockedExisting);
+
+      const lockedPreviousExecutionPolicy = normalizeIssueExecutionPolicy(lockedExisting.executionPolicy ?? null);
+      const lockedNextExecutionPolicy =
+        requestedUpdateFields.executionPolicy !== undefined
+          ? (requestedUpdateFields.executionPolicy as NormalizedExecutionPolicy | null)
+          : lockedPreviousExecutionPolicy;
+      const lockedExecutionPolicyGovernanceChanged = !issueExecutionPolicyInputGovernanceEqual(
+        lockedExisting.executionPolicy ?? null,
+        req.body.executionPolicy === undefined ? lockedExisting.executionPolicy ?? null : req.body.executionPolicy,
+      );
+      assertAgentExecutionPolicyGovernancePreserved(
+        req,
+        lockedPreviousExecutionPolicy,
+        lockedNextExecutionPolicy,
+        !lockedExecutionPolicyGovernanceChanged,
+      );
+      const lockedMonitorChanged =
+        monitorPoliciesEqual(lockedPreviousExecutionPolicy, lockedNextExecutionPolicy) === false;
+      const lockedTransition = applyIssueExecutionPolicyTransition({
+        issue: lockedExisting,
+        policy: lockedNextExecutionPolicy,
+        previousPolicy: lockedPreviousExecutionPolicy,
+        executionPolicyGovernanceChanged: lockedExecutionPolicyGovernanceChanged,
+        requestedStatus:
+          typeof requestedUpdateFields.status === "string" ? requestedUpdateFields.status : undefined,
+        requestedAssigneePatch: {
+          assigneeAgentId: normalizedAssigneeAgentId,
+          assigneeUserId:
+            req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+        },
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        allowBoardOverride: req.actor.type === "board",
+        commentBody,
+        reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+        monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && lockedMonitorChanged,
+      });
+      if (Boolean(lockedTransition.decision) !== Boolean(decisionId)) {
+        throw conflict("The execution stage changed while this request was in progress. Retry against the current issue.", {
+          code: "execution_stage_stale",
+          expectedStageId: parseIssueExecutionState(existing.executionState)?.currentStageId ?? null,
+          currentStageId: parseIssueExecutionState(lockedExisting.executionState)?.currentStageId ?? null,
+        });
+      }
+      if (decisionId) {
+        const nextExecutionState = lockedTransition.patch.executionState;
+        if (!nextExecutionState || typeof nextExecutionState !== "object") {
+          throw new Error("Execution policy decision patch is missing executionState");
+        }
+        lockedTransition.patch.executionState = {
+          ...nextExecutionState,
+          lastDecisionId: decisionId,
+        };
+      }
+      const lockedUpdateFields = {
+        ...requestedUpdateFields,
+        ...lockedTransition.patch,
+      } as typeof updateFields;
+      if (reviewRequest !== undefined && lockedTransition.patch.executionState === undefined) {
+        const lockedExecutionState = parseIssueExecutionState(lockedExisting.executionState);
+        if (!lockedExecutionState || lockedExecutionState.status !== "pending") {
+          if (reviewRequest !== null) {
+            throw unprocessable("reviewRequest requires an active review or approval stage");
+          }
+        } else {
+          lockedUpdateFields.executionState = {
+            ...lockedExecutionState,
+            reviewRequest,
+          };
+        }
+      }
       const lockedPolicyChangeRequested =
         req.body.reviewPolicy !== undefined
         && req.body.reviewPolicy !== lockedExisting.reviewPolicy;
       const lockedReviewVerdictRequested =
         lockedExisting.status === "in_review"
-        && (updateFields.status === "done" || updateFields.status === "cancelled");
+        && (lockedUpdateFields.status === "done" || lockedUpdateFields.status === "cancelled");
       if (
         (lockedReviewVerdictRequested || lockedPolicyChangeRequested)
         && lockedExisting.reviewPolicy != null
@@ -9517,11 +9683,20 @@ export function issueRoutes(
           reviewPolicy: lockedExisting.reviewPolicy,
         });
       }
-      return true;
+      return {
+        decision: lockedTransition.decision ?? null,
+        updateFields: lockedUpdateFields,
+        updateData: {
+          ...lockedUpdateFields,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        } as typeof issueUpdateData,
+      };
     };
     const persistReviewTransitionActivity = async (
       tx: Parameters<typeof svc.update>[2],
       updated: NonNullable<Awaited<ReturnType<typeof svc.update>>>,
+      committedUpdateFields: typeof updateFields,
     ) => {
       if (!persistReviewActivityTransactionally) return;
       const changes = updated.changes ?? {};
@@ -9540,7 +9715,7 @@ export function issueRoutes(
         entityType: "issue",
         entityId: updated.id,
         details: {
-          ...updateFields,
+          ...committedUpdateFields,
           identifier: updated.identifier,
           authorizationReason: issueMutationAuthorizationReason,
           changes,
@@ -9589,48 +9764,36 @@ export function issueRoutes(
       generation: reopenedGeneration,
       finalIssueStatus: () => issue?.status,
     });
-    const decision = transition.decision && decisionId ? transition.decision : null;
-    const shouldUseTransactionalIssueUpdate =
-      Boolean(decision)
-      || shouldRelayStop
-      || persistReviewActivityTransactionally
-      || reviewPolicySensitiveMutationRequested;
     try {
-      if (shouldUseTransactionalIssueUpdate) {
-        issue = await db.transaction(async (tx) => {
-          if (
-            reviewPolicySensitiveMutationRequested
-            && !(await assertLockedReviewPolicyAllowsMutation(tx))
-          ) return null;
-          const updated = await updateIssue(tx);
-          if (!updated) return null;
+      issue = await db.transaction(async (tx) => {
+        const lockedUpdate = await prepareLockedIssueUpdate(tx);
+        if (!lockedUpdate) return null;
+        const updated = await updateIssue(lockedUpdate.updateData, tx);
+        if (!updated) return null;
 
-          if (decision && decisionId) {
-            await tx.insert(issueExecutionDecisions).values({
-              id: decisionId,
-              companyId: updated.companyId,
-              issueId: updated.id,
-              stageId: decision.stageId,
-              stageType: decision.stageType,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-              outcome: decision.outcome,
-              body: decision.body,
-              createdByRunId: actor.runId ?? null,
-            });
-          }
+        if (lockedUpdate.decision && decisionId) {
+          await tx.insert(issueExecutionDecisions).values({
+            id: decisionId,
+            companyId: updated.companyId,
+            issueId: updated.id,
+            stageId: lockedUpdate.decision.stageId,
+            stageType: lockedUpdate.decision.stageType,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            outcome: lockedUpdate.decision.outcome,
+            body: lockedUpdate.decision.body,
+            createdByRunId: actor.runId ?? null,
+          });
+        }
 
-          if (shouldRelayStop) {
-            stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
-          }
+        if (shouldRelayStop) {
+          stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
+        }
 
-          await persistReviewTransitionActivity(tx, updated);
+        await persistReviewTransitionActivity(tx, updated, lockedUpdate.updateFields);
 
-          return updated;
-        });
-      } else {
-        issue = await updateIssue();
-      }
+        return updated;
+      });
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
@@ -12005,7 +12168,6 @@ export function issueRoutes(
     }
 
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
-    const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
     const shouldAutoApproveReviewComment =
       currentIssue.status === "in_review" &&
       currentExecutionState?.status === "pending" &&
@@ -12017,37 +12179,6 @@ export function issueRoutes(
     // comment is inserted would leave an orphan comment without the corresponding state change.
     let comment: Awaited<ReturnType<typeof svc.addComment>>;
     if (shouldAutoApproveReviewComment) {
-      const transition = applyIssueExecutionPolicyTransition({
-        issue: currentIssue,
-        policy: currentExecutionPolicy,
-        requestedStatus: "done",
-        requestedAssigneePatch: {},
-        actor: {
-          agentId: actor.agentId ?? null,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-        commentBody: req.body.body,
-      });
-      const decisionId = transition.decision ? randomUUID() : null;
-      if (decisionId) {
-        const nextExecutionState = transition.patch.executionState;
-        if (!nextExecutionState || typeof nextExecutionState !== "object") {
-          throw new Error("Execution policy decision patch is missing executionState");
-        }
-        transition.patch.executionState = {
-          ...nextExecutionState,
-          lastDecisionId: decisionId,
-        };
-      }
-
-      issueBeforeCommentDecision = currentIssue;
-      const updatePatch = {
-        ...transition.patch,
-        status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
-        actorAgentId: actor.agentId ?? null,
-        actorUserId: actor.actorType === "user" ? actor.actorId : null,
-      };
-
       const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
@@ -12059,6 +12190,54 @@ export function issueRoutes(
       const postCommitActivityPublications: ActivityPublication[] = [];
       try {
         txResult = await db.transaction(async (tx) => {
+          const lockedCurrentIssue = await svc.getByIdForUpdate(id, tx);
+          if (!lockedCurrentIssue) throw new AutoApprovalIssueMissingError();
+          assertExecutionTransitionSnapshotCurrent(currentIssue, lockedCurrentIssue);
+
+          const lockedExecutionState = parseIssueExecutionState(lockedCurrentIssue.executionState);
+          const lockedExecutionPolicy = normalizeIssueExecutionPolicy(lockedCurrentIssue.executionPolicy ?? null);
+          const lockedActorMayApprove =
+            lockedCurrentIssue.status === "in_review" &&
+            lockedExecutionState?.status === "pending" &&
+            actorMatchesExecutionParticipant(actor, lockedExecutionState.currentParticipant ?? null);
+          if (!lockedActorMayApprove) {
+            throw conflict("The execution stage changed while this request was in progress. Retry against the current issue.", {
+              code: "execution_stage_stale",
+              expectedStageId: currentExecutionState?.currentStageId ?? null,
+              currentStageId: lockedExecutionState?.currentStageId ?? null,
+            });
+          }
+
+          const transition = applyIssueExecutionPolicyTransition({
+            issue: lockedCurrentIssue,
+            policy: lockedExecutionPolicy,
+            requestedStatus: "done",
+            requestedAssigneePatch: {},
+            actor: {
+              agentId: actor.agentId ?? null,
+              userId: actor.actorType === "user" ? actor.actorId : null,
+            },
+            commentBody: req.body.body,
+          });
+          const decisionId = transition.decision ? randomUUID() : null;
+          if (decisionId) {
+            const nextExecutionState = transition.patch.executionState;
+            if (!nextExecutionState || typeof nextExecutionState !== "object") {
+              throw new Error("Execution policy decision patch is missing executionState");
+            }
+            transition.patch.executionState = {
+              ...nextExecutionState,
+              lastDecisionId: decisionId,
+            };
+          }
+          issueBeforeCommentDecision = lockedCurrentIssue;
+          const updatePatch = {
+            ...transition.patch,
+            status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          };
+
           const insertedComment = await svc.addComment(
             id,
             req.body.body,
@@ -12071,7 +12250,7 @@ export function issueRoutes(
             { ...commentOptions, authorizationReason: commentAuthorizationReason },
             tx,
           );
-          const updated = actor.actorType === "user" && currentIssue.status !== "done"
+          const updated = actor.actorType === "user" && lockedCurrentIssue.status !== "done"
             ? await svc.update(id, updatePatch, tx, postCommitActivityPublications)
             : await svc.update(id, updatePatch, tx);
           // Throw (not return null) so drizzle rolls back the inserted comment when the issue
