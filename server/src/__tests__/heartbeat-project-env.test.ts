@@ -478,6 +478,39 @@ describe("resolveExecutionRunAdapterConfig", () => {
   });
 });
 
+describe("resolveExecutionRunAdapterConfig subscription-only merged env gate", () => {
+  const secretsSvc = (resolvedEnv: Record<string, string>, agentEnv: Record<string, string> = {}) => ({
+    resolveAdapterConfigForRuntime: vi.fn().mockResolvedValue({
+      config: { billingPolicy: "subscription_only", env: agentEnv }, secretKeys: new Set<string>(), manifest: [],
+    }),
+    resolveEnvBindings: vi.fn().mockResolvedValue({ env: resolvedEnv, secretKeys: new Set<string>(), manifest: [] }),
+  });
+
+  it.each([
+    ["environment", { environmentId: "env-1", environmentEnv: { OPENAI_API_KEY: "secret-ref" } }],
+    ["project", { projectId: "project-1", projectEnv: { OPENAI_API_KEY: "secret-ref" } }],
+    ["routine", { routineId: "routine-1", routineEnv: { OPENAI_API_KEY: "secret-ref" } }],
+  ])("blocks a metered credential resolved from %s before adapter execution", async (_source, layer) => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1", agentId: "agent-1", adapterType: "codex_local", executionRunConfig: { billingPolicy: "subscription_only", env: {} },
+      environmentEnv: null, projectEnv: null, secretsSvc: secretsSvc({ OPENAI_API_KEY: "resolved-secret" }), ...layer,
+    } as any)).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: { configurationIncomplete: { policyFailureCode: "metered_credential_present" } },
+    });
+  });
+
+  it("blocks a secret-resolved agent credential without exposing its value", async () => {
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1", agentId: "agent-1", adapterType: "codex_local", executionRunConfig: { billingPolicy: "subscription_only", env: { OPENAI_API_KEY: "secret-ref" } },
+      environmentEnv: null, projectEnv: null, secretsSvc: secretsSvc({}, { OPENAI_API_KEY: "resolved-secret" }),
+    } as any)).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: { configurationIncomplete: { policyFailureCode: "metered_credential_present" } },
+    });
+  });
+});
+
 describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch gate", () => {
   const cleanupDirs: string[] = [];
 

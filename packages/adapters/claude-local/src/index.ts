@@ -48,6 +48,7 @@ Core fields:
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+- billingPolicy (string, optional): set exactly to "subscription_only" to require local native Claude subscription authentication. It is supported only by the isolated CLI lane: explicit ACP fails closed and auto selects CLI. Environment tests use the same preflight; remote/sandbox execution is unsupported.
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 - filesystemScope (string, optional): set to "workspace" to confine local CLI filesystem access with Bubblewrap. Off by default. The workspace and Claude config remain writable; other host paths are hidden.
@@ -68,6 +69,7 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
+- Subscription-only failures use stable codes: subscription_auth_missing, metered_credential_present, metered_provider_selected, subscription_auth_unverifiable, and subscription_environment_unsupported. The policy rejects API keys, Anthropic auth tokens, Bedrock/Vertex/Foundry/Mantle/custom gateways, managed-settings selectors, command or loader injection, and any result inconsistent with the local preflight classification. CLAUDE_CODE_OAUTH_TOKEN is accepted as an explicit first-party Claude Code subscription credential without running auth status because the CLI consumes the injected token directly and host login status does not attest that token; all alternate provider selectors remain blocked before launch. Billing evidence is a local fail-closed classification, not a provider receipt, and requires an administrator-controlled trusted host Claude executable/runtime.
 - filesystemScope and networkScope are spawn-level confinement and are orthogonal to Claude permission flags. Both require Bubblewrap on the host and select the CLI engine in auto mode; engine="acp" is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
 - The Claude ACP lane requires Node >=22.12.0 and @agentclientprotocol/claude-agent-acp to be installed with this adapter package. Auto engine selection falls back to CLI when those prerequisites are unavailable; explicit engine="acp" fails loudly.
 - For ACP runs, model selection is passed through ANTHROPIC_MODEL at ACP server startup; Paperclip-managed Claude permissions and ephemeral skill materialization are handled by the shared ACP engine.

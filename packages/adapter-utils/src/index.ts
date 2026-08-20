@@ -84,6 +84,20 @@ export type {
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export {
+  SUBSCRIPTION_BILLING_POLICY_FAILURE_CODES,
+  SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
+  SUBSCRIPTION_ONLY_BILLING_POLICY,
+  SUBSCRIPTION_POLICY_ENV_KEYS,
+  SUBSCRIPTION_POLICY_FINAL_ENV_INJECTION_KEYS,
+  SUBSCRIPTION_POLICY_INJECTION_ENV_KEYS,
+  SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS,
+  SubscriptionBillingPolicyFailure,
+  classifySubscriptionOnlyProviderPolicy,
+  isSubscriptionBillingPolicyFailure,
+  isSubscriptionOnlyBillingPolicy,
+} from "./subscription-billing-policy.js";
+export type { SubscriptionBillingPolicyFailureCode, SubscriptionOnlyBillingCapability } from "./subscription-billing-policy.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

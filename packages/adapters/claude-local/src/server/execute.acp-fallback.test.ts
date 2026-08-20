@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS } from "@paperclipai/adapter-utils";
 
 const {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -87,6 +88,38 @@ function buildContext(config: Record<string, unknown> = {}) {
 describe("claude_local ACP startup fallback", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    for (const key of ["NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "CLAUDE_CONFIG_DIR", ...SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS]) {
+      vi.stubEnv(key, "");
+      vi.stubEnv(key.toLowerCase(), "");
+    }
+  });
+
+  it("blocks auto fallback before ACP or CLI provider creation", async () => {
+    await expect(execute(buildContext({
+      billingPolicy: "subscription_only",
+      engine: "auto",
+      env: { ANTHROPIC_API_KEY: "secret" },
+    }) as never)).rejects.toMatchObject({ code: "metered_credential_present" });
+    expect(executeClaudeAcp).not.toHaveBeenCalled();
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+
+  it("routes subscription-only auto to isolated CLI argv without attempting ACP", async () => {
+    const ctx = buildContext({
+      billingPolicy: "subscription_only",
+      engine: "auto",
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-token" },
+    });
+    const result = await execute(ctx as never);
+    expect(result.billingType).toBe("subscription");
+    expect(executeClaudeAcp).not.toHaveBeenCalled();
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      null,
+      "claude",
+      expect.arrayContaining(["--setting-sources", ""]),
+      expect.any(Object),
+    );
   });
 
   afterEach(() => {

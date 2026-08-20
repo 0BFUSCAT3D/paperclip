@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { getServerAdapter } from "../adapters/index.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
@@ -2068,6 +2069,29 @@ function sessionParamsWithConfigMetadata(
 }
 
 describe("effective run session config freshness", () => {
+  it("fingerprints active subscription capability version and evidence semantics", async () => {
+    const adapter = getServerAdapter("codex_local");
+    if (!adapter?.subscriptionOnlyBilling) throw new Error("codex subscription capability missing");
+    const original = adapter.subscriptionOnlyBilling;
+    const base = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: { billingPolicy: "subscription_only" },
+    });
+    try {
+      (adapter as { subscriptionOnlyBilling?: unknown }).subscriptionOnlyBilling = {
+        ...original,
+        version: 2,
+        billingEvidence: "changed-local-classification",
+      };
+      const changed = await buildSessionConfigMetadata({
+        effectiveAdapterConfig: { billingPolicy: "subscription_only" },
+      });
+      expect(changed.categoryFingerprints.adapter).not.toBe(base.categoryFingerprints.adapter);
+      expect(changed.fingerprint).not.toBe(base.fingerprint);
+    } finally {
+      (adapter as { subscriptionOnlyBilling?: unknown }).subscriptionOnlyBilling = original;
+    }
+  });
+
   it("resets when effective adapter config changes after model/profile/env resolution", async () => {
     const base = await buildSessionConfigMetadata();
     const next = await buildSessionConfigMetadata({

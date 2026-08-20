@@ -20,10 +20,19 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `model` | string | No | Claude model to use (e.g. `claude-opus-4-6`) |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
+| `billingPolicy` | string | No | Set exactly to `subscription_only` for the fail-closed local subscription lane described below |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+
+## Subscription-only billing policy
+
+`billingPolicy: "subscription_only"` is an opt-in, local-CLI-only policy. Explicit ACP and every remote, sandbox, or container target fail with `subscription_environment_unsupported`; `engine: "auto"` selects the isolated CLI lane. Test Environment runs the same policy preflight before its hello probe.
+
+The preflight accepts `CLAUDE_CODE_OAUTH_TOKEN` or a bounded `claude auth status --json` result that proves `loggedIn: true`, `authMethod: "claude.ai"`, `apiProvider: "firstParty"`, and no non-`none` API-key source. It rejects API-key/Auth-Token credentials, Bedrock, Vertex, Foundry, Mantle, gateways, managed/remote settings selectors, custom headers, commands/arguments, config roots, loader/shell injection, and proxy/custom-CA/TLS interception. Shared Claude settings are securely inspected, and the CLI runs with project/local setting sources disabled.
+
+Evidence is a local preflight classification plus a defensive result check, not a provider-issued billing receipt. The lane therefore requires an administrator-controlled trusted host Claude executable/runtime and stable host authentication store. Stable remediation codes are `subscription_auth_missing`, `metered_credential_present`, `metered_provider_selected`, `subscription_auth_unverifiable`, and `subscription_environment_unsupported`; these persist as configuration-incomplete failures and do not enter a generic retry loop.
 
 ## Prompt Templates
 

@@ -80,6 +80,18 @@ describe("heartbeat model profile application", () => {
     });
   });
 
+  it.each([
+    ["profile", { adapterConfig: { billingPolicy: "" } }, null],
+    ["issue", null, { billingPolicy: null }],
+    ["issue enabled", null, { billingPolicy: "subscription_only" }],
+  ])("preserves base subscription policy and rejects %s policy keys", (_label, profileConfig, issueAdapterConfig) => {
+    expect(() => mergeModelProfileAdapterConfig({
+      baseConfig: { billingPolicy: "subscription_only", model: "primary" },
+      modelProfile: { requested: "cheap", requestedBy: "issue_override", applied: "cheap", configSource: "agent_runtime", fallbackReason: null, adapterConfig: profileConfig?.adapterConfig ?? null },
+      issueAdapterConfig,
+    })).toThrow(/agent-base-only/);
+  });
+
   it("lets agent runtime profile config customize adapter defaults", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [cheapProfile],

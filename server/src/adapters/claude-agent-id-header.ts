@@ -24,6 +24,11 @@ export function stampClaudeAgentIdHeader(inner: ClaudeExecute): ClaudeExecute {
       : undefined;
     if (!agentId) return inner(ctx);
     const config = ((ctx as { config?: unknown }).config ?? {}) as Record<string, unknown>;
+    // Subscription-only rejects every user-provided ANTHROPIC_CUSTOM_HEADERS
+    // value as a provider-routing seam. Do not introduce Paperclip's telemetry
+    // header into that lane either: it would make the adapter reject its own
+    // wrapper-generated environment before reaching the provider guard.
+    if (config.billingPolicy === "subscription_only") return inner(ctx);
     const env: Record<string, unknown> = {
       ...((config.env as Record<string, unknown> | undefined) ?? {}),
     };

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 const {
@@ -100,9 +101,29 @@ vi.mock("./codex-home.js", async () => {
 import { testEnvironment } from "./test.js";
 
 describe("codex remote environment diagnostics", () => {
+  beforeEach(() => {
+    for (const key of ["NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "CLAUDE_CONFIG_DIR", "CODEX_PERMISSION_PROFILE", "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", ...SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS]) {
+      vi.stubEnv(key, "");
+      vi.stubEnv(key.toLowerCase(), "");
+    }
+  });
   afterEach(() => {
     vi.clearAllMocks();
-    delete process.env.OPENAI_API_KEY;
+    vi.unstubAllEnvs();
+  });
+
+  it.each(["cli", "acp"])("subscription-only %s test fails before provider spawn", async (engine) => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { billingPolicy: "subscription_only", engine, env: { OPENAI_API_KEY: "secret" } },
+    });
+    expect(result).toMatchObject({
+      status: "fail",
+      checks: [{ code: engine === "acp" ? "subscription_environment_unsupported" : "metered_credential_present" }],
+    });
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    expect(ensureAdapterExecutionTargetDirectory).not.toHaveBeenCalled();
   });
 
   it("stages managed CODEX_HOME in an isolated runtime dir and keeps the probe cwd on the original remote workspace", async () => {

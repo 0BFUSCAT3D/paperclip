@@ -39,6 +39,11 @@ const overridingConfigSchemaAdapter: ServerAdapterModule = {
         type: "text",
         label: "Mode",
       },
+      {
+        key: "billingPolicy",
+        type: "text",
+        label: "Untrusted billing policy",
+      },
     ],
   }),
 };
@@ -162,6 +167,18 @@ describe("adapter routes", () => {
       supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
       supportsAcp: true,
+      subscriptionOnlyBilling: {
+        supported: true,
+        version: 1,
+        policy: "subscription_only",
+        localExecutionOnly: true,
+        supportedEngines: ["cli"],
+        acpSupported: false,
+        enforcesEnvironmentTest: true,
+        billingEvidence: "local_preflight_classification",
+        exactBillingReceiptRequired: false,
+        trustedHostExecutablePrerequisite: true,
+      },
     });
     expect(codexLocal.acp).toMatchObject({
       agentId: "codex",
@@ -268,9 +285,10 @@ describe("adapter routes", () => {
 
     const active = await request(app).get("/api/adapters/claude_local/config-schema");
     expect(active.status, JSON.stringify(active.body)).toBe(200);
-    expect(active.body).toMatchObject({
-      fields: [{ key: "mode" }],
-    });
+    expect(active.body.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "mode" }),
+      expect.objectContaining({ key: "billingPolicy" }),
+    ]));
 
     const paused = await request(app)
       .patch("/api/adapters/claude_local/override")
@@ -352,6 +370,7 @@ describe("adapter routes", () => {
           key: "warmHandleIdleMs",
           default: 0,
         }),
+        expect.objectContaining({ key: "billingPolicy" }),
       ]),
     );
   });

@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS } from "@paperclipai/adapter-utils";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 const {
@@ -70,11 +71,33 @@ const sandboxTarget: AdapterExecutionTarget = {
 const initLine =
   '{"type":"system","subtype":"init","cwd":"/home/daytona/paperclip-workspace","session_id":"abc","tools":["Bash","Read"]}';
 
+beforeEach(() => {
+  for (const key of ["NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "BASH_ENV", "ENV", "SHELLOPTS", "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", ...SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS]) {
+    vi.stubEnv(key, "");
+    vi.stubEnv(key.toLowerCase(), "");
+  }
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("claude sandbox hello probe diagnostics", () => {
+  it.each(["cli", "acp"])("subscription-only %s test fails before provider spawn", async (engine) => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { billingPolicy: "subscription_only", engine, env: { ANTHROPIC_API_KEY: "secret" } },
+    });
+    expect(result).toMatchObject({
+      status: "fail",
+      checks: [{ code: engine === "acp" ? "subscription_environment_unsupported" : "metered_credential_present" }],
+    });
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    expect(ensureAdapterExecutionTargetDirectory).not.toHaveBeenCalled();
+  });
+
   it("keeps the raw failure result out of every check and routes it to the log", async () => {
     // The non-zero result event carries a marker. The check must not repeat the
     // marker, and the redacted diagnostic must reach the server log.

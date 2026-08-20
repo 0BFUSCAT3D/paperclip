@@ -8,6 +8,7 @@ import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
+  SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
 } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
@@ -183,6 +184,7 @@ Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly 
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  subscriptionOnlyBilling: SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
   execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   acp: {
@@ -256,6 +258,7 @@ const acpxLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  subscriptionOnlyBilling: SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   acp: {

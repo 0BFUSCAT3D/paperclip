@@ -1,7 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  SubscriptionBillingPolicyFailure,
+  classifySubscriptionOnlyProviderPolicy,
+  isSubscriptionOnlyBillingPolicy,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+  type AdapterEnvironmentTestContext,
+} from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -31,6 +39,7 @@ import {
 import {
   asString,
   asNumber,
+  asStringArray,
   parseObject,
   buildPaperclipEnv,
   buildInvocationEnvForLogs,
@@ -66,6 +75,9 @@ import {
 } from "./parse.js";
 import {
   codexHomeHasUsableAuth,
+  codexHomeHasProvableChatGptSubscriptionAuth,
+  codexHomeHasCustomProviderRouting,
+  createCodexSubscriptionAuthSnapshot,
   evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
   pathExists,
@@ -196,6 +208,151 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
 
+function buildCodexPolicyEnv(config: Record<string, unknown>): Record<string, string> {
+  const configEnv = parseObject(config.env);
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
+  for (const [key, value] of Object.entries(configEnv)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  return env;
+}
+
+async function codexProjectTreeHasCustomProviderRouting(cwd: string): Promise<boolean> {
+  let cursor = path.resolve(cwd);
+  while (true) {
+    // Codex project config remains in force even with --ignore-user-config.
+    // Because it can select profiles, commands, sandboxes and future routing
+    // keys, the opt-in policy rejects the file itself instead of maintaining a
+    // version-sensitive TOML denylist.
+    const projectConfigPresent = await fs.lstat(path.join(cursor, ".codex", "config.toml"))
+      .then(() => true)
+      .catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : true);
+    if (projectConfigPresent) return true;
+    const [gitMarker, workspaceMarker] = await Promise.all([
+      fs.lstat(path.join(cursor, ".git")).then(() => true).catch(() => false),
+      fs.lstat(path.join(cursor, "pnpm-workspace.yaml")).then(() => true).catch(() => false),
+    ]);
+    if (gitMarker || workspaceMarker) return false;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return false;
+    cursor = parent;
+  }
+}
+
+/** Strict, no-spawn guard for the opt-in native Codex subscription lane. */
+export async function assertCodexSubscriptionOnlyLaunchable(
+  ctx: AdapterExecutionContext | AdapterEnvironmentTestContext,
+  options: {
+    finalEnv?: Record<string, string>;
+    effectiveHome?: string;
+    projectCwd?: string;
+  } = {},
+): Promise<void> {
+  if (!isSubscriptionOnlyBillingPolicy(ctx.config)) return;
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: "executionTransport" in ctx ? ctx.executionTransport?.remoteExecution : undefined,
+  });
+  if (target?.kind === "remote") {
+    throw new SubscriptionBillingPolicyFailure(
+      "subscription_environment_unsupported",
+      "Subscription-only Codex execution requires local, inspectable authentication; remote targets are not attested.",
+    );
+  }
+  if (ctx.config.engine === "acp") {
+    throw new SubscriptionBillingPolicyFailure(
+      "subscription_environment_unsupported",
+      "Subscription-only Codex execution supports only the isolated local CLI lane; ACP is not attested.",
+    );
+  }
+  const env = options.finalEnv ?? buildCodexPolicyEnv(ctx.config);
+  const policyFailureCode = classifySubscriptionOnlyProviderPolicy({
+    adapterType: "codex_local",
+    config: ctx.config,
+    env,
+    configuredEnv: parseObject(ctx.config.env),
+  });
+  if (policyFailureCode) {
+    throw new SubscriptionBillingPolicyFailure(
+      policyFailureCode,
+      "Subscription-only Codex execution rejects the configured credential, provider, command, or process-injection override.",
+    );
+  }
+  const configEnv = parseObject(ctx.config.env);
+  const companyId = "agent" in ctx ? ctx.agent.companyId : ctx.companyId;
+  const agentId = "agent" in ctx ? ctx.agent.id : null;
+  const configuredHome = typeof configEnv.CODEX_HOME === "string" && configEnv.CODEX_HOME.trim()
+    ? path.resolve(configEnv.CODEX_HOME.trim())
+    : null;
+  const canonicalAgentHome = agentId
+    ? resolveManagedCodexHomeDir(process.env, companyId, agentId)
+    : null;
+  if (configuredHome && (!canonicalAgentHome || configuredHome !== canonicalAgentHome)) {
+    throw new SubscriptionBillingPolicyFailure(
+      "subscription_auth_unverifiable",
+      "Subscription-only Codex execution requires CODEX_HOME to be absent or the current agent's canonical managed home.",
+    );
+  }
+  if (configuredHome) {
+    const [realHome, realCanonicalHome] = await Promise.all([
+      fs.realpath(configuredHome).catch(() => null),
+      fs.realpath(canonicalAgentHome!).catch(() => null),
+    ]);
+    if (!realHome || !realCanonicalHome || realHome !== realCanonicalHome) {
+      throw new SubscriptionBillingPolicyFailure(
+        "subscription_auth_unverifiable",
+        "Subscription-only Codex execution could not verify the current agent's canonical managed CODEX_HOME.",
+      );
+    }
+  }
+  const effectiveHome = options.effectiveHome ?? configuredHome ?? canonicalAgentHome ?? resolveManagedCodexHomeDir(process.env, companyId);
+  const sharedHome = resolveSharedCodexHomeDir(process.env);
+  if (await codexHomeHasCustomProviderRouting(effectiveHome) || await codexHomeHasCustomProviderRouting(sharedHome)) {
+    throw new SubscriptionBillingPolicyFailure(
+      "metered_provider_selected",
+      "Subscription-only Codex execution cannot run with custom provider routing configured.",
+    );
+  }
+  const contextRecord = "context" in ctx ? ctx.context : {};
+  const workspaceRecord = parseObject(parseObject(contextRecord).paperclipWorkspace);
+  const projectCwd = path.resolve(
+    options.projectCwd ?? (
+      asString(workspaceRecord.cwd, "") ||
+      asString(ctx.config.cwd, "") ||
+      process.cwd()
+    ),
+  );
+  if (await codexProjectTreeHasCustomProviderRouting(projectCwd)) {
+    throw new SubscriptionBillingPolicyFailure(
+      "metered_provider_selected",
+      "Subscription-only Codex execution cannot run with project provider routing configured.",
+    );
+  }
+  const effectiveAuth = await codexHomeHasProvableChatGptSubscriptionAuth(effectiveHome);
+  const sharedAuth = effectiveHome === sharedHome
+    ? "missing"
+    : await codexHomeHasProvableChatGptSubscriptionAuth(sharedHome);
+  if (effectiveAuth === "metered" || sharedAuth === "metered") {
+    throw new SubscriptionBillingPolicyFailure(
+      "metered_credential_present",
+      "Subscription-only Codex execution cannot use API-key auth.json credentials.",
+    );
+  }
+  if (effectiveAuth === "present" || sharedAuth === "present") return;
+  if (effectiveAuth === "missing" && sharedAuth === "missing") {
+    throw new SubscriptionBillingPolicyFailure(
+      "subscription_auth_missing",
+      "Subscription-only Codex execution requires inspected ChatGPT account authentication.",
+    );
+  }
+  throw new SubscriptionBillingPolicyFailure(
+    "subscription_auth_unverifiable",
+    "Subscription-only Codex execution could not prove ChatGPT account authentication.",
+  );
+}
+
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
     pathExists(path.join(candidate, "pnpm-workspace.yaml")),
@@ -260,6 +417,54 @@ async function pruneBrokenUnavailablePaperclipSkillSymlinks(
       "stdout",
       `[paperclip] Removed stale Codex skill "${entry.name}" from ${skillsHome}\n`,
     );
+  }
+}
+
+export async function executeWithCodexSubscriptionPolicy(
+  ctx: AdapterExecutionContext,
+  executeInner: (context: AdapterExecutionContext) => Promise<AdapterExecutionResult> = executeUnchecked,
+): Promise<AdapterExecutionResult> {
+  await assertCodexSubscriptionOnlyLaunchable(ctx);
+  const result = await executeInner(ctx);
+  if (isSubscriptionOnlyBillingPolicy(ctx.config) && result.billingType !== "subscription") {
+    throw new SubscriptionBillingPolicyFailure(
+      "metered_provider_selected",
+      "Subscription-only Codex execution received a non-subscription billing result.",
+      {
+        provider: result.provider ?? null,
+        biller: result.biller ?? null,
+        billingType: result.billingType ?? null,
+        costUsd: result.costUsd ?? null,
+        usage: result.usage ?? null,
+        exitCode: result.exitCode ?? null,
+        timedOut: result.timedOut ?? false,
+      },
+    );
+  }
+  return result;
+}
+
+export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  return executeWithCodexSubscriptionPolicy(ctx);
+}
+
+export async function finalizeCodexSubscriptionAuthSnapshot(input: {
+  snapshotHome: string;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  let removed = true;
+  await fs.rm(input.snapshotHome, { recursive: true, force: true }).catch(async () => {
+    removed = false;
+    await input.onLog(
+      "stderr",
+      "[paperclip] Failed to remove private Codex subscription auth snapshot.\n",
+    ).catch(() => undefined);
+  });
+  if (removed) {
+    await input.onLog(
+      "stdout",
+      "[paperclip] Discarded private Codex subscription auth snapshot; refresh or re-auth must be completed in the authoritative host login outside an agent run.\n",
+    ).catch(() => undefined);
   }
 }
 
@@ -561,18 +766,28 @@ export async function ensureCodexSkillsInjected(
   );
 }
 
-export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.engine === "acp") {
-    try {
-      return await executeCodexAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatCodexAcpFallbackMessage(`Codex ACP startup failed: ${reason}`),
-      );
+    if (isSubscriptionOnlyBillingPolicy(ctx.config)) {
+      if (engineSelection.explicit) {
+        throw new SubscriptionBillingPolicyFailure(
+          "subscription_environment_unsupported",
+          "Subscription-only Codex ACP is disabled until the bridge can attest isolated provider configuration.",
+        );
+      }
+      await ctx.onLog("stderr", formatCodexAcpFallbackMessage("Subscription-only billing requires the isolated CLI lane."));
+    } else {
+      try {
+        return await executeCodexAcp(ctx);
+      } catch (err) {
+        if (engineSelection.explicit) throw err;
+        const reason = err instanceof Error ? err.message : String(err);
+        await ctx.onLog(
+          "stderr",
+          formatCodexAcpFallbackMessage(`Codex ACP startup failed: ${reason}`),
+        );
+      }
     }
   }
   if (!engineSelection.explicit && engineSelection.fallbackReason) {
@@ -671,7 +886,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       void error;
     });
   }
-  if (configuredCodexHome == null) {
+  const subscriptionOnly = isSubscriptionOnlyBillingPolicy(config);
+  const policyAgentCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId, agent.id);
+  if (subscriptionOnly) {
+    await seedManagedCodexHome(configuredCodexHome ?? policyAgentCodexHome, process.env, onLog, {
+      apiKey: configuredOpenAiApiKey,
+    });
+  } else if (configuredCodexHome == null) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
     });
@@ -680,9 +901,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       apiKey: configuredOpenAiApiKey,
     });
   }
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
-  await fs.mkdir(effectiveCodexHome, { recursive: true });
+  const defaultCodexHome = subscriptionOnly
+    ? policyAgentCodexHome
+    : resolveManagedCodexHomeDir(process.env, agent.companyId);
+  const baseCodexHome = configuredCodexHome ?? defaultCodexHome;
+  await fs.mkdir(baseCodexHome, { recursive: true });
 
   // Never launch a managed CODEX_HOME with no credentials. Without auth.json
   // and with OPENAI_API_KEY="" the provider rejects every request with
@@ -699,7 +922,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
-    effectiveCodexHome,
+    effectiveCodexHome: baseCodexHome,
     target: executionTarget,
     cwd,
     onLog,
@@ -708,6 +931,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
   // An explicit env.CODEX_HOME override is treated as user-managed and skipped.
+  let subscriptionSnapshotHome: string | null = null;
+  if (subscriptionOnly) {
+    const snapshot = await createCodexSubscriptionAuthSnapshot([
+      baseCodexHome,
+      resolveSharedCodexHomeDir(process.env),
+    ]);
+    if (snapshot.status === "metered") {
+      throw new SubscriptionBillingPolicyFailure(
+        "metered_credential_present",
+        "Subscription-only Codex execution cannot snapshot API-key credentials.",
+      );
+    }
+    if (snapshot.status !== "present" || !snapshot.home) {
+      throw new SubscriptionBillingPolicyFailure(
+        snapshot.status === "missing" ? "subscription_auth_missing" : "subscription_auth_unverifiable",
+        "Subscription-only Codex execution could not create a private ChatGPT authentication snapshot.",
+      );
+    }
+    subscriptionSnapshotHome = snapshot.home;
+  }
+  const effectiveCodexHome = subscriptionSnapshotHome ?? baseCodexHome;
   const envConfigStrings = Object.fromEntries(
     Object.entries(envConfig).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -715,7 +959,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
-    codexHome: configuredCodexHome ? null : effectiveCodexHome,
+    codexHome: subscriptionOnly || !configuredCodexHome ? effectiveCodexHome : null,
+  }).catch(async (error) => {
+    if (subscriptionSnapshotHome) {
+      await fs.rm(subscriptionSnapshotHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+    throw error;
   });
   // Curated allowlist dir staged for the remote `home` asset (see below). Held
   // here so the outer `finally` can remove it on every exit path (teardown and
@@ -1288,7 +1537,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
 
       try {
-        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        await assertCodexSubscriptionOnlyLaunchable(ctx, {
+          finalEnv: effectiveEnv,
+          effectiveHome: effectiveCodexHome,
+          projectCwd: effectiveExecutionCwd,
+        });
+        const spawnCommand = isSubscriptionOnlyBillingPolicy(ctx.config) ? resolvedCommand : command;
+        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, spawnCommand, args, {
           cwd,
           env,
           stdin: prompt,
@@ -1577,6 +1832,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // If the process dies before reaching this, the next
     // prepareCodexRuntimeConfig restores the original from the pre-run backup
     // written at prepare time.
-    await preparedRuntimeConfig.cleanup();
+    try {
+      await preparedRuntimeConfig.cleanup();
+    } finally {
+      if (subscriptionSnapshotHome) {
+        await finalizeCodexSubscriptionAuthSnapshot({
+          snapshotHome: subscriptionSnapshotHome,
+          onLog,
+        });
+      }
+    }
   }
 }

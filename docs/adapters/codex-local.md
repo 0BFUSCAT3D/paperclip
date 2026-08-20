@@ -22,10 +22,21 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 | `model` | string | No | Model to use |
 | `promptTemplate` | string | No | Prompt used for all runs |
 | `env` | object | No | Environment variables (supports secret refs) |
+| `billingPolicy` | string | No | Set exactly to `subscription_only` for the fail-closed local subscription lane described below |
 | `timeoutSec` | number | No | Process timeout (0 = no timeout) |
 | `graceSec` | number | No | Grace period before force-kill |
 | `fastMode` | boolean | No | Enables Codex Fast mode. Currently supported on `gpt-5.4` only and burns credits faster |
 | `dangerouslyBypassApprovalsAndSandbox` | boolean | No | Skip safety checks (dev only) |
+
+## Subscription-only billing policy
+
+`billingPolicy: "subscription_only"` is an opt-in, local-CLI-only policy. Explicit ACP and every remote, sandbox, or container target fail with `subscription_environment_unsupported`; `engine: "auto"` selects CLI. Test Environment applies the same preflight before any live hello probe.
+
+The preflight accepts only a securely read regular `auth.json` owned by the current user, mode `0600`, at most 64 KiB, with explicit `auth_mode: "chatgpt"` and the current account/token shape. API-key auth, `OPENAI_*`/Codex auth variables, provider routing, custom commands/arguments, external or sibling-agent `CODEX_HOME`, loader/shell injection, proxy/custom-CA/TLS interception, unsafe `config.toml`, and every workspace ancestor `.codex/config.toml` are rejected. Execution seeds the current agent's canonical managed home, copies the verified credential into a private per-run `0700` home with a regular `0600` auth file, loads only Paperclip's generated config from that home, and ignores project rules.
+
+The private run credential is always discarded at teardown and is never copied back to the authoritative host login. An agent process runs as the same OS user and can rewrite its snapshot, so Paperclip cannot authenticate a purported in-run token refresh strongly enough to install it on the host. If Codex rotates or invalidates a single-use refresh token during a run, refresh or re-authenticate the authoritative host Codex login outside the agent run before the next subscription-only execution.
+
+Evidence is a local preflight classification plus a defensive result check, not a provider-issued billing receipt. The lane requires an administrator-controlled trusted host Codex/Node executable chain. Stable remediation codes are `subscription_auth_missing`, `metered_credential_present`, `metered_provider_selected`, `subscription_auth_unverifiable`, and `subscription_environment_unsupported`; these persist as configuration-incomplete failures and do not enter a generic retry loop. Subscription auth/session state is isolated per run, while Paperclip's immutable session fingerprint includes the active policy capability semantics so a policy-version change cannot resume stale execution state.
 
 ## Session Persistence
 

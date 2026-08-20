@@ -267,7 +267,10 @@ import {
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 import {
+  classifySubscriptionOnlyProviderPolicy,
   hasSessionCompactionThresholds,
+  isSubscriptionOnlyBillingPolicy,
+  isSubscriptionBillingPolicyFailure,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
@@ -1169,6 +1172,50 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
+  // This runs only after environment, agent, project, routine, and secret
+  // values have been merged. It is the durable pre-dispatch counterpart to
+  // the adapters' final no-spawn auth proof, so a metered credential injected
+  // by any overlay becomes a human-owned configuration blocker before adapter
+  // execution can construct a provider process.
+  if (isSubscriptionOnlyBillingPolicy(resolvedConfig)) {
+    const adapter = input.adapterType ? getServerAdapter(input.adapterType) : null;
+    if (!adapter?.subscriptionOnlyBilling) {
+      throw new ConfigurationIncompleteFailure(
+        "configuration incomplete: the selected adapter does not support subscription-only billing.",
+        {
+          configurationIncomplete: {
+            reason: "subscription_billing_policy",
+            policyFailureCode: "subscription_environment_unsupported",
+            adapterType: input.adapterType ?? null,
+          },
+        },
+      );
+    }
+    const resolvedEnv = parseObject(resolvedConfig.env);
+    const policyFailureCode = classifySubscriptionOnlyProviderPolicy({
+      adapterType: input.adapterType ?? "",
+      config: resolvedConfig,
+      env: resolvedEnv,
+      configuredEnv: resolvedEnv,
+    });
+    if (policyFailureCode) {
+      throw new ConfigurationIncompleteFailure(
+        "configuration incomplete: subscription-only billing policy rejects the resolved provider configuration.",
+        {
+          configurationIncomplete: {
+            reason: "subscription_billing_policy",
+            policyFailureCode,
+            adapterType: input.adapterType ?? null,
+            companyId: input.companyId,
+            agentId: input.agentId ?? null,
+            issueId: input.issueId ?? null,
+            projectId: input.projectId ?? null,
+            routineId: input.routineId ?? null,
+          },
+        },
+      );
+    }
+  }
   // Pre-dispatch credential gate for codex_local: a managed Codex home with no
   // usable auth.json and an empty OPENAI_API_KEY would dispatch a run that
   // immediately fails with "no Codex credentials provisioned" (adapter_failed),
@@ -1890,6 +1937,19 @@ function fingerprintFinalizeWorkspaceBranchValidation(input: {
 
 function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
+}
+
+function asConfigurationIncompleteFailure(error: unknown): ConfigurationIncompleteFailure | null {
+  if (isConfigurationIncompleteFailure(error)) return error;
+  if (!isSubscriptionBillingPolicyFailure(error)) return null;
+  return new ConfigurationIncompleteFailure(`configuration incomplete: ${error.message}`, {
+    configurationIncomplete: {
+      reason: "subscription_billing_policy",
+      policyFailureCode: error.code,
+      remediation: "Update the agent's subscription-only authentication or provider configuration before retrying.",
+      ...(error.evidence ? { billingEvidence: error.evidence } : {}),
+    },
+  });
 }
 
 export function isConfigurationIncompleteFailedRun(
@@ -3614,10 +3674,33 @@ export function resolveModelProfileApplication(input: {
 }
 
 export function mergeModelProfileAdapterConfig(input: {
+  adapterType?: string | null;
   baseConfig: Record<string, unknown>;
   modelProfile: ModelProfileApplication;
   issueAdapterConfig: Record<string, unknown> | null | undefined;
 }): Record<string, unknown> {
+  for (const [source, config] of [
+    ["runtime model profile", input.modelProfile.adapterConfig],
+    ["issue assignee adapter overrides", input.issueAdapterConfig],
+  ] as const) {
+    const overrideValue = config?.billingPolicy;
+    if (config && Object.prototype.hasOwnProperty.call(config, "billingPolicy") && (
+      input.baseConfig.billingPolicy === "subscription_only" ||
+      overrideValue === "subscription_only" ||
+      input.adapterType === "claude_local" ||
+      input.adapterType === "codex_local"
+    )) {
+      throw new ConfigurationIncompleteFailure(
+        `configuration incomplete: ${source} cannot set billingPolicy; billing policy is agent-base-only.`,
+        {
+          configurationIncomplete: {
+            reason: "subscription_billing_policy",
+            policyFailureCode: "subscription_environment_unsupported",
+          },
+        },
+      );
+    }
+  }
   return {
     ...input.baseConfig,
     ...(input.modelProfile.adapterConfig ?? {}),
@@ -4848,6 +4931,10 @@ function buildSessionConfigCategoryValues(input: {
     adapter: {
       adapterType: input.adapterType,
       agentConfigRevision: input.agentConfigRevision,
+      subscriptionOnlyBilling:
+        input.effectiveAdapterConfig.billingPolicy === "subscription_only"
+          ? getServerAdapter(input.adapterType)?.subscriptionOnlyBilling ?? null
+          : null,
     },
     adapterConfig: input.effectiveAdapterConfig,
     agentRuntimeConfig: input.agentRuntimeConfig,
@@ -14560,6 +14647,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.paperclipModelProfile;
     }
     const mergedConfig = mergeModelProfileAdapterConfig({
+      adapterType: agent.adapterType,
       baseConfig: workspaceManagedConfig,
       modelProfile: modelProfileApplication,
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
@@ -14600,9 +14688,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             reason: "push_write_credential_missing",
             remediation:
               "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
-          }
+            }
         : undefined,
     });
+    const resolvedEnvironmentDriver = selectedEnvironmentForConfig?.driver ?? "local";
+    if (isSubscriptionOnlyBillingPolicy(resolvedConfig) && resolvedEnvironmentDriver !== "local") {
+      throw new ConfigurationIncompleteFailure(
+        "configuration incomplete: subscription-only billing requires an attested local execution environment.",
+        {
+          configurationIncomplete: {
+            reason: "subscription_billing_policy",
+            policyFailureCode: "subscription_environment_unsupported",
+            adapterType: agent.adapterType,
+            environmentDriver: resolvedEnvironmentDriver,
+          },
+        },
+      );
+    }
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
         manifest: secretManifest,
@@ -16453,7 +16555,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await getCurrentUserRedactionOptions(),
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
-      const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
+      const configurationIncompleteFailure = asConfigurationIncompleteFailure(err);
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
       const failureErrorCode =
@@ -16597,7 +16699,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // not an opaque setup crash. Surface it with its own errorCode so the
           // recovery path routes it to a human owner instead of looping retries.
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
-          const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const configurationIncompleteSetupFailure = asConfigurationIncompleteFailure(outerErr);
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =

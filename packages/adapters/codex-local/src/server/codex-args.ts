@@ -53,7 +53,9 @@ export function buildCodexExecArgs(
   );
   const extraArgs = readExtraArgs(record);
 
-  const args = ["exec", "--json"];
+  const args = record.billingPolicy === "subscription_only"
+    ? ["exec", "--ignore-rules", "--json"]
+    : ["exec", "--json"];
   // Codex rejects a repeated `--skip-git-repo-check` ("cannot be used multiple
   // times"). The adapter injects this flag for sandbox execution, so when an
   // operator's extraArgs already carry it the injection would abort the run

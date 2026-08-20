@@ -584,6 +584,13 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it.each(["", null, "subscription_only"])("leaves issue-level billingPolicy value %s to adapter-aware server enforcement", (billingPolicy) => {
+    expect(createIssueSchema.safeParse({
+      title: "No policy override",
+      assigneeAdapterOverrides: { adapterConfig: { billingPolicy } },
+    }).success).toBe(true);
+  });
+
   it("validates agent runtime cheap model profile config without rejecting other runtime fields", () => {
     const parsed = createAgentSchema.parse({
       name: "Coder",

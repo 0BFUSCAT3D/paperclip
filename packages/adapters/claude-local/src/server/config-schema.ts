@@ -23,6 +23,16 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Auto uses ACP when prerequisites pass and falls back to Claude CLI with diagnostics.",
       },
       {
+        key: "billingPolicy",
+        label: "Billing policy",
+        type: "select",
+        options: [
+          { value: "", label: "Default provider behavior" },
+          { value: "subscription_only", label: "Subscription only" },
+        ],
+        hint: "When selected, Paperclip uses the isolated local CLI lane; explicit ACP fails closed and auto selects CLI. API keys, metered routing, and unverifiable authentication are rejected before execution.",
+      },
+      {
         key: "agentCommand",
         label: "ACP server command",
         type: "text",
