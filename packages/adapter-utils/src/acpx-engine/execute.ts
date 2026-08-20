@@ -2333,19 +2333,35 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 }
 
 function renderApiAccessNote(env: Record<string, string>): string {
-  if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
+  if (!env.PAPERCLIP_API_URL) return "";
+  // A run without an injected PAPERCLIP_API_KEY still has API access — the
+  // control plane attributes writes from `X-Paperclip-Run-Id` in local_trusted
+  // deployments (REEA-11). Gating this whole note on the key told those runs
+  // nothing about the API at all, so they never sent the run header either and
+  // their writes landed as the board user.
+  const authHeader = env.PAPERCLIP_API_KEY
+    ? `-H "Authorization: Bearer $PAPERCLIP_API_KEY" `
+    : "";
+  const runHeader = `-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" `;
   const lines = [
     "Paperclip API access note:",
     "Use terminal commands with curl to make Paperclip API requests.",
     "Normalize the base URL before adding API paths:",
     `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
     "GET example:",
-    `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_BASE/api/agents/me"`,
+    `  curl -s ${authHeader}${runHeader}"$PAPERCLIP_API_BASE/api/agents/me"`,
   ];
+  if (!env.PAPERCLIP_API_KEY) {
+    lines.push(
+      "This run has no PAPERCLIP_API_KEY. Send X-Paperclip-Run-Id on every request so",
+      "the control plane attributes your writes to you; without it your comments are",
+      "recorded as the board user.",
+    );
+  }
   if (env.PAPERCLIP_TASK_ID) {
     lines.push(
       "Scoped issue comment example:",
-      `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
+      `  curl -s -X POST ${authHeader}-H "Content-Type: application/json" ${runHeader}-d '{"body":"Status update from agent."}' "$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments"`,
     );
   } else {
     lines.push("Use a real issue id from the current context before making issue write requests.");

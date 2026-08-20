@@ -157,9 +157,39 @@ export function publishActivity(publication: ActivityPublication) {
   if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
 }
 
+/**
+ * `activity_log.run_id` is a foreign key to `heartbeat_runs`, and `input.runId`
+ * commonly originates from the caller-supplied `X-Paperclip-Run-Id` header. An
+ * unknown or stale id would therefore turn an otherwise-valid write into a 500
+ * at the activity-log step, after the primary mutation has already committed.
+ * Null out unknowns instead, matching how the issue-comment insert already
+ * treats `createdByRunId`.
+ */
+async function resolveActivityRunId(
+  db: Db,
+  companyId: string,
+  runId: string | null | undefined,
+): Promise<string | null> {
+  const normalized = typeof runId === "string" ? runId.trim() : "";
+  if (!normalized || !isUuidLike(normalized)) return null;
+  const existing = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, normalized), eq(heartbeatRuns.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!existing) {
+    logger.warn(
+      { companyId, runId: normalized, action: "activity_log" },
+      "dropping invalid runId for activity log insert",
+    );
+  }
+  return existing?.id ?? null;
+}
+
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const runId = await resolveActivityRunId(db, input.companyId, input.runId);
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -168,7 +198,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });

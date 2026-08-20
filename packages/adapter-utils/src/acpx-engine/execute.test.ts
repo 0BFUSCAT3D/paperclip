@@ -560,6 +560,29 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
   });
 
+  it("still documents API access, via the run header, when no auth token was injected", async () => {
+    const { meta } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      {
+        authToken: undefined,
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    // A keyless run still has API access; withholding this note is what left
+    // those runs writing as the board user (REEA-11).
+    expect(prompt).toContain("Paperclip API access note:");
+    expect(prompt).toContain("X-Paperclip-Run-Id");
+    expect(prompt).toContain("This run has no PAPERCLIP_API_KEY.");
+    // Nothing should reference a bearer token this run does not have.
+    expect(prompt).not.toContain("Authorization: Bearer");
+  });
+
   it("does not show a scoped issue API command when the task id is unavailable", async () => {
     const { meta } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js" },

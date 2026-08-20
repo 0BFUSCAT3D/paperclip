@@ -285,6 +285,7 @@ export type {
   AgentChainOfCommandEntry,
   AgentDetail,
   ClearAgentErrorResponse,
+  ActorAuthSource,
   AgentModelProfileConfig,
   AgentPermissions,
   AgentRuntimeConfig,

@@ -13,6 +13,7 @@ import {
   userInboxAgentPolicies,
 } from "@paperclipai/db";
 import type {
+  ActorAuthSource,
   AgentApiKeyScope,
   InboxAgentPolicyMode,
   PermissionKey,
@@ -45,14 +46,9 @@ export type AuthorizationActor =
     keyScope?: AgentApiKeyScope | null;
     runId?: string | null;
     onBehalfOfUserId?: string | null;
-    source?:
-      | "local_implicit"
-      | "session"
-      | "board_key"
-      | "agent_key"
-      | "agent_jwt"
-      | "cloud_tenant"
-      | "none";
+    // `run_header` is authorization-wise an ordinary agent actor; see
+    // ActorAuthSource for what it does and does not prove.
+    source?: ActorAuthSource;
   };
 
 export type AuthorizationAction =
