@@ -3,6 +3,8 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { isSubscriptionBillingPolicyFailure, isSubscriptionOnlyBillingPolicy } from "@paperclipai/adapter-utils";
+import { assertCodexSubscriptionOnlyLaunchable } from "./execute.js";
 import {
   asString,
   parseObject,
@@ -196,10 +198,32 @@ async function prepareCodexHelloProbe(input: {
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
-  const engineSelection = await resolveCodexExecutionEngineForRun({
+  try {
+    await assertCodexSubscriptionOnlyLaunchable(ctx);
+  } catch (error) {
+    if (!isSubscriptionBillingPolicyFailure(error)) throw error;
+    return {
+      adapterType: "codex_local",
+      status: "fail",
+      testedAt: new Date().toISOString(),
+      checks: [{ code: error.code, level: "error", message: error.message }],
+    };
+  }
+  let engineSelection = await resolveCodexExecutionEngineForRun({
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
   });
+  if (engineSelection.engine === "acp" && isSubscriptionOnlyBillingPolicy(parseObject(ctx.config))) {
+    if (engineSelection.explicit) {
+      return {
+        adapterType: "codex_local",
+        status: "fail",
+        testedAt: new Date().toISOString(),
+        checks: [{ code: "subscription_environment_unsupported", level: "error", message: "Subscription-only Codex ACP cannot attest isolated provider configuration." }],
+      };
+    }
+    engineSelection = { engine: "cli", explicit: false, fallbackReason: "Subscription-only billing requires the isolated CLI lane." };
+  }
   if (engineSelection.engine === "acp") {
     return testCodexAcpEnvironment(ctx);
   }

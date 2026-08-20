@@ -104,4 +104,34 @@ describe("stampClaudeAgentIdHeader", () => {
       "X-Anthropic-Agent-Id: manual-override",
     );
   });
+
+  it("does not stamp a custom header into subscription-only execution", async () => {
+    const { inner, sentinel } = recordingInner();
+    const wrapped = stampClaudeAgentIdHeader(inner as never);
+    const ctx = {
+      agent: { id: "agent-subscription" },
+      config: { billingPolicy: "subscription_only", env: { CLAUDE_CODE_OAUTH_TOKEN: "token" } },
+    } as never;
+
+    await expect(wrapped(ctx)).resolves.toBe(sentinel);
+    expect(inner).toHaveBeenCalledOnce();
+    expect(inner.mock.calls[0]?.[0]).toBe(ctx);
+    expect(customHeaders(inner.mock.calls[0]?.[0] as ExecuteCtx)).toBeUndefined();
+  });
+
+  it("preserves user custom headers for the subscription policy guard to reject", async () => {
+    const { inner } = recordingInner();
+    const wrapped = stampClaudeAgentIdHeader(inner as never);
+    const ctx = {
+      agent: { id: "agent-subscription" },
+      config: {
+        billingPolicy: "subscription_only",
+        env: { ANTHROPIC_CUSTOM_HEADERS: "X-Proxy-Route: metered" },
+      },
+    } as never;
+
+    await wrapped(ctx);
+    expect(inner.mock.calls[0]?.[0]).toBe(ctx);
+    expect(customHeaders(inner.mock.calls[0]?.[0] as ExecuteCtx)).toBe("X-Proxy-Route: metered");
+  });
 });

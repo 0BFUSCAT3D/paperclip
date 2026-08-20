@@ -316,6 +316,63 @@ describe("agent routes adapter validation", () => {
     expect(res.body.adapterType).toBe("external_test");
   });
 
+  it.each(["agents", "agent-hires"])("rejects subscription policy on unsupported adapter through %s", async (endpoint) => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/company-1/${endpoint}`)
+      .send({ name: "Unsupported policy", adapterType: "external_test", adapterConfig: { billingPolicy: "subscription_only" } }));
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unrelated third-party billingPolicy key", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "External billing", adapterType: "external_test", adapterConfig: { billingPolicy: "vendor_contract" } }));
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(createInput.adapterConfig).toMatchObject({ billingPolicy: "vendor_contract" });
+  });
+
+  it("canonicalizes an empty base billing policy to absent", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({ name: "Default billing", adapterType: "codex_local", adapterConfig: { billingPolicy: "" } }));
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(createInput.adapterConfig).not.toHaveProperty("billingPolicy");
+  });
+
+  it("rejects subscription policy when updating onto an unsupported adapter", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType: "external_test", adapterConfig: { billingPolicy: "subscription_only" } }));
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects runtime model-profile billing policy at the route", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/companies/company-1/agents")
+      .send({
+        name: "Profile override",
+        adapterType: "codex_local",
+        runtimeConfig: { modelProfiles: { cheap: { adapterConfig: { billingPolicy: "" } } } },
+      }));
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
   it("does not inject CODEX_HOME or OPENAI_API_KEY when creating a keyless codex_local agent", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>

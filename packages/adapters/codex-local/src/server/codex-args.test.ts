@@ -197,4 +197,10 @@ describe("buildCodexExecArgs", () => {
 
     expect(result.args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
   });
+
+  it("loads only the private per-run home config while ignoring project rules", () => {
+    const result = buildCodexExecArgs({ billingPolicy: "subscription_only" });
+    expect(result.args.slice(0, 3)).toEqual(["exec", "--ignore-rules", "--json"]);
+    expect(result.args).not.toContain("--ignore-user-config");
+  });
 });

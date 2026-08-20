@@ -219,6 +219,38 @@ describe("agent test-environment route", () => {
     });
   });
 
+  it("fails local-only subscription policy before acquiring or realizing a remote environment", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({
+      ...externalAdapter,
+      subscriptionOnlyBilling: {
+        supported: true,
+        version: 1,
+        policy: "subscription_only",
+        localExecutionOnly: true,
+        supportedEngines: ["cli"],
+        acpSupported: false,
+        enforcesEnvironmentTest: true,
+        billingEvidence: "local_preflight_classification",
+        exactBillingReceiptRequired: false,
+        trustedHostExecutablePrerequisite: true,
+      },
+    });
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({
+        adapterConfig: { billingPolicy: "subscription_only" },
+        environmentId: "11111111-1111-4111-8111-111111111111",
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ status: "fail", checks: [{ code: "subscription_environment_unsupported" }] });
+    expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+    expect(mockEnvironmentRuntime.realizeWorkspace).not.toHaveBeenCalled();
+    expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
   it("returns a diagnostic result instead of probing the host when the requested environment is missing", async () => {
     mockEnvironmentService.getById.mockResolvedValueOnce(null);
     const app = await createApp();

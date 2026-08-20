@@ -86,6 +86,7 @@ interface AdapterCapabilities {
   requiresMaterializedRuntimeSkills: boolean;
   supportsModelProfiles: boolean;
   supportsAcp: boolean;
+  subscriptionOnlyBilling?: ServerAdapterModule["subscriptionOnlyBilling"];
 }
 
 interface AdapterInfo {
@@ -142,6 +143,7 @@ function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabili
     requiresMaterializedRuntimeSkills: adapter.requiresMaterializedRuntimeSkills ?? false,
     supportsModelProfiles: Boolean(adapter.modelProfiles?.length || adapter.listModelProfiles),
     supportsAcp: Boolean(adapter.acp),
+    ...(adapter.subscriptionOnlyBilling ? { subscriptionOnlyBilling: adapter.subscriptionOnlyBilling } : {}),
   };
 }
 

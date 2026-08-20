@@ -3,6 +3,8 @@ import type {
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { isSubscriptionBillingPolicyFailure, isSubscriptionOnlyBillingPolicy } from "@paperclipai/adapter-utils";
+import { assertClaudeSubscriptionOnlyLaunchable } from "./execute.js";
 import {
   asString,
   asBoolean,
@@ -84,10 +86,32 @@ function summarizeProbeDetail(stdout: string, stderr: string): string | null {
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
-  const engineSelection = await resolveClaudeExecutionEngineForRun({
+  try {
+    await assertClaudeSubscriptionOnlyLaunchable(ctx);
+  } catch (error) {
+    if (!isSubscriptionBillingPolicyFailure(error)) throw error;
+    return {
+      adapterType: "claude_local",
+      status: "fail",
+      testedAt: new Date().toISOString(),
+      checks: [{ code: error.code, level: "error", message: error.message }],
+    };
+  }
+  let engineSelection = await resolveClaudeExecutionEngineForRun({
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
   });
+  if (engineSelection.engine === "acp" && isSubscriptionOnlyBillingPolicy(parseObject(ctx.config))) {
+    if (engineSelection.explicit) {
+      return {
+        adapterType: "claude_local",
+        status: "fail",
+        testedAt: new Date().toISOString(),
+        checks: [{ code: "subscription_environment_unsupported", level: "error", message: "Subscription-only Claude ACP cannot attest isolated provider configuration." }],
+      };
+    }
+    engineSelection = { engine: "cli", explicit: false, fallbackReason: "Subscription-only billing requires the isolated CLI lane." };
+  }
   if (engineSelection.engine === "acp") {
     return testClaudeAcpEnvironment(ctx);
   }
@@ -289,7 +313,9 @@ export async function testEnvironment(
         }
       }
 
-      const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      const args = isSubscriptionOnlyBillingPolicy(config)
+        ? ["--setting-sources", "", "--print", "-", "--output-format", "stream-json", "--verbose"]
+        : ["--print", "-", "--output-format", "stream-json", "--verbose"];
       args.push(...buildClaudeProbePermissionArgs({
         dangerouslySkipPermissions,
         targetIsRemote,

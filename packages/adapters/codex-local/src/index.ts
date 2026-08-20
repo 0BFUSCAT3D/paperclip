@@ -101,6 +101,7 @@ Core fields:
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+- billingPolicy (string, optional): set exactly to "subscription_only" to require local, securely inspected ChatGPT subscription authentication. It is supported only by the isolated CLI lane: explicit ACP fails closed and auto selects CLI. Environment tests use the same preflight; remote/sandbox execution is unsupported.
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
 - filesystemScope (string, optional): set to "workspace" to confine local CLI filesystem access with Bubblewrap. Off by default. The workspace and managed CODEX_HOME remain writable; other host paths are hidden.
@@ -120,6 +121,7 @@ Operational fields:
 - warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
 
 Notes:
+- Subscription-only failures use stable codes: subscription_auth_missing, metered_credential_present, metered_provider_selected, subscription_auth_unverifiable, and subscription_environment_unsupported. The policy requires a locked-down regular auth.json with explicit auth_mode="chatgpt" and the exact account/token shape, and rejects API keys, custom providers, project .codex/config.toml files, command or loader injection, and any result inconsistent with the local preflight classification. Billing evidence is a local fail-closed classification, not a provider receipt, and requires an administrator-controlled trusted host Codex/Node executable chain and stable managed credential files.
 - filesystemScope and networkScope are spawn-level confinement and are orthogonal to Codex approval/sandbox flags. Both require Bubblewrap on the host and select the CLI engine in auto mode; engine="acp" is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
 - Prompts are piped via stdin (Codex receives "-" prompt argument).
 - If instructionsFilePath is configured, Paperclip prepends that file's contents to the stdin prompt on every run.

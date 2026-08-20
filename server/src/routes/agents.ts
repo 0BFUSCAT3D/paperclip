@@ -1562,6 +1562,46 @@ export function agentRoutes(
     return value as Record<string, unknown>;
   }
 
+  function canonicalizeBaseBillingPolicy(
+    adapterType: string,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (!Object.prototype.hasOwnProperty.call(adapterConfig, "billingPolicy")) return adapterConfig;
+    const value = adapterConfig.billingPolicy;
+    const capability = requireServerAdapter(adapterType).subscriptionOnlyBilling;
+    if (!capability) {
+      if (value === "subscription_only") {
+        throw unprocessable(`Adapter '${adapterType}' does not support adapterConfig.billingPolicy=subscription_only`);
+      }
+      return adapterConfig;
+    }
+    if (value === "") {
+      const next = { ...adapterConfig };
+      delete next.billingPolicy;
+      return next;
+    }
+    if (value !== "subscription_only" || capability.policy !== value) {
+      throw unprocessable(`Adapter '${adapterType}' does not support adapterConfig.billingPolicy=${String(value)}`);
+    }
+    return adapterConfig;
+  }
+
+  function assertNoRuntimeBillingPolicy(adapterType: string, baseConfig: Record<string, unknown>, runtimeConfig: unknown): void {
+    const profiles = asRecord(asRecord(runtimeConfig)?.modelProfiles);
+    if (!profiles) return;
+    for (const [profileKey, profile] of Object.entries(profiles)) {
+      const adapterConfig = asRecord(asRecord(profile)?.adapterConfig);
+      const overrideValue = adapterConfig?.billingPolicy;
+      if (adapterConfig && Object.prototype.hasOwnProperty.call(adapterConfig, "billingPolicy") && (
+        baseConfig.billingPolicy === "subscription_only" ||
+        overrideValue === "subscription_only" ||
+        Boolean(requireServerAdapter(adapterType).subscriptionOnlyBilling)
+      )) {
+        throw unprocessable(`runtimeConfig.modelProfiles.${profileKey}.adapterConfig.billingPolicy is not allowed; billingPolicy is agent-base-only`);
+      }
+    }
+  }
+
   function asNonEmptyString(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
@@ -2341,8 +2381,10 @@ export function agentRoutes(
 
       const adapter = requireServerAdapter(type);
 
-      const inputAdapterConfig =
-        (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
+      const inputAdapterConfig = canonicalizeBaseBillingPolicy(
+        type,
+        (req.body?.adapterConfig ?? {}) as Record<string, unknown>,
+      );
       const requestedEnvironmentId =
         typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
           ? (req.body.environmentId as string)
@@ -2367,6 +2409,23 @@ export function agentRoutes(
         ),
         { adapterType: type, userSecretMediation: "owner_scoped" },
       );
+
+      if (adapter.subscriptionOnlyBilling?.localExecutionOnly && runtimeAdapterConfig.billingPolicy === "subscription_only" && requestedEnvironmentId) {
+        const selectedEnvironment = await environmentsSvc.getById(requestedEnvironmentId);
+        if (selectedEnvironment && selectedEnvironment.driver !== "local") {
+          res.json({
+            adapterType: type,
+            status: "fail",
+            testedAt: new Date().toISOString(),
+            checks: [{
+              code: "subscription_environment_unsupported",
+              level: "error",
+              message: "Subscription-only billing requires an attested local execution environment.",
+            }],
+          } satisfies AdapterEnvironmentTestResult);
+          return;
+        }
+      }
 
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
@@ -3132,13 +3191,17 @@ export function agentRoutes(
       ...hireInput
     } = req.body;
     hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
-    const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const rawHireAdapterConfig = canonicalizeBaseBillingPolicy(
+      hireInput.adapterType,
+      (hireInput.adapterConfig ?? {}) as Record<string, unknown>,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    assertNoRuntimeBillingPolicy(hireInput.adapterType, rawHireAdapterConfig, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3348,13 +3411,17 @@ export function agentRoutes(
       ...createInput
     } = req.body;
     createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
-    const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const rawCreateAdapterConfig = canonicalizeBaseBillingPolicy(
+      createInput.adapterType,
+      (createInput.adapterConfig ?? {}) as Record<string, unknown>,
+    );
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    assertNoRuntimeBillingPolicy(createInput.adapterType, rawCreateAdapterConfig, createInput.runtimeConfig);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3795,6 +3862,7 @@ export function agentRoutes(
         return;
       }
       assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      assertNoRuntimeBillingPolicy(requestedAdapterType, asRecord(existing.adapterConfig) ?? {}, runtimeConfig);
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
@@ -3841,7 +3909,7 @@ export function agentRoutes(
         requestedAdapterType,
         applyCreateDefaultsByAdapterType(
           requestedAdapterType,
-          rawEffectiveAdapterConfig,
+          canonicalizeBaseBillingPolicy(requestedAdapterType, rawEffectiveAdapterConfig),
         ),
       );
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({

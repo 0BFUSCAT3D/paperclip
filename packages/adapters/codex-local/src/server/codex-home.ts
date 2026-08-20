@@ -84,6 +84,34 @@ function hasUsableAuthPayload(authPayload: unknown): boolean {
   return false;
 }
 
+/**
+ * Strict subscription-only predicate. The current Codex 0.143 AuthDotJson
+ * shape is the three-token `tokens` object with an `account_id`; this exact
+ * format is characterized in this package's auth-home tests. A generic token
+ * payload, an API-key auth.json, or a partial legacy payload is not proof of a
+ * ChatGPT subscription and must not pass this policy gate.
+ */
+function hasProvableChatGptSubscriptionAuthPayload(authPayload: unknown): boolean {
+  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
+    return false;
+  }
+  const payload = authPayload as Record<string, unknown>;
+  if (typeof payload.OPENAI_API_KEY === "string" && payload.OPENAI_API_KEY.trim().length > 0) {
+    return false;
+  }
+  const tokens = payload.tokens;
+  if (tokens === null || typeof tokens !== "object" || Array.isArray(tokens)) return false;
+  const tokenRecord = tokens as Record<string, unknown>;
+  const accountId = tokenRecord.account_id;
+  if (typeof accountId !== "string" || accountId.trim().length === 0) return false;
+  if (payload.auth_mode !== "chatgpt") return false;
+  const exactCurrentShape = ["id_token", "access_token", "refresh_token"].every((key) => {
+    const value = tokenRecord[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+  return exactCurrentShape;
+}
+
 function readApiKeyFromAuthPayload(authPayload: unknown): string | null {
   if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
     return null;
@@ -106,15 +134,17 @@ function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
 export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
+  agentId?: string,
 ): string {
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
     env,
   });
-  return companyId
-    ? path.resolve(instanceRoot, "companies", companyId, "codex-home")
-    : path.resolve(instanceRoot, "codex-home");
+  if (!companyId) return path.resolve(instanceRoot, "codex-home");
+  return agentId
+    ? path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home")
+    : path.resolve(instanceRoot, "companies", companyId, "codex-home");
 }
 
 /**
@@ -154,6 +184,123 @@ export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
     return hasUsableAuthPayload(parsed);
   } catch {
     return false;
+  }
+}
+
+type SecureCodexSubscriptionAuthRead = {
+  status: "present" | "missing" | "metered" | "unverifiable";
+  snapshot?: Buffer;
+};
+
+async function readSecureCodexSubscriptionAuth(home: string): Promise<SecureCodexSubscriptionAuthRead> {
+  const authPath = path.join(home, "auth.json");
+  const before = await fs.lstat(authPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }).catch(() => undefined);
+  if (before === null) return { status: "missing" };
+  if (!before || !before.isFile() || before.isSymbolicLink() || before.size > 64 * 1024) return { status: "unverifiable" };
+  if (process.platform !== "win32" && (before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0)) {
+    return { status: "unverifiable" };
+  }
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  try {
+    handle = await fs.open(authPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const after = await handle.stat();
+    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size > 64 * 1024) {
+      return { status: "unverifiable" };
+    }
+    const buffer = Buffer.alloc(Number(after.size) + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 64 * 1024) return { status: "unverifiable" };
+    const afterRead = await handle.stat();
+    if (
+      afterRead.dev !== after.dev ||
+      afterRead.ino !== after.ino ||
+      afterRead.size !== after.size ||
+      afterRead.mtimeMs !== after.mtimeMs ||
+      afterRead.ctimeMs !== after.ctimeMs
+    ) {
+      return { status: "unverifiable" };
+    }
+    const payload = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as Record<string, unknown>;
+    if (typeof payload.OPENAI_API_KEY === "string" && payload.OPENAI_API_KEY.trim()) return { status: "metered" };
+    return hasProvableChatGptSubscriptionAuthPayload(payload)
+      ? { status: "present", snapshot: Buffer.from(JSON.stringify(payload), "utf8") }
+      : { status: "unverifiable" };
+  } catch {
+    return { status: "unverifiable" };
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+export async function codexHomeHasProvableChatGptSubscriptionAuth(home: string): Promise<"present" | "missing" | "metered" | "unverifiable"> {
+  return (await readSecureCodexSubscriptionAuth(home)).status;
+}
+
+/**
+ * Copy an inspected ChatGPT credential into a private, regular-file per-run
+ * CODEX_HOME so the provider cannot reopen a mutable shared auth symlink after
+ * the final policy check. Returns only a non-secret classification and path.
+ */
+export async function createCodexSubscriptionAuthSnapshot(
+  sourceHomes: readonly string[],
+): Promise<{ status: "present"; home: string } | { status: "missing" | "metered" | "unverifiable"; home: null }> {
+  let sawUnverifiable = false;
+  for (const sourceHome of [...new Set(sourceHomes.map((value) => path.resolve(value)))]) {
+    const inspected = await readSecureCodexSubscriptionAuth(sourceHome);
+    if (inspected.status === "metered") return { status: "metered", home: null };
+    if (inspected.status === "unverifiable") {
+      sawUnverifiable = true;
+      continue;
+    }
+    if (inspected.status !== "present" || !inspected.snapshot) continue;
+    const snapshotHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-subscription-"));
+    try {
+      await fs.chmod(snapshotHome, 0o700);
+      await fs.writeFile(path.join(snapshotHome, "auth.json"), inspected.snapshot, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      return { status: "present", home: snapshotHome };
+    } catch (error) {
+      await fs.rm(snapshotHome, { recursive: true, force: true }).catch(() => undefined);
+      void error;
+      return { status: "unverifiable", home: null };
+    }
+  }
+  return { status: sawUnverifiable ? "unverifiable" : "missing", home: null };
+}
+
+/** Returns only a safe routing classification, never TOML values or paths. */
+export async function codexHomeHasCustomProviderRouting(home: string): Promise<boolean> {
+  return codexConfigFileHasCustomProviderRouting(path.join(home, "config.toml"));
+}
+
+/** Securely inspect any Codex TOML path, including workspace .codex/config.toml. */
+export async function codexConfigFileHasCustomProviderRouting(configPath: string): Promise<boolean> {
+  const before = await fs.lstat(configPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }).catch(() => undefined);
+  if (before === null) return false;
+  if (!before || !before.isFile() || before.isSymbolicLink() || before.size > 64 * 1024) return true;
+  if (process.platform !== "win32" && (before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0)) return true;
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  try {
+    handle = await fs.open(configPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    const after = await handle.stat();
+    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size > 64 * 1024) return true;
+    const buffer = Buffer.alloc(Number(after.size) + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 64 * 1024) return true;
+    const config = buffer.subarray(0, bytesRead).toString("utf8");
+    return /(?:^|\n)\s*(?:["']?(?:model_provider|model_providers|base_url|env_key)["']?|["'][^"']+["']\.(?:model_provider|base_url|env_key))\s*=|(?:^|\n)\s*\[\s*["']?model_providers["']?(?:\.|\])/im.test(config);
+  } catch {
+    return true;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
