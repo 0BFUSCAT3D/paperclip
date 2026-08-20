@@ -223,6 +223,60 @@ describe("runAdapterExecutionTargetProcess", () => {
     vi.unstubAllEnvs();
   });
 
+  it("uses the exact guarded environment without re-inheriting hostile host provider or loader variables", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "host-anthropic-secret");
+    vi.stubEnv("OPENAI_API_KEY", "host-openai-secret");
+    vi.stubEnv("HTTPS_PROXY", "http://host-proxy.invalid");
+    vi.stubEnv("NODE_OPTIONS", "--require=/definitely/missing/paperclip-host-injection.cjs");
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "host-decision-secret");
+
+    const exactEnv = serverUtils.sanitizePreparedSubscriptionFinalEnv(
+      {
+        ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
+        SAFE_VALUE: "guarded",
+        PAPERCLIP_API_KEY: "stale-host-api-key",
+      },
+      {
+        PAPERCLIP_API_KEY: "run-scoped-api-key",
+        PAPERCLIP_RUN_ID: "run-exact-environment",
+      },
+    );
+    for (const key of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "HTTPS_PROXY", "NODE_OPTIONS"]) {
+      delete exactEnv[key];
+    }
+
+    const result = await runAdapterExecutionTargetProcess(
+      "run-exact-environment",
+      null,
+      process.execPath,
+      ["-e", `process.stdout.write(JSON.stringify({
+        safe: process.env.SAFE_VALUE,
+        anthropic: process.env.ANTHROPIC_API_KEY,
+        openai: process.env.OPENAI_API_KEY,
+        proxy: process.env.HTTPS_PROXY,
+        nodeOptions: process.env.NODE_OPTIONS,
+        decisionSecret: process.env.PAPERCLIP_DECISION_SIGNING_SECRET,
+        paperclipApiKey: process.env.PAPERCLIP_API_KEY,
+        paperclipRunId: process.env.PAPERCLIP_RUN_ID,
+      }))`],
+      {
+        cwd: process.cwd(),
+        env: exactEnv,
+        exactEnvironment: true,
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      safe: "guarded",
+      paperclipApiKey: "run-scoped-api-key",
+      paperclipRunId: "run-exact-environment",
+    });
+  });
+
   it("sanitizes inherited host env before SSH process execution", async () => {
     vi.stubEnv("PATH", "/host/bin:/usr/bin");
     vi.stubEnv("HOME", "/Users/local");

@@ -18,6 +18,7 @@ import {
   refreshClaudeModels,
   testEnvironment as claudeTestEnvironment,
   sessionCodec as claudeSessionCodec,
+  inspectClaudeSubscriptionAuthAuthority,
   getQuotaWindows as claudeGetQuotaWindows,
   getConfigSchema as getClaudeConfigSchema,
 } from "@paperclipai/adapter-claude-local/server";
@@ -32,6 +33,7 @@ import {
   syncCodexSkills,
   testEnvironment as codexTestEnvironment,
   sessionCodec as codexSessionCodec,
+  inspectCodexSubscriptionAuthAuthority,
   getQuotaWindows as codexGetQuotaWindows,
   getConfigSchema as getCodexConfigSchema,
 } from "@paperclipai/adapter-codex-local/server";
@@ -110,6 +112,7 @@ import {
 } from "@paperclipai/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
 import { listCursorModels } from "./cursor-models.js";
+import { withServerSubscriptionAuthAuthoritySigner } from "../services/execution-profile-auth-authority.js";
 import {
   execute as piExecute,
   listPiSkills,
@@ -185,6 +188,9 @@ Paperclip keeps this tombstone registered so stale acpx_local rows fail clearly 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   subscriptionOnlyBilling: SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
+  inspectSubscriptionAuthAuthority: withServerSubscriptionAuthAuthoritySigner(
+    inspectClaudeSubscriptionAuthAuthority,
+  ),
   execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   acp: {
@@ -259,6 +265,9 @@ const acpxLocalAdapter: ServerAdapterModule = {
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
   subscriptionOnlyBilling: SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
+  inspectSubscriptionAuthAuthority: withServerSubscriptionAuthAuthoritySigner(
+    inspectCodexSubscriptionAuthAuthority,
+  ),
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   acp: {
@@ -434,6 +443,7 @@ const builtinFallbacks = new Map<string, ServerAdapterModule>();
 // paused, `getServerAdapter()` returns the builtin fallback instead of the
 // external.  Persisted across reloads via the same disabled-adapters store.
 const pausedOverrides = new Set<string>();
+const HOST_PROTECTED_SUBSCRIPTION_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
 
 function registerBuiltInAdapters() {
   for (const adapter of [
@@ -492,8 +502,12 @@ function getDisabledAdapterTypesFromStore(): string[] {
 export function resolveExternalAdapterRegistration(
   externalAdapter: ServerAdapterModule,
 ): ServerAdapterModule {
+  const protectedCollision = HOST_PROTECTED_SUBSCRIPTION_ADAPTER_TYPES.has(externalAdapter.type);
   return {
     ...externalAdapter,
+    ...(protectedCollision
+      ? { subscriptionOnlyBilling: undefined, inspectSubscriptionAuthAuthority: undefined }
+      : {}),
     sessionManagement:
       externalAdapter.sessionManagement
         ?? getAdapterSessionManagement(externalAdapter.type)
@@ -549,7 +563,12 @@ export function registerServerAdapter(adapter: ServerAdapterModule): void {
       builtinFallbacks.set(adapter.type, existing);
     }
   }
-  adaptersByType.set(adapter.type, adapter);
+  adaptersByType.set(
+    adapter.type,
+    HOST_PROTECTED_SUBSCRIPTION_ADAPTER_TYPES.has(adapter.type)
+      ? resolveExternalAdapterRegistration(adapter)
+      : adapter,
+  );
 }
 
 export function unregisterServerAdapter(type: string): void {

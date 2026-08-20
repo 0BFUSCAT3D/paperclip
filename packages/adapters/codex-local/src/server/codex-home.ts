@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import type { Stats } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
@@ -148,6 +149,158 @@ export function resolveManagedCodexHomeDir(
 }
 
 /**
+ * Prove that the canonical per-agent managed home has no redirectable parent.
+ * This is intentionally read-only: insecure legacy permissions fail closed
+ * and must be repaired by an administrator outside an agent run.
+ */
+const MANAGED_CODEX_HOME_PATH_AUTHORITY = Symbol("managedCodexHomePathAuthority");
+
+type ManagedCodexHomePathAuthorityComponent = Readonly<{
+  path: string;
+  dev: number;
+  ino: number;
+  ctimeMs: number;
+  uid: number;
+  mode: number;
+}>;
+
+export type ManagedCodexHomePathAuthoritySnapshot = Readonly<{
+  [MANAGED_CODEX_HOME_PATH_AUTHORITY]: true;
+  home: string;
+  components: readonly ManagedCodexHomePathAuthorityComponent[];
+}>;
+
+function sameManagedCodexHomePathAuthorityComponent(
+  left: ManagedCodexHomePathAuthorityComponent,
+  right: ManagedCodexHomePathAuthorityComponent,
+): boolean {
+  return left.path === right.path
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.ctimeMs === right.ctimeMs
+    && left.uid === right.uid
+    && left.mode === right.mode;
+}
+
+export async function validateManagedCodexHomePathAuthority(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  agentId: string,
+  home: string,
+  expected?: ManagedCodexHomePathAuthoritySnapshot,
+): Promise<ManagedCodexHomePathAuthoritySnapshot | null> {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  const canonicalHome = resolveManagedCodexHomeDir(env, companyId, agentId);
+  if (path.resolve(home) !== canonicalHome) return null;
+  const relative = path.relative(instanceRoot, canonicalHome);
+  const expectedRelative = path.join("companies", companyId, "agents", agentId, "codex-home");
+  if (relative !== expectedRelative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+
+  const components = [
+    instanceRoot,
+    path.join(instanceRoot, "companies"),
+    path.join(instanceRoot, "companies", companyId),
+    path.join(instanceRoot, "companies", companyId, "agents"),
+    path.join(instanceRoot, "companies", companyId, "agents", agentId),
+    canonicalHome,
+  ];
+  if (
+    expected
+    && (expected[MANAGED_CODEX_HOME_PATH_AUTHORITY] !== true
+      || expected.home !== canonicalHome
+      || expected.components.length !== components.length)
+  ) return null;
+  try {
+    const captured: ManagedCodexHomePathAuthorityComponent[] = [];
+    for (const [index, candidate] of components.entries()) {
+      const before = await fs.lstat(candidate);
+      if (!before.isDirectory() || before.isSymbolicLink()) return null;
+      if (process.platform !== "win32" && (before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0)) {
+        return null;
+      }
+      const component = Object.freeze({
+        path: candidate,
+        dev: before.dev,
+        ino: before.ino,
+        ctimeMs: before.ctimeMs,
+        uid: before.uid,
+        mode: before.mode,
+      });
+      if (expected && !sameManagedCodexHomePathAuthorityComponent(component, expected.components[index]!)) {
+        return null;
+      }
+      const resolved = await fs.realpath(candidate);
+      if (resolved !== candidate) return null;
+      const after = await fs.lstat(candidate);
+      const afterComponent = {
+        path: candidate,
+        dev: after.dev,
+        ino: after.ino,
+        ctimeMs: after.ctimeMs,
+        uid: after.uid,
+        mode: after.mode,
+      };
+      if (
+        !after.isDirectory() ||
+        after.isSymbolicLink() ||
+        !sameManagedCodexHomePathAuthorityComponent(afterComponent, component) ||
+        (process.platform !== "win32" && (after.uid !== process.getuid?.() || (after.mode & 0o077) !== 0))
+      ) return null;
+      captured.push(component);
+    }
+    return Object.freeze({
+      [MANAGED_CODEX_HOME_PATH_AUTHORITY]: true as const,
+      home: canonicalHome,
+      components: Object.freeze(captured),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function ensureOwnerOnlyManagedCodexDirectoryChain(
+  env: NodeJS.ProcessEnv,
+  targetHome: string,
+): Promise<void> {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  const resolvedTarget = path.resolve(targetHome);
+  const relative = path.relative(instanceRoot, resolvedTarget);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    // seedManagedCodexHome predates managed per-agent homes and remains a
+    // general helper for explicit non-policy homes. Only repair permissions on
+    // the host-owned managed tree; immutable authority independently requires
+    // the exact canonical per-agent home and fails closed on every other path.
+    await fs.mkdir(resolvedTarget, { recursive: true });
+    return;
+  }
+  let cursor = instanceRoot;
+  for (const component of ["", ...relative.split(path.sep).filter(Boolean)]) {
+    if (component) cursor = path.join(cursor, component);
+    await fs.mkdir(cursor, { mode: 0o700, recursive: component === "" }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "EEXIST") throw error;
+    });
+    const stats = await fs.lstat(cursor);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error("Refusing to seed Codex auth through a non-directory or symlinked managed path.");
+    }
+    if (process.platform !== "win32") {
+      if (stats.uid !== process.getuid?.()) {
+        throw new Error("Refusing to seed Codex auth through a managed path owned by another user.");
+      }
+      await fs.chmod(cursor, 0o700);
+    }
+  }
+}
+
+/**
  * True when `homePath` lives under the Paperclip-managed company tree
  * (`<instanceRoot>/companies/<companyId>/...`). This covers both the shared
  * company `codex-home` and the per-agent `agents/<agentId>/codex-home` set by
@@ -187,56 +340,135 @@ export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
   }
 }
 
-type SecureCodexSubscriptionAuthRead = {
+export type SecureCodexSubscriptionAuthRead = {
   status: "present" | "missing" | "metered" | "unverifiable";
   snapshot?: Buffer;
 };
 
-async function readSecureCodexSubscriptionAuth(home: string): Promise<SecureCodexSubscriptionAuthRead> {
-  const authPath = path.join(home, "auth.json");
+export type SecureCodexSubscriptionAuthReadHooks = {
+  afterOpen?: () => void | Promise<void>;
+  afterRead?: () => void | Promise<void>;
+};
+
+function secureCodexAuthStats(stats: Stats): boolean {
+  return stats.isFile()
+    && stats.size >= 0
+    && stats.size <= 64 * 1024
+    && (process.platform === "win32" || (stats.uid === process.getuid?.() && (stats.mode & 0o077) === 0));
+}
+
+async function readSecureCodexSubscriptionAuthFile(
+  authPath: string,
+  hooks: SecureCodexSubscriptionAuthReadHooks = {},
+): Promise<SecureCodexSubscriptionAuthRead> {
   const before = await fs.lstat(authPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   }).catch(() => undefined);
   if (before === null) return { status: "missing" };
-  if (!before || !before.isFile() || before.isSymbolicLink() || before.size > 64 * 1024) return { status: "unverifiable" };
-  if (process.platform !== "win32" && (before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0)) {
-    return { status: "unverifiable" };
-  }
+  if (!before || before.isSymbolicLink() || !secureCodexAuthStats(before)) return { status: "unverifiable" };
   let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  let buffer: Buffer | null = null;
   try {
     handle = await fs.open(authPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
-    const after = await handle.stat();
-    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino || after.size > 64 * 1024) {
+    await hooks.afterOpen?.();
+    const opened = await handle.stat();
+    if (!secureCodexAuthStats(opened) || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) {
       return { status: "unverifiable" };
     }
-    const buffer = Buffer.alloc(Number(after.size) + 1);
+    buffer = Buffer.alloc(Number(opened.size) + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > 64 * 1024) return { status: "unverifiable" };
+    await hooks.afterRead?.();
+    if (bytesRead !== opened.size || bytesRead > 64 * 1024) return { status: "unverifiable" };
     const afterRead = await handle.stat();
     if (
-      afterRead.dev !== after.dev ||
-      afterRead.ino !== after.ino ||
-      afterRead.size !== after.size ||
-      afterRead.mtimeMs !== after.mtimeMs ||
-      afterRead.ctimeMs !== after.ctimeMs
+      !secureCodexAuthStats(afterRead) ||
+      afterRead.dev !== opened.dev ||
+      afterRead.ino !== opened.ino ||
+      afterRead.size !== opened.size ||
+      afterRead.mtimeMs !== opened.mtimeMs ||
+      afterRead.ctimeMs !== opened.ctimeMs
     ) {
       return { status: "unverifiable" };
     }
     const payload = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as Record<string, unknown>;
     if (typeof payload.OPENAI_API_KEY === "string" && payload.OPENAI_API_KEY.trim()) return { status: "metered" };
     return hasProvableChatGptSubscriptionAuthPayload(payload)
-      ? { status: "present", snapshot: Buffer.from(JSON.stringify(payload), "utf8") }
+      ? { status: "present", snapshot: Buffer.from(buffer.subarray(0, bytesRead)) }
       : { status: "unverifiable" };
   } catch {
     return { status: "unverifiable" };
   } finally {
+    buffer?.fill(0);
     await handle?.close().catch(() => undefined);
   }
 }
 
+export async function readSecureCodexSubscriptionAuth(
+  home: string,
+  hooks: SecureCodexSubscriptionAuthReadHooks = {},
+): Promise<SecureCodexSubscriptionAuthRead> {
+  return readSecureCodexSubscriptionAuthFile(path.join(home, "auth.json"), hooks);
+}
+
+/**
+ * Securely capture the credential Codex will actually open. The sole accepted
+ * symlink is the standard managed-agent link to this instance's canonical
+ * shared auth.json; arbitrary and relative links fail closed.
+ */
+export async function readSecureEffectiveCodexSubscriptionAuth(
+  home: string,
+  env: NodeJS.ProcessEnv = process.env,
+  hooks: SecureCodexSubscriptionAuthReadHooks = {},
+): Promise<SecureCodexSubscriptionAuthRead> {
+  const authPath = path.join(home, "auth.json");
+  const linkBefore = await fs.lstat(authPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }).catch(() => undefined);
+  if (linkBefore === null) return { status: "missing" };
+  if (!linkBefore) return { status: "unverifiable" };
+  if (!linkBefore.isSymbolicLink()) return readSecureCodexSubscriptionAuth(home, hooks);
+
+  const expectedTarget = path.join(resolveSharedCodexHomeDir(env), "auth.json");
+  try {
+    const rawTarget = await fs.readlink(authPath);
+    if (!path.isAbsolute(rawTarget) || path.resolve(rawTarget) !== path.resolve(expectedTarget)) {
+      return { status: "unverifiable" };
+    }
+    const [resolvedLink, resolvedExpected] = await Promise.all([
+      fs.realpath(authPath),
+      fs.realpath(expectedTarget),
+    ]);
+    if (resolvedLink !== resolvedExpected) {
+      return { status: "unverifiable" };
+    }
+    const inspected = await readSecureCodexSubscriptionAuthFile(expectedTarget, hooks);
+    const linkAfter = await fs.lstat(authPath);
+    const [rawTargetAfter, resolvedLinkAfter] = await Promise.all([
+      fs.readlink(authPath),
+      fs.realpath(authPath),
+    ]);
+    const linkStable = linkAfter.isSymbolicLink()
+      && linkAfter.dev === linkBefore.dev
+      && linkAfter.ino === linkBefore.ino
+      && linkAfter.ctimeMs === linkBefore.ctimeMs
+      && rawTargetAfter === rawTarget
+      && resolvedLinkAfter === resolvedExpected;
+    if (!linkStable) {
+      inspected.snapshot?.fill(0);
+      return { status: "unverifiable" };
+    }
+    return inspected;
+  } catch {
+    return { status: "unverifiable" };
+  }
+}
+
 export async function codexHomeHasProvableChatGptSubscriptionAuth(home: string): Promise<"present" | "missing" | "metered" | "unverifiable"> {
-  return (await readSecureCodexSubscriptionAuth(home)).status;
+  const inspected = await readSecureCodexSubscriptionAuth(home);
+  inspected.snapshot?.fill(0);
+  return inspected.status;
 }
 
 /**
@@ -256,8 +488,9 @@ export async function createCodexSubscriptionAuthSnapshot(
       continue;
     }
     if (inspected.status !== "present" || !inspected.snapshot) continue;
-    const snapshotHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-subscription-"));
+    let snapshotHome: string | null = null;
     try {
+      snapshotHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-subscription-"));
       await fs.chmod(snapshotHome, 0o700);
       await fs.writeFile(path.join(snapshotHome, "auth.json"), inspected.snapshot, {
         flag: "wx",
@@ -265,9 +498,13 @@ export async function createCodexSubscriptionAuthSnapshot(
       });
       return { status: "present", home: snapshotHome };
     } catch (error) {
-      await fs.rm(snapshotHome, { recursive: true, force: true }).catch(() => undefined);
+      if (snapshotHome) {
+        await fs.rm(snapshotHome, { recursive: true, force: true }).catch(() => undefined);
+      }
       void error;
       return { status: "unverifiable", home: null };
+    } finally {
+      inspected.snapshot.fill(0);
     }
   }
   return { status: sawUnverifiable ? "unverifiable" : "missing", home: null };
@@ -737,7 +974,7 @@ export async function seedManagedCodexHome(
   const sourceHome = resolveSharedCodexHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
-  await fs.mkdir(targetHome, { recursive: true });
+  await ensureOwnerOnlyManagedCodexDirectoryChain(env, targetHome);
 
   // A regular-file auth.json in the target home is one of two very different
   // things. The device-login promotion writes the company credential as a

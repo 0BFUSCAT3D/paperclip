@@ -40,7 +40,9 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("hermes_gateway");
     unregisterServerAdapter("claude_local");
+    unregisterServerAdapter("codex_local");
     setOverridePaused("claude_local", false);
+    setOverridePaused("codex_local", false);
   });
 
   afterEach(() => {
@@ -48,7 +50,9 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("hermes_local");
     unregisterServerAdapter("hermes_gateway");
     unregisterServerAdapter("claude_local");
+    unregisterServerAdapter("codex_local");
     setOverridePaused("claude_local", false);
+    setOverridePaused("codex_local", false);
   });
 
   it("registers external adapters and exposes them through lookup helpers", async () => {
@@ -118,16 +122,48 @@ describe("server adapter registry", () => {
       }),
       models: [{ id: "plugin-model", label: "Plugin Override" }],
       supportsLocalAgentJwt: false,
+      subscriptionOnlyBilling: findServerAdapter("claude_local")!.subscriptionOnlyBilling,
+      inspectSubscriptionAuthAuthority: findServerAdapter("claude_local")!.inspectSubscriptionAuthAuthority,
     };
 
     registerServerAdapter(plugin);
 
     // Plugin wins
     const resolved = requireServerAdapter("claude_local");
-    expect(resolved).toBe(plugin);
+    expect(resolved).not.toBe(plugin);
     expect(resolved.models).toEqual([
       { id: "plugin-model", label: "Plugin Override" },
     ]);
+    expect(resolved.execute).toBe(plugin.execute);
+    expect(resolved.testEnvironment).toBe(plugin.testEnvironment);
+    expect(resolved.subscriptionOnlyBilling).toBeUndefined();
+    expect(resolved.inspectSubscriptionAuthAuthority).toBeUndefined();
+  });
+
+  it("keeps a codex_local override active while stripping host-owned subscription authority", () => {
+    const builtIn = findServerAdapter("codex_local");
+    expect(builtIn).not.toBeNull();
+    const plugin: ServerAdapterModule = {
+      type: "codex_local",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "codex_local",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      models: [{ id: "plugin-codex", label: "Plugin Codex" }],
+      subscriptionOnlyBilling: builtIn!.subscriptionOnlyBilling,
+      inspectSubscriptionAuthAuthority: builtIn!.inspectSubscriptionAuthAuthority,
+    };
+
+    registerServerAdapter(plugin);
+    const resolved = requireServerAdapter("codex_local");
+    expect(resolved).not.toBe(plugin);
+    expect(resolved.execute).toBe(plugin.execute);
+    expect(resolved.models).toEqual([{ id: "plugin-codex", label: "Plugin Codex" }]);
+    expect(resolved.subscriptionOnlyBilling).toBeUndefined();
+    expect(resolved.inspectSubscriptionAuthAuthority).toBeUndefined();
   });
 
   it("ships Hermes adapters as built-ins and still accepts external overrides", () => {
@@ -353,7 +389,10 @@ describe("server adapter registry", () => {
 
     registerServerAdapter(plugin);
 
-    expect(findActiveServerAdapter("claude_local")).toBe(plugin);
+    expect(findActiveServerAdapter("claude_local")).not.toBe(plugin);
+    expect(findActiveServerAdapter("claude_local")?.execute).toBe(plugin.execute);
+    expect(findActiveServerAdapter("claude_local")?.subscriptionOnlyBilling).toBeUndefined();
+    expect(findActiveServerAdapter("claude_local")?.inspectSubscriptionAuthAuthority).toBeUndefined();
     expect(await listAdapterModels("claude_local")).toEqual([
       { id: "plugin-model", label: "Plugin Override" },
     ]);

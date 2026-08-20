@@ -10,6 +10,7 @@ import {
   type AdapterExecutionContext,
   type AdapterExecutionResult,
   type AdapterEnvironmentTestContext,
+  type SubscriptionAuthHostOwnedFinalEnvEvidenceV1,
 } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -47,6 +48,7 @@ import {
   ensurePathInEnv,
   isForbiddenConfigEnvKey,
   isPaperclipRuntimeEnvKey,
+  sanitizePreparedSubscriptionFinalEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -97,6 +99,7 @@ import {
   formatClaudeAcpFallbackMessage,
   resolveClaudeExecutionEngineForRun,
 } from "./acp.js";
+import { isClaudePreparedSubscriptionAuthFinalEnv } from "./subscription-auth-authority.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
@@ -121,6 +124,7 @@ interface ClaudeRuntimeConfig {
   workspaceRepoUrl: string | null;
   workspaceRepoRef: string | null;
   env: Record<string, string>;
+  trustedPaperclipEnv: Record<string, string>;
   loggedEnv: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
@@ -276,7 +280,10 @@ async function hasProvableClaudeNativeSubscriptionAuth(env: Record<string, strin
 /** Strict, no-spawn guard for the opt-in native Claude subscription lane. */
 export async function assertClaudeSubscriptionOnlyLaunchable(
   ctx: AdapterExecutionContext | AdapterEnvironmentTestContext,
-  options: { finalEnv?: Record<string, string> } = {},
+  options: {
+    finalEnv?: Record<string, string>;
+    hostOwnedFinalEnv?: SubscriptionAuthHostOwnedFinalEnvEvidenceV1;
+  } = {},
 ): Promise<void> {
   if (!isSubscriptionOnlyBillingPolicy(ctx.config)) return;
   const target = readAdapterExecutionTarget({
@@ -296,11 +303,29 @@ export async function assertClaudeSubscriptionOnlyLaunchable(
     );
   }
   const env = options.finalEnv ?? buildClaudePolicyEnv(ctx.config);
+  const configuredEnv = parseObject(ctx.config.env);
+  const hasConfiguredClaudeConfigDir = Object.prototype.hasOwnProperty.call(configuredEnv, "CLAUDE_CONFIG_DIR");
+  if (hasConfiguredClaudeConfigDir) {
+    throw new SubscriptionBillingPolicyFailure(
+      "metered_provider_selected",
+      "Subscription-only Claude execution rejects a configured Claude config directory.",
+    );
+  }
+  const trustedPreparedEnv = !hasConfiguredClaudeConfigDir
+    && isClaudePreparedSubscriptionAuthFinalEnv(options.hostOwnedFinalEnv, env);
+  if (hasNonEmptyEnvValue(env, "CLAUDE_CONFIG_DIR") && !trustedPreparedEnv) {
+    throw new SubscriptionBillingPolicyFailure(
+      "metered_provider_selected",
+      "Subscription-only Claude execution rejects an untrusted Claude config directory.",
+    );
+  }
+  const classifiedEnv = trustedPreparedEnv ? { ...env } : env;
+  if (trustedPreparedEnv) delete classifiedEnv.CLAUDE_CONFIG_DIR;
   const policyFailureCode = classifySubscriptionOnlyProviderPolicy({
     adapterType: "claude_local",
     config: ctx.config,
-    env,
-    configuredEnv: parseObject(ctx.config.env),
+    env: classifiedEnv,
+    configuredEnv,
   });
   if (policyFailureCode) {
     throw new SubscriptionBillingPolicyFailure(
@@ -308,7 +333,9 @@ export async function assertClaudeSubscriptionOnlyLaunchable(
       "Subscription-only Claude execution rejects the configured credential, provider, command, or process-injection override.",
     );
   }
-  if (await claudeSettingsHaveProviderRouting()) {
+  if (await claudeSettingsHaveProviderRouting(
+    trustedPreparedEnv ? env.CLAUDE_CONFIG_DIR : resolveSharedClaudeConfigDir(process.env),
+  )) {
     throw new SubscriptionBillingPolicyFailure(
       "metered_provider_selected",
       "Subscription-only Claude execution cannot use unsafe or provider-affecting shared settings.",
@@ -333,24 +360,34 @@ export async function executeWithClaudeSubscriptionPolicy(
   ctx: AdapterExecutionContext,
   executeInner: (context: AdapterExecutionContext) => Promise<AdapterExecutionResult> = executeUnchecked,
 ): Promise<AdapterExecutionResult> {
-  await assertClaudeSubscriptionOnlyLaunchable(ctx);
-  const result = await executeInner(ctx);
-  if (isSubscriptionOnlyBillingPolicy(ctx.config) && result.billingType !== "subscription") {
-    throw new SubscriptionBillingPolicyFailure(
-      "metered_provider_selected",
-      "Subscription-only Claude execution received a non-subscription billing result.",
-      {
-        provider: result.provider ?? null,
-        biller: result.biller ?? null,
-        billingType: result.billingType ?? null,
-        costUsd: result.costUsd ?? null,
-        usage: result.usage ?? null,
-        exitCode: result.exitCode ?? null,
-        timedOut: result.timedOut ?? false,
-      },
-    );
+  try {
+    if (isSubscriptionOnlyBillingPolicy(ctx.config) && ctx.preparedSubscriptionAuthAuthority) {
+      const initialEnv = buildClaudePolicyEnv(ctx.config);
+      const hostOwnedFinalEnv = await ctx.preparedSubscriptionAuthAuthority.apply({ env: initialEnv });
+      await assertClaudeSubscriptionOnlyLaunchable(ctx, { finalEnv: initialEnv, hostOwnedFinalEnv });
+    } else {
+      await assertClaudeSubscriptionOnlyLaunchable(ctx);
+    }
+    const result = await executeInner(ctx);
+    if (isSubscriptionOnlyBillingPolicy(ctx.config) && result.billingType !== "subscription") {
+      throw new SubscriptionBillingPolicyFailure(
+        "metered_provider_selected",
+        "Subscription-only Claude execution received a non-subscription billing result.",
+        {
+          provider: result.provider ?? null,
+          biller: result.biller ?? null,
+          billingType: result.billingType ?? null,
+          costUsd: result.costUsd ?? null,
+          usage: result.usage ?? null,
+          exitCode: result.exitCode ?? null,
+          timedOut: result.timedOut ?? false,
+        },
+      );
+    }
+    return result;
+  } finally {
+    await ctx.preparedSubscriptionAuthAuthority?.dispose();
   }
-  return result;
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -480,6 +517,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   if (runtimePrimaryUrl) {
     env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
   }
+  const trustedPaperclipEnv = { ...env };
   const shapedEnvConfig = rewriteWorkspaceCwdEnvVarsForExecution({
     env: envConfig,
     workspaceCwd: effectiveWorkspaceCwd,
@@ -498,6 +536,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
 
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
+    trustedPaperclipEnv.PAPERCLIP_API_KEY = authToken;
   }
 
   const runtimeEnv = Object.fromEntries(
@@ -546,6 +585,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
+    trustedPaperclipEnv,
     loggedEnv,
     timeoutSec,
     graceSec,
@@ -673,6 +713,7 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
     workspaceRepoUrl,
     workspaceRepoRef,
     env,
+    trustedPaperclipEnv,
     loggedEnv: initialLoggedEnv,
     timeoutSec,
     graceSec,
@@ -689,7 +730,7 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveClaudeBillingType(effectiveEnv);
+  let billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed
@@ -1128,11 +1169,28 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
       });
     }
 
-    await assertClaudeSubscriptionOnlyLaunchable(ctx, { finalEnv: effectiveEnv });
+    let hostOwnedFinalEnv: SubscriptionAuthHostOwnedFinalEnvEvidenceV1 | undefined;
+    if (isSubscriptionOnlyBillingPolicy(ctx.config) && ctx.preparedSubscriptionAuthAuthority) {
+      const exactEnv = sanitizePreparedSubscriptionFinalEnv(effectiveEnv, trustedPaperclipEnv);
+      for (const key of Object.keys(effectiveEnv)) delete effectiveEnv[key];
+      Object.assign(effectiveEnv, exactEnv);
+      hostOwnedFinalEnv = await ctx.preparedSubscriptionAuthAuthority.apply({ env: effectiveEnv });
+    }
+    await assertClaudeSubscriptionOnlyLaunchable(ctx, { finalEnv: effectiveEnv, hostOwnedFinalEnv });
+    if (hostOwnedFinalEnv && localProcessSandbox && filesystemScope) {
+      localProcessSandbox.homeDir = effectiveEnv.HOME;
+      if (!localProcessSandbox.managedPaths?.some(({ path: managedPath }) => managedPath === effectiveEnv.HOME)) {
+        localProcessSandbox.managedPaths = [
+          ...(localProcessSandbox.managedPaths ?? []),
+          { path: effectiveEnv.HOME, access: "rw" },
+        ];
+      }
+    }
+    billingType = resolveClaudeBillingType(effectiveEnv);
     const spawnCommand = isSubscriptionOnlyBillingPolicy(ctx.config) ? resolvedCommand : command;
     const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, spawnCommand, args, {
       cwd,
-      env,
+      env: effectiveEnv,
       stdin: prompt,
       timeoutSec,
       graceSec,
@@ -1145,6 +1203,7 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
       localProcessSandbox,
+      exactEnvironment: Boolean(hostOwnedFinalEnv),
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);

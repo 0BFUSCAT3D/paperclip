@@ -193,6 +193,8 @@ export interface AdapterExecutionTargetProcessOptions {
    */
   runLogTail?: SandboxRunLogTailFactory | null;
   localProcessSandbox?: LocalProcessSandboxOptions | null;
+  /** Host-owned prepared auth only: do not merge the server's ambient environment at local spawn. */
+  exactEnvironment?: boolean;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -692,6 +694,7 @@ export async function runAdapterExecutionTargetProcess(
     terminalResultCleanup: options.terminalResultCleanup,
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+    exactEnvironment: options.exactEnvironment === true,
   });
 }
 
