@@ -14,7 +14,7 @@ const {
     throw new Error('Transform failed with 1 error: execute.ts:818:0: ERROR: Unexpected "<<"');
   }),
   resolveAdapterExecutionTargetCommandForLogs: vi.fn(async () => "claude"),
-  runAdapterExecutionTargetProcess: vi.fn(async () => ({
+  runAdapterExecutionTargetProcess: vi.fn(async (..._args: unknown[]) => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -62,6 +62,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
+import { inspectClaudeSubscriptionAuthAuthority } from "./subscription-auth-authority.js";
 
 function buildContext(config: Record<string, unknown> = {}) {
   return {
@@ -122,6 +123,74 @@ describe("claude_local ACP startup fallback", () => {
     );
   });
 
+  it("uses invalid captured OAuth in an isolated home and cannot fall back to a valid host login", async () => {
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "host-decision-secret");
+    const hostHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-host-login-"));
+    const hostConfig = path.join(hostHome, ".claude");
+    await fs.mkdir(hostConfig, { recursive: true });
+    await fs.writeFile(path.join(hostConfig, "settings.json"), JSON.stringify({ apiProvider: "firstParty" }));
+    vi.stubEnv("HOME", hostHome);
+    vi.stubEnv("CLAUDE_CONFIG_DIR", hostConfig);
+    const token = "invalid-captured-oauth";
+    const prepared = await inspectClaudeSubscriptionAuthAuthority({
+      mode: "prepare",
+      adapterType: "claude_local",
+      companyId: "11111111-1111-4111-8111-111111111111",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      config: { billingPolicy: "subscription_only", engine: "cli", env: { CLAUDE_CODE_OAUTH_TOKEN: token } },
+      env: { CLAUDE_CODE_OAUTH_TOKEN: token },
+      authSource: {
+        kind: "resolved_user_secret_version",
+        configPath: "env.CLAUDE_CODE_OAUTH_TOKEN",
+        key: "CLAUDE_CODE_OAUTH_TOKEN",
+        secretId: "33333333-3333-4333-8333-333333333333",
+        versionId: "44444444-4444-4444-8444-444444444444",
+        version: 1,
+        value: token,
+      },
+      signOpaque: (domain, bytes) => `decision-spec-v1.${createHash("sha256").update(domain).update(bytes).digest("hex")}`,
+    });
+    let seenEnv: Record<string, string> = {};
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as { env?: Record<string, string> };
+      seenEnv = { ...(options.env ?? {}) };
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          result: "Failed to authenticate. Invalid bearer token",
+          total_cost_usd: 0,
+        }),
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    });
+    const ctx = buildContext({
+      billingPolicy: "subscription_only",
+      engine: "cli",
+      env: { CLAUDE_CODE_OAUTH_TOKEN: token },
+    });
+    Object.assign(ctx, { preparedSubscriptionAuthAuthority: prepared.prepared, authToken: "run-scoped-paperclip-token" });
+    const result = await execute(ctx as never);
+    expect(result.exitCode).toBe(1);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledOnce();
+    expect((runAdapterExecutionTargetProcess.mock.calls[0]?.[4] as { exactEnvironment?: boolean }).exactEnvironment).toBe(true);
+    expect(seenEnv.CLAUDE_CODE_OAUTH_TOKEN).toBe(token);
+    expect(seenEnv.HOME).not.toBe(hostHome);
+    expect(seenEnv.CLAUDE_CONFIG_DIR).not.toBe(hostConfig);
+    expect(seenEnv.CLAUDE_CONFIG_DIR).toContain("paperclip-claude-auth-authority-");
+    expect(seenEnv.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(seenEnv.PAPERCLIP_DECISION_SIGNING_SECRET).toBeUndefined();
+    expect(seenEnv.PAPERCLIP_API_KEY).toBe("run-scoped-paperclip-token");
+    expect(seenEnv.PAPERCLIP_RUN_ID).toBe("run-1");
+    await fs.rm(hostHome, { recursive: true, force: true });
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -174,3 +243,7 @@ describe("claude_local ACP startup fallback", () => {
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
 });
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";

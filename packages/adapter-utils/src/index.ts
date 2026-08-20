@@ -98,6 +98,27 @@ export {
   isSubscriptionOnlyBillingPolicy,
 } from "./subscription-billing-policy.js";
 export type { SubscriptionBillingPolicyFailureCode, SubscriptionOnlyBillingCapability } from "./subscription-billing-policy.js";
+export {
+  SUBSCRIPTION_AUTH_AUTHORITY_SCHEMA,
+  SUBSCRIPTION_AUTH_AUTHORITY_VERSION,
+  SUBSCRIPTION_AUTH_AUTHORITY_OPAQUE_DOMAINS,
+  isSubscriptionAuthAuthorityFingerprint,
+  isSubscriptionAuthAuthorityProof,
+  isSubscriptionAuthAuthorityInspectionForMode,
+} from "./subscription-auth-authority.js";
+export type {
+  SubscriptionAuthAuthorityOpaqueDomain,
+  SubscriptionAuthAuthoritySignOpaque,
+  SubscriptionAuthAuthoritySource,
+  SubscriptionAuthAuthorityInspectInput,
+  SubscriptionAuthAuthorityEvidence,
+  SubscriptionAuthAuthorityProofV1,
+  SubscriptionAuthAuthorityApplyContext,
+  SubscriptionAuthHostOwnedFinalEnvEvidenceV1,
+  PreparedSubscriptionAuthAuthority,
+  SubscriptionAuthAuthorityInspection,
+  InspectSubscriptionAuthAuthority,
+} from "./subscription-auth-authority.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {

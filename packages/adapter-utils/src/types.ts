@@ -183,6 +183,8 @@ export interface AdapterExecutionContext {
     remoteExecution?: Record<string, unknown> | null;
   };
   runtimeMcp?: AdapterRuntimeMcpAccess;
+  /** Server-owned transient credential material. Never serialize or expose to adapter metadata. */
+  preparedSubscriptionAuthAuthority?: import("./subscription-auth-authority.js").PreparedSubscriptionAuthAuthority;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
@@ -422,6 +424,7 @@ export interface ServerAdapterModule {
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   acp?: AcpTargetDescriptor;
   subscriptionOnlyBilling?: import("./subscription-billing-policy.js").SubscriptionOnlyBillingCapability;
+  inspectSubscriptionAuthAuthority?: import("./subscription-auth-authority.js").InspectSubscriptionAuthAuthority;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;

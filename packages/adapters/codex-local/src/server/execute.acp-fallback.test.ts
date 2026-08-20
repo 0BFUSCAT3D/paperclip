@@ -4,17 +4,28 @@ import { SUBSCRIPTION_POLICY_TRANSPORT_INTERCEPTION_ENV_KEYS } from "@paperclipa
 const {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  codexHomeHasCustomProviderRouting,
+  codexHomeHasProvableChatGptSubscriptionAuth,
+  createCodexSubscriptionAuthSnapshot,
   evaluateCodexCredentialReadiness,
   executeCodexAcp,
+  prepareManagedCodexHome,
   prepareCodexRuntimeConfig,
   readPaperclipRuntimeSkillEntries,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
   seedManagedCodexHome,
+  selectVendCredential,
   tempCodexHome,
 } = vi.hoisted(() => ({
   ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => undefined),
   ensureAdapterExecutionTargetRuntimeCommandInstalled: vi.fn(async () => undefined),
+  codexHomeHasCustomProviderRouting: vi.fn(async (_home: string) => false),
+  codexHomeHasProvableChatGptSubscriptionAuth: vi.fn(async (_home: string) => "present"),
+  createCodexSubscriptionAuthSnapshot: vi.fn(async () => ({
+    status: "present",
+    home: "/tmp/paperclip-codex-acp-fallback-test-home-subscription-snapshot",
+  })),
   evaluateCodexCredentialReadiness: vi.fn(async () => ({
     managed: true,
     authMode: "api",
@@ -25,10 +36,11 @@ const {
   executeCodexAcp: vi.fn(async () => {
     throw new Error('Transform failed with 1 error: execute.ts:818:0: ERROR: Unexpected "<<"');
   }),
+  prepareManagedCodexHome: vi.fn(async () => ({ status: "seeded", home: "/tmp/paperclip-codex-acp-fallback-test-home" })),
   prepareCodexRuntimeConfig: vi.fn(async () => ({ cleanup: vi.fn(async () => undefined), notes: [] })),
   readPaperclipRuntimeSkillEntries: vi.fn(async () => []),
   resolveAdapterExecutionTargetCommandForLogs: vi.fn(async () => "codex"),
-  runAdapterExecutionTargetProcess: vi.fn(async () => ({
+  runAdapterExecutionTargetProcess: vi.fn(async (..._args: unknown[]) => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -48,6 +60,7 @@ const {
     startedAt: new Date().toISOString(),
   })),
   seedManagedCodexHome: vi.fn(async () => ({ status: "seeded", home: "/tmp/paperclip-codex-acp-fallback-test-home" })),
+  selectVendCredential: vi.fn(async () => ({ status: "skipped" })),
   tempCodexHome: "/tmp/paperclip-codex-acp-fallback-test-home",
 }));
 
@@ -88,21 +101,24 @@ vi.mock("./codex-home.js", async () => {
   const actual = await vi.importActual<typeof import("./codex-home.js")>("./codex-home.js");
   return {
     ...actual,
-    codexHomeHasCustomProviderRouting: vi.fn(async () => false),
-    codexHomeHasProvableChatGptSubscriptionAuth: vi.fn(async () => "present"),
-    createCodexSubscriptionAuthSnapshot: vi.fn(async () => ({
-      status: "present",
-      home: `${tempCodexHome}-subscription-snapshot`,
-    })),
+    codexHomeHasCustomProviderRouting,
+    validateManagedCodexHomePathAuthority: vi.fn(async (...args: unknown[]) => args[4] ?? Object.freeze({})),
+    codexHomeHasProvableChatGptSubscriptionAuth,
+    createCodexSubscriptionAuthSnapshot,
     evaluateCodexCredentialReadiness,
     isManagedCodexHomePath: vi.fn(() => true),
-    prepareManagedCodexHome: vi.fn(async () => ({ status: "seeded", home: tempCodexHome })),
+    prepareManagedCodexHome,
     resolveManagedCodexHomeDir: vi.fn((_env, companyId?: string, agentId?: string) =>
       agentId
         ? `/tmp/paperclip/companies/${companyId}/agents/${agentId}/codex-home`
         : tempCodexHome),
     seedManagedCodexHome,
   };
+});
+
+vi.mock("./codex-auth-cache.js", async () => {
+  const actual = await vi.importActual<typeof import("./codex-auth-cache.js")>("./codex-auth-cache.js");
+  return { ...actual, isCodexAuthCacheEnabled: vi.fn(() => true), selectVendCredential };
 });
 
 vi.mock("./runtime-config.js", async () => {
@@ -114,6 +130,7 @@ vi.mock("./runtime-config.js", async () => {
 });
 
 import { execute } from "./execute.js";
+import { inspectCodexSubscriptionAuthAuthority } from "./subscription-auth-authority.js";
 
 function buildContext(config: Record<string, unknown> = {}) {
   return {
@@ -154,6 +171,12 @@ describe("codex_local ACP startup fallback", () => {
       ready: true,
       effectiveHome: tempCodexHome,
       sharedSourceHome: tempCodexHome,
+    });
+    codexHomeHasProvableChatGptSubscriptionAuth.mockResolvedValue("present");
+    codexHomeHasCustomProviderRouting.mockResolvedValue(false);
+    createCodexSubscriptionAuthSnapshot.mockResolvedValue({
+      status: "present",
+      home: `${tempCodexHome}-subscription-snapshot`,
     });
   });
   afterEach(() => vi.unstubAllEnvs());
@@ -210,6 +233,68 @@ describe("codex_local ACP startup fallback", () => {
     expect(processOptions.env.CODEX_HOME).toBe(`${tempCodexHome}-subscription-snapshot`);
   });
 
+  it("spawns from the prepared captured auth snapshot after the managed source changes", async () => {
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "host-decision-secret");
+    const companyId = "11111111-1111-4111-8111-111111111111";
+    const agentId = "22222222-2222-4222-8222-222222222222";
+    const sourceHome = `/tmp/paperclip/companies/${companyId}/agents/${agentId}/codex-home`;
+    const sharedHome = `/tmp/paperclip-shared-${process.pid}-${Date.now()}`;
+    vi.stubEnv("CODEX_HOME", sharedHome);
+    const sourceAuth = path.join(sourceHome, "auth.json");
+    const auth = (account: string, marker: string) => JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: { account_id: account, id_token: `id-${marker}`, access_token: `access-${marker}`, refresh_token: `refresh-${marker}` },
+    });
+    const captured = auth("account-a", "captured");
+    await fs.mkdir(sourceHome, { recursive: true, mode: 0o700 });
+    await fs.writeFile(sourceAuth, captured, { mode: 0o600 });
+    const inspected = await inspectCodexSubscriptionAuthAuthority({
+      mode: "prepare",
+      adapterType: "codex_local",
+      companyId,
+      agentId,
+      config: { billingPolicy: "subscription_only", engine: "cli", env: {} },
+      env: {},
+      authSource: { kind: "managed_local_profile", profile: "codex_agent_home", location: sourceHome },
+      signOpaque: (domain, bytes) => `decision-spec-v1.${createHash("sha256").update(domain).update(bytes).digest("hex")}`,
+    });
+    await fs.rm(sourceAuth);
+    await fs.mkdir(sharedHome, { recursive: true });
+    await fs.writeFile(path.join(sharedHome, "config.toml"), 'openai_base_url = "https://metered.invalid"\n');
+    codexHomeHasCustomProviderRouting.mockImplementation(async (home: string) => path.resolve(home) === path.resolve(sharedHome));
+    let spawnedAuth = "";
+    let spawnedEnv: Record<string, string> = {};
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as { env: Record<string, string> };
+      spawnedEnv = { ...options.env };
+      spawnedAuth = await fs.readFile(path.join(options.env.CODEX_HOME, "auth.json"), "utf8");
+      return {
+        exitCode: 0, signal: null, timedOut: false,
+        stdout: [JSON.stringify({ type: "thread.started", thread_id: "codex-thread-1" }), JSON.stringify({ type: "turn.completed", usage: {} })].join("\n"),
+        stderr: "", pid: 123, startedAt: new Date().toISOString(),
+      };
+    });
+    const ctx = buildContext({ billingPolicy: "subscription_only", engine: "cli", env: {} });
+    Object.assign(ctx, { preparedSubscriptionAuthAuthority: inspected.prepared, authToken: "run-scoped-paperclip-token" });
+    await execute(ctx as never);
+    expect(spawnedAuth).toBe(captured);
+    expect(spawnedEnv.PAPERCLIP_DECISION_SIGNING_SECRET).toBeUndefined();
+    expect(spawnedEnv.PAPERCLIP_API_KEY).toBe("run-scoped-paperclip-token");
+    expect(spawnedEnv.PAPERCLIP_RUN_ID).toBe("run-1");
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledOnce();
+    expect((runAdapterExecutionTargetProcess.mock.calls[0]?.[4] as { exactEnvironment?: boolean }).exactEnvironment).toBe(true);
+    expect(selectVendCredential).not.toHaveBeenCalled();
+    expect(seedManagedCodexHome).not.toHaveBeenCalled();
+    expect(prepareManagedCodexHome).not.toHaveBeenCalled();
+    expect(evaluateCodexCredentialReadiness).not.toHaveBeenCalled();
+    expect(createCodexSubscriptionAuthSnapshot).not.toHaveBeenCalled();
+    expect(codexHomeHasProvableChatGptSubscriptionAuth).toHaveBeenCalledTimes(2);
+    expect(codexHomeHasProvableChatGptSubscriptionAuth.mock.calls.every(([home]) => home !== sourceHome)).toBe(true);
+    expect(codexHomeHasCustomProviderRouting.mock.calls.every(([home]) => path.resolve(home) !== path.resolve(sharedHome))).toBe(true);
+    await fs.rm(sourceHome, { recursive: true, force: true });
+    await fs.rm(sharedHome, { recursive: true, force: true });
+  });
+
   it("falls back to Codex CLI when auto-selected ACP fails before execution starts", async () => {
     const ctx = buildContext();
 
@@ -237,3 +322,6 @@ describe("codex_local ACP startup fallback", () => {
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
 });
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";

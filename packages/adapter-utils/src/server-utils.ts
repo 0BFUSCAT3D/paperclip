@@ -2348,6 +2348,26 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   return env;
 }
 
+/**
+ * Build the exact local provider environment for host-owned prepared auth.
+ * Every ambient PAPERCLIP_* value is removed first; only the explicit,
+ * server-constructed per-run values supplied by the adapter are restored.
+ */
+export function sanitizePreparedSubscriptionFinalEnv(
+  finalEnv: Record<string, string>,
+  trustedRuntimeEnv: Record<string, string>,
+): Record<string, string> {
+  const exact = { ...finalEnv };
+  delete exact.PAPERCLIPAI_CMD;
+  for (const key of Object.keys(exact)) {
+    if (key.startsWith("PAPERCLIP_")) delete exact[key];
+  }
+  for (const [key, value] of Object.entries(trustedRuntimeEnv)) {
+    if (key.startsWith("PAPERCLIP_") && typeof value === "string") exact[key] = value;
+  }
+  return exact;
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -3301,14 +3321,17 @@ export async function runChildProcess(
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
     localProcessSandbox?: LocalProcessSandboxOptions | null;
+    exactEnvironment?: boolean;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
-    const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
-    };
+    const rawMerged: NodeJS.ProcessEnv = opts.exactEnvironment
+      ? { ...opts.env }
+      : {
+          ...sanitizeInheritedPaperclipEnv(process.env),
+          ...opts.env,
+        };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
     // don't refuse to start with "cannot be launched inside another session".
@@ -3326,7 +3349,7 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
-    if (opts.localProcessSandbox?.homeDir) {
+    if (opts.localProcessSandbox?.homeDir && !opts.exactEnvironment) {
       mergedEnv.HOME = opts.localProcessSandbox.homeDir;
     }
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
