@@ -19,6 +19,7 @@ import {
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { createConfiguredServerInfoSnapshot } from "./server-info.js";
 import { capabilityRoutes } from "./routes/capabilities.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -400,6 +401,7 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
+  const fixedServerInfo = createConfiguredServerInfoSnapshot(process.env);
   api.use(boardMutationGuard());
   api.use(
     "/health",
@@ -408,6 +410,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      serverInfo: fixedServerInfo,
       databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );

@@ -163,6 +163,17 @@ export function createServerInfoSnapshot(
   };
 }
 
+/** Reeve and other managed launchers can require process-bound source identity.
+ * The default remains dynamic for Paperclip's in-process dev-server restart. */
+export function createConfiguredServerInfoSnapshot(
+  env: NodeJS.ProcessEnv = process.env,
+  opts: Parameters<typeof createServerInfoSnapshot>[0] = {},
+): ServerInfoSnapshot | undefined {
+  return env.PAPERCLIP_FREEZE_SERVER_INFO === "true"
+    ? createServerInfoSnapshot(opts)
+    : undefined;
+}
+
 // processStartedAt is a true boot constant, but the running commit can change
 // without the Node process restarting: a managed dev-server restart re-runs the
 // code while keeping this module alive, so a commit captured once at boot goes
