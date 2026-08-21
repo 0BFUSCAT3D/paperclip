@@ -8,9 +8,9 @@ import type {
   SubscriptionAuthAuthorityOpaqueDomain,
 } from "@paperclipai/adapter-utils";
 import {
+  prepareManagedCodexAgentHome,
   readSecureEffectiveCodexSubscriptionAuth,
   resolveManagedCodexHomeDir,
-  seedManagedCodexHome,
 } from "./codex-home.js";
 import { inspectCodexSubscriptionAuthAuthority } from "./subscription-auth-authority.js";
 
@@ -155,8 +155,12 @@ describe("Codex subscription auth authority", () => {
     await fs.mkdir(sharedHome, { recursive: true, mode: 0o700 });
     const original = auth("account-seeded", "captured");
     await fs.writeFile(path.join(sharedHome, "auth.json"), original, { mode: 0o600 });
-    const home = resolveManagedCodexHomeDir(process.env, COMPANY_ID, AGENT_ID);
-    await seedManagedCodexHome(home, process.env, async () => undefined);
+    const home = await prepareManagedCodexAgentHome(
+      process.env,
+      async () => undefined,
+      COMPANY_ID,
+      AGENT_ID,
+    );
     expect((await fs.lstat(path.join(home, "auth.json"))).isSymbolicLink()).toBe(true);
     const prepared = await inspectCodexSubscriptionAuthAuthority({
       ...inputForHome(home),

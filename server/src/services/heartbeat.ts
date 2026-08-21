@@ -98,7 +98,10 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { resolveManagedCodexHomeDir } from "@paperclipai/adapter-codex-local/server";
+import {
+  prepareManagedCodexAgentHome,
+  resolveManagedCodexHomeDir,
+} from "@paperclipai/adapter-codex-local/server";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -14179,6 +14182,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectEnv: project?.env ?? null,
       secretsSvc: authoritySecrets,
     });
+    const codexManagedHome = agent.adapterType === "codex_local"
+      ? await prepareManagedCodexAgentHome(
+          process.env,
+          async () => undefined,
+          input.companyId,
+          agent.id,
+        )
+      : null;
     const adapter = getServerAdapter(agent.adapterType);
     return inspectExecutionProfileBinding({
       mode: "inspect",
@@ -14194,9 +14205,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       instructionsSha256: await instructionFileSha256(resolvedConfig),
       subscriptionOnlyBilling: adapter.subscriptionOnlyBilling,
       inspectSubscriptionAuthAuthority: adapter.inspectSubscriptionAuthAuthority,
-      codexManagedHome: agent.adapterType === "codex_local"
-        ? resolveManagedCodexHomeDir(process.env, input.companyId, agent.id)
-        : null,
+      codexManagedHome,
     });
   }
 

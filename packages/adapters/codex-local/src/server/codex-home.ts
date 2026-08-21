@@ -1088,6 +1088,23 @@ export async function prepareManagedCodexHome(
   return targetHome;
 }
 
+/**
+ * Materialize the exact per-agent home used by immutable subscription
+ * authority. Governed activation needs this before it can inspect and bind the
+ * current ChatGPT credential; waiting until provider execution is too late.
+ */
+export async function prepareManagedCodexAgentHome(
+  env: NodeJS.ProcessEnv,
+  onLog: AdapterExecutionContext["onLog"],
+  companyId: string,
+  agentId: string,
+  options: { apiKey?: string | null } = {},
+): Promise<string> {
+  const targetHome = resolveManagedCodexHomeDir(env, companyId, agentId);
+  await seedManagedCodexHome(targetHome, env, onLog, options);
+  return targetHome;
+}
+
 export type ReconcileManagedCodexHomeStatus =
   | "no_managed_home"
   | "external_override"

@@ -23,6 +23,12 @@ import {
 } from "./helpers/embedded-postgres.js";
 
 const preparedDisposals = vi.hoisted(() => [] as Array<ReturnType<typeof vi.fn>>);
+const prepareManagedCodexAgentHome = vi.hoisted(() => vi.fn(async (
+  _env: NodeJS.ProcessEnv,
+  _onLog: unknown,
+  companyId: string,
+  agentId: string,
+) => `/private/paperclip/companies/${companyId}/agents/${agentId}/codex-home`));
 const inspectAuthority = vi.hoisted(() => vi.fn(async (input: {
   companyId: string;
   agentId: string;
@@ -67,6 +73,16 @@ const inspectAuthority = vi.hoisted(() => vi.fn(async (input: {
   };
 }));
 
+vi.doMock("@paperclipai/adapter-codex-local/server", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@paperclipai/adapter-codex-local/server")>(),
+  prepareManagedCodexAgentHome,
+  resolveManagedCodexHomeDir: vi.fn((
+    _env: NodeJS.ProcessEnv,
+    companyId: string,
+    agentId: string,
+  ) => `/private/paperclip/companies/${companyId}/agents/${agentId}/codex-home`),
+}));
+
 vi.doMock("../adapters/index.js", () => ({
   getServerAdapter: vi.fn(() => ({
     type: "codex_local",
@@ -103,6 +119,7 @@ describeEmbeddedPostgres("heartbeat execution profile binding", () => {
 
   afterEach(async () => {
     inspectAuthority.mockClear();
+    prepareManagedCodexAgentHome.mockClear();
     preparedDisposals.splice(0);
     await db.delete(heartbeatRuns);
     await db.delete(governedIssueReservations);
@@ -172,6 +189,30 @@ describeEmbeddedPostgres("heartbeat execution profile binding", () => {
       },
     };
   }
+
+  it("materializes the exact per-agent Codex profile before activation inspection", async () => {
+    const fixture = await seedFixture();
+    const heartbeat = heartbeatService(db);
+    const issue = await db.select().from(issues).where(eq(issues.id, fixture.issueId))
+      .then((rows) => rows[0]!);
+
+    await heartbeat.inspectGovernedExecutionProfileForActivation({
+      companyId: fixture.companyId,
+      agentId: fixture.agent.id,
+      issueId: fixture.issueId,
+      agentExecutionProfileRevision: fixture.agent.executionProfileRevision,
+      issueAssigneeProfileRevision: issue.assigneeProfileRevision!,
+    });
+
+    expect(prepareManagedCodexAgentHome).toHaveBeenCalledOnce();
+    expect(prepareManagedCodexAgentHome).toHaveBeenCalledWith(
+      process.env,
+      expect.any(Function),
+      fixture.companyId,
+      fixture.agent.id,
+    );
+    expect(inspectAuthority).toHaveBeenCalledOnce();
+  });
 
   it("accepts one exact stored binding and fails closed on config drift", async () => {
     const fixture = await seedFixture();
