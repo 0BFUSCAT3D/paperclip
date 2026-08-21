@@ -167,6 +167,14 @@ export interface AdapterRuntimeEvent {
   payload?: Record<string, unknown>;
 }
 
+export interface PreparedInstructionSnapshot {
+  /** Original configured path, retained only for prompt provenance copy. */
+  sourcePath: string;
+  /** Exact validated UTF-8 content whose bytes produced sha256. */
+  contents: string;
+  sha256: string;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -185,6 +193,8 @@ export interface AdapterExecutionContext {
   runtimeMcp?: AdapterRuntimeMcpAccess;
   /** Server-owned transient credential material. Never serialize or expose to adapter metadata. */
   preparedSubscriptionAuthAuthority?: import("./subscription-auth-authority.js").PreparedSubscriptionAuthAuthority;
+  /** Server-owned instruction bytes sealed during subscription profile preparation. */
+  preparedInstructionSnapshot?: PreparedInstructionSnapshot;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;

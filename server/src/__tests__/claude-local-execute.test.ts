@@ -414,7 +414,7 @@ describe("claude execute", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-exec-fresh-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     const instructionsFile = path.join(root, "instructions.md");
-    await fs.writeFile(instructionsFile, "# Agent instructions", "utf-8");
+    await fs.writeFile(instructionsFile, "# Replaced after attestation", "utf-8");
     try {
       await execute({
         runId: "run-fresh",
@@ -429,6 +429,11 @@ describe("claude execute", () => {
           instructionsFilePath: instructionsFile,
         },
         context: {},
+        preparedInstructionSnapshot: {
+          sourcePath: instructionsFile,
+          contents: "# Agent instructions",
+          sha256: "a".repeat(64),
+        },
         authToken: "tok",
         onLog: async () => {},
         onMeta: async () => {},
@@ -438,6 +443,8 @@ describe("claude execute", () => {
       expect(captured.argv).not.toContain("-");
       expect(captured.prompt).toContain("Do work.");
       expect(captured.argv).toContain("--append-system-prompt-file");
+      expect(captured.instructionsContents).toContain("# Agent instructions");
+      expect(captured.instructionsContents).not.toContain("# Replaced after attestation");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

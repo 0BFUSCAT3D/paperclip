@@ -408,7 +408,7 @@ describeEmbeddedPostgres("immutable execution profile binding migration", () => 
         "digest", "projection", "authority_identity", "authority_fingerprint",
         "transition_kind", "transition_reason", "parent_run_id", "parent_profile_id"
       ) VALUES (
-        ${companyA}, ${childRun}, ${agentA}, 1, 8, 'child', '{}'::jsonb,
+        ${companyA}, ${childRun}, ${agentA}, 1, 8, 'parent', '{}'::jsonb,
         '{"profile":{"adapter":"subscription-only"}}'::jsonb, 'ignored',
         'preserve', 'process_loss', ${parentRun}, ${parentProfile}
       )
@@ -500,7 +500,7 @@ describeEmbeddedPostgres("immutable execution profile binding migration", () => 
         "transition_kind", "transition_reason", "parent_run_id", "parent_profile_id"
       ) VALUES (
         ${companyA}, ${preserveAfterDriftRun}, ${agentA}, ${issueA}, 1,
-        8, 4, 'preserved-after-drift', '{}'::jsonb, '{"profile":{"adapter":"drift-test"}}'::jsonb,
+        8, 4, 'drift-parent', '{}'::jsonb, '{"profile":{"adapter":"drift-test"}}'::jsonb,
         'ignored', 'preserve', 'process_loss', ${driftParentRun}, ${driftParentProfile}
       )
     `;

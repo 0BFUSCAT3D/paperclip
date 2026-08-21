@@ -738,8 +738,15 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
   let combinedInstructionsContents: string | null = null;
   if (instructionsFilePath) {
+    if (
+      ctx.preparedInstructionSnapshot
+      && ctx.preparedInstructionSnapshot.sourcePath !== instructionsFilePath
+    ) {
+      throw new Error("Prepared instruction snapshot does not match the configured path");
+    }
     try {
-      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      const instructionsContent = ctx.preparedInstructionSnapshot?.contents
+        ?? await fs.readFile(instructionsFilePath, "utf-8");
       const pathDirective =
         `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}. ` +

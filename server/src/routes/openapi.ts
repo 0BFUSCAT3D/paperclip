@@ -28,6 +28,9 @@ import {
   updateIssueSchema,
   reserveGovernedIssueV1Schema,
   activateGovernedIssueV1Schema,
+  reserveGovernedIssueV2Schema,
+  activateGovernedIssueV2Schema,
+  governedExecutionProfileIntentV2Schema,
   governedIssueLifecycleIssueV1Schema,
   approveIssueReviewEvidenceSchema,
   artifactDirectorShipCandidateResponseV1Schema,
@@ -1195,13 +1198,13 @@ const PaperclipCapabilitiesSchema = z.object({
     }).strict(),
     governedIssueReservationActivation: z.object({
       supported: z.literal(true),
-      version: z.literal(1),
-      reservationEndpoint: z.literal("/api/v1/companies/{companyId}/governed-issue-reservations"),
+      version: z.literal(2),
+      reservationEndpoint: z.literal("/api/v2/companies/{companyId}/governed-issue-reservations"),
       reservationLookupEndpoint: z.literal(
-        "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}",
+        "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}",
       ),
       activationEndpoint: z.literal(
-        "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}/activation",
+        "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/activation",
       ),
       reservationMethod: z.literal("POST"),
       activationMethod: z.literal("PUT"),
@@ -1209,6 +1212,14 @@ const PaperclipCapabilitiesSchema = z.object({
       reservationUnassigned: z.literal(true),
       exactEnvelopeCas: z.literal(true),
       durableWakeReceipt: z.literal(true),
+      participantExecutionProfileRevisionCas: z.literal(true),
+      immutableRunExecutionProfileReceipt: z.literal(true),
+      exactSubscriptionAuthAuthority: z.literal(true),
+      preSpawnAuthorityPreparation: z.literal(true),
+      billingPolicy: z.literal("subscription_only"),
+      claudeAuthAuthority: z.literal("owner_secret_version"),
+      codexAuthAuthority: z.literal("managed_chatgpt_profile"),
+      nativeHostClaudeLoginAccepted: z.literal(false),
     }).strict(),
     executionAuditAgentDeleteProtection: z.object({
       supported: z.literal(true),
@@ -2335,6 +2346,163 @@ const GovernedIssueActivationResponseSchema = z.object({
   issue: governedIssueLifecycleIssueV1Schema,
   activationReceipt: GovernedIssueActivationReceiptSchema,
 }).strict();
+
+const OpaqueSubscriptionAuthorityFingerprintSchema = z.string()
+  .regex(/^decision-spec-v1\.[a-f0-9]{64}$/);
+const SubscriptionAuthorityEvidenceSchema = z.object({
+  evidence: z.enum(["credential_bound", "account_id_bound"]),
+  identityFingerprint: OpaqueSubscriptionAuthorityFingerprintSchema,
+  revisionFingerprint: OpaqueSubscriptionAuthorityFingerprintSchema,
+}).strict();
+const SubscriptionAuthorityProofSchema = z.object({
+  schema: z.literal("paperclip.subscription-auth-authority"),
+  version: z.literal(1),
+  adapterType: z.enum(["claude_local", "codex_local"]),
+  companyId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  authKind: z.enum(["claude_oauth_user_secret", "codex_chatgpt_managed_profile"]),
+  sourceKind: z.enum(["user_secret_version", "managed_local_profile"]),
+  authProfile: SubscriptionAuthorityEvidenceSchema,
+  account: SubscriptionAuthorityEvidenceSchema,
+  principal: SubscriptionAuthorityEvidenceSchema,
+  credentialRevisionFingerprint: OpaqueSubscriptionAuthorityFingerprintSchema,
+}).strict();
+const GovernedExecutionProfileProjectionSchema = z.object({
+  schema: z.literal("paperclip.governed-execution-profile"),
+  version: z.literal(1),
+  companyId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  issueId: z.string().uuid(),
+  adapterType: z.enum(["claude_local", "codex_local"]),
+  billingPolicy: z.literal("subscription_only"),
+  engine: z.literal("cli"),
+  environment: z.object({ id: z.string().uuid(), driver: z.literal("local") }).strict(),
+  agentExecutionProfileRevision: z.number().int().safe().positive(),
+  issueAssigneeProfileRevision: z.number().int().safe().positive(),
+  securityConfigSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  instructionsSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  authorityProofSha256: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+const GovernedExecutionProfileReceiptSchema = z.object({
+  version: z.literal(2),
+  bindingVersion: z.literal(1),
+  profileId: z.string().uuid(),
+  runId: z.string().uuid(),
+  companyId: z.string().uuid(),
+  issueId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  agentExecutionProfileRevision: z.number().int().safe().positive(),
+  issueAssigneeProfileRevision: z.number().int().safe().positive(),
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+  authorityFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  authorityProofSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  projection: GovernedExecutionProfileProjectionSchema,
+  authority: SubscriptionAuthorityProofSchema,
+}).strict();
+const GovernedIssueReservationReceiptV2Schema = GovernedIssueReservationReceiptSchema.extend({
+  executionProfileIntentSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  executionProfiles: governedExecutionProfileIntentV2Schema,
+}).strict();
+const GovernedIssueActivationReceiptV2Schema = z.object({
+  version: z.literal(2),
+  idempotencyKey: z.string(),
+  issueId: z.string().uuid(),
+  builderAgentId: z.string().uuid(),
+  envelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  activationSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  activatedAt: z.string().datetime(),
+  issueUpdatedAt: z.string().datetime(),
+  issueSnapshot: governedIssueLifecycleIssueV1Schema,
+  wake: z.object({
+    durable: z.literal(true),
+    idempotencyKey: z.string(),
+    requestId: z.string().uuid(),
+    runId: z.string().uuid(),
+    status: z.literal("queued"),
+  }).strict(),
+  executionProfile: GovernedExecutionProfileReceiptSchema,
+}).strict();
+const GovernedIssueReservationResponseV2Schema = z.object({
+  version: z.literal(2),
+  replayed: z.boolean().optional(),
+  state: z.enum(["reserved", "activated"]),
+  reservation: GovernedIssueReservationReceiptV2Schema,
+  activationReceipt: GovernedIssueActivationReceiptV2Schema.nullable(),
+  issue: governedIssueLifecycleIssueV1Schema,
+}).strict();
+const GovernedIssueActivationResponseV2Schema = z.object({
+  version: z.literal(2),
+  replayed: z.boolean(),
+  issue: governedIssueLifecycleIssueV1Schema,
+  activationReceipt: GovernedIssueActivationReceiptV2Schema,
+}).strict();
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v2/companies/{companyId}/governed-issue-reservations",
+  tags: ["issues"],
+  summary: "Reserve governed work with exact participant execution profile revisions",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(reserveGovernedIssueV2Schema),
+  },
+  responses: {
+    200: r.ok(GovernedIssueReservationResponseV2Schema),
+    201: r.ok(GovernedIssueReservationResponseV2Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}",
+  tags: ["issues"],
+  summary: "Read a profile-bound governed reservation or activation receipt",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+  },
+  responses: {
+    200: r.ok(GovernedIssueReservationResponseV2Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/activation",
+  tags: ["issues"],
+  summary: "Atomically activate governed work with an immutable subscription execution receipt",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+    body: jsonBody(activateGovernedIssueV2Schema),
+  },
+  responses: {
+    200: r.ok(GovernedIssueActivationResponseV2Schema),
+    201: r.ok(GovernedIssueActivationResponseV2Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
+    422: r.unprocessable,
+  },
+});
 
 registry.registerPath({
   method: "post",

@@ -45,16 +45,24 @@ export interface PaperclipCapabilitiesResponseV1 {
     };
     governedIssueReservationActivation: {
       supported: true;
-      version: 1;
-      reservationEndpoint: "/api/v1/companies/{companyId}/governed-issue-reservations";
-      reservationLookupEndpoint: "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}";
-      activationEndpoint: "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}/activation";
+      version: 2;
+      reservationEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations";
+      reservationLookupEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}";
+      activationEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/activation";
       reservationMethod: "POST";
       activationMethod: "PUT";
       reservationStatus: "backlog";
       reservationUnassigned: true;
       exactEnvelopeCas: true;
       durableWakeReceipt: true;
+      participantExecutionProfileRevisionCas: true;
+      immutableRunExecutionProfileReceipt: true;
+      exactSubscriptionAuthAuthority: true;
+      preSpawnAuthorityPreparation: true;
+      billingPolicy: "subscription_only";
+      claudeAuthAuthority: "owner_secret_version";
+      codexAuthAuthority: "managed_chatgpt_profile";
+      nativeHostClaudeLoginAccepted: false;
     };
     executionAuditAgentDeleteProtection: {
       supported: true;
@@ -93,16 +101,24 @@ export const PAPERCLIP_CAPABILITIES_V1: PaperclipCapabilitiesResponseV1 = {
     },
     governedIssueReservationActivation: {
       supported: true,
-      version: 1,
-      reservationEndpoint: "/api/v1/companies/{companyId}/governed-issue-reservations",
-      reservationLookupEndpoint: "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}",
-      activationEndpoint: "/api/v1/companies/{companyId}/governed-issue-reservations/{encodedKey}/activation",
+      version: 2,
+      reservationEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations",
+      reservationLookupEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}",
+      activationEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/activation",
       reservationMethod: "POST",
       activationMethod: "PUT",
       reservationStatus: "backlog",
       reservationUnassigned: true,
       exactEnvelopeCas: true,
       durableWakeReceipt: true,
+      participantExecutionProfileRevisionCas: true,
+      immutableRunExecutionProfileReceipt: true,
+      exactSubscriptionAuthAuthority: true,
+      preSpawnAuthorityPreparation: true,
+      billingPolicy: "subscription_only",
+      claudeAuthAuthority: "owner_secret_version",
+      codexAuthAuthority: "managed_chatgpt_profile",
+      nativeHostClaudeLoginAccepted: false,
     },
     executionAuditAgentDeleteProtection: {
       supported: true,

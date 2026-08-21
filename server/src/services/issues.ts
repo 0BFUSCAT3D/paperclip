@@ -687,9 +687,12 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   governanceReservation?: {
+    contractVersion?: 1 | 2;
     requestIntentSha256: string;
     envelopeSha256: string;
     envelope: GovernedIssueEnvelope;
+    executionProfileIntentSha256?: string | null;
+    executionProfileIntent?: Record<string, unknown> | null;
   };
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
@@ -6679,6 +6682,12 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
+      if (blockParentUntilDone) {
+        // Refuse before creating the child. The relation write below has its
+        // own transactional/database backstops, but creating first would leave
+        // an orphan child when a governed parent is still reserved.
+        await assertIssueNotPendingGovernedReservation(db, parent.id);
+      }
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
         issueData.executionWorkspacePreference !== undefined ||
@@ -7416,10 +7425,13 @@ export function issueService(db: Db) {
             companyId,
             idempotencyKey,
             issueId: issue.id,
-            contractVersion: 1,
+            contractVersion: governanceReservation.contractVersion ?? 1,
             requestIntentSha256: governanceReservation.requestIntentSha256,
             envelopeSha256: governanceReservation.envelopeSha256,
             envelope: governanceReservation.envelope as unknown as Record<string, unknown>,
+            executionProfileIntentSha256:
+              governanceReservation.executionProfileIntentSha256 ?? null,
+            executionProfileIntent: governanceReservation.executionProfileIntent ?? null,
             reservedIssueSnapshot: governedIssueReservedSnapshot(issue),
             reservedIssueUpdatedAt: issue.updatedAt,
           });

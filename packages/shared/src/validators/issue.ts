@@ -557,6 +557,91 @@ export const activateGovernedIssueV1Schema = z.object({
   issue: governedIssueEnvelopeSchema,
 }).strict();
 
+export const governedExecutionProfileParticipantV2Schema = z.object({
+  agentId: z.string().uuid(),
+  executionProfileRevision: z.number().int().safe().positive(),
+}).strict();
+
+export const governedExecutionProfileIntentV2Schema = z.object({
+  builderAgentId: z.string().uuid(),
+  participants: z.array(governedExecutionProfileParticipantV2Schema).min(1).max(16),
+}).strict().superRefine((intent, ctx) => {
+  const seen = new Set<string>();
+  for (let index = 0; index < intent.participants.length; index += 1) {
+    const participant = intent.participants[index]!;
+    if (seen.has(participant.agentId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["participants", index, "agentId"],
+        message: "Execution profile participants must be unique",
+      });
+    }
+    seen.add(participant.agentId);
+    if (index > 0 && intent.participants[index - 1]!.agentId.localeCompare(participant.agentId) >= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["participants", index, "agentId"],
+        message: "Execution profile participants must use canonical agent-id order",
+      });
+    }
+  }
+  if (!seen.has(intent.builderAgentId)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["builderAgentId"],
+      message: "The builder must appear in the execution profile participant set",
+    });
+  }
+});
+
+function assertGovernedExecutionProfileIntentMatchesIssue(
+  issue: z.infer<typeof governedIssueEnvelopeSchema>,
+  executionProfiles: z.infer<typeof governedExecutionProfileIntentV2Schema>,
+  ctx: z.RefinementCtx,
+): void {
+  const requiredAgentIds = new Set<string>([executionProfiles.builderAgentId]);
+  for (const stage of issue.executionPolicy.stages) {
+    for (const participant of stage.participants) {
+      if (participant.type === "agent" && participant.agentId) {
+        requiredAgentIds.add(participant.agentId);
+      }
+    }
+  }
+  const actualAgentIds = executionProfiles.participants.map((participant) => participant.agentId);
+  const required = [...requiredAgentIds].sort((left, right) => left.localeCompare(right));
+  if (
+    actualAgentIds.length !== required.length
+    || actualAgentIds.some((agentId, index) => agentId !== required[index])
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["executionProfiles", "participants"],
+      message: "Execution profile participants must exactly match the builder and every agent policy participant",
+    });
+  }
+}
+
+export const reserveGovernedIssueV2Schema = z.object({
+  version: z.literal(2),
+  idempotencyKey: z.string().trim().min(1).max(255),
+  issue: governedIssueEnvelopeSchema,
+  executionProfiles: governedExecutionProfileIntentV2Schema,
+}).strict().superRefine((request, ctx) => {
+  assertGovernedExecutionProfileIntentMatchesIssue(request.issue, request.executionProfiles, ctx);
+});
+
+export const activateGovernedIssueV2Schema = z.object({
+  version: z.literal(2),
+  expectedIssueId: z.string().uuid(),
+  expectedIssueUpdatedAt: z.string().datetime(),
+  expectedEnvelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  expectedExecutionProfileIntentSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  issue: governedIssueEnvelopeSchema,
+  executionProfiles: governedExecutionProfileIntentV2Schema,
+}).strict().superRefine((request, ctx) => {
+  assertGovernedExecutionProfileIntentMatchesIssue(request.issue, request.executionProfiles, ctx);
+});
+
 /**
  * Immutable issue projection used by the governed reservation lifecycle.
  *
@@ -624,6 +709,10 @@ export const governedIssueLifecycleIssueV1Schema = z.object({
 export type GovernedIssueEnvelope = z.infer<typeof governedIssueEnvelopeSchema>;
 export type ReserveGovernedIssueV1 = z.infer<typeof reserveGovernedIssueV1Schema>;
 export type ActivateGovernedIssueV1 = z.infer<typeof activateGovernedIssueV1Schema>;
+export type GovernedExecutionProfileParticipantV2 = z.infer<typeof governedExecutionProfileParticipantV2Schema>;
+export type GovernedExecutionProfileIntentV2 = z.infer<typeof governedExecutionProfileIntentV2Schema>;
+export type ReserveGovernedIssueV2 = z.infer<typeof reserveGovernedIssueV2Schema>;
+export type ActivateGovernedIssueV2 = z.infer<typeof activateGovernedIssueV2Schema>;
 export type GovernedIssueLifecycleIssueV1 = z.infer<typeof governedIssueLifecycleIssueV1Schema>;
 
 export const upsertIssueWatchdogSchema = z.object({
