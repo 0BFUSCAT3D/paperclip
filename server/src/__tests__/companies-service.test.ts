@@ -14,6 +14,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   principalPermissionGrants,
   routines,
   routineTriggers,
@@ -55,6 +56,7 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
@@ -143,6 +145,8 @@ describeEmbeddedPostgres("companyService", () => {
     const terminatedAgentId = randomUUID();
     const wakeupRequestId = randomUUID();
     const runId = randomUUID();
+    const issueId = randomUUID();
+    const reviewStageId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -237,6 +241,44 @@ describeEmbeddedPostgres("companyService", () => {
       invocationSource: "timer",
       status: "running",
       wakeupRequestId,
+      contextSnapshot: { issueId },
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review in progress while company is archived",
+      status: "in_review",
+      assigneeAgentId: idleAgentId,
+      executionRunId: runId,
+      checkoutRunId: runId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: reviewStageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{
+            id: randomUUID(),
+            type: "agent",
+            agentId: runningAgentId,
+            userId: null,
+          }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: runningAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: idleAgentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
     });
 
     const archived = await companyService(db).archive(companyId, {
@@ -292,6 +334,21 @@ describeEmbeddedPostgres("companyService", () => {
     expect(run).toMatchObject({
       status: "cancelled",
       error: "Cancelled because the company was archived",
+    });
+
+    const archivedIssue = await db
+      .select({
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(archivedIssue).toEqual({
+      status: "in_review",
+      executionRunId: null,
+      checkoutRunId: null,
     });
 
     const wakeup = await db
