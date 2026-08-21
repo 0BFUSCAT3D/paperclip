@@ -957,6 +957,11 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
       }
     }
   }
+  // Remote runtime preparation materializes the managed Claude config and the
+  // callback bridge after the initial policy environment is assembled. Keep
+  // the actual spawn environment bound to those final, host-owned values;
+  // otherwise the child silently loses CLAUDE_CONFIG_DIR and bridge metadata.
+  Object.assign(effectiveEnv, env);
   let effectiveEffort = effort;
   if (executionTargetIsSandbox && effort) {
     const supportsEffort = await claudeCommandSupportsEffortFlag({
