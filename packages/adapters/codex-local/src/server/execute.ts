@@ -1385,8 +1385,15 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
     let instructionsPrefix = "";
     let instructionsChars = 0;
     if (instructionsFilePath) {
+      if (
+        ctx.preparedInstructionSnapshot
+        && ctx.preparedInstructionSnapshot.sourcePath !== instructionsFilePath
+      ) {
+        throw new Error("Prepared instruction snapshot does not match the configured path");
+      }
       try {
-        const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+        const instructionsContents = ctx.preparedInstructionSnapshot?.contents
+          ?? await fs.readFile(instructionsFilePath, "utf8");
         instructionsPrefix =
           `${instructionsContents}\n\n` +
           `The above agent instructions were loaded from ${instructionsFilePath}. ` +

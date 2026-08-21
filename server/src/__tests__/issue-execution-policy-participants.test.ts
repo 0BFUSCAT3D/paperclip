@@ -10,6 +10,7 @@ import {
   companyMemberships,
   createDb,
   governedIssueReservations,
+  heartbeatRunExecutionProfiles,
   heartbeatRuns,
   instanceSettings,
   issueCreateIdempotencyKeys,
@@ -18,6 +19,11 @@ import {
   issueWorkProducts,
   issues,
 } from "@paperclipai/db";
+import {
+  SUBSCRIPTION_AUTH_AUTHORITY_SCHEMA,
+  SUBSCRIPTION_AUTH_AUTHORITY_VERSION,
+  type SubscriptionAuthAuthorityProofV1,
+} from "@paperclipai/adapter-utils";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -33,6 +39,13 @@ import {
   governedIssueSha256,
   serializeGovernedIssueActivationReceipt,
 } from "../services/governed-issue-contract.ts";
+import {
+  EXECUTION_PROFILE_BINDING_VERSION,
+  EXECUTION_PROFILE_PROJECTION_SCHEMA,
+  executionProfileSha256,
+  type GovernedExecutionProfileProjectionV1,
+  type InspectedExecutionProfileBinding,
+} from "../services/execution-profile-binding.ts";
 import { lockIssueExecutionReviewEvidenceBuilderAgent } from "../services/issue-execution-review-evidence.ts";
 import {
   ensureLocalTrustedBoardPrincipal,
@@ -71,8 +84,8 @@ describeEmbeddedPostgres("execution-policy participant invariants", () => {
     await db.delete(issueWorkProducts);
     await db.delete(activityLog);
     await db.delete(issueRelations);
-    await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agentWakeupRequests);
     await db.delete(companyMemberships);
     await db.delete(authUsers);
@@ -139,6 +152,59 @@ describeEmbeddedPostgres("execution-policy participant invariants", () => {
         { type: "approval", participants: [{ type: "user", userId: directorUserId }] },
       ],
     })!;
+  }
+
+  function authorityFingerprint(character: string) {
+    return `decision-spec-v1.${character.repeat(64)}`;
+  }
+
+  function inspectedBuilderProfile(input: {
+    companyId: string;
+    builderAgentId: string;
+    issueId: string;
+    agentExecutionProfileRevision: number;
+    issueAssigneeProfileRevision: number;
+  }): InspectedExecutionProfileBinding {
+    const evidence = (character: string) => ({
+      evidence: "credential_bound" as const,
+      identityFingerprint: authorityFingerprint(character),
+      revisionFingerprint: authorityFingerprint(character === "f" ? "e" : "f"),
+    });
+    const authorityProof: SubscriptionAuthAuthorityProofV1 = {
+      schema: SUBSCRIPTION_AUTH_AUTHORITY_SCHEMA,
+      version: SUBSCRIPTION_AUTH_AUTHORITY_VERSION,
+      adapterType: "claude_local",
+      companyId: input.companyId,
+      agentId: input.builderAgentId,
+      authKind: "claude_oauth_user_secret",
+      sourceKind: "user_secret_version",
+      authProfile: evidence("a"),
+      account: evidence("b"),
+      principal: evidence("c"),
+      credentialRevisionFingerprint: authorityFingerprint("d"),
+    };
+    const projection: GovernedExecutionProfileProjectionV1 = {
+      schema: EXECUTION_PROFILE_PROJECTION_SCHEMA,
+      version: EXECUTION_PROFILE_BINDING_VERSION,
+      companyId: input.companyId,
+      agentId: input.builderAgentId,
+      issueId: input.issueId,
+      adapterType: "claude_local",
+      billingPolicy: "subscription_only",
+      engine: "cli",
+      environment: { id: randomUUID(), driver: "local" },
+      agentExecutionProfileRevision: input.agentExecutionProfileRevision,
+      issueAssigneeProfileRevision: input.issueAssigneeProfileRevision,
+      securityConfigSha256: executionProfileSha256({ billingPolicy: "subscription_only" }),
+      instructionsSha256: executionProfileSha256({ kind: "none" }),
+      authorityProofSha256: executionProfileSha256(authorityProof),
+    };
+    return {
+      projection,
+      digest: executionProfileSha256(projection),
+      authorityProof,
+      prepared: null,
+    };
   }
 
   it("validates create participants and rejects self-review and inactive or foreign principals", async () => {
@@ -441,6 +507,336 @@ describeEmbeddedPostgres("execution-policy participant invariants", () => {
         status: 409,
         details: { code: "governed_issue_activation_conflict" },
       });
+  });
+
+  it("atomically binds a version 2 activation to participant revisions and one immutable run profile", async () => {
+    const companyId = await seedCompany();
+    const builderAgentId = await seedAgent(companyId, "Builder");
+    const reviewerAgentId = await seedAgent(companyId, "Reviewer");
+    const directorUserId = await seedUser(companyId);
+    const executionPolicy = twoStagePolicy(reviewerAgentId, directorUserId);
+    const envelope = {
+      title: "Immutable subscription activation",
+      description: "Bind the builder wake to exact execution profile authority.",
+      workMode: "standard" as const,
+      priority: "high" as const,
+      reviewPolicy: "not_creator" as const,
+      requestDepth: 0,
+      executionPolicy,
+    };
+    const executionProfiles = {
+      builderAgentId,
+      participants: [builderAgentId, reviewerAgentId]
+        .sort((left, right) => left.localeCompare(right))
+        .map((agentId) => ({ agentId, executionProfileRevision: 1 })),
+    };
+    const idempotencyKey = "reeve-build:profile-bound";
+    const requestIntentSha256 = governedIssueSha256({
+      version: 2,
+      issue: envelope,
+      executionProfiles,
+    });
+    const executionProfileIntentSha256 = governedIssueSha256(executionProfiles);
+    const issue = await issueService(db).create(companyId, {
+      ...envelope,
+      status: "backlog",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: directorUserId,
+      idempotencyKey,
+      allowDuplicate: true,
+      governanceReservation: {
+        contractVersion: 2,
+        requestIntentSha256,
+        envelopeSha256: governedIssueEnvelopeSha256(envelope),
+        envelope,
+        executionProfileIntentSha256,
+        executionProfileIntent: executionProfiles,
+      },
+    });
+    const contracts = governedIssueContractService(db);
+    const reservation = await contracts.getReservation(companyId, idempotencyKey);
+    expect(reservation).toMatchObject({
+      contractVersion: 2,
+      issueId: issue.id,
+      executionProfileIntentSha256,
+      executionProfileReceipt: null,
+    });
+    const inspectedExecutionProfile = inspectedBuilderProfile({
+      companyId,
+      builderAgentId,
+      issueId: issue.id,
+      agentExecutionProfileRevision: 1,
+      issueAssigneeProfileRevision: 2,
+    });
+    let inspectionCalls = 0;
+    const activationInput = {
+      version: 2 as const,
+      companyId,
+      idempotencyKey,
+      expectedIssueId: issue.id,
+      expectedIssueUpdatedAt: reservation!.reservedIssueUpdatedAt.toISOString(),
+      expectedEnvelopeSha256: reservation!.envelopeSha256,
+      expectedExecutionProfileIntentSha256: executionProfileIntentSha256,
+      builderAgentId,
+      executionProfiles,
+      inspectExecutionProfile: async (context: {
+        db: unknown;
+        agentExecutionProfileRevision: number;
+        issueAssigneeProfileRevision: number;
+      }) => {
+        inspectionCalls += 1;
+        expect(context.db).toBeDefined();
+        expect(context.agentExecutionProfileRevision).toBe(1);
+        expect(context.issueAssigneeProfileRevision).toBe(2);
+        const [assignedInsideActivation] = await (context.db as typeof db)
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeProfileRevision: issues.assigneeProfileRevision,
+          })
+          .from(issues)
+          .where(eq(issues.id, issue.id));
+        expect(assignedInsideActivation).toEqual({
+          status: "todo",
+          assigneeAgentId: builderAgentId,
+          assigneeProfileRevision: 2,
+        });
+        return inspectedExecutionProfile;
+      },
+      envelope,
+      requestedByActorType: "user" as const,
+      requestedByActorId: directorUserId,
+    };
+    const activated = await contracts.activate(activationInput);
+    expect(activated).toMatchObject({
+      replayed: false,
+      needsDispatch: true,
+      issue: {
+        id: issue.id,
+        status: "todo",
+        assigneeAgentId: builderAgentId,
+      },
+    });
+    const [sidecar] = await db.select().from(heartbeatRunExecutionProfiles);
+    expect(sidecar).toMatchObject({
+      runId: activated.reservation.heartbeatRunId,
+      companyId,
+      issueId: issue.id,
+      agentId: builderAgentId,
+      bindingVersion: EXECUTION_PROFILE_BINDING_VERSION,
+      agentExecutionProfileRevision: 1,
+      issueAssigneeProfileRevision: 2,
+      digest: inspectedExecutionProfile.digest,
+      transitionKind: "fresh",
+      transitionReason: "governed_activation",
+    });
+    expect(sidecar!.authorityFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(sidecar!.authorityFingerprint).not.toBe("pending-database-canonicalization");
+    const receipt = serializeGovernedIssueActivationReceipt(activated.reservation);
+    expect(receipt).toMatchObject({
+      version: 2,
+      wake: { durable: true, runId: sidecar!.runId },
+      executionProfile: {
+        version: 2,
+        profileId: sidecar!.id,
+        runId: sidecar!.runId,
+        companyId,
+        issueId: issue.id,
+        agentId: builderAgentId,
+        agentExecutionProfileRevision: 1,
+        issueAssigneeProfileRevision: 2,
+        digest: inspectedExecutionProfile.digest,
+        authorityFingerprint: sidecar!.authorityFingerprint,
+        authorityProofSha256: executionProfileSha256(inspectedExecutionProfile.authorityProof),
+        projection: inspectedExecutionProfile.projection,
+      },
+    });
+
+    const replay = await contracts.activate({
+      ...activationInput,
+    });
+    expect(replay.replayed).toBe(true);
+    expect(inspectionCalls).toBe(1);
+    expect(serializeGovernedIssueActivationReceipt(replay.reservation)).toEqual(receipt);
+    expect(await db.select().from(heartbeatRunExecutionProfiles)).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(
+      agentWakeupRequests.idempotencyKey,
+      `governed_issue_activation:v2:${reservation!.id}`,
+    ))).toHaveLength(1);
+  });
+
+  it("rolls back version 2 activation when a future-stage participant profile revision changed", async () => {
+    const companyId = await seedCompany();
+    const builderAgentId = await seedAgent(companyId, "Builder");
+    const reviewerAgentId = await seedAgent(companyId, "Reviewer");
+    const directorUserId = await seedUser(companyId);
+    const executionPolicy = twoStagePolicy(reviewerAgentId, directorUserId);
+    const envelope = {
+      title: "Reject stale reviewer authority",
+      workMode: "standard" as const,
+      priority: "high" as const,
+      reviewPolicy: "not_creator" as const,
+      requestDepth: 0,
+      executionPolicy,
+    };
+    const executionProfiles = {
+      builderAgentId,
+      participants: [builderAgentId, reviewerAgentId]
+        .sort((left, right) => left.localeCompare(right))
+        .map((agentId) => ({ agentId, executionProfileRevision: 1 })),
+    };
+    const idempotencyKey = "reeve-build:stale-reviewer-profile";
+    const executionProfileIntentSha256 = governedIssueSha256(executionProfiles);
+    const issue = await issueService(db).create(companyId, {
+      ...envelope,
+      status: "backlog",
+      createdByUserId: directorUserId,
+      idempotencyKey,
+      allowDuplicate: true,
+      governanceReservation: {
+        contractVersion: 2,
+        requestIntentSha256: governedIssueSha256({ version: 2, issue: envelope, executionProfiles }),
+        envelopeSha256: governedIssueEnvelopeSha256(envelope),
+        envelope,
+        executionProfileIntentSha256,
+        executionProfileIntent: executionProfiles,
+      },
+    });
+    const contracts = governedIssueContractService(db);
+    const reservation = await contracts.getReservation(companyId, idempotencyKey);
+    await db.update(agents)
+      .set({ adapterConfig: { changedAfterReservation: true } })
+      .where(eq(agents.id, reviewerAgentId));
+    let inspectionCalls = 0;
+    await expect(contracts.activate({
+      version: 2,
+      companyId,
+      idempotencyKey,
+      expectedIssueId: issue.id,
+      expectedIssueUpdatedAt: reservation!.reservedIssueUpdatedAt.toISOString(),
+      expectedEnvelopeSha256: reservation!.envelopeSha256,
+      expectedExecutionProfileIntentSha256: executionProfileIntentSha256,
+      builderAgentId,
+      executionProfiles,
+      inspectExecutionProfile: async () => {
+        inspectionCalls += 1;
+        return inspectedBuilderProfile({
+          companyId,
+          builderAgentId,
+          issueId: issue.id,
+          agentExecutionProfileRevision: 1,
+          issueAssigneeProfileRevision: 2,
+        });
+      },
+      envelope,
+      requestedByActorType: "user",
+      requestedByActorId: directorUserId,
+    })).rejects.toMatchObject({
+      status: 412,
+      details: {
+        code: "governed_execution_profile_revision_mismatch",
+        agentId: reviewerAgentId,
+      },
+    });
+    expect(await issueService(db).getById(issue.id)).toMatchObject({
+      status: "backlog",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRunExecutionProfiles)).toHaveLength(0);
+    expect(inspectionCalls).toBe(0);
+    expect(await contracts.getReservation(companyId, idempotencyKey)).toMatchObject({
+      activatedAt: null,
+      executionProfileReceipt: null,
+    });
+  });
+
+  it("rolls back assignment when post-assignment execution evidence is invalid", async () => {
+    const companyId = await seedCompany();
+    const builderAgentId = await seedAgent(companyId, "Builder");
+    const directorUserId = await seedUser(companyId);
+    const envelope = {
+      title: "Reject invalid activation evidence",
+      workMode: "standard" as const,
+      priority: "high" as const,
+      reviewPolicy: "not_creator" as const,
+      requestDepth: 0,
+      executionPolicy: {
+        mode: "normal" as const,
+        commentRequired: true,
+        stages: [{
+          type: "approval" as const,
+          approvalsNeeded: 1 as const,
+          participants: [{ type: "user" as const, userId: directorUserId }],
+        }],
+      },
+    };
+    const executionProfiles = {
+      builderAgentId,
+      participants: [{ agentId: builderAgentId, executionProfileRevision: 1 }],
+    };
+    const idempotencyKey = "reeve-build:invalid-activation-evidence";
+    const executionProfileIntentSha256 = governedIssueSha256(executionProfiles);
+    const issue = await issueService(db).create(companyId, {
+      ...envelope,
+      status: "backlog",
+      createdByUserId: directorUserId,
+      idempotencyKey,
+      allowDuplicate: true,
+      governanceReservation: {
+        contractVersion: 2,
+        requestIntentSha256: governedIssueSha256({ version: 2, issue: envelope, executionProfiles }),
+        envelopeSha256: governedIssueEnvelopeSha256(envelope),
+        envelope,
+        executionProfileIntentSha256,
+        executionProfileIntent: executionProfiles,
+      },
+    });
+    const contracts = governedIssueContractService(db);
+    const reservation = await contracts.getReservation(companyId, idempotencyKey);
+    const valid = inspectedBuilderProfile({
+      companyId,
+      builderAgentId,
+      issueId: issue.id,
+      agentExecutionProfileRevision: 1,
+      issueAssigneeProfileRevision: 2,
+    });
+    await expect(contracts.activate({
+      version: 2,
+      companyId,
+      idempotencyKey,
+      expectedIssueId: issue.id,
+      expectedIssueUpdatedAt: reservation!.reservedIssueUpdatedAt.toISOString(),
+      expectedEnvelopeSha256: reservation!.envelopeSha256,
+      expectedExecutionProfileIntentSha256: executionProfileIntentSha256,
+      builderAgentId,
+      executionProfiles,
+      inspectExecutionProfile: async () => ({
+        ...valid,
+        projection: { ...valid.projection, issueId: randomUUID() },
+      }),
+      envelope,
+      requestedByActorType: "user",
+      requestedByActorId: directorUserId,
+    })).rejects.toMatchObject({
+      status: 412,
+      details: { code: "governed_execution_profile_activation_drift" },
+    });
+    expect(await issueService(db).getById(issue.id)).toMatchObject({
+      status: "backlog",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRunExecutionProfiles)).toHaveLength(0);
+    expect(await contracts.getReservation(companyId, idempotencyKey)).toMatchObject({
+      activatedAt: null,
+      executionProfileReceipt: null,
+    });
   });
 
   it("semantically replays an ID-less reservation after generic retention and activates the original materialization", async () => {

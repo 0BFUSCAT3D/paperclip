@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  createConfiguredServerInfoSnapshot,
   createServerInfoSnapshot,
   getServerInfoSnapshot,
   resetServerInfoCacheForTests,
@@ -164,6 +165,25 @@ describe("server info snapshot", () => {
           unavailableReason: "git_status_unavailable",
         },
       },
+    });
+  });
+
+  it("freezes source identity only when a managed launcher opts in", () => {
+    expect(createConfiguredServerInfoSnapshot({}, {
+      gitCommand: gitCommandFor("aaaaaaa", "ignored"),
+    })).toBeUndefined();
+
+    const frozen = createConfiguredServerInfoSnapshot(
+      { PAPERCLIP_FREEZE_SERVER_INFO: "true" },
+      {
+        now: new Date("2026-08-20T22:00:00.000Z"),
+        gitCommand: gitCommandFor("aaaaaaa", "Loaded source"),
+        gitStatusCommand: () => "",
+      },
+    );
+    expect(frozen).toMatchObject({
+      processStartedAt: "2026-08-20T22:00:00.000Z",
+      git: { shortSha: "aaaaaaa", subject: "Loaded source" },
     });
   });
 });

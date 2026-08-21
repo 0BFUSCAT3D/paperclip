@@ -13,8 +13,10 @@ export * from "./acp.js";
 export { getConfigSchema } from "./config-schema.js";
 export {
   reconcileManagedCodexHome,
+  prepareManagedCodexAgentHome,
   isManagedCodexHomePath,
   evaluateCodexCredentialReadiness,
+  resolveManagedCodexHomeDir,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,
   type ReconcileManagedCodexHomeStatus,

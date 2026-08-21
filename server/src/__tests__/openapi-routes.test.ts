@@ -302,6 +302,12 @@ describe("openapi routes", () => {
     const governedActivation = spec.paths[
       "/api/v1/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/activation"
     ].put;
+    const governedReservationV2 = spec.paths[
+      "/api/v2/companies/{companyId}/governed-issue-reservations"
+    ].post;
+    const governedActivationV2 = spec.paths[
+      "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/activation"
+    ].put;
     expect(governedReservation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
     expect(governedActivation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
     expect(governedActivation.responses["201"].content["application/json"].schema.properties.activationReceipt)
@@ -313,6 +319,17 @@ describe("openapi routes", () => {
     expect(activationResponse.properties.issue.additionalProperties).toBe(false);
     expect(activationResponse.properties.activationReceipt.properties.issueSnapshot.additionalProperties)
       .toBe(false);
+    expect(governedReservationV2.requestBody.content["application/json"].schema.additionalProperties)
+      .toBe(false);
+    expect(governedActivationV2.requestBody.content["application/json"].schema.additionalProperties)
+      .toBe(false);
+    const activationV2Response = governedActivationV2.responses["201"].content["application/json"].schema;
+    expect(activationV2Response.properties.activationReceipt.properties.executionProfile.additionalProperties)
+      .toBe(false);
+    expect(activationV2Response.properties.activationReceipt.properties.executionProfile.properties.projection
+      .additionalProperties).toBe(false);
+    expect(activationV2Response.properties.activationReceipt.properties.executionProfile.properties.authority
+      .additionalProperties).toBe(false);
     const shipCandidate = spec.paths["/api/v1/issues/{issueId}/artifact-director-ship-candidate"].get;
     const shipOperation = spec.paths["/api/v1/issues/{issueId}/artifact-director-ships/{idempotencyKey}"];
     expect(shipCandidate.responses["200"].content["application/json"].schema.additionalProperties).toBe(false);

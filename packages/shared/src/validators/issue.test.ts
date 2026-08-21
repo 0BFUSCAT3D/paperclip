@@ -6,6 +6,8 @@ import {
   createIssueSchema,
   reserveGovernedIssueV1Schema,
   activateGovernedIssueV1Schema,
+  reserveGovernedIssueV2Schema,
+  activateGovernedIssueV2Schema,
   governedIssueLifecycleIssueV1Schema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -82,6 +84,93 @@ describe("issue validators", () => {
       expectedEnvelopeSha256: "a".repeat(64),
       builderAgentId: "22222222-2222-4222-8222-222222222222",
       issue,
+    }).success).toBe(true);
+  });
+
+  it("binds governed v2 requests to one canonical participant revision set", () => {
+    const issue = {
+      title: "Profile-bound create",
+      reviewPolicy: "not_creator" as const,
+      executionPolicy: {
+        stages: [{
+          type: "review" as const,
+          participants: [{
+            type: "agent" as const,
+            agentId: "33333333-3333-4333-8333-333333333333",
+          }],
+        }],
+      },
+    };
+    const executionProfiles = {
+      builderAgentId: "22222222-2222-4222-8222-222222222222",
+      participants: [
+        { agentId: "22222222-2222-4222-8222-222222222222", executionProfileRevision: 7 },
+        { agentId: "33333333-3333-4333-8333-333333333333", executionProfileRevision: 11 },
+      ],
+    };
+    expect(reserveGovernedIssueV2Schema.safeParse({
+      version: 2,
+      idempotencyKey: "reeve-build:v2:42",
+      issue,
+      executionProfiles,
+    }).success).toBe(true);
+    expect(activateGovernedIssueV2Schema.safeParse({
+      version: 2,
+      expectedIssueId: "11111111-1111-4111-8111-111111111111",
+      expectedIssueUpdatedAt: "2026-08-20T12:00:00.000Z",
+      expectedEnvelopeSha256: "a".repeat(64),
+      expectedExecutionProfileIntentSha256: "b".repeat(64),
+      issue,
+      executionProfiles,
+    }).success).toBe(true);
+
+    for (const participants of [
+      executionProfiles.participants.slice(1),
+      [executionProfiles.participants[1]!, executionProfiles.participants[0]!],
+      [executionProfiles.participants[0]!, executionProfiles.participants[0]!],
+      [
+        { ...executionProfiles.participants[0]!, executionProfileRevision: 0 },
+        executionProfiles.participants[1]!,
+      ],
+    ]) {
+      expect(reserveGovernedIssueV2Schema.safeParse({
+        version: 2,
+        idempotencyKey: "reeve-build:v2:42",
+        issue,
+        executionProfiles: { ...executionProfiles, participants },
+      }).success).toBe(false);
+    }
+
+    expect(reserveGovernedIssueV2Schema.safeParse({
+      version: 2,
+      idempotencyKey: "reeve-build:v2:42",
+      issue,
+      executionProfiles: {
+        ...executionProfiles,
+        participants: [
+          executionProfiles.participants[0]!,
+          { agentId: "44444444-4444-4444-8444-444444444444", executionProfileRevision: 3 },
+        ],
+      },
+    }).success).toBe(false);
+
+    const userReviewedIssue = {
+      ...issue,
+      executionPolicy: {
+        stages: [{
+          type: "approval" as const,
+          participants: [{ type: "user" as const, userId: "director" }],
+        }],
+      },
+    };
+    expect(reserveGovernedIssueV2Schema.safeParse({
+      version: 2,
+      idempotencyKey: "reeve-build:v2:user-review",
+      issue: userReviewedIssue,
+      executionProfiles: {
+        builderAgentId: executionProfiles.builderAgentId,
+        participants: [executionProfiles.participants[0]],
+      },
     }).success).toBe(true);
   });
 

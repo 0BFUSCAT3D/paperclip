@@ -1,22 +1,32 @@
 import { createHash } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
+  agents,
   governedIssueReservations,
+  heartbeatRunExecutionProfiles,
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
 import {
   governedIssueLifecycleIssueV1Schema,
   type GovernedIssueEnvelope,
+  type GovernedExecutionProfileIntentV2,
   type GovernedIssueLifecycleIssueV1,
 } from "@paperclipai/shared";
 import { conflict, notFound, preconditionFailed } from "../errors.js";
 import { assertIssueExecutionPolicyParticipants } from "./issue-execution-policy-participants.js";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "./issue-execution-policy.js";
+import {
+  EXECUTION_PROFILE_BINDING_VERSION,
+  executionProfileSha256,
+  inspectedExecutionProfileBindingMatchesScope,
+  type InspectedExecutionProfileBinding,
+} from "./execution-profile-binding.js";
 
 export const GOVERNED_ISSUE_LIFECYCLE_VERSION = 1 as const;
+export const GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION = 2 as const;
 
 function canonicalJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJsonValue);
@@ -144,7 +154,19 @@ export type GovernedIssueActivationInput = {
   envelope: GovernedIssueEnvelope;
   requestedByActorType: "user" | "agent" | "system";
   requestedByActorId: string | null;
-};
+} & (
+  | { version?: 1; executionProfiles?: never; expectedExecutionProfileIntentSha256?: never; inspectExecutionProfile?: never }
+  | {
+      version: 2;
+      executionProfiles: GovernedExecutionProfileIntentV2;
+      expectedExecutionProfileIntentSha256: string;
+      inspectExecutionProfile: (input: {
+        db: Db;
+        agentExecutionProfileRevision: number;
+        issueAssigneeProfileRevision: number;
+      }) => Promise<InspectedExecutionProfileBinding>;
+    }
+);
 
 export function governedIssueContractService(db: Db) {
   return {
@@ -170,6 +192,14 @@ export function governedIssueContractService(db: Db) {
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!reservation) throw notFound("Governed issue reservation not found");
+      const contractVersion = input.version ?? 1;
+      if (reservation.contractVersion !== contractVersion) {
+        throw conflict("Governed issue reservation uses a different contract version", {
+          code: "governed_issue_contract_version_mismatch",
+          reservationVersion: reservation.contractVersion,
+          requestVersion: contractVersion,
+        });
+      }
 
       const issue = await tx
         .select()
@@ -204,13 +234,49 @@ export function governedIssueContractService(db: Db) {
         });
       }
 
-      const activationSha256 = governedIssueSha256({
-        version: GOVERNED_ISSUE_LIFECYCLE_VERSION,
+      let executionProfileIntentSha256: string | null = null;
+      if (input.version === 2) {
+        executionProfileIntentSha256 = governedIssueSha256(input.executionProfiles);
+        if (
+          input.expectedExecutionProfileIntentSha256 !== reservation.executionProfileIntentSha256
+          || executionProfileIntentSha256 !== reservation.executionProfileIntentSha256
+          || governedIssueSha256(input.executionProfiles) !== governedIssueSha256(reservation.executionProfileIntent)
+        ) {
+          throw preconditionFailed("Governed execution profile intent does not match the reservation", {
+            code: "governed_execution_profile_intent_mismatch",
+          });
+        }
+      }
+
+      const activationSha256For = (executionProfile: {
+        digest: unknown;
+        authorityFingerprint: unknown;
+        authorityProofSha256: unknown;
+      } | null) => governedIssueSha256({
+        version: contractVersion,
         issueId: reservation.issueId,
         envelopeSha256,
         builderAgentId: input.builderAgentId,
+        ...(input.version === 2
+          ? {
+              executionProfileIntentSha256,
+              executionProfileDigest: executionProfile?.digest,
+              executionProfileAuthorityFingerprint: executionProfile?.authorityFingerprint,
+              authorityProofSha256: executionProfile?.authorityProofSha256,
+            }
+          : {}),
       });
       if (reservation.activatedAt) {
+        const storedExecutionProfile = input.version === 2
+          ? reservation.executionProfileReceipt as Record<string, unknown> | null
+          : null;
+        const activationSha256 = activationSha256For(storedExecutionProfile
+          ? {
+              digest: storedExecutionProfile.digest,
+              authorityFingerprint: storedExecutionProfile.authorityFingerprint,
+              authorityProofSha256: storedExecutionProfile.authorityProofSha256,
+            }
+          : null);
         if (reservation.activationSha256 !== activationSha256) {
           throw conflict("Governed issue reservation was already activated with different intent", {
             code: "governed_issue_activation_conflict",
@@ -259,6 +325,41 @@ export function governedIssueContractService(db: Db) {
         reservedIssueSnapshot: reservation.reservedIssueSnapshot,
       });
 
+      let builderExecutionProfileRevision: number | null = null;
+      if (input.version === 2) {
+        const participantIds = input.executionProfiles.participants.map((participant) => participant.agentId);
+        const participantRows = await tx
+          .select({ id: agents.id, executionProfileRevision: agents.executionProfileRevision })
+          .from(agents)
+          .where(and(
+            eq(agents.companyId, input.companyId),
+            inArray(agents.id, participantIds),
+          ))
+          .orderBy(asc(agents.id))
+          .for("update");
+        const revisions = new Map(participantRows.map((participant) => [
+          participant.id,
+          participant.executionProfileRevision,
+        ]));
+        for (const participant of input.executionProfiles.participants) {
+          if (revisions.get(participant.agentId) !== participant.executionProfileRevision) {
+            throw preconditionFailed("Governed execution participant profile revision changed", {
+              code: "governed_execution_profile_revision_mismatch",
+              agentId: participant.agentId,
+            });
+          }
+        }
+        builderExecutionProfileRevision = revisions.get(input.builderAgentId) ?? null;
+        if (
+          input.executionProfiles.builderAgentId !== input.builderAgentId
+          || builderExecutionProfileRevision === null
+        ) {
+          throw preconditionFailed("Governed execution builder does not match the reserved profile intent", {
+            code: "governed_execution_profile_builder_mismatch",
+          });
+        }
+      }
+
       const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
       const state = parseIssueExecutionState(issue.executionState);
       await assertIssueExecutionPolicyParticipants(tx as unknown as Db, {
@@ -291,8 +392,32 @@ export function governedIssueContractService(db: Db) {
         });
       }
       const activatedIssueSnapshot = governedIssueLifecycleIssueSnapshot(activatedIssue);
-
-      const wakeIdempotencyKey = `governed_issue_activation:v1:${reservation.id}`;
+      const inspectedExecutionProfile = input.version === 2
+        ? await input.inspectExecutionProfile({
+            db: tx as unknown as Db,
+            agentExecutionProfileRevision: builderExecutionProfileRevision!,
+            issueAssigneeProfileRevision: activatedIssue.assigneeProfileRevision,
+          })
+        : null;
+      if (input.version === 2 && !inspectedExecutionProfileBindingMatchesScope(
+        inspectedExecutionProfile,
+        {
+          companyId: input.companyId,
+          agentId: input.builderAgentId,
+          issueId: activatedIssue.id,
+          agentExecutionProfileRevision: builderExecutionProfileRevision!,
+          issueAssigneeProfileRevision: activatedIssue.assigneeProfileRevision,
+        },
+      )) {
+        const invalidPrepared = (inspectedExecutionProfile as unknown as {
+          prepared?: { dispose(): Promise<void> } | null;
+        } | null)?.prepared;
+        await invalidPrepared?.dispose().catch(() => undefined);
+        throw preconditionFailed("Governed execution profile evidence no longer matches activation", {
+          code: "governed_execution_profile_activation_drift",
+        });
+      }
+      const wakeIdempotencyKey = `governed_issue_activation:v${contractVersion}:${reservation.id}`;
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -328,12 +453,46 @@ export function governedIssueContractService(db: Db) {
             taskKey: issue.identifier,
             source: "issue.governed_activation",
             wakeReason: "governed_issue_activated",
+            ...(contractVersion === 2 ? { governedContractVersion: 2 } : {}),
           },
           createdAt: now,
           updatedAt: now,
         })
         .returning()
         .then((rows) => rows[0]);
+      const executionProfile = input.version === 2
+        ? await tx
+          .insert(heartbeatRunExecutionProfiles)
+          .values({
+            companyId: input.companyId,
+            runId: heartbeatRun.id,
+            agentId: input.builderAgentId,
+            issueId: issue.id,
+            bindingVersion: EXECUTION_PROFILE_BINDING_VERSION,
+            agentExecutionProfileRevision:
+              inspectedExecutionProfile!.projection.agentExecutionProfileRevision,
+            issueAssigneeProfileRevision: activatedIssue.assigneeProfileRevision,
+            digest: inspectedExecutionProfile!.digest,
+            projection: inspectedExecutionProfile!.projection as unknown as Record<string, unknown>,
+            authorityIdentity: {
+              profile: inspectedExecutionProfile!.authorityProof,
+            },
+            authorityFingerprint: "pending-database-canonicalization",
+            transitionKind: "fresh",
+            transitionReason: "governed_activation",
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0])
+        : null;
+      const activationSha256 = activationSha256For(executionProfile
+        ? {
+            digest: executionProfile.digest,
+            authorityFingerprint: executionProfile.authorityFingerprint,
+            authorityProofSha256: executionProfileSha256(inspectedExecutionProfile!.authorityProof),
+          }
+        : null);
       await tx
         .update(agentWakeupRequests)
         .set({ runId: heartbeatRun.id, updatedAt: now })
@@ -346,6 +505,28 @@ export function governedIssueContractService(db: Db) {
           activatedAt: now,
           activatedIssueUpdatedAt: activatedIssue.updatedAt,
           activatedIssueSnapshot: activatedIssueSnapshot as unknown as Record<string, unknown>,
+          ...(executionProfile
+            ? {
+                executionProfileReceipt: {
+                  version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+                  bindingVersion: executionProfile.bindingVersion,
+                  profileId: executionProfile.id,
+                  runId: heartbeatRun.id,
+                  companyId: input.companyId,
+                  issueId: issue.id,
+                  agentId: input.builderAgentId,
+                  agentExecutionProfileRevision: executionProfile.agentExecutionProfileRevision,
+                  issueAssigneeProfileRevision: executionProfile.issueAssigneeProfileRevision,
+                  digest: executionProfile.digest,
+                  authorityFingerprint: executionProfile.authorityFingerprint,
+                  authorityProofSha256: executionProfileSha256(
+                    inspectedExecutionProfile!.authorityProof,
+                  ),
+                  projection: inspectedExecutionProfile!.projection,
+                  authority: inspectedExecutionProfile!.authorityProof,
+                },
+              }
+            : {}),
           wakeupRequestId: wakeupRequest.id,
           heartbeatRunId: heartbeatRun.id,
           updatedAt: now,
@@ -372,6 +553,12 @@ export function serializeGovernedIssueReservation(
     issueId: reservation.issueId,
     requestIntentSha256: reservation.requestIntentSha256,
     envelopeSha256: reservation.envelopeSha256,
+    ...(reservation.contractVersion === 2
+      ? {
+          executionProfileIntentSha256: reservation.executionProfileIntentSha256,
+          executionProfiles: reservation.executionProfileIntent,
+        }
+      : {}),
     reservedIssueUpdatedAt: reservation.reservedIssueUpdatedAt.toISOString(),
     createdAt: reservation.createdAt.toISOString(),
   };
@@ -389,7 +576,7 @@ export function serializeGovernedIssueActivationReceipt(
     || !reservation.heartbeatRunId
   ) return null;
   return {
-    version: GOVERNED_ISSUE_LIFECYCLE_VERSION,
+    version: reservation.contractVersion,
     idempotencyKey: reservation.idempotencyKey,
     issueId: reservation.issueId,
     builderAgentId: reservation.builderAgentId,
@@ -400,10 +587,13 @@ export function serializeGovernedIssueActivationReceipt(
     issueSnapshot: governedIssueReservationResponseIssue(reservation),
     wake: {
       durable: true as const,
-      idempotencyKey: `governed_issue_activation:v1:${reservation.id}`,
+      idempotencyKey: `governed_issue_activation:v${reservation.contractVersion}:${reservation.id}`,
       requestId: reservation.wakeupRequestId,
       runId: reservation.heartbeatRunId,
       status: "queued" as const,
     },
+    ...(reservation.contractVersion === 2
+      ? { executionProfile: reservation.executionProfileReceipt }
+      : {}),
   };
 }

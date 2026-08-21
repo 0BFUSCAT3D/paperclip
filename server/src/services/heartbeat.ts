@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -11,6 +11,7 @@ import {
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
+  governedExecutionProfileIntentV2Schema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
   type CostStatus,
@@ -48,7 +49,9 @@ import {
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
+  heartbeatRunExecutionProfiles,
   heartbeatRuns,
+  governedIssueReservations,
   issueApprovals,
   issueComments,
   issuePlanDecompositions,
@@ -95,6 +98,10 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import {
+  prepareManagedCodexAgentHome,
+  resolveManagedCodexHomeDir,
+} from "@paperclipai/adapter-codex-local/server";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
@@ -102,6 +109,15 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
+import {
+  inspectExecutionProfileBinding,
+  inspectedExecutionProfileBindingMatchesScope,
+  instructionFileSha256,
+  readInstructionFileSnapshot,
+  executionProfileBindingsMatch,
+  EXECUTION_PROFILE_BINDING_VERSION,
+  type InspectedExecutionProfileBinding,
+} from "./execution-profile-binding.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -6827,7 +6843,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
-  const recovery = recoveryService(db, { enqueueWakeup });
+  const recovery = recoveryService(db, {
+    enqueueWakeup,
+    bindQueuedExecutionProfile: bindGovernedV2ExecutionProfileToQueuedRun,
+  });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -10061,6 +10080,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .returning()
         .then((rows) => rows[0]);
 
+      await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+        run: queuedRun,
+        transition: { kind: "fresh", reason: "missing_comment_retry" },
+      });
+
       await tx
         .update(agentWakeupRequests)
         .set({
@@ -10310,6 +10334,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .returning()
         .then((rows) => rows[0]);
+
+      await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+        run: retryRun,
+        transition: { kind: "preserve", reason: "process_loss", parentRunId: run.id },
+      });
 
       await tx
         .update(agentWakeupRequests)
@@ -11680,6 +11709,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .returning()
         .then((rows) => rows[0]);
+
+      await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+        run: scheduledRun,
+        transition: { kind: "fresh", reason: "bounded_retry" },
+      });
 
       await tx
         .update(agentWakeupRequests)
@@ -14019,6 +14053,476 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  async function inspectGovernedExecutionProfileForActivation(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    db?: Db;
+    agentExecutionProfileRevision: number;
+    issueAssigneeProfileRevision: number;
+    contextSnapshot?: Record<string, unknown>;
+  }): Promise<InspectedExecutionProfileBinding> {
+    const authorityDb = input.db ?? db;
+    const authorityEnvironments = input.db ? environmentService(authorityDb) : environmentsSvc;
+    const authorityInstanceSettings = input.db ? instanceSettingsService(authorityDb) : instanceSettings;
+    const authoritySecrets = input.db ? secretService(authorityDb) : secretsSvc;
+    const [agent, issue] = await Promise.all([
+      authorityDb.select().from(agents).where(and(
+        eq(agents.id, input.agentId),
+        eq(agents.companyId, input.companyId),
+      )).then((rows) => rows[0] ?? null),
+      authorityDb.select().from(issues).where(and(
+        eq(issues.id, input.issueId),
+        eq(issues.companyId, input.companyId),
+      )).then((rows) => rows[0] ?? null),
+    ]);
+    if (!agent || !issue) {
+      throw conflict("Governed execution profile participant or issue is missing", {
+        code: "execution_profile_scope_missing",
+      });
+    }
+    if (
+      agent.executionProfileRevision !== input.agentExecutionProfileRevision
+      || issue.assigneeAgentId !== agent.id
+      || issue.assigneeUserId !== null
+      || issue.assigneeProfileRevision !== input.issueAssigneeProfileRevision
+    ) {
+      throw conflict("Governed execution profile scope changed during activation", {
+        code: "execution_profile_activation_scope_changed",
+      });
+    }
+    if (agent.defaultEnvironmentId !== null || Object.keys(parseObject(issue.assigneeAdapterOverrides)).length > 0) {
+      throw conflict("Governed execution profile requires an unmodified local assignment", {
+        code: "execution_profile_assignment_override",
+      });
+    }
+    const issueWorkspaceSettings = parseObject(issue.executionWorkspaceSettings);
+    if (readNonEmptyString(issueWorkspaceSettings.environmentId)) {
+      throw conflict("Governed execution profile cannot select an issue environment", {
+        code: "execution_profile_environment_override",
+      });
+    }
+    const [localEnvironment, settings, experimental, project] = await Promise.all([
+      authorityEnvironments.ensureLocalEnvironment(input.companyId),
+      authorityInstanceSettings.get(),
+      authorityInstanceSettings.getExperimental(),
+      issue.projectId
+        ? authorityDb.select().from(projects).where(and(
+            eq(projects.id, issue.projectId),
+            eq(projects.companyId, input.companyId),
+          )).then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+    if (
+      (settings.defaultEnvironmentId && settings.defaultEnvironmentId !== localEnvironment.id)
+      || experimental.enableManagedSandboxOnly === true
+      || settings.general.executionMode === "kubernetes"
+      || localEnvironment.driver !== "local"
+    ) {
+      throw conflict("Governed execution profile requires the active local environment", {
+        code: "execution_profile_environment_unsupported",
+      });
+    }
+    const parsedProjectExecutionWorkspacePolicy = parseProjectExecutionWorkspacePolicy(
+      project?.executionWorkspacePolicy,
+    );
+    const projectExecutionWorkspacePolicy = gateProjectExecutionWorkspacePolicy(
+      parsedProjectExecutionWorkspacePolicy,
+      experimental.enableIsolatedWorkspaces === true,
+    );
+    const issueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
+      issue.executionWorkspaceSettings,
+    );
+    const executionWorkspaceMode = resolveExecutionWorkspaceMode({
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      legacyUseProjectWorkspace: null,
+    });
+    const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: parseObject(agent.adapterConfig),
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      mode: executionWorkspaceMode,
+      legacyUseProjectWorkspace: null,
+    });
+    let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
+    let profileResolutionFallbackReason: string | null = null;
+    try {
+      adapterModelProfiles = await listAdapterModelProfiles(agent.adapterType);
+    } catch {
+      profileResolutionFallbackReason = "adapter_profile_resolution_failed";
+    }
+    const modelProfileApplication = resolveModelProfileApplication({
+      adapterModelProfiles,
+      agentRuntimeConfig: agent.runtimeConfig,
+      issueModelProfile: null,
+      contextSnapshot: input.contextSnapshot ?? {},
+      profileResolutionFallbackReason,
+    });
+    const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(
+      mergeModelProfileAdapterConfig({
+        adapterType: agent.adapterType,
+        baseConfig: workspaceManagedConfig,
+        modelProfile: modelProfileApplication,
+        issueAdapterConfig: null,
+      }),
+    );
+    const { resolvedConfig, secretManifest } = await resolveExecutionRunAdapterConfig({
+      companyId: input.companyId,
+      agentId: agent.id,
+      adapterType: agent.adapterType,
+      issueId: issue.id,
+      heartbeatRunId: null,
+      environmentId: localEnvironment.id,
+      environmentEnv: localEnvironment.envVars,
+      environmentDriver: localEnvironment.driver,
+      projectId: project?.id ?? null,
+      responsibleUserId: issue.responsibleUserId,
+      executionRunConfig,
+      projectEnv: project?.env ?? null,
+      secretsSvc: authoritySecrets,
+    });
+    const codexManagedHome = agent.adapterType === "codex_local"
+      ? await prepareManagedCodexAgentHome(
+          process.env,
+          async () => undefined,
+          input.companyId,
+          agent.id,
+        )
+      : null;
+    const adapter = getServerAdapter(agent.adapterType);
+    return inspectExecutionProfileBinding({
+      mode: "inspect",
+      companyId: input.companyId,
+      agentId: agent.id,
+      issueId: issue.id,
+      adapterType: agent.adapterType,
+      resolvedConfig,
+      secretManifest,
+      environment: { id: localEnvironment.id, driver: localEnvironment.driver },
+      agentExecutionProfileRevision: input.agentExecutionProfileRevision,
+      issueAssigneeProfileRevision: input.issueAssigneeProfileRevision,
+      instructionsSha256: await instructionFileSha256(resolvedConfig),
+      subscriptionOnlyBilling: adapter.subscriptionOnlyBilling,
+      inspectSubscriptionAuthAuthority: adapter.inspectSubscriptionAuthAuthority,
+      codexManagedHome,
+    });
+  }
+
+  type GovernedQueuedProfileTransition =
+    | { kind: "fresh"; reason:
+        | "provider_quota_recovery"
+        | "missing_comment_retry"
+        | "bounded_retry"
+        | "execution_review_recovery"
+        | "assignment_recovery"
+        | "continuation_recovery"
+        | "normal_enqueue" }
+    | { kind: "preserve"; reason: "process_loss" | "deferred_promotion"; parentRunId: string };
+
+  async function bindGovernedV2ExecutionProfileToQueuedRun(
+    authorityDb: Db,
+    input: {
+      run: typeof heartbeatRuns.$inferSelect;
+      transition: GovernedQueuedProfileTransition;
+    },
+  ) {
+    const issueId = readNonEmptyString(parseObject(input.run.contextSnapshot).issueId);
+    if (!issueId) return null;
+
+    const existing = await authorityDb.select().from(heartbeatRunExecutionProfiles)
+      .where(eq(heartbeatRunExecutionProfiles.runId, input.run.id))
+      .then((rows) => rows[0] ?? null);
+    if (existing) return existing;
+
+    const reservation = await authorityDb
+      .select({ executionProfileIntent: governedIssueReservations.executionProfileIntent })
+      .from(governedIssueReservations)
+      .where(and(
+        eq(governedIssueReservations.companyId, input.run.companyId),
+        eq(governedIssueReservations.issueId, issueId),
+        eq(governedIssueReservations.contractVersion, 2),
+        isNotNull(governedIssueReservations.activatedAt),
+      ))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!reservation) return null;
+
+    const intent = governedExecutionProfileIntentV2Schema.safeParse(reservation.executionProfileIntent);
+    if (!intent.success) {
+      throw conflict("Governed execution profile intent is invalid", {
+        code: "governed_execution_profile_intent_invalid",
+      });
+    }
+    const expectedParticipant = intent.data.participants.find(
+      (participant) => participant.agentId === input.run.agentId,
+    );
+    if (!expectedParticipant) {
+      throw conflict("Queued agent is not a governed execution participant", {
+        code: "governed_execution_profile_participant_missing",
+      });
+    }
+
+    const [agent, issue] = await Promise.all([
+      authorityDb.select().from(agents).where(and(
+        eq(agents.id, input.run.agentId),
+        eq(agents.companyId, input.run.companyId),
+      )).for("update").then((rows) => rows[0] ?? null),
+      authorityDb.select().from(issues).where(and(
+        eq(issues.id, issueId),
+        eq(issues.companyId, input.run.companyId),
+      )).for("update").then((rows) => rows[0] ?? null),
+    ]);
+    if (
+      !agent
+      || !issue
+      || agent.executionProfileRevision !== expectedParticipant.executionProfileRevision
+      || issue.assigneeAgentId !== agent.id
+      || issue.assigneeUserId !== null
+    ) {
+      throw conflict("Governed execution participant changed before queue binding", {
+        code: "governed_execution_profile_queue_drift",
+      });
+    }
+
+    const inspected = await inspectGovernedExecutionProfileForActivation({
+      companyId: input.run.companyId,
+      agentId: input.run.agentId,
+      issueId,
+      db: authorityDb,
+      agentExecutionProfileRevision: expectedParticipant.executionProfileRevision,
+      issueAssigneeProfileRevision: issue.assigneeProfileRevision,
+      contextSnapshot: parseObject(input.run.contextSnapshot),
+    });
+    if (!inspectedExecutionProfileBindingMatchesScope(inspected, {
+      companyId: input.run.companyId,
+      agentId: input.run.agentId,
+      issueId,
+      agentExecutionProfileRevision: expectedParticipant.executionProfileRevision,
+      issueAssigneeProfileRevision: issue.assigneeProfileRevision,
+    })) {
+      const invalidPrepared = (inspected as unknown as {
+        prepared?: { dispose(): Promise<void> } | null;
+      }).prepared;
+      await invalidPrepared?.dispose().catch(() => undefined);
+      throw conflict("Governed queued execution profile evidence is invalid", {
+        code: "governed_execution_profile_queue_binding_invalid",
+      });
+    }
+
+    if (input.transition.kind === "preserve") {
+      const parent = await authorityDb.select().from(heartbeatRunExecutionProfiles)
+        .where(and(
+          eq(heartbeatRunExecutionProfiles.runId, input.transition.parentRunId),
+          eq(heartbeatRunExecutionProfiles.companyId, input.run.companyId),
+          eq(heartbeatRunExecutionProfiles.agentId, input.run.agentId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!parent || !executionProfileBindingsMatch(parent, inspected)) {
+        throw conflict("Governed retry cannot preserve a changed execution authority", {
+          code: "governed_execution_profile_preserve_mismatch",
+        });
+      }
+      return authorityDb.insert(heartbeatRunExecutionProfiles).values({
+        companyId: input.run.companyId,
+        runId: input.run.id,
+        agentId: input.run.agentId,
+        issueId: parent.issueId,
+        bindingVersion: parent.bindingVersion,
+        agentExecutionProfileRevision: parent.agentExecutionProfileRevision,
+        issueAssigneeProfileRevision: parent.issueAssigneeProfileRevision,
+        digest: parent.digest,
+        projection: parent.projection,
+        authorityIdentity: parent.authorityIdentity,
+        authorityFingerprint: "pending-database-canonicalization",
+        transitionKind: "preserve",
+        transitionReason: input.transition.reason,
+        parentRunId: parent.runId,
+        parentProfileId: parent.id,
+      }).returning().then((rows) => rows[0]!);
+    }
+
+    return authorityDb.insert(heartbeatRunExecutionProfiles).values({
+      companyId: input.run.companyId,
+      runId: input.run.id,
+      agentId: input.run.agentId,
+      issueId,
+      bindingVersion: EXECUTION_PROFILE_BINDING_VERSION,
+      agentExecutionProfileRevision: expectedParticipant.executionProfileRevision,
+      issueAssigneeProfileRevision: issue.assigneeProfileRevision,
+      digest: inspected.digest,
+      projection: inspected.projection as unknown as Record<string, unknown>,
+      authorityIdentity: { profile: inspected.authorityProof },
+      authorityFingerprint: "pending-database-canonicalization",
+      transitionKind: "fresh",
+      transitionReason: input.transition.reason,
+    }).returning().then((rows) => rows[0]!);
+  }
+
+  async function prepareSubscriptionExecutionProfileForRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    issueId: string | null;
+    resolvedConfig: Record<string, unknown>;
+    secretManifest: readonly import("./secrets.js").RuntimeSecretManifestEntry[];
+    environment: { id: string; driver: string };
+  }) {
+    const [currentAgentRevision, currentIssue, governedReservation] = await Promise.all([
+      db.select({ executionProfileRevision: agents.executionProfileRevision })
+        .from(agents)
+        .where(and(eq(agents.id, input.agent.id), eq(agents.companyId, input.agent.companyId)))
+        .then((rows) => rows[0]?.executionProfileRevision ?? null),
+      input.issueId
+        ? db.select({
+            id: issues.id,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeProfileRevision: issues.assigneeProfileRevision,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.agent.companyId)))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      input.issueId
+        ? db.select({ executionProfileIntent: governedIssueReservations.executionProfileIntent })
+          .from(governedIssueReservations)
+          .where(and(
+            eq(governedIssueReservations.companyId, input.agent.companyId),
+            eq(governedIssueReservations.issueId, input.issueId),
+            eq(governedIssueReservations.contractVersion, 2),
+            isNotNull(governedIssueReservations.activatedAt),
+          ))
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+    ]);
+    const governedIntent = governedReservation
+      ? governedExecutionProfileIntentV2Schema.safeParse(governedReservation.executionProfileIntent)
+      : null;
+    const expectedGovernedParticipant = governedIntent?.success
+      ? governedIntent.data.participants.find((participant) => participant.agentId === input.agent.id) ?? null
+      : null;
+    if (
+      currentAgentRevision === null
+      || currentAgentRevision !== input.agent.executionProfileRevision
+      || (input.issueId && (!currentIssue || currentIssue.assigneeAgentId !== input.agent.id))
+      || (governedReservation && (
+        !governedIntent?.success
+        || !expectedGovernedParticipant
+        || expectedGovernedParticipant.executionProfileRevision !== currentAgentRevision
+      ))
+    ) {
+      throw conflict("Execution profile changed before provider preparation", {
+        code: "execution_profile_revision_changed",
+      });
+    }
+    const adapter = getServerAdapter(input.agent.adapterType);
+    const instructionSnapshot = await readInstructionFileSnapshot(input.resolvedConfig);
+    const inspected = await inspectExecutionProfileBinding({
+      mode: "prepare",
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      issueId: input.issueId,
+      adapterType: input.agent.adapterType,
+      resolvedConfig: input.resolvedConfig,
+      secretManifest: input.secretManifest,
+      environment: input.environment,
+      agentExecutionProfileRevision: currentAgentRevision,
+      issueAssigneeProfileRevision: currentIssue?.assigneeProfileRevision ?? null,
+      instructionsSha256: instructionSnapshot.sha256,
+      subscriptionOnlyBilling: adapter.subscriptionOnlyBilling,
+      inspectSubscriptionAuthAuthority: adapter.inspectSubscriptionAuthAuthority,
+      codexManagedHome: input.agent.adapterType === "codex_local"
+        ? resolveManagedCodexHomeDir(process.env, input.agent.companyId, input.agent.id)
+        : null,
+    });
+    try {
+      let stored = await db.select().from(heartbeatRunExecutionProfiles)
+        .where(eq(heartbeatRunExecutionProfiles.runId, input.run.id))
+        .then((rows) => rows[0] ?? null);
+      const context = parseObject(input.run.contextSnapshot);
+      if (!stored) {
+        if (asNumber(context.governedContractVersion, 0) === 2 || governedReservation) {
+          throw conflict("Governed version 2 run is missing its activation profile receipt", {
+            code: "execution_profile_sidecar_missing",
+          });
+        }
+        const preserveParent = input.run.retryOfRunId
+          && readNonEmptyString(context.wakeReason) === "process_lost_retry"
+          ? await db.select().from(heartbeatRunExecutionProfiles)
+            .where(eq(heartbeatRunExecutionProfiles.runId, input.run.retryOfRunId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        if (preserveParent && !executionProfileBindingsMatch(preserveParent, inspected)) {
+          throw conflict("Preserved retry execution authority no longer matches", {
+            code: "execution_profile_preserve_mismatch",
+          });
+        }
+        stored = await db.insert(heartbeatRunExecutionProfiles).values(
+          preserveParent
+            ? {
+                companyId: input.run.companyId,
+                runId: input.run.id,
+                agentId: input.run.agentId,
+                issueId: preserveParent.issueId,
+                bindingVersion: preserveParent.bindingVersion,
+                agentExecutionProfileRevision: preserveParent.agentExecutionProfileRevision,
+                issueAssigneeProfileRevision: preserveParent.issueAssigneeProfileRevision,
+                digest: preserveParent.digest,
+                projection: preserveParent.projection,
+                authorityIdentity: preserveParent.authorityIdentity,
+                authorityFingerprint: preserveParent.authorityFingerprint,
+                transitionKind: "preserve",
+                transitionReason: "process_loss",
+                parentRunId: preserveParent.runId,
+                parentProfileId: preserveParent.id,
+              }
+            : {
+                companyId: input.run.companyId,
+                runId: input.run.id,
+                agentId: input.run.agentId,
+                issueId: input.issueId,
+                bindingVersion: EXECUTION_PROFILE_BINDING_VERSION,
+                agentExecutionProfileRevision: currentAgentRevision,
+                issueAssigneeProfileRevision: currentIssue?.assigneeProfileRevision ?? null,
+                digest: inspected.digest,
+                projection: inspected.projection as unknown as Record<string, unknown>,
+                authorityIdentity: { profile: inspected.authorityProof },
+                authorityFingerprint: "pending-database-canonicalization",
+                transitionKind: "fresh",
+                transitionReason: "normal_enqueue",
+              },
+        ).returning().then((rows) => rows[0]);
+      }
+      if (!executionProfileBindingsMatch(stored, inspected)) {
+        throw conflict("Stored execution profile does not match the pre-spawn authority", {
+          code: "execution_profile_pre_spawn_mismatch",
+        });
+      }
+      await db.update(heartbeatRunExecutionProfiles)
+        .set({ validatedAt: new Date(), updatedAt: new Date() })
+        .where(eq(heartbeatRunExecutionProfiles.id, stored.id));
+      return {
+        authority: inspected.prepared,
+        instructions: instructionSnapshot.prepared,
+      };
+    } catch (error) {
+      await inspected.prepared?.dispose().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async function requiresSubscriptionExecutionProfilePreparation(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    resolvedConfig: Record<string, unknown>;
+  }): Promise<boolean> {
+    if (isSubscriptionOnlyBillingPolicy(input.resolvedConfig)) return true;
+    if (asNumber(parseObject(input.run.contextSnapshot).governedContractVersion, 0) === 2) return true;
+    return db.select({ id: heartbeatRunExecutionProfiles.id })
+      .from(heartbeatRunExecutionProfiles)
+      .where(eq(heartbeatRunExecutionProfiles.runId, input.run.id))
+      .limit(1)
+      .then((rows) => rows.length === 1);
+  }
+
   // Public wakeup entry point. Callers dispatch it fire-and-forget, so register
   // the promise in activeWakeupPromises before it starts its asynchronous
   // prologue. drainActiveRunExecutions can then await a wake that is still before
@@ -14692,7 +15196,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : undefined,
     });
     const resolvedEnvironmentDriver = selectedEnvironmentForConfig?.driver ?? "local";
-    if (isSubscriptionOnlyBillingPolicy(resolvedConfig) && resolvedEnvironmentDriver !== "local") {
+    if (
+      isSubscriptionOnlyBillingPolicy(resolvedConfig)
+      && (!selectedEnvironmentForConfig || resolvedEnvironmentDriver !== "local")
+    ) {
       throw new ConfigurationIncompleteFailure(
         "configuration incomplete: subscription-only billing requires an attested local execution environment.",
         {
@@ -16058,6 +16565,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      let preparedExecutionProfile: Awaited<
+        ReturnType<typeof prepareSubscriptionExecutionProfileForRun>
+      > | null = null;
       try {
         const adapterContext = { ...context };
         const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
@@ -16077,6 +16587,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
+        const executionProfilePreparationRequired = await requiresSubscriptionExecutionProfilePreparation({
+          run,
+          resolvedConfig,
+        });
+        preparedExecutionProfile = executionProfilePreparationRequired
+          ? await prepareSubscriptionExecutionProfileForRun({
+              run,
+              agent,
+              issueId,
+              resolvedConfig,
+              secretManifest,
+              environment: {
+                id: selectedEnvironmentForConfig!.id,
+                driver: selectedEnvironmentForConfig!.driver,
+              },
+            })
+          : null;
+        if (executionProfilePreparationRequired && !preparedExecutionProfile?.authority) {
+          throw conflict("Subscription execution profile preparation returned no launch authority", {
+            code: "execution_profile_prepare_missing",
+          });
+        }
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
@@ -16089,6 +16621,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
             : undefined,
           runtimeMcp,
+          ...(preparedExecutionProfile?.authority
+            ? { preparedSubscriptionAuthAuthority: preparedExecutionProfile.authority }
+            : {}),
+          ...(preparedExecutionProfile?.instructions
+            ? { preparedInstructionSnapshot: preparedExecutionProfile.instructions }
+            : {}),
           onLog,
           onMeta: onAdapterMeta,
           onEvent: onAdapterEvent,
@@ -16137,6 +16675,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         throw adapterErr;
       } finally {
+        try {
+          await preparedExecutionProfile?.authority?.dispose();
+        } catch (disposeErr) {
+          logger.warn(
+            { err: disposeErr, runId: run.id, companyId: agent.companyId },
+            "failed to dispose prepared subscription authentication authority",
+          );
+        }
         try {
           await revokeHeartbeatRunGatewayTokens({
             db,
@@ -17249,6 +17795,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .returning()
           .then((rows) => rows[0]);
 
+        await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+          run: newRun,
+          transition: { kind: "preserve", reason: "deferred_promotion", parentRunId: run.id },
+        });
+
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -17414,6 +17965,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .returning()
           .then((rows) => rows[0]);
 
+        await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+          run: queuedRun,
+          transition: { kind: "fresh", reason: "execution_review_recovery" },
+        });
+
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -17568,6 +18124,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .returning()
         .then((rows) => rows[0]);
+
+      await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+        run: queuedRun,
+        transition: { kind: "fresh", reason: "assignment_recovery" },
+      });
 
       await tx
         .update(agentWakeupRequests)
@@ -18693,6 +19254,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .returning()
           .then((rows) => rows[0]);
 
+        await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+          run: newRun,
+          transition: { kind: "fresh", reason: "normal_enqueue" },
+        });
+
         await tx
           .update(agentWakeupRequests)
           .set({
@@ -18867,6 +19433,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .returning()
         .then((rows) => rows[0]);
 
+      await bindGovernedV2ExecutionProfileToQueuedRun(tx as unknown as Db, {
+        run: newRun,
+        transition: { kind: "fresh", reason: "normal_enqueue" },
+      });
+
       await tx
         .update(agentWakeupRequests)
         .set({
@@ -19002,6 +19573,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    suppressImmediateRecovery?: boolean;
   };
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
@@ -19060,7 +19632,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: options.suppressImmediateRecovery,
+      });
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
@@ -19450,6 +20024,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }),
 
     wakeup: trackWakeup,
+    inspectGovernedExecutionProfileForActivation,
+    bindGovernedV2ExecutionProfileToQueuedRun,
+    prepareSubscriptionExecutionProfileForRun,
+    requiresSubscriptionExecutionProfilePreparation,
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,

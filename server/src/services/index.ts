@@ -105,6 +105,7 @@ export {
   serializeGovernedIssueActivationReceipt,
   serializeGovernedIssueReservation,
   GOVERNED_ISSUE_LIFECYCLE_VERSION,
+  GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
 } from "./governed-issue-contract.js";
 export {
   productivityReviewService,

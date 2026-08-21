@@ -738,8 +738,15 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
   // need --append-system-prompt-file (Claude CLI forbids using both flags together).
   let combinedInstructionsContents: string | null = null;
   if (instructionsFilePath) {
+    if (
+      ctx.preparedInstructionSnapshot
+      && ctx.preparedInstructionSnapshot.sourcePath !== instructionsFilePath
+    ) {
+      throw new Error("Prepared instruction snapshot does not match the configured path");
+    }
     try {
-      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      const instructionsContent = ctx.preparedInstructionSnapshot?.contents
+        ?? await fs.readFile(instructionsFilePath, "utf-8");
       const pathDirective =
         `\nThe above agent instructions were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}. ` +
@@ -950,6 +957,11 @@ async function executeUnchecked(ctx: AdapterExecutionContext): Promise<AdapterEx
       }
     }
   }
+  // Remote runtime preparation materializes the managed Claude config and the
+  // callback bridge after the initial policy environment is assembled. Keep
+  // the actual spawn environment bound to those final, host-owned values;
+  // otherwise the child silently loses CLAUDE_CONFIG_DIR and bridge metadata.
+  Object.assign(effectiveEnv, env);
   let effectiveEffort = effort;
   if (executionTargetIsSandbox && effort) {
     const supportsEffort = await claudeCommandSupportsEffortFlag({

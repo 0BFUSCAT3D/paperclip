@@ -9,6 +9,7 @@ export type {
   AdapterRuntimeEvent,
   AdapterRuntimeMcpServer,
   AdapterRuntimeMcpAccess,
+  PreparedInstructionSnapshot,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

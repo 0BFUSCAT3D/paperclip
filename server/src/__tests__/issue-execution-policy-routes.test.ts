@@ -22,6 +22,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   startNextQueuedRunForAgent: vi.fn(async () => undefined),
+  inspectGovernedExecutionProfileForActivation: vi.fn(),
   wakeup: vi.fn(async () => undefined),
   triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
   reportRunActivity: vi.fn(async () => undefined),
@@ -134,11 +135,17 @@ function registerModuleMocks() {
       issueId: reservation.issueId,
       requestIntentSha256: reservation.requestIntentSha256,
       envelopeSha256: reservation.envelopeSha256,
+      ...(reservation.contractVersion === 2
+        ? {
+            executionProfileIntentSha256: reservation.executionProfileIntentSha256,
+            executionProfiles: reservation.executionProfileIntent,
+          }
+        : {}),
       reservedIssueUpdatedAt: reservation.reservedIssueUpdatedAt.toISOString(),
       createdAt: reservation.createdAt.toISOString(),
     }),
     serializeGovernedIssueActivationReceipt: (reservation: any) => reservation.activatedAt ? ({
-      version: 1,
+      version: reservation.contractVersion ?? 1,
       idempotencyKey: reservation.idempotencyKey,
       issueId: reservation.issueId,
       builderAgentId: reservation.builderAgentId,
@@ -149,13 +156,17 @@ function registerModuleMocks() {
       issueSnapshot: reservation.activatedIssueSnapshot,
       wake: {
         durable: true,
-        idempotencyKey: `governed_issue_activation:v1:${reservation.id}`,
+        idempotencyKey: `governed_issue_activation:v${reservation.contractVersion ?? 1}:${reservation.id}`,
         requestId: reservation.wakeupRequestId,
         runId: reservation.heartbeatRunId,
         status: "queued",
       },
+      ...(reservation.contractVersion === 2
+        ? { executionProfile: reservation.executionProfileReceipt }
+        : {}),
     }) : null,
     GOVERNED_ISSUE_LIFECYCLE_VERSION: 1,
+    GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION: 2,
     environmentService: () => ({
       getById: vi.fn(async () => null),
     }),
@@ -2476,6 +2487,7 @@ describe("issue execution policy routes", () => {
     const reservation = {
       id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       companyId: "company-1",
+      contractVersion: 1,
       idempotencyKey: "reeve-build:ingress-42",
       issueId: stagedIssue.id,
       requestIntentSha256: "c".repeat(64),
@@ -2647,6 +2659,284 @@ describe("issue execution policy routes", () => {
     expect(replayRes.body.issue).toEqual(replayRes.body.activationReceipt.issueSnapshot);
     expect(replayRes.body.issue).toMatchObject({ status: "todo", assigneeAgentId: builderAgentId });
     expect(replayRes.body.issue.updatedAt).toBe(activatedIssue.updatedAt.toISOString());
+  });
+
+  it("reserves and activates version 2 only with exact participant revisions and an immutable profile receipt", async () => {
+    const builderAgentId = "44444444-4444-4444-8444-444444444444";
+    const reviewerAgentId = "55555555-5555-4555-8555-555555555555";
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          type: "approval",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+      ],
+    })!;
+    const executionProfiles = {
+      builderAgentId,
+      participants: [
+        { agentId: builderAgentId, executionProfileRevision: 7 },
+        { agentId: reviewerAgentId, executionProfileRevision: 11 },
+      ],
+    };
+    const stagedIssue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectWorkspaceId: null,
+      status: "backlog",
+      workMode: "standard",
+      harnessKind: null,
+      priority: "high",
+      projectId: null,
+      goalId: null,
+      parentId: null,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      responsibleUserId: "local-board",
+      reviewPolicy: "not_creator",
+      issueNumber: 2002,
+      identifier: "PAP-2002",
+      title: "Profile-bound governed work",
+      description: null,
+      requestDepth: 0,
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionPolicy: policy,
+      executionState: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+      hiddenAt: null,
+      createdAt: new Date("2026-08-20T12:00:00.000Z"),
+      updatedAt: new Date("2026-08-20T12:00:00.000Z"),
+    };
+    const reservation = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      companyId: "company-1",
+      contractVersion: 2,
+      idempotencyKey: "reeve-build:profile-bound-route",
+      issueId: stagedIssue.id,
+      requestIntentSha256: "c".repeat(64),
+      envelopeSha256: "a".repeat(64),
+      executionProfileIntentSha256: "c".repeat(64),
+      executionProfileIntent: executionProfiles,
+      executionProfileReceipt: null,
+      reservedIssueSnapshot: {
+        ...stagedIssue,
+        hiddenAt: undefined,
+        createdAt: stagedIssue.createdAt.toISOString(),
+        updatedAt: stagedIssue.updatedAt.toISOString(),
+      },
+      reservedIssueUpdatedAt: stagedIssue.updatedAt,
+      createdAt: new Date("2026-08-20T12:00:00.000Z"),
+      activatedAt: null,
+    };
+    mockIssueService.create.mockResolvedValue(stagedIssue);
+    mockGovernedIssueContractService.getReservation.mockResolvedValue(reservation);
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    const app = await createApp();
+
+    const invalid = await request(app)
+      .post("/api/v2/companies/company-1/governed-issue-reservations")
+      .send({
+        version: 2,
+        idempotencyKey: reservation.idempotencyKey,
+        issue: {
+          title: stagedIssue.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+        executionProfiles: {
+          builderAgentId,
+          participants: [{ agentId: builderAgentId, executionProfileRevision: 7 }],
+        },
+      });
+    expect(invalid.status).toBe(400);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+
+    const createRes = await request(app)
+      .post("/api/v2/companies/company-1/governed-issue-reservations")
+      .send({
+        version: 2,
+        idempotencyKey: reservation.idempotencyKey,
+        issue: {
+          title: stagedIssue.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+        executionProfiles,
+      });
+    expect(createRes.status).toBe(201);
+    expect(createRes.body).toMatchObject({
+      version: 2,
+      replayed: false,
+      state: "reserved",
+      reservation: {
+        executionProfileIntentSha256: reservation.executionProfileIntentSha256,
+        executionProfiles,
+      },
+    });
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        status: "backlog",
+        assigneeAgentId: null,
+        governanceReservation: expect.objectContaining({
+          contractVersion: 2,
+          executionProfileIntentSha256: "c".repeat(64),
+          executionProfileIntent: executionProfiles,
+        }),
+      }),
+    );
+
+    const inspectedExecutionProfile = {
+      digest: "d".repeat(64),
+      projection: {
+        agentExecutionProfileRevision: 7,
+        issueAssigneeProfileRevision: 2,
+      },
+      authorityProof: { schema: "paperclip.subscription-auth-authority" },
+      prepared: null,
+    };
+    mockHeartbeatService.inspectGovernedExecutionProfileForActivation.mockResolvedValue(
+      inspectedExecutionProfile,
+    );
+    const activatedIssue = {
+      ...stagedIssue,
+      status: "todo",
+      assigneeAgentId: builderAgentId,
+      updatedAt: new Date("2026-08-20T12:01:00.000Z"),
+    };
+    const executionProfileReceipt = {
+      version: 2,
+      profileId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      runId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      agentId: builderAgentId,
+      agentExecutionProfileRevision: 7,
+      issueAssigneeProfileRevision: 2,
+      digest: inspectedExecutionProfile.digest,
+    };
+    const activatedReservation = {
+      ...reservation,
+      builderAgentId,
+      activationSha256: "b".repeat(64),
+      activatedAt: new Date("2026-08-20T12:01:00.000Z"),
+      activatedIssueUpdatedAt: activatedIssue.updatedAt,
+      activatedIssueSnapshot: {
+        ...activatedIssue,
+        hiddenAt: undefined,
+        createdAt: activatedIssue.createdAt.toISOString(),
+        updatedAt: activatedIssue.updatedAt.toISOString(),
+      },
+      executionProfileReceipt,
+      wakeupRequestId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      heartbeatRunId: executionProfileReceipt.runId,
+    };
+    mockIssueService.getById.mockResolvedValue(stagedIssue);
+    mockGovernedIssueContractService.activate.mockImplementationOnce(async (input: any) => {
+      const inspected = await input.inspectExecutionProfile({
+        db: mockDb,
+        agentExecutionProfileRevision: 7,
+        issueAssigneeProfileRevision: 2,
+      });
+      expect(inspected).toBe(inspectedExecutionProfile);
+      return {
+        reservation: activatedReservation,
+        issue: activatedReservation.activatedIssueSnapshot,
+        replayed: false,
+        needsDispatch: true,
+      };
+    });
+    const activateRes = await request(app)
+      .put(`/api/v2/companies/company-1/governed-issue-reservations/${encodeURIComponent(reservation.idempotencyKey)}/activation`)
+      .send({
+        version: 2,
+        expectedIssueId: stagedIssue.id,
+        expectedIssueUpdatedAt: stagedIssue.updatedAt.toISOString(),
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        expectedExecutionProfileIntentSha256: reservation.executionProfileIntentSha256,
+        issue: {
+          title: stagedIssue.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+        executionProfiles,
+      });
+    expect(activateRes.status).toBe(201);
+    expect(mockHeartbeatService.inspectGovernedExecutionProfileForActivation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        agentId: builderAgentId,
+        issueId: stagedIssue.id,
+        db: mockDb,
+        agentExecutionProfileRevision: 7,
+        issueAssigneeProfileRevision: 2,
+        contextSnapshot: {
+          issueId: stagedIssue.id,
+          taskId: stagedIssue.id,
+          taskKey: stagedIssue.identifier,
+          source: "issue.governed_activation",
+          wakeReason: "governed_issue_activated",
+          governedContractVersion: 2,
+        },
+      }),
+    );
+    expect(mockGovernedIssueContractService.activate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        version: 2,
+        expectedExecutionProfileIntentSha256: reservation.executionProfileIntentSha256,
+        executionProfiles,
+        inspectExecutionProfile: expect.any(Function),
+      }),
+    );
+    expect(activateRes.body.activationReceipt).toMatchObject({
+      version: 2,
+      executionProfile: executionProfileReceipt,
+      wake: { durable: true, runId: executionProfileReceipt.runId },
+    });
+
+    mockGovernedIssueContractService.getReservation.mockResolvedValue(activatedReservation);
+    mockIssueService.getById.mockResolvedValue(activatedIssue);
+    mockGovernedIssueContractService.activate.mockResolvedValue({
+      reservation: activatedReservation,
+      issue: activatedReservation.activatedIssueSnapshot,
+      replayed: true,
+      needsDispatch: false,
+    });
+    const replayRes = await request(app)
+      .put(`/api/v2/companies/company-1/governed-issue-reservations/${encodeURIComponent(reservation.idempotencyKey)}/activation`)
+      .send({
+        version: 2,
+        expectedIssueId: stagedIssue.id,
+        expectedIssueUpdatedAt: stagedIssue.updatedAt.toISOString(),
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        expectedExecutionProfileIntentSha256: reservation.executionProfileIntentSha256,
+        issue: {
+          title: stagedIssue.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+        executionProfiles,
+      });
+    expect(replayRes.status).toBe(200);
+    expect(mockHeartbeatService.inspectGovernedExecutionProfileForActivation).toHaveBeenCalledTimes(1);
+    expect(mockGovernedIssueContractService.activate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ inspectExecutionProfile: expect.any(Function) }),
+    );
   });
 
   it("reads an issue by create idempotency key without creating or waking", async () => {

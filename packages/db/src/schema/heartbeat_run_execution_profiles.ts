@@ -22,8 +22,9 @@ import { issues } from "./issues.js";
  *
  * `projection` is deliberately typed as an opaque record at the DB boundary;
  * the server owns the versioned, non-secret domain type and canonical digest.
- * Legacy heartbeat rows may have no sidecar, but every newly executable row is
- * inserted through the server binding helper in the same transaction.
+ * Legacy heartbeat rows may have no sidecar. Governed-v2 rows receive this
+ * evidence in the same queue transaction; other opt-in subscription runs must
+ * acquire and validate it before provider spawn.
  */
 export const heartbeatRunExecutionProfiles = pgTable(
   "heartbeat_run_execution_profiles",

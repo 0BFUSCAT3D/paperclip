@@ -111,7 +111,9 @@ export function companyService(db: Db) {
     cascade: { agentsPaused: number; activeRunIds: string[] },
   ) {
     for (const runId of cascade.activeRunIds) {
-      await heartbeat.cancelRun(runId, "Cancelled because the company was archived");
+      await heartbeat.cancelRun(runId, "Cancelled because the company was archived", {
+        suppressImmediateRecovery: true,
+      });
     }
 
     await logActivity(db, {

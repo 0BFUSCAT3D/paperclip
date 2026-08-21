@@ -48,6 +48,8 @@ import {
   createIssueSchema,
   reserveGovernedIssueV1Schema,
   activateGovernedIssueV1Schema,
+  reserveGovernedIssueV2Schema,
+  activateGovernedIssueV2Schema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   feedbackTargetTypeSchema,
@@ -137,6 +139,7 @@ import {
   serializeGovernedIssueActivationReceipt,
   serializeGovernedIssueReservation,
   GOVERNED_ISSUE_LIFECYCLE_VERSION,
+  GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
   issueService,
   type ActivityPublication,
   type IssueFilters,
@@ -8290,6 +8293,141 @@ export function issueRoutes(
   });
 
   router.post(
+    "/v2/companies/:companyId/governed-issue-reservations",
+    validate(reserveGovernedIssueV2Schema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (isSkillTestScopedActor(req) || isTaskBridgeKeyActor(req)) {
+        throw forbidden("Scoped tokens cannot create governed issue reservations");
+      }
+      if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
+
+      const actor = getActorInfo(req);
+      const envelope = {
+        ...req.body.issue,
+        executionPolicy: applyActorMonitorScheduledBy(
+          normalizeIssueExecutionPolicy(req.body.issue.executionPolicy),
+          actor.actorType,
+        ),
+      };
+      const envelopeSha256 = governedIssueEnvelopeSha256(envelope);
+      const requestIntentSha256 = governedIssueSha256({
+        version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+        issue: envelope,
+        executionProfiles: req.body.executionProfiles,
+      });
+      const executionProfileIntentSha256 = governedIssueSha256(req.body.executionProfiles);
+      let parent: Awaited<ReturnType<typeof svc.getById>> | null = null;
+      if (envelope.parentId) {
+        parent = await svc.getById(envelope.parentId);
+        if (!parent || parent.companyId !== companyId) throw notFound("Parent issue not found");
+        if (req.actor.type === "agent" && !(await assertIssueWriteInfluenceAllowed(req, res, parent))) return;
+      } else if (req.actor.type === "agent") {
+        const companyScopeDecision = await access.decide({
+          actor: req.actor,
+          action: "company_scope:read",
+          resource: { type: "company", companyId },
+        });
+        if (!companyScopeDecision.allowed) {
+          throw forbidden("Low-trust agents must reserve child issues inside their assigned boundary");
+        }
+      }
+      if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, companyId, parent))) return;
+      await assertTaskBridgeCreateAllowed(req, companyId, {
+        projectId: envelope.projectId ?? parent?.projectId ?? null,
+        parentIssueId: envelope.parentId ?? null,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      });
+      await assertIssueEnvironmentSelection(companyId, envelope.executionWorkspaceSettings?.environmentId);
+      await assertCanManageIssueMonitor(access, req, companyId, null, Boolean(envelope.executionPolicy?.monitor));
+
+      const issueId = randomUUID();
+      const sourceTrust = await sourceTrustForActorWrite({
+        id: issueId,
+        companyId,
+        projectId: envelope.projectId ?? null,
+        executionPolicy: envelope.executionPolicy,
+      }, actor);
+      let replayed = false;
+      const issue = await svc.create(companyId, {
+        ...envelope,
+        ...(taskBridgeOriginForActor(req) ?? {}),
+        id: issueId,
+        status: "backlog",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        idempotencyKey: req.body.idempotencyKey,
+        allowDuplicate: true,
+        governanceReservation: {
+          contractVersion: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+          requestIntentSha256,
+          envelopeSha256,
+          envelope,
+          executionProfileIntentSha256,
+          executionProfileIntent: req.body.executionProfiles,
+        },
+        ...(sourceTrust ? { sourceTrust } : {}),
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        actorRunId: actor.runId,
+        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        trustExplicitResponsibleUserId: actor.actorType === "user",
+        onDeduplicated: (reason) => {
+          if (reason === "idempotency_key") replayed = true;
+        },
+      });
+      const reservation = await getGovernedIssueContracts().getReservation(companyId, req.body.idempotencyKey);
+      if (!reservation) {
+        throw conflict("Governed issue reservation was not persisted", {
+          code: "governed_issue_reservation_receipt_missing",
+          issueId: issue.id,
+        });
+      }
+      if (
+        reservation.contractVersion !== GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION
+        || reservation.requestIntentSha256 !== requestIntentSha256
+        || reservation.envelopeSha256 !== envelopeSha256
+        || governedIssueSha256(reservation.envelope) !== governedIssueSha256(envelope)
+        || reservation.executionProfileIntentSha256 !== executionProfileIntentSha256
+        || governedIssueSha256(reservation.executionProfileIntent) !== executionProfileIntentSha256
+      ) {
+        throw conflict("Governed issue reservation key is bound to different version 2 intent", {
+          code: "governed_issue_reservation_intent_conflict",
+        });
+      }
+      if (!replayed) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.governed_reserved",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            idempotencyKey: reservation.idempotencyKey,
+            envelopeSha256: reservation.envelopeSha256,
+            executionProfileIntentSha256,
+          },
+        });
+      }
+      res.status(replayed ? 200 : 201).json({
+        version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+        replayed,
+        state: reservation.activatedAt ? "activated" : "reserved",
+        reservation: serializeGovernedIssueReservation(reservation),
+        activationReceipt: serializeGovernedIssueActivationReceipt(reservation),
+        issue: governedIssueReservationResponseIssue(reservation),
+      });
+    },
+  );
+
+  router.post(
     "/v1/companies/:companyId/governed-issue-reservations",
     validate(reserveGovernedIssueV1Schema),
     async (req, res) => {
@@ -8373,6 +8511,14 @@ export function issueRoutes(
           issueId: issue.id,
         });
       }
+      if (
+        reservation.contractVersion !== GOVERNED_ISSUE_LIFECYCLE_VERSION
+        || reservation.requestIntentSha256 !== requestIntentSha256
+      ) {
+        throw conflict("Governed issue reservation key is bound to different version 1 intent", {
+          code: "governed_issue_reservation_intent_conflict",
+        });
+      }
       if (!replayed) {
         await logActivity(db, {
           companyId,
@@ -8403,6 +8549,33 @@ export function issueRoutes(
   );
 
   router.get(
+    "/v2/companies/:companyId/governed-issue-reservations/:idempotencyKey",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const idempotencyKey = (req.params.idempotencyKey as string).trim();
+      assertCompanyAccess(req, companyId);
+      if (!idempotencyKey || idempotencyKey.length > 255) {
+        throw badRequest("Governed issue reservation key must contain 1 to 255 characters");
+      }
+      const reservation = await getGovernedIssueContracts().getReservation(companyId, idempotencyKey);
+      if (!reservation || reservation.contractVersion !== GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION) {
+        throw notFound("Governed issue reservation not found");
+      }
+      const issue = await svc.getById(reservation.issueId);
+      if (!issue || issue.companyId !== companyId) throw notFound("Governed issue reservation target not found");
+      const readDecision = await decideIssueAccess(req, issue, "issue:read");
+      if (!readDecision.allowed) throw notFound("Governed issue reservation not found");
+      res.json({
+        version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+        state: reservation.activatedAt ? "activated" : "reserved",
+        reservation: serializeGovernedIssueReservation(reservation),
+        activationReceipt: serializeGovernedIssueActivationReceipt(reservation),
+        issue: governedIssueReservationResponseIssue(reservation),
+      });
+    },
+  );
+
+  router.get(
     "/v1/companies/:companyId/governed-issue-reservations/:idempotencyKey",
     async (req, res) => {
       const companyId = req.params.companyId as string;
@@ -8412,7 +8585,9 @@ export function issueRoutes(
         throw badRequest("Governed issue reservation key must contain 1 to 255 characters");
       }
       const reservation = await getGovernedIssueContracts().getReservation(companyId, idempotencyKey);
-      if (!reservation) throw notFound("Governed issue reservation not found");
+      if (!reservation || reservation.contractVersion !== GOVERNED_ISSUE_LIFECYCLE_VERSION) {
+        throw notFound("Governed issue reservation not found");
+      }
       const issue = await svc.getById(reservation.issueId);
       if (!issue || issue.companyId !== companyId) throw notFound("Governed issue reservation target not found");
       const readDecision = await decideIssueAccess(req, issue, "issue:read");
@@ -8423,6 +8598,132 @@ export function issueRoutes(
         reservation: serializeGovernedIssueReservation(reservation),
         activationReceipt: serializeGovernedIssueActivationReceipt(reservation),
         issue: governedIssueReservationResponseIssue(reservation),
+      });
+    },
+  );
+
+  router.put(
+    "/v2/companies/:companyId/governed-issue-reservations/:idempotencyKey/activation",
+    validate(activateGovernedIssueV2Schema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const idempotencyKey = (req.params.idempotencyKey as string).trim();
+      assertCompanyAccess(req, companyId);
+      if (!idempotencyKey || idempotencyKey.length > 255) {
+        throw badRequest("Governed issue reservation key must contain 1 to 255 characters");
+      }
+      if (isSkillTestScopedActor(req) || isTaskBridgeKeyActor(req)) {
+        throw forbidden("Scoped tokens cannot activate governed issue reservations");
+      }
+      const reservation = await getGovernedIssueContracts().getReservation(companyId, idempotencyKey);
+      if (!reservation || reservation.contractVersion !== GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION) {
+        throw notFound("Governed issue reservation not found");
+      }
+      const existing = await svc.getById(reservation.issueId);
+      if (!existing || existing.companyId !== companyId) throw notFound("Governed issue reservation target not found");
+      if (await assertLowTrustControlPlaneDenied(req, res, companyId, existing)) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
+
+      const requestedBuilderAgentId = req.body.executionProfiles.builderAgentId;
+      const builderAgentId = await normalizeIssueAssigneeAgentReference(
+        companyId,
+        requestedBuilderAgentId,
+        { actorType: req.actor.type },
+      );
+      if (!builderAgentId || builderAgentId !== requestedBuilderAgentId) {
+        throw unprocessable("Governed activation requires the exact builder agent");
+      }
+      await assertNoAgentDelegationCycle({
+        actorType: req.actor.type,
+        parentIssueId: existing.parentId,
+        assigneeAgentId: builderAgentId,
+      });
+      if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body.issue))) return;
+      await assertCanAssignTasks(req, companyId, {
+        projectId: existing.projectId,
+        parentIssueId: existing.parentId,
+        assigneeAgentId: builderAgentId,
+        assigneeUserId: null,
+      });
+
+      const actor = getActorInfo(req);
+      const envelope = {
+        ...req.body.issue,
+        executionPolicy: applyActorMonitorScheduledBy(
+          normalizeIssueExecutionPolicy(req.body.issue.executionPolicy),
+          actor.actorType,
+        ),
+      };
+      const activation = await getGovernedIssueContracts().activate({
+        version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+        companyId,
+        idempotencyKey,
+        expectedIssueId: req.body.expectedIssueId,
+        expectedIssueUpdatedAt: req.body.expectedIssueUpdatedAt,
+        expectedEnvelopeSha256: req.body.expectedEnvelopeSha256,
+        expectedExecutionProfileIntentSha256: req.body.expectedExecutionProfileIntentSha256,
+        builderAgentId,
+        executionProfiles: req.body.executionProfiles,
+        inspectExecutionProfile: ({
+          db: activationDb,
+          agentExecutionProfileRevision,
+          issueAssigneeProfileRevision,
+        }) => heartbeat.inspectGovernedExecutionProfileForActivation({
+          companyId,
+          agentId: builderAgentId,
+          issueId: existing.id,
+          db: activationDb,
+          agentExecutionProfileRevision,
+          issueAssigneeProfileRevision,
+          contextSnapshot: {
+            issueId: existing.id,
+            taskId: existing.id,
+            taskKey: existing.identifier,
+            source: "issue.governed_activation",
+            wakeReason: "governed_issue_activated",
+            governedContractVersion: 2,
+          },
+        }),
+        envelope,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+      if (activation.needsDispatch) {
+        try {
+          await dispatchGovernedActivationWake(builderAgentId);
+        } catch (err) {
+          logger.warn(
+            { err, issueId: activation.issue.id, builderAgentId },
+            "governed activation wake is durably queued but immediate dispatch failed",
+          );
+        }
+      }
+      if (!activation.replayed) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.governed_activated",
+          entityType: "issue",
+          entityId: activation.issue.id,
+          details: {
+            identifier: activation.issue.identifier,
+            builderAgentId,
+            activationSha256: activation.reservation.activationSha256,
+            wakeupRequestId: activation.reservation.wakeupRequestId,
+            heartbeatRunId: activation.reservation.heartbeatRunId,
+            executionProfileIntentSha256: activation.reservation.executionProfileIntentSha256,
+          },
+        });
+      }
+      res.status(activation.replayed ? 200 : 201).json({
+        version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+        replayed: activation.replayed,
+        issue: activation.issue,
+        activationReceipt: serializeGovernedIssueActivationReceipt(activation.reservation),
       });
     },
   );
@@ -8441,7 +8742,9 @@ export function issueRoutes(
         throw forbidden("Scoped tokens cannot activate governed issue reservations");
       }
       const reservation = await getGovernedIssueContracts().getReservation(companyId, idempotencyKey);
-      if (!reservation) throw notFound("Governed issue reservation not found");
+      if (!reservation || reservation.contractVersion !== GOVERNED_ISSUE_LIFECYCLE_VERSION) {
+        throw notFound("Governed issue reservation not found");
+      }
       const existing = await svc.getById(reservation.issueId);
       if (!existing || existing.companyId !== companyId) throw notFound("Governed issue reservation target not found");
       if (await assertLowTrustControlPlaneDenied(req, res, companyId, existing)) return;

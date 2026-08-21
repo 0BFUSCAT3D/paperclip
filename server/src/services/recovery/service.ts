@@ -763,7 +763,16 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(db: Db, deps: {
+  enqueueWakeup: RecoveryWakeup;
+  bindQueuedExecutionProfile?: (
+    authorityDb: Db,
+    input: {
+      run: typeof heartbeatRuns.$inferSelect;
+      transition: { kind: "fresh"; reason: "provider_quota_recovery" };
+    },
+  ) => Promise<unknown>;
+}) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -3076,6 +3085,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         })
         .returning()
         .then((rows) => rows[0]!);
+      await deps.bindQueuedExecutionProfile?.(tx as unknown as Db, {
+        run: scheduledRun,
+        transition: { kind: "fresh", reason: "provider_quota_recovery" },
+      });
       await tx
         .update(agentWakeupRequests)
         .set({ runId: scheduledRun.id, updatedAt: now })

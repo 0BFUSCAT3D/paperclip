@@ -652,6 +652,10 @@ export type RuntimeSecretManifestEntry = {
   configPath: string;
   envKey: string | null;
   secretId: string;
+  /** Concrete storage scope of the resolved secret. */
+  secretScope: "company" | "user";
+  /** Concrete immutable secret-version row selected for this resolution. */
+  versionId: string;
   bindingId?: string | null;
   secretKey: string;
   version: number;
@@ -1377,6 +1381,8 @@ export function secretService(db: Db) {
           configPath: configPath ?? "",
           envKey: configPath?.startsWith("env.") ? configPath.slice("env.".length) : null,
           secretId: secret.id,
+          secretScope: secret.scope === "user" ? "user" : "company",
+          versionId: versionRow.id,
           bindingId: binding?.id ?? null,
           secretKey: secret.key,
           version: resolvedVersion,
