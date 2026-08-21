@@ -7035,7 +7035,18 @@ export function issueService(db: Db) {
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
-        delete issueData.executionWorkspaceSettings;
+        if (governanceReservation && issueData.executionWorkspaceSettings !== undefined) {
+          const governedSettings = parseIssueExecutionWorkspaceSettings(
+            issueData.executionWorkspaceSettings,
+          );
+          if (governedSettings?.mode !== "shared_workspace") {
+            throw unprocessable(
+              "Governed issue workspace settings require shared_workspace while isolated workspaces are disabled",
+            );
+          }
+        } else {
+          delete issueData.executionWorkspaceSettings;
+        }
       }
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");

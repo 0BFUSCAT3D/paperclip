@@ -12,6 +12,7 @@ import {
   environments,
   executionWorkspaces,
   goals,
+  governedIssueReservations,
   heartbeatRuns,
   instanceSettings,
   issueComments,
@@ -2816,6 +2817,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(governedIssueReservations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -2830,6 +2832,58 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("retains the exact governed shared-workspace envelope when isolated workspaces are disabled", async () => {
+    const companyId = randomUUID();
+    const reviewerAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Reviewer",
+      role: "reviewer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const envelope = {
+      title: "Governed shared workspace",
+      status: "backlog" as const,
+      priority: "medium" as const,
+      reviewPolicy: "not_creator" as const,
+      executionPolicy: {
+        stages: [
+          {
+            id: randomUUID(),
+            type: "review" as const,
+            participants: [{ id: randomUUID(), type: "agent" as const, agentId: reviewerAgentId }],
+          },
+        ],
+      },
+      executionWorkspaceSettings: { mode: "shared_workspace" as const },
+    };
+
+    const issue = await svc.create(companyId, {
+      ...envelope,
+      idempotencyKey: "governed-shared-workspace",
+      allowDuplicate: true,
+      governanceReservation: {
+        contractVersion: 1,
+        requestIntentSha256: "a".repeat(64),
+        envelopeSha256: "b".repeat(64),
+        envelope,
+      },
+    });
+
+    expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
   });
 
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
