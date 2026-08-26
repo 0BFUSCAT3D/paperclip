@@ -5,6 +5,7 @@ import {
   agentWakeupRequests,
   agents,
   governedIssueReservations,
+  executionWorkspaces,
   heartbeatRunExecutionProfiles,
   heartbeatRuns,
   issues,
@@ -165,6 +166,10 @@ export type GovernedIssueActivationInput = {
         agentExecutionProfileRevision: number;
         issueAssigneeProfileRevision: number;
       }) => Promise<InspectedExecutionProfileBinding>;
+      inspectPreparedExecutionWorkspace?: (input: {
+        db: Db;
+        workspace: typeof executionWorkspaces.$inferSelect;
+      }) => Promise<void>;
     }
 );
 
@@ -372,6 +377,38 @@ export function governedIssueContractService(db: Db) {
         createdByAgentId: issue.createdByAgentId,
         createdByUserId: issue.createdByUserId,
       });
+
+      if (input.version === 2 && reservation.executionWorkspaceId) {
+        const preparedWorkspace = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, reservation.executionWorkspaceId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (
+          !preparedWorkspace
+          || preparedWorkspace.companyId !== input.companyId
+          || preparedWorkspace.custodyKind !== "external_prepared"
+          || preparedWorkspace.status !== "active"
+          || preparedWorkspace.sourceIssueId !== issue.id
+          || issue.executionWorkspaceId !== preparedWorkspace.id
+          || issue.projectId !== preparedWorkspace.projectId
+          || issue.projectWorkspaceId !== preparedWorkspace.projectWorkspaceId
+        ) {
+          throw preconditionFailed("Governed prepared workspace binding changed after reservation", {
+            code: "governed_prepared_workspace_binding_drift",
+          });
+        }
+        if (!input.inspectPreparedExecutionWorkspace) {
+          throw conflict("Prepared workspace activation validator is unavailable", {
+            code: "governed_prepared_workspace_validator_unavailable",
+          });
+        }
+        await input.inspectPreparedExecutionWorkspace({
+          db: tx as unknown as Db,
+          workspace: preparedWorkspace,
+        });
+      }
 
       const now = new Date();
       await tx.execute(sql`select set_config('paperclip.governed_activation_issue_id', ${issue.id}, true)`);

@@ -10,6 +10,7 @@ import {
   agentTaskSessions,
   agentWakeupRequests,
   governedIssueReservations,
+  governedExecutorLaunchReceipts,
   issues,
   issueComments,
   projects,
@@ -459,6 +460,7 @@ export function companyService(db: Db) {
         // Governed activation receipts intentionally restrict their issue/run/
         // wake references. Authorized company hard deletion must remove the
         // receipts before those referenced rows.
+        await tx.delete(governedExecutorLaunchReceipts).where(eq(governedExecutorLaunchReceipts.companyId, id));
         await tx.delete(governedIssueReservations).where(eq(governedIssueReservations.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));

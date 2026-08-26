@@ -586,6 +586,9 @@ export {
 
 export {
   executionWorkspaceConfigSchema,
+  adoptPreparedExecutionWorkspaceSchema,
+  preparedExecutionWorkspaceAdoptionSchema,
+  governedExecutorLaunchReceiptSchema,
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
@@ -600,6 +603,9 @@ export {
   type ReconcileExecutionWorkspaceBranch,
   type UpdateExecutionWorkspace,
   type WorkspaceOverviewQuery,
+  type AdoptPreparedExecutionWorkspace,
+  type PreparedExecutionWorkspaceAdoption,
+  type GovernedExecutorLaunchReceipt,
 } from "./execution-workspace.js";
 
 export {

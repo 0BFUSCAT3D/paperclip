@@ -12,6 +12,63 @@ export const executionWorkspaceStatusSchema = z.enum([
   "cleanup_failed",
 ]);
 
+const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const gitObjectIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+const safeTaskIdSchema = z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+
+/** Same-host board request to adopt, but never own, a prepared external worktree. */
+export const adoptPreparedExecutionWorkspaceSchema = z.object({
+  version: z.literal(1),
+  companyId: z.string().uuid(),
+  projectWorkspaceId: z.string().uuid(),
+  connectionId: z.string().uuid(),
+  lifecycleId: z.string().uuid(),
+  taskId: safeTaskIdSchema,
+  path: z.string().min(1).max(4096),
+  root: z.string().min(1).max(4096),
+  commonGitDirectory: z.string().min(1).max(4096),
+  branch: z.string().min(1).max(255),
+  authorizedStartHeadSha: gitObjectIdSchema,
+  repositoryIdentitySha256: sha256Schema,
+  inspectionReceiptSha256: sha256Schema,
+  preparedIdentitySha256: sha256Schema,
+}).strict();
+
+export const preparedExecutionWorkspaceAdoptionSchema = z.object({
+  version: z.literal(1),
+  executionWorkspaceId: z.string().uuid(),
+  companyId: z.string().uuid(),
+  projectId: z.string().uuid(),
+  projectWorkspaceId: z.string().uuid(),
+  connectionId: z.string().uuid(),
+  lifecycleId: z.string().uuid(),
+  taskId: safeTaskIdSchema,
+  cwd: z.string().min(1).max(4096),
+  branch: z.string().min(1).max(255),
+  authorizedStartHeadSha: gitObjectIdSchema,
+  preparedIdentitySha256: sha256Schema,
+  replayed: z.boolean(),
+}).strict();
+
+export const governedExecutorLaunchReceiptSchema = z.object({
+  version: z.literal(1),
+  receipt: z.object({
+    connectionId: z.string().uuid(),
+    lifecycleId: z.string().uuid(),
+    taskId: safeTaskIdSchema,
+    pid: z.number().int().positive(),
+    startToken: sha256Schema,
+    instanceId: z.string().uuid(),
+    receiptId: z.string().uuid(),
+  }).strict(),
+  workspace: z.object({
+    executionWorkspaceId: z.string().uuid(),
+    cwd: z.string().min(1).max(4096),
+    branch: z.string().min(1).max(255),
+    headSha: gitObjectIdSchema,
+  }).strict(),
+}).strict();
+
 export const executionWorkspaceDeliveryStateSchema = z.enum([
   "merged_via_pr",
   "merged_by_ancestry",
@@ -178,3 +235,6 @@ export const reconcileExecutionWorkspaceBranchSchema = z.discriminatedUnion("mod
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
 export type ReconcileExecutionWorkspaceBranch = z.infer<typeof reconcileExecutionWorkspaceBranchSchema>;
 export type WorkspaceOverviewQuery = z.infer<typeof workspaceOverviewQuerySchema>;
+export type AdoptPreparedExecutionWorkspace = z.infer<typeof adoptPreparedExecutionWorkspaceSchema>;
+export type PreparedExecutionWorkspaceAdoption = z.infer<typeof preparedExecutionWorkspaceAdoptionSchema>;
+export type GovernedExecutorLaunchReceipt = z.infer<typeof governedExecutorLaunchReceiptSchema>;

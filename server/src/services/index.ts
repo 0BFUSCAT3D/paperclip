@@ -107,6 +107,8 @@ export {
   GOVERNED_ISSUE_LIFECYCLE_VERSION,
   GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
 } from "./governed-issue-contract.js";
+export { governedExecutorLaunchReceiptService } from "./governed-executor-launch-receipts.js";
+export { deriveLocalProcessStartToken } from "./process-start-identity.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
