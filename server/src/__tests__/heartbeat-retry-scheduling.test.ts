@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   issueRelations,
   issues,
+  projectWorkspaces,
   projects,
 } from "@paperclipai/db";
 import {
@@ -133,6 +134,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await cleanupHeartbeatRunDependents();
     await db.delete(heartbeatRuns);
@@ -862,6 +864,110 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
     expect(agent?.id).toBe(agentId);
+  });
+
+  it("holds an external prepared workspace validation failure without retry, quarantine, or detach", async () => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const validation = {
+      reason: "git_worktree_branch_incoherence",
+      fingerprint: "workspace_incoherence:v1:sha256:external",
+      executionWorkspaceId,
+      expectedBranch: "reeve/prepared",
+      actualBranch: "changed",
+      cleanliness: "clean",
+    };
+    await db.insert(projects).values({ id: projectId, companyId, name: "Prepared", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: "/workspace/repository",
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Reeve prepared",
+      status: "active",
+      cwd: "/workspace/prepared",
+      baseRef: "a".repeat(40),
+      branchName: "reeve/prepared",
+      providerType: "git_worktree",
+      providerRef: "/workspace/prepared",
+      custodyKind: "external_prepared",
+      externalConnectionId: randomUUID(),
+      externalLifecycleId: randomUUID(),
+      externalTaskId: "prepared-task",
+      preparedIdentitySha256: "b".repeat(64),
+      authorizedStartHeadSha: "a".repeat(40),
+      repositoryIdentitySha256: "c".repeat(64),
+      inspectionReceiptSha256: "d".repeat(64),
+      externalRoot: "/workspace/repository",
+      externalCommonGitDirectory: "/workspace/repository/.git",
+      metadata: { externalCustody: true },
+    });
+    await db.update(issues).set({
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({
+      error: "workspace validation failed before dispatch",
+      errorCode: "workspace_validation_failed",
+      resultJson: { workspaceValidation: validation },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        mutation: "interaction",
+        interactionId: randomUUID(),
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    });
+    expect(result).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "external_prepared_workspace_validation_retry_held",
+      issueId,
+    });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+    expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, INTERACTION_CONTINUATION_INFRA_WAKE_REASON))).toHaveLength(0);
+    expect(await db.select({
+      executionRunId: issues.executionRunId,
+      executionWorkspaceId: issues.executionWorkspaceId,
+      executionWorkspacePreference: issues.executionWorkspacePreference,
+    }).from(issues).where(eq(issues.id, issueId))).toEqual([{
+      executionRunId: runId,
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    }]);
+    expect(await db.select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces).where(eq(executionWorkspaces.id, executionWorkspaceId)))
+      .toEqual([{ status: "active", metadata: { externalCustody: true } }]);
+    expect(await db.select({ id: activityLog.id }).from(activityLog)
+      .where(eq(activityLog.action, "execution_workspace.workspace_validation_quarantined")))
+      .toHaveLength(0);
   });
 
   it("does not quarantine another issue's workspace when validation payload is stale", async () => {

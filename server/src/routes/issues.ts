@@ -133,6 +133,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   governedIssueContractService,
+  governedExecutorLaunchReceiptService,
   governedIssueEnvelopeSha256,
   governedIssueSha256,
   governedIssueReservationResponseIssue,
@@ -205,6 +206,7 @@ import {
 import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { validateStoredPreparedExecutionWorkspace } from "../services/prepared-execution-workspaces.js";
 import {
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
@@ -2938,6 +2940,7 @@ export function issueRoutes(
     governedIssueContracts ??= governedIssueContractService(db);
     return governedIssueContracts;
   };
+  const governedLaunchReceipts = governedExecutorLaunchReceiptService(db);
   const dispatchGovernedActivationWake = opts.governedActivationWakeDispatcher
     ?? heartbeat.startNextQueuedRunForAgent;
   const enqueueStalledReviewDecisionWakeup = opts.stalledReviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
@@ -8602,6 +8605,50 @@ export function issueRoutes(
     },
   );
 
+  router.get(
+    "/v2/companies/:companyId/governed-issue-reservations/:idempotencyKey/executor-launch-receipt",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const idempotencyKey = (req.params.idempotencyKey as string).trim();
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      if (!idempotencyKey || idempotencyKey.length > 255) {
+        throw badRequest("Governed issue reservation key must contain 1 to 255 characters");
+      }
+      const reservation = await getGovernedIssueContracts().getReservation(companyId, idempotencyKey);
+      if (!reservation || reservation.contractVersion !== GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION) {
+        throw notFound("Governed issue reservation not found");
+      }
+      const issue = await svc.getById(reservation.issueId);
+      if (!issue || issue.companyId !== companyId) throw notFound("Governed issue reservation target not found");
+      const readDecision = await decideIssueAccess(req, issue, "issue:read");
+      if (!readDecision.allowed) throw notFound("Governed issue reservation not found");
+      const receipt = await governedLaunchReceipts.getForReservation(reservation.id);
+      if (receipt) {
+        res.json(receipt);
+        return;
+      }
+      if (!reservation.activatedAt || !reservation.heartbeatRunId) {
+        throw conflict("Governed issue reservation has not been activated", {
+          code: "governed_executor_launch_not_activated",
+        });
+      }
+      const runStatus = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, reservation.heartbeatRunId))
+        .then((rows) => rows[0]?.status ?? null);
+      if (runStatus === "queued" || runStatus === "running") {
+        res.status(202).json({ version: 1, state: "pending" });
+        return;
+      }
+      throw conflict("Governed executor terminated without a launch receipt", {
+        code: "governed_executor_launch_receipt_missing",
+        runStatus,
+      });
+    },
+  );
+
   router.put(
     "/v2/companies/:companyId/governed-issue-reservations/:idempotencyKey/activation",
     validate(activateGovernedIssueV2Schema),
@@ -8684,6 +8731,13 @@ export function issueRoutes(
             governedContractVersion: 2,
           },
         }),
+        inspectPreparedExecutionWorkspace: async ({ db: activationDb, workspace }) => {
+          await validateStoredPreparedExecutionWorkspace({
+            db: activationDb,
+            companyId,
+            workspace,
+          });
+        },
         envelope,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,

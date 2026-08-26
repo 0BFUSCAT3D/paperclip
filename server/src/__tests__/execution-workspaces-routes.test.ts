@@ -40,6 +40,25 @@ const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   destroyReusableSandboxLeases: vi.fn(async () => undefined),
 }));
 
+const mockAssertWorkspaceArtifactDirectorShipMutationAllowed = vi.hoisted(() =>
+  vi.fn(async () => undefined),
+);
+const mockValidatePreparedExecutionWorkspace = vi.hoisted(() => vi.fn(async () => ({
+  path: "/tmp/prepared",
+  root: "/tmp/repository",
+  commonGitDirectory: "/tmp/repository/.git",
+  branchName: "reeve/task-1",
+  headSha: "a".repeat(40),
+})));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: true })),
+}));
+
+vi.mock("../services/artifact-director-ship-guards.js", () => ({
+  assertWorkspaceArtifactDirectorShipMutationAllowed:
+    mockAssertWorkspaceArtifactDirectorShipMutationAllowed,
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
@@ -52,6 +71,14 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../services/environment-runtime.js", () => ({
   environmentRuntimeService: () => mockEnvironmentRuntimeService,
+}));
+
+vi.mock("../services/prepared-execution-workspaces.js", () => ({
+  validatePreparedExecutionWorkspace: mockValidatePreparedExecutionWorkspace,
+}));
+
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
 const mockWorkspaceRuntimeTeardown = vi.hoisted(() => ({
@@ -75,14 +102,16 @@ function createApp(actor: Record<string, unknown> = {
   companyIds: ["company-1"],
   source: "session",
   isInstanceAdmin: false,
-}) {
+}, db: unknown = {}, supportsExactProcessStartIdentity = true) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", executionWorkspaceRoutes({} as any));
+  app.use("/api", executionWorkspaceRoutes(db as any, {
+    supportsExactProcessStartIdentity: () => supportsExactProcessStartIdentity,
+  }));
   app.use(errorHandler);
   return app;
 }
@@ -116,6 +145,155 @@ describe.sequential("execution workspace routes", () => {
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+  });
+
+  it("rejects prepared worktree adoption from an agent before filesystem or database inspection", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "10000000-0000-4000-8000-000000000010",
+      companyId: "10000000-0000-4000-8000-000000000001",
+      source: "agent_jwt",
+      runId: "10000000-0000-4000-8000-000000000011",
+    }))
+      .put("/api/v1/projects/10000000-0000-4000-8000-000000000002/prepared-execution-workspaces/10000000-0000-4000-8000-000000000005")
+      .send({
+        version: 1,
+        companyId: "10000000-0000-4000-8000-000000000001",
+        projectWorkspaceId: "10000000-0000-4000-8000-000000000003",
+        connectionId: "10000000-0000-4000-8000-000000000004",
+        lifecycleId: "10000000-0000-4000-8000-000000000005",
+        taskId: "task-1",
+        path: "/tmp/prepared",
+        root: "/tmp/repository",
+        commonGitDirectory: "/tmp/repository/.git",
+        branch: "reeve/task-1",
+        authorizedStartHeadSha: "a".repeat(40),
+        repositoryIdentitySha256: "b".repeat(64),
+        inspectionReceiptSha256: "c".repeat(64),
+        preparedIdentitySha256: "d".repeat(64),
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(mockValidatePreparedExecutionWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("rejects adoption when the host exact process-identity source is unavailable", async () => {
+    const companyId = "10000000-0000-4000-8000-000000000001";
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: [companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    }, {}, false))
+      .put("/api/v1/projects/10000000-0000-4000-8000-000000000002/prepared-execution-workspaces/10000000-0000-4000-8000-000000000005")
+      .send({
+        version: 1,
+        companyId,
+        projectWorkspaceId: "10000000-0000-4000-8000-000000000003",
+        connectionId: "10000000-0000-4000-8000-000000000004",
+        lifecycleId: "10000000-0000-4000-8000-000000000005",
+        taskId: "task-1",
+        path: "/tmp/prepared",
+        root: "/tmp/repository",
+        commonGitDirectory: "/tmp/repository/.git",
+        branch: "reeve/task-1",
+        authorizedStartHeadSha: "a".repeat(40),
+        repositoryIdentitySha256: "b".repeat(64),
+        inspectionReceiptSha256: "c".repeat(64),
+        preparedIdentitySha256: "d".repeat(64),
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("exact_process_start_identity_unavailable");
+    expect(mockValidatePreparedExecutionWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("adopts once, replays exact identity, and rejects lifecycle identity drift", async () => {
+    const companyId = "10000000-0000-4000-8000-000000000001";
+    const projectId = "10000000-0000-4000-8000-000000000002";
+    const projectWorkspaceId = "10000000-0000-4000-8000-000000000003";
+    const connectionId = "10000000-0000-4000-8000-000000000004";
+    const lifecycleId = "10000000-0000-4000-8000-000000000005";
+    let stored: Record<string, unknown> | null = null;
+    const transaction = {
+      execute: vi.fn(async () => undefined),
+      select: vi.fn(() => ({
+        from: () => ({
+          where: () => Promise.resolve(stored ? [stored] : []),
+        }),
+      })),
+      insert: vi.fn(() => ({
+        values: (values: Record<string, unknown>) => ({
+          returning: () => ({
+            then: (resolve: (rows: Record<string, unknown>[]) => unknown) => {
+              stored = { id: "10000000-0000-4000-8000-000000000006", ...values };
+              return Promise.resolve(resolve([stored]));
+            },
+          }),
+        }),
+      })),
+    };
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve([{ id: projectId, companyId }]),
+        }),
+      }),
+      transaction: (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction),
+    };
+    const body = {
+      version: 1,
+      companyId,
+      projectWorkspaceId,
+      connectionId,
+      lifecycleId,
+      taskId: "task-1",
+      path: "/tmp/prepared",
+      root: "/tmp/repository",
+      commonGitDirectory: "/tmp/repository/.git",
+      branch: "reeve/task-1",
+      authorizedStartHeadSha: "a".repeat(40),
+      repositoryIdentitySha256: "b".repeat(64),
+      inspectionReceiptSha256: "c".repeat(64),
+      preparedIdentitySha256: "d".repeat(64),
+    };
+    const app = createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: [companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    }, db);
+
+    const created = await request(app)
+      .put(`/api/v1/projects/${projectId}/prepared-execution-workspaces/${lifecycleId}`)
+      .send(body);
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({
+      version: 1,
+      executionWorkspaceId: "10000000-0000-4000-8000-000000000006",
+      connectionId,
+      lifecycleId,
+      taskId: "task-1",
+      replayed: false,
+    });
+
+    const replayed = await request(app)
+      .put(`/api/v1/projects/${projectId}/prepared-execution-workspaces/${lifecycleId}`)
+      .send(body);
+    expect(replayed.status).toBe(200);
+    expect(replayed.body.replayed).toBe(true);
+    expect(transaction.insert).toHaveBeenCalledTimes(1);
+
+    const drifted = await request(app)
+      .put(`/api/v1/projects/${projectId}/prepared-execution-workspaces/${lifecycleId}`)
+      .send({ ...body, taskId: "different-task" });
+    expect(drifted.status).toBe(409);
+    expect(drifted.body.code).toBe("prepared_workspace_identity_conflict");
+    expect(transaction.insert).toHaveBeenCalledTimes(1);
+    expect(mockValidatePreparedExecutionWorkspace).toHaveBeenCalledTimes(5);
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
@@ -502,6 +680,55 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).toHaveBeenCalledTimes(1);
     // The destruction fence never runs, so no worktree is removed.
     expect(mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction).not.toHaveBeenCalled();
+  });
+
+  it("holds explicit archive of an external prepared workspace before lifecycle locks or teardown", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "active",
+      mode: "isolated_workspace",
+      custodyKind: "external_prepared",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("external_prepared_workspace_lifecycle_held");
+    expect(mockAssertWorkspaceArtifactDirectorShipMutationAllowed).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.getCloseReadiness).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).not.toHaveBeenCalled();
+    expect(mockWorkspaceRuntimeLeaseService.release).not.toHaveBeenCalled();
+    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeases).not.toHaveBeenCalled();
+    expect(mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockWorkspaceRuntimeTeardown.cleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
+  });
+
+  it("holds external prepared runtime commands before operations, leases, or commands", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "active",
+      mode: "isolated_workspace",
+      custodyKind: "external_prepared",
+      cwd: "/tmp/prepared",
+      runtimeServices: [],
+    });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/runtime-commands/run")
+      .send({ workspaceCommandId: "build" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("external_prepared_workspace_runtime_control_held");
+    expect(mockAssertWorkspaceArtifactDirectorShipMutationAllowed).not.toHaveBeenCalled();
+    expect(mockWorkspaceOperationService.createRecorder).not.toHaveBeenCalled();
+    expect(mockWorkspaceRuntimeLeaseService.claim).not.toHaveBeenCalled();
+    expect(mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
   });
 
   it("destroys the reusable sandbox leases inside the destruction fence when the archive wins", async () => {

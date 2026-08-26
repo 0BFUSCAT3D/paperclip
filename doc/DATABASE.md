@@ -244,6 +244,22 @@ for governed clients; the generic issue create and PATCH routes remain available
 for existing clients but are not a substitute for reservation CAS and durable
 activation receipts.
 
+An `execution_workspaces` row with `custody_kind = external_prepared` records a
+same-host worktree that Reeve owns. Its connection, lifecycle, task, reviewed
+head, receipt hashes, canonical root, and common Git directory form an immutable
+identity. Paperclip re-proves the registered worktree, branch, exact head, and
+cleanliness before reservation, activation, and spawn, but never refreshes,
+rebuilds, removes, or runs cleanup commands in that worktree. Only a version 2
+governed reservation can claim one such row, through
+`governed_issue_reservations.execution_workspace_id`.
+
+`governed_executor_launch_receipts` stores the immutable post-spawn evidence for
+that claim: the exact execution workspace, cwd, branch, head, Reeve lifecycle,
+PID, and OS process-start token. Reservation and heartbeat-run uniqueness make
+replay exact. The adapter withholds prompt stdin and terminates the child when
+this receipt cannot be persisted, so a governed external worktree never begins
+an unreceipted run.
+
 ## Decision training snapshot retention
 
 `decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.

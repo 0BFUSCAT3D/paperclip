@@ -105,6 +105,41 @@ export function signalRunningProcess(
   }
 }
 
+async function waitForExactChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off("exit", onExit);
+      child.off("close", onExit);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+    child.once("close", onExit);
+    if (child.exitCode !== null || child.signalCode !== null) finish(true);
+  });
+}
+
+async function terminateSpawnRejectedChild(input: {
+  child: ChildProcess;
+  processGroupId: number | null;
+  graceSec: number;
+}): Promise<boolean> {
+  const graceMs = Math.max(50, Math.min(Math.max(1, input.graceSec) * 1000, 5_000));
+  const exactExit = waitForExactChildExit(input.child, graceMs);
+  signalRunningProcess(input, "SIGTERM");
+  if (await exactExit) return true;
+
+  const killedExit = waitForExactChildExit(input.child, 5_000);
+  signalRunningProcess(input, "SIGKILL");
+  return killedExit;
+}
+
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
@@ -3372,11 +3407,9 @@ export async function runChildProcess(
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
-        const spawnPersistPromise =
+        const spawnPersistPromise: Promise<void> =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
-            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {
-              onLogError(err, runId, "failed to record child process metadata");
-            })
+            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt })
             : Promise.resolve();
 
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
@@ -3393,6 +3426,7 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let spawnAuthorityRejected = false;
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
@@ -3485,12 +3519,33 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
-          });
+          void spawnPersistPromise.then(
+            () => {
+              if (child.killed || stdin.destroyed) return;
+              stdin.write(opts.stdin as string);
+              stdin.end();
+            },
+            () => undefined,
+          );
         }
+        void spawnPersistPromise.catch(async (err) => {
+          spawnAuthorityRejected = true;
+          onLogError(err, runId, "failed to persist child process launch authority");
+          if (stdin && !stdin.destroyed) stdin.destroy();
+          const terminated = await terminateSpawnRejectedChild({
+            child,
+            processGroupId,
+            graceSec: opts.graceSec,
+          });
+          if (!terminated) {
+            reject(new Error(
+              `Launch authority persistence failed and exact executor termination could not be confirmed: ${err instanceof Error ? err.message : String(err)}`,
+              { cause: err },
+            ));
+            return;
+          }
+          reject(err instanceof Error ? err : new Error(String(err)));
+        });
 
         child.on("error", (err: Error) => {
           if (timeout) clearTimeout(timeout);
@@ -3518,26 +3573,29 @@ export async function runChildProcess(
             void Promise.resolve()
               .then(() => target.cleanup?.())
               .finally(() => {
-              resolve({
-                exitCode: code,
-                signal,
-                timedOut,
-                stdout,
-                stderr,
-                pid: child.pid ?? null,
-                startedAt,
-                terminalResultCleanup: terminalCleanupStarted
-                  ? {
-                    kind: "terminal_result_cleanup",
-                    stopped: true,
-                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-                    terminalResultSeen,
-                    signal: terminalCleanupSignal,
-                    forceKilled: terminalCleanupForceKilled,
-                  }
-                  : null,
-              });
+              void spawnPersistPromise.then(() => {
+                if (spawnAuthorityRejected) return;
+                resolve({
+                  exitCode: code,
+                  signal,
+                  timedOut,
+                  stdout,
+                  stderr,
+                  pid: child.pid ?? null,
+                  startedAt,
+                  terminalResultCleanup: terminalCleanupStarted
+                    ? {
+                      kind: "terminal_result_cleanup",
+                      stopped: true,
+                      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                      reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                      terminalResultSeen,
+                      signal: terminalCleanupSignal,
+                      forceKilled: terminalCleanupForceKilled,
+                    }
+                    : null,
+                });
+              }, () => undefined);
               });
           });
         });

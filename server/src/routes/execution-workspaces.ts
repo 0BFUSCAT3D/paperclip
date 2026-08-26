@@ -1,8 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
+  adoptPreparedExecutionWorkspaceSchema,
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
   reconcileExecutionWorkspaceBranchSchema,
@@ -12,7 +13,7 @@ import {
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { forbidden } from "../errors.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 import {
   accessService,
   executionWorkspaceService,
@@ -47,10 +48,19 @@ import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { runExclusiveWorkspaceRuntimeControl } from "../services/workspace-operations.js";
 import { assertWorkspaceArtifactDirectorShipMutationAllowed } from "../services/artifact-director-ship-guards.js";
+import { validatePreparedExecutionWorkspace } from "../services/prepared-execution-workspaces.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { supportsExactLocalProcessStartIdentity } from "../services/process-start-identity.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
-export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
+export function executionWorkspaceRoutes(
+  db: Db,
+  opts: {
+    pluginWorkerManager?: PluginWorkerManager;
+    supportsExactProcessStartIdentity?: () => boolean;
+  } = {},
+) {
   const router = Router();
   const svc = executionWorkspaceService(db);
   const access = accessService(db);
@@ -62,6 +72,144 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const instanceSettings = instanceSettingsService(db);
+
+  router.put(
+    "/v1/projects/:projectId/prepared-execution-workspaces/:lifecycleId",
+    validate(adoptPreparedExecutionWorkspaceSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const projectId = req.params.projectId as string;
+      const lifecycleId = req.params.lifecycleId as string;
+      const prepared = req.body;
+      assertCompanyAccess(req, prepared.companyId);
+      if (lifecycleId !== prepared.lifecycleId) {
+        throw conflict("Prepared workspace lifecycle differs from the route", {
+          code: "prepared_workspace_lifecycle_mismatch",
+        });
+      }
+      if (!(await instanceSettings.getExperimental()).enableIsolatedWorkspaces) {
+        throw conflict("Prepared workspace adoption requires isolated workspaces", {
+          code: "isolated_workspaces_disabled",
+        });
+      }
+      const supportsExactProcessStartIdentity = opts.supportsExactProcessStartIdentity
+        ?? supportsExactLocalProcessStartIdentity;
+      if (!supportsExactProcessStartIdentity()) {
+        throw conflict("Prepared workspace adoption requires exact local process-start identity", {
+          code: "exact_process_start_identity_unavailable",
+        });
+      }
+      const project = await db
+        .select({ id: projects.id, companyId: projects.companyId })
+        .from(projects)
+        .where(and(eq(projects.id, projectId), eq(projects.companyId, prepared.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!project) throw notFound("Project not found");
+
+      await validatePreparedExecutionWorkspace({ db, projectId, prepared });
+      const actor = getActorInfo(req);
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${prepared.companyId}:${prepared.connectionId}:${lifecycleId}`}))`);
+        const existing = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(and(
+            eq(executionWorkspaces.companyId, prepared.companyId),
+            eq(executionWorkspaces.externalConnectionId, prepared.connectionId),
+            eq(executionWorkspaces.externalLifecycleId, lifecycleId),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          const exact = existing.projectId === projectId
+            && existing.projectWorkspaceId === prepared.projectWorkspaceId
+            && existing.externalTaskId === prepared.taskId
+            && existing.cwd === prepared.path
+            && existing.providerRef === prepared.path
+            && existing.branchName === prepared.branch
+            && existing.authorizedStartHeadSha === prepared.authorizedStartHeadSha
+            && existing.repositoryIdentitySha256 === prepared.repositoryIdentitySha256
+            && existing.inspectionReceiptSha256 === prepared.inspectionReceiptSha256
+            && existing.preparedIdentitySha256 === prepared.preparedIdentitySha256
+            && existing.externalRoot === prepared.root
+            && existing.externalCommonGitDirectory === prepared.commonGitDirectory
+            && existing.custodyKind === "external_prepared";
+          if (!exact) {
+            throw conflict("Prepared workspace lifecycle is already bound to different identity", {
+              code: "prepared_workspace_identity_conflict",
+            });
+          }
+          await validatePreparedExecutionWorkspace({ db: tx as unknown as Db, projectId, prepared });
+          return { row: existing, replayed: true };
+        }
+
+        await validatePreparedExecutionWorkspace({ db: tx as unknown as Db, projectId, prepared });
+        const row = await tx
+          .insert(executionWorkspaces)
+          .values({
+            companyId: prepared.companyId,
+            projectId,
+            projectWorkspaceId: prepared.projectWorkspaceId,
+            sourceIssueId: null,
+            mode: "isolated_workspace",
+            strategyType: "git_worktree",
+            name: `Prepared workspace ${prepared.taskId}`,
+            status: "active",
+            cwd: prepared.path,
+            repoUrl: null,
+            baseRef: prepared.authorizedStartHeadSha,
+            branchName: prepared.branch,
+            providerType: "git_worktree",
+            providerRef: prepared.path,
+            custodyKind: "external_prepared",
+            externalConnectionId: prepared.connectionId,
+            externalLifecycleId: lifecycleId,
+            externalTaskId: prepared.taskId,
+            preparedIdentitySha256: prepared.preparedIdentitySha256,
+            authorizedStartHeadSha: prepared.authorizedStartHeadSha,
+            repositoryIdentitySha256: prepared.repositoryIdentitySha256,
+            inspectionReceiptSha256: prepared.inspectionReceiptSha256,
+            externalRoot: prepared.root,
+            externalCommonGitDirectory: prepared.commonGitDirectory,
+            metadata: { createdByRuntime: false, externalCustody: true },
+          })
+          .returning()
+          .then((rows) => rows[0]!);
+        await logActivity(tx as unknown as Db, {
+          companyId: prepared.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "execution_workspace.prepared_adopted",
+          entityType: "execution_workspace",
+          entityId: row.id,
+          details: {
+            projectId,
+            projectWorkspaceId: prepared.projectWorkspaceId,
+            lifecycleId,
+            taskId: prepared.taskId,
+          },
+        });
+        return { row, replayed: false };
+      });
+      res.status(result.replayed ? 200 : 201).json({
+        version: 1,
+        executionWorkspaceId: result.row.id,
+        companyId: result.row.companyId,
+        projectId: result.row.projectId,
+        projectWorkspaceId: result.row.projectWorkspaceId,
+        connectionId: result.row.externalConnectionId,
+        lifecycleId: result.row.externalLifecycleId,
+        taskId: result.row.externalTaskId,
+        cwd: result.row.cwd,
+        branch: result.row.branchName,
+        authorizedStartHeadSha: result.row.authorizedStartHeadSha,
+        preparedIdentitySha256: result.row.preparedIdentitySha256,
+        replayed: result.replayed,
+      });
+    },
+  );
 
   async function assertExecutionWorkspaceReadAllowed(req: Request, res: Response, companyId: string) {
     const decision = await access.decide({
@@ -161,6 +309,11 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+    if (existing.custodyKind === "external_prepared") {
+      throw conflict("Runtime commands are held for Reeve-custody prepared worktrees", {
+        code: "external_prepared_workspace_runtime_control_held",
+      });
+    }
 
     return db.transaction(async (shipTx) => {
       await assertWorkspaceArtifactDirectorShipMutationAllowed(shipTx as unknown as Db, id);
@@ -348,6 +501,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       run: async () => {
         const ensureWorkspaceAvailable = async () =>
           await ensurePersistedExecutionWorkspaceAvailable({
+            db,
             base: {
               baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
               source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
@@ -366,6 +520,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               repoUrl: existing.repoUrl,
               baseRef: existing.baseRef,
               branchName: existing.branchName,
+              custodyKind: existing.custodyKind,
+              externalConnectionId: existing.externalConnectionId,
+              externalLifecycleId: existing.externalLifecycleId,
+              externalTaskId: existing.externalTaskId,
+              preparedIdentitySha256: existing.preparedIdentitySha256,
+              authorizedStartHeadSha: existing.authorizedStartHeadSha,
+              repositoryIdentitySha256: existing.repositoryIdentitySha256,
+              inspectionReceiptSha256: existing.inspectionReceiptSha256,
+              externalRoot: existing.externalRoot,
+              externalCommonGitDirectory: existing.externalCommonGitDirectory,
               metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
@@ -713,8 +877,17 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
-    await assertWorkspaceArtifactDirectorShipMutationAllowed(db, id);
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+    if (
+      existing.custodyKind === "external_prepared"
+      && req.body.status !== undefined
+      && req.body.status !== existing.status
+    ) {
+      throw conflict("Lifecycle status changes are held for Reeve-custody prepared worktrees", {
+        code: "external_prepared_workspace_lifecycle_held",
+      });
+    }
+    await assertWorkspaceArtifactDirectorShipMutationAllowed(db, id);
     if (
       req.actor.type === "agent"
       && (
@@ -800,6 +973,11 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           error: "Execution workspace was reopened and cannot be archived right now",
         });
         return;
+      }
+      if (archiveResult.outcome === "external_custody_held") {
+        throw conflict("Lifecycle status changes are held for Reeve-custody prepared worktrees", {
+          code: "external_prepared_workspace_lifecycle_held",
+        });
       }
       workspace = archiveResult.workspace;
       const capturedGeneration = archiveResult.capturedGeneration;

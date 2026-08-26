@@ -112,6 +112,9 @@ import {
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
   reconcileExecutionWorkspaceBranchSchema,
+  adoptPreparedExecutionWorkspaceSchema,
+  preparedExecutionWorkspaceAdoptionSchema,
+  governedExecutorLaunchReceiptSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -1220,6 +1223,23 @@ const PaperclipCapabilitiesSchema = z.object({
       claudeAuthAuthority: z.literal("owner_secret_version"),
       codexAuthAuthority: z.literal("managed_chatgpt_profile"),
       nativeHostClaudeLoginAccepted: z.literal(false),
+    }).strict(),
+    preparedExecutionWorkspaceAdoption: z.object({
+      supported: z.boolean(),
+      enabled: z.boolean(),
+      version: z.literal(1),
+      adoptionEndpoint: z.literal(
+        "/api/v1/projects/{projectId}/prepared-execution-workspaces/{lifecycleId}",
+      ),
+      launchReceiptEndpoint: z.literal(
+        "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/executor-launch-receipt",
+      ),
+      sameHostOnly: z.literal(true),
+      boardOnly: z.literal(true),
+      exactEnvelopeWorkspaceCas: z.literal(true),
+      externalCustodyNonDestructive: z.literal(true),
+      prerequisite: z.literal("enableIsolatedWorkspaces"),
+      osProcessStartIdentity: z.tuple([z.literal("linux"), z.literal("darwin")]),
     }).strict(),
     executionAuditAgentDeleteProtection: z.object({
       supported: z.literal(true),
@@ -2501,6 +2521,28 @@ registry.registerPath({
     409: r.conflict,
     412: r.preconditionFailed,
     422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/executor-launch-receipt",
+  tags: ["issues"],
+  summary: "Read the immutable host launch receipt for a governed prepared workspace",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+  },
+  responses: {
+    200: r.ok(governedExecutorLaunchReceiptSchema),
+    202: r.ok(z.object({ version: z.literal(1), state: z.literal("pending") }).strict()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
   },
 });
 
@@ -5739,6 +5781,27 @@ registry.registerPath({
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v1/projects/{projectId}/prepared-execution-workspaces/{lifecycleId}",
+  tags: ["execution-workspaces"],
+  summary: "Adopt a same-host Reeve-owned prepared Git worktree without taking custody",
+  request: {
+    params: z.object({ projectId: z.string().uuid(), lifecycleId: z.string().uuid() }),
+    body: jsonBody(adoptPreparedExecutionWorkspaceSchema),
+  },
+  responses: {
+    200: r.ok(preparedExecutionWorkspaceAdoptionSchema),
+    201: r.ok(preparedExecutionWorkspaceAdoptionSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 registry.registerPath({
   method: "get",

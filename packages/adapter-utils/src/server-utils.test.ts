@@ -444,6 +444,64 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("terminates the child and never sends stdin when launch authority persistence fails", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-launch-authority-"));
+    const marker = path.join(dir, "prompt-received");
+    const runId = randomUUID();
+    let childPid: number | null = null;
+    const startedAt = Date.now();
+    try {
+      await expect(runChildProcess(
+        runId,
+        process.execPath,
+        [
+          "-e",
+          `process.on('SIGTERM',()=>{});process.stdin.once('data',()=>require('node:fs').writeFileSync(${JSON.stringify(marker)},'received'));setInterval(()=>{},1000);`,
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          stdin: "go",
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          onSpawn: async (meta) => {
+            childPid = meta.pid;
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            throw new Error("receipt unavailable");
+          },
+        },
+      )).rejects.toThrow("receipt unavailable");
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(900);
+      expect(childPid).not.toBeNull();
+      expect(await waitForPidExit(childPid!, 100)).toBe(true);
+      await expect(fs.access(marker)).rejects.toThrow();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not report a fast-exiting child as successful before launch authority persistence settles", async () => {
+    const startedAt = Date.now();
+    await expect(runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.exit(0)"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        onSpawn: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          throw new Error("receipt write failed after exit");
+        },
+      },
+    )).rejects.toThrow("receipt write failed after exit");
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(125);
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 
