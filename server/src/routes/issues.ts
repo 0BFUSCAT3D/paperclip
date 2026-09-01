@@ -51,6 +51,8 @@ import {
   reserveGovernedIssueV2Schema,
   activateGovernedIssueV2Schema,
   retireGovernedIssueReservationV1Schema,
+  observeGovernedIssueReservationTerminalV1Schema,
+  releaseGovernedIssueReservationWithDraftPullRequestV1Schema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
   feedbackTargetTypeSchema,
@@ -135,11 +137,14 @@ import {
   issueReferenceService,
   governedIssueContractService,
   governedExecutorLaunchReceiptService,
+  governedIssueCompletionService,
   governedIssueEnvelopeSha256,
   governedIssueSha256,
   governedIssueReservationResponseIssue,
   serializeGovernedIssueActivationReceipt,
   serializeGovernedIssueRetirementReceipt,
+  serializeGovernedTerminalObservationReceipt,
+  serializeGovernedDraftPullRequestReleaseReceipt,
   serializeGovernedIssueReservation,
   governedIssueReservationState,
   GOVERNED_ISSUE_LIFECYCLE_VERSION,
@@ -2947,6 +2952,11 @@ export function issueRoutes(
   const getGovernedLaunchReceipts = () => {
     governedLaunchReceipts ??= governedExecutorLaunchReceiptService(db);
     return governedLaunchReceipts;
+  };
+  let governedIssueCompletion: ReturnType<typeof governedIssueCompletionService> | null = null;
+  const getGovernedIssueCompletion = () => {
+    governedIssueCompletion ??= governedIssueCompletionService(db);
+    return governedIssueCompletion;
   };
   const dispatchGovernedActivationWake = opts.governedActivationWakeDispatcher
     ?? heartbeat.startNextQueuedRunForAgent;
@@ -8426,6 +8436,7 @@ export function issueRoutes(
           },
         });
       }
+      const releaseReceipt = serializeGovernedDraftPullRequestReleaseReceipt(reservation);
       res.status(replayed ? 200 : 201).json({
         version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
         replayed,
@@ -8433,7 +8444,10 @@ export function issueRoutes(
         reservation: serializeGovernedIssueReservation(reservation),
         activationReceipt: serializeGovernedIssueActivationReceipt(reservation),
         retirementReceipt: serializeGovernedIssueRetirementReceipt(reservation),
-        issue: governedIssueReservationResponseIssue(reservation),
+        terminalObservationReceipt: serializeGovernedTerminalObservationReceipt(reservation),
+        releaseReceipt,
+        issue: releaseReceipt?.issueSnapshot
+          ?? governedIssueReservationResponseIssue(reservation),
       });
     },
   );
@@ -8576,13 +8590,17 @@ export function issueRoutes(
       if (!issue || issue.companyId !== companyId) throw notFound("Governed issue reservation target not found");
       const readDecision = await decideIssueAccess(req, issue, "issue:read");
       if (!readDecision.allowed) throw notFound("Governed issue reservation not found");
+      const releaseReceipt = serializeGovernedDraftPullRequestReleaseReceipt(reservation);
       res.json({
         version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
         state: governedIssueReservationState(reservation),
         reservation: serializeGovernedIssueReservation(reservation),
         activationReceipt: serializeGovernedIssueActivationReceipt(reservation),
         retirementReceipt: serializeGovernedIssueRetirementReceipt(reservation),
-        issue: governedIssueReservationResponseIssue(reservation),
+        terminalObservationReceipt: serializeGovernedTerminalObservationReceipt(reservation),
+        releaseReceipt,
+        issue: releaseReceipt?.issueSnapshot
+          ?? governedIssueReservationResponseIssue(reservation),
       });
     },
   );
@@ -8659,6 +8677,64 @@ export function issueRoutes(
       throw conflict("Governed executor terminated without a launch receipt", {
         code: "governed_executor_launch_receipt_missing",
         runStatus,
+      });
+    },
+  );
+
+  router.put(
+    "/v2/companies/:companyId/governed-issue-reservations/:idempotencyKey/terminal-observation",
+    validate(observeGovernedIssueReservationTerminalV1Schema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const idempotencyKey = (req.params.idempotencyKey as string).trim();
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      if (!idempotencyKey || idempotencyKey.length > 255) {
+        throw badRequest("Governed issue reservation key must contain 1 to 255 characters");
+      }
+      const actor = getActorInfo(req);
+      const result = await getGovernedIssueCompletion().observeTerminal({
+        companyId,
+        idempotencyKey,
+        request: req.body,
+        requestedByActorId: actor.actorId,
+      });
+      if (result.activityPublication) publishActivity(result.activityPublication);
+      res.status(result.replayed ? 200 : 201).json({
+        version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+        replayed: result.replayed,
+        state: "terminal_observed",
+        terminalObservationReceipt: result.receipt,
+      });
+    },
+  );
+
+  router.put(
+    "/v2/companies/:companyId/governed-issue-reservations/:idempotencyKey/draft-pull-request-release",
+    validate(releaseGovernedIssueReservationWithDraftPullRequestV1Schema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const idempotencyKey = (req.params.idempotencyKey as string).trim();
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      if (!idempotencyKey || idempotencyKey.length > 255) {
+        throw badRequest("Governed issue reservation key must contain 1 to 255 characters");
+      }
+      const actor = getActorInfo(req);
+      const result = await getGovernedIssueCompletion().releaseWithDraftPullRequest({
+        companyId,
+        idempotencyKey,
+        request: req.body,
+        requestedByActorId: actor.actorId,
+      });
+      if (result.activityPublication) publishActivity(result.activityPublication);
+      res.status(result.replayed ? 200 : 201).json({
+        version: GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION,
+        replayed: result.replayed,
+        state: "released",
+        terminalObservationReceipt: serializeGovernedTerminalObservationReceipt(result.reservation),
+        releaseReceipt: result.receipt,
+        issue: result.receipt.issueSnapshot,
       });
     },
   );

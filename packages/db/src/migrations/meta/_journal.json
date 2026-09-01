@@ -1625,6 +1625,20 @@
       "when": 1788233302285,
       "tag": "0233_large_morlun",
       "breakpoints": true
+    },
+    {
+      "idx": 234,
+      "version": "7",
+      "when": 1788238378427,
+      "tag": "0234_pink_mordo",
+      "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1788238810875,
+      "tag": "0235_thick_sentinel",
+      "breakpoints": true
     }
   ]
 }

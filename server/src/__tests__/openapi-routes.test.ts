@@ -311,6 +311,12 @@ describe("openapi routes", () => {
     const governedRetirementV2 = spec.paths[
       "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/retirement"
     ].put;
+    const governedTerminalObservationV2 = spec.paths[
+      "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/terminal-observation"
+    ].put;
+    const governedDraftReleaseV2 = spec.paths[
+      "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/draft-pull-request-release"
+    ].put;
     expect(governedReservation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
     expect(governedActivation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
     expect(governedActivation.responses["201"].content["application/json"].schema.properties.activationReceipt)
@@ -328,6 +334,12 @@ describe("openapi routes", () => {
       .toBe(false);
     expect(governedRetirementV2.requestBody.content["application/json"].schema.additionalProperties)
       .toBe(false);
+    expect(governedTerminalObservationV2.requestBody.content["application/json"].schema.properties.status)
+      .toBeUndefined();
+    expect(governedTerminalObservationV2["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(governedDraftReleaseV2.requestBody.content["application/json"].schema.properties.pullRequest.properties.draft)
+      .toEqual(expect.objectContaining({ enum: [true] }));
+    expect(governedDraftReleaseV2["x-paperclip-authorization"]).toEqual({ actor: "board" });
     expect(governedRetirementV2.responses["200"].content["application/json"].schema.properties
       .retirementReceipt.additionalProperties).toBe(false);
     expect(governedRetirementV2.responses["409"]).toBeDefined();

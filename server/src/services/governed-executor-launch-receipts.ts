@@ -96,6 +96,7 @@ export function governedExecutorLaunchReceiptService(
           eq(governedIssueReservations.executionWorkspaceId, input.workspace.id),
           isNotNull(governedIssueReservations.activatedAt),
           isNull(governedIssueReservations.retiredAt),
+          isNull(governedIssueReservations.releasedAt),
         )).then((rows) => rows[0] ?? null),
         db.select().from(executionWorkspaces).where(and(
           eq(executionWorkspaces.companyId, input.companyId),
@@ -161,6 +162,11 @@ export function governedExecutorLaunchReceiptService(
       if (reservation.retiredAt) {
         throw conflict("Governed issue reservation is retired", {
           code: "governed_issue_reservation_retired",
+        });
+      }
+      if (reservation.releasedAt) {
+        throw conflict("Governed issue reservation is released", {
+          code: "governed_issue_reservation_released",
         });
       }
       if (input.expectedReservationId && reservation.id !== input.expectedReservationId) {

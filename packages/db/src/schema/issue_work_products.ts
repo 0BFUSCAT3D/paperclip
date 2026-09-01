@@ -9,6 +9,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -51,6 +52,9 @@ export const issueWorkProducts = pgTable(
       table.issueId,
       table.type,
     ),
+    issueTypePrimaryUq: uniqueIndex("issue_work_products_issue_type_primary_uq")
+      .on(table.companyId, table.issueId, table.type)
+      .where(sql`${table.isPrimary} = true`),
     companyExecutionWorkspaceTypeIdx: index("issue_work_products_company_execution_workspace_type_idx").on(
       table.companyId,
       table.executionWorkspaceId,

@@ -71,6 +71,26 @@ describe("GET /api/capabilities", () => {
       activeRunRefusal: true,
       terminalRunObservationRequired: true,
     });
+    expect(response.body.features.governedIssueReservationTerminalObservation).toEqual({
+      supported: true,
+      version: 1,
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/terminal-observation",
+      method: "PUT",
+      boardOnly: true,
+      paperclipDerivedRuntimeOutcome: true,
+      exactLaunchReceiptBinding: true,
+      durableReceipt: true,
+      pathFree: true,
+    });
+    expect(response.body.features.governedIssueReservationDraftPullRequestRelease).toMatchObject({
+      supported: true,
+      provider: "github",
+      draftRequired: true,
+      successfulTerminalObservationRequired: true,
+      registersPrimaryWorkProduct: true,
+      preservesInReviewIssue: true,
+      mergeOrDeploy: false,
+    });
   });
 
   it("advertises prepared-worktree adoption as disabled when isolated workspaces are disabled", async () => {
