@@ -421,6 +421,7 @@ export {
   governedExecutionProfileIntentV2Schema,
   reserveGovernedIssueV2Schema,
   activateGovernedIssueV2Schema,
+  retireGovernedIssueReservationV1Schema,
   governedIssueLifecycleIssueV1Schema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,
@@ -503,6 +504,7 @@ export {
   type GovernedExecutionProfileIntentV2,
   type ReserveGovernedIssueV2,
   type ActivateGovernedIssueV2,
+  type RetireGovernedIssueReservationV1,
   type GovernedIssueLifecycleIssueV1,
   type CreateChildIssue,
   type CreateAcceptedPlanDecomposition,
@@ -586,6 +588,9 @@ export {
 
 export {
   executionWorkspaceConfigSchema,
+  adoptPreparedExecutionWorkspaceSchema,
+  preparedExecutionWorkspaceAdoptionSchema,
+  governedExecutorLaunchReceiptSchema,
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
@@ -600,6 +605,9 @@ export {
   type ReconcileExecutionWorkspaceBranch,
   type UpdateExecutionWorkspace,
   type WorkspaceOverviewQuery,
+  type AdoptPreparedExecutionWorkspace,
+  type PreparedExecutionWorkspaceAdoption,
+  type GovernedExecutorLaunchReceipt,
 } from "./execution-workspace.js";
 
 export {

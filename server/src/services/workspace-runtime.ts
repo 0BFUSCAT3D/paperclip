@@ -54,6 +54,7 @@ import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execu
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
+import { validatePreparedExecutionWorkspace } from "./prepared-execution-workspaces.js";
 import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
@@ -2047,6 +2048,26 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   if (currentBranch === expectedBranchName) {
     return { branchName: expectedBranchName, reconciledForward: false, warnings: [] };
   }
+  if (input.db && input.executionWorkspaceId) {
+    const custody = await input.db
+      .select({ custodyKind: executionWorkspaces.custodyKind })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, input.executionWorkspaceId))
+      .then((rows) => rows[0]?.custodyKind ?? null);
+    if (custody === "external_prepared") {
+      throw new WorkspaceRuntimeValidationFailure(
+        "External prepared worktree branch drift requires a new Reeve-reviewed lifecycle; Paperclip will not repair or rewrite it.",
+        {
+          workspaceValidation: {
+            reason: "external_prepared_branch_drift_held",
+            executionWorkspaceId: input.executionWorkspaceId,
+            expectedBranchName,
+            actualBranchName: currentBranch,
+          },
+        },
+      );
+    }
+  }
 
   const evidence = await inspectGitWorktreeBranchIncoherence({
     db: input.db ?? null,
@@ -3285,6 +3306,16 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     repoUrl: string | null | undefined;
     baseRef: string | null | undefined;
     branchName: string | null | undefined;
+    custodyKind?: string | null;
+    externalConnectionId?: string | null;
+    externalLifecycleId?: string | null;
+    externalTaskId?: string | null;
+    preparedIdentitySha256?: string | null;
+    authorizedStartHeadSha?: string | null;
+    repositoryIdentitySha256?: string | null;
+    inspectionReceiptSha256?: string | null;
+    externalRoot?: string | null;
+    externalCommonGitDirectory?: string | null;
     metadata?: Record<string, unknown> | null;
     config?: {
       provisionCommand?: string | null;
@@ -3320,6 +3351,79 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     baseRefSha: readRecordedBaseRefSha(input.workspace.metadata),
   };
   const provisionCommand = asString(input.workspace.config?.provisionCommand, "").trim();
+
+  if (input.workspace.custodyKind === "external_prepared") {
+    // External custody binds the persisted repository identity. A project/base
+    // repo URL is only realization context and must never be back-filled into
+    // that immutable adopted row.
+    realized.repoUrl = input.workspace.repoUrl ?? null;
+    realized.repoRef = input.workspace.baseRef ?? null;
+    if (!input.db || !input.workspace.projectId || !input.workspace.projectWorkspaceId) {
+      throw new WorkspaceRuntimeValidationFailure("External prepared workspace scope is incomplete.", {
+        workspaceValidation: {
+          reason: "external_prepared_scope_incomplete",
+          executionWorkspaceId: input.workspace.id ?? null,
+        },
+      });
+    }
+    const required = {
+      connectionId: input.workspace.externalConnectionId,
+      lifecycleId: input.workspace.externalLifecycleId,
+      taskId: input.workspace.externalTaskId,
+      preparedIdentitySha256: input.workspace.preparedIdentitySha256,
+      authorizedStartHeadSha: input.workspace.authorizedStartHeadSha,
+      repositoryIdentitySha256: input.workspace.repositoryIdentitySha256,
+      inspectionReceiptSha256: input.workspace.inspectionReceiptSha256,
+      root: input.workspace.externalRoot,
+      commonGitDirectory: input.workspace.externalCommonGitDirectory,
+      branch: input.workspace.branchName,
+    };
+    if (Object.values(required).some((value) => typeof value !== "string" || value.length === 0)) {
+      throw new WorkspaceRuntimeValidationFailure("External prepared workspace identity is incomplete.", {
+        workspaceValidation: {
+          reason: "external_prepared_identity_incomplete",
+          executionWorkspaceId: input.workspace.id ?? null,
+        },
+      });
+    }
+    try {
+      const validated = await validatePreparedExecutionWorkspace({
+        db: input.db,
+        projectId: input.workspace.projectId,
+        prepared: {
+          version: 1,
+          companyId: input.agent.companyId,
+          projectWorkspaceId: input.workspace.projectWorkspaceId,
+          connectionId: required.connectionId!,
+          lifecycleId: required.lifecycleId!,
+          taskId: required.taskId!,
+          path: cwd,
+          root: required.root!,
+          commonGitDirectory: required.commonGitDirectory!,
+          branch: required.branch!,
+          authorizedStartHeadSha: required.authorizedStartHeadSha!,
+          repositoryIdentitySha256: required.repositoryIdentitySha256!,
+          inspectionReceiptSha256: required.inspectionReceiptSha256!,
+          preparedIdentitySha256: required.preparedIdentitySha256!,
+        },
+      });
+      realized.cwd = validated.path;
+      realized.worktreePath = validated.path;
+      realized.branchName = validated.branchName;
+      realized.baseRefSha = validated.headSha;
+      return realized;
+    } catch (error) {
+      throw new WorkspaceRuntimeValidationFailure(
+        `External prepared workspace is no longer reusable (${error instanceof Error ? error.message : String(error)}).`,
+        {
+          workspaceValidation: {
+            reason: "external_prepared_validation_failed",
+            executionWorkspaceId: input.workspace.id ?? null,
+          },
+        },
+      );
+    }
+  }
 
   if (strategy !== "git_worktree") {
     if (!await directoryExists(cwd)) {
@@ -3644,6 +3748,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectId: string | null;
     projectWorkspaceId: string | null;
     sourceIssueId: string | null;
+    custodyKind?: string | null;
     metadata?: Record<string, unknown> | null;
   };
   projectWorkspace?: {
@@ -3660,6 +3765,9 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   forceWorktreeRemoval?: boolean;
 }) {
   const warnings: string[] = [];
+  if (input.workspace.custodyKind === "external_prepared") {
+    return { cleaned: true, warnings };
+  }
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const repoRoot = input.workspace.providerType === "git_worktree" && workspacePath
     ? await resolveGitRepoRootForWorkspaceCleanup(
@@ -6254,6 +6362,27 @@ async function isPersistedIsolatedExecutionWorkspace(input: {
   return row?.mode === "isolated_workspace";
 }
 
+async function assertExternalPreparedRuntimeServicesHeld(input: {
+  db?: Db;
+  companyId: string;
+  executionWorkspaceId?: string | null;
+}): Promise<void> {
+  if (!input.db || !input.executionWorkspaceId) return;
+  const custodyKind = await input.db
+    .select({ custodyKind: executionWorkspaces.custodyKind })
+    .from(executionWorkspaces)
+    .where(and(
+      eq(executionWorkspaces.id, input.executionWorkspaceId),
+      eq(executionWorkspaces.companyId, input.companyId),
+    ))
+    .then((rows) => rows[0]?.custodyKind ?? null);
+  if (custodyKind === "external_prepared") {
+    throw conflict("Runtime services are held for Reeve-custody prepared worktrees", {
+      code: "external_prepared_workspace_runtime_control_held",
+    });
+  }
+}
+
 export async function ensureRuntimeServicesForRun(input: {
   db?: Db;
   runId: string;
@@ -6272,6 +6401,13 @@ export async function ensureRuntimeServicesForRun(input: {
     defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "running",
     serviceStates: readConfiguredServiceStates(input.config),
   });
+  if (rawServices.length > 0) {
+    await assertExternalPreparedRuntimeServicesHeld({
+      db: input.db,
+      companyId: input.agent.companyId,
+      executionWorkspaceId: input.executionWorkspaceId,
+    });
+  }
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
   const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
@@ -6553,6 +6689,13 @@ export async function startRuntimeServicesForWorkspaceControl(
     defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
     serviceStates: readConfiguredServiceStates(input.config),
   });
+  if (rawServices.length > 0) {
+    await assertExternalPreparedRuntimeServicesHeld({
+      db: input.db,
+      companyId: input.actor.companyId,
+      executionWorkspaceId: input.executionWorkspaceId,
+    });
+  }
   const invocationId = input.invocationId ?? randomUUID();
   const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
   const provisionCoordinator = createRuntimeProvisionCoordinator();

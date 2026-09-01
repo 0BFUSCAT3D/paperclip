@@ -8,6 +8,7 @@ import {
   activateGovernedIssueV1Schema,
   reserveGovernedIssueV2Schema,
   activateGovernedIssueV2Schema,
+  retireGovernedIssueReservationV1Schema,
   governedIssueLifecycleIssueV1Schema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -172,6 +173,29 @@ describe("issue validators", () => {
         participants: [executionProfiles.participants[0]],
       },
     }).success).toBe(true);
+  });
+
+  it("uses one strict exact-CAS request for governed reservation retirement", () => {
+    const request = {
+      version: 1 as const,
+      expectedIssueId: "11111111-1111-4111-8111-111111111111",
+      expectedEnvelopeSha256: "a".repeat(64),
+      expectedState: "activated" as const,
+      expectedHeartbeatRunId: "22222222-2222-4222-8222-222222222222",
+      reason: "  delivery settled  ",
+    };
+    expect(retireGovernedIssueReservationV1Schema.parse(request)).toEqual({
+      ...request,
+      reason: "delivery settled",
+    });
+    expect(retireGovernedIssueReservationV1Schema.safeParse({
+      ...request,
+      expectedHeartbeatRunId: undefined,
+    }).success).toBe(false);
+    expect(retireGovernedIssueReservationV1Schema.safeParse({
+      ...request,
+      unknownAuthority: true,
+    }).success).toBe(false);
   });
 
   it("uses a strict materialized issue projection for governed lifecycle receipts", () => {

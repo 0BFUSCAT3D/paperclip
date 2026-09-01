@@ -64,6 +64,31 @@ export interface PaperclipCapabilitiesResponseV1 {
       codexAuthAuthority: "managed_chatgpt_profile";
       nativeHostClaudeLoginAccepted: false;
     };
+    governedIssueReservationRetirement: {
+      supported: true;
+      version: 1;
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/retirement";
+      method: "PUT";
+      boardOnly: true;
+      exactReservationCas: true;
+      durableReceipt: true;
+      retiredRowsPreserved: true;
+      activeRunRefusal: true;
+      terminalRunObservationRequired: true;
+    };
+    preparedExecutionWorkspaceAdoption: {
+      supported: boolean;
+      enabled: boolean;
+      version: 1;
+      adoptionEndpoint: "/api/v1/projects/{projectId}/prepared-execution-workspaces/{lifecycleId}";
+      launchReceiptEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/executor-launch-receipt";
+      sameHostOnly: true;
+      boardOnly: true;
+      exactEnvelopeWorkspaceCas: true;
+      externalCustodyNonDestructive: true;
+      prerequisite: "enableIsolatedWorkspaces";
+      osProcessStartIdentity: readonly ["linux", "darwin"];
+    };
     executionAuditAgentDeleteProtection: {
       supported: true;
       version: 1;
@@ -120,6 +145,31 @@ export const PAPERCLIP_CAPABILITIES_V1: PaperclipCapabilitiesResponseV1 = {
       codexAuthAuthority: "managed_chatgpt_profile",
       nativeHostClaudeLoginAccepted: false,
     },
+    governedIssueReservationRetirement: {
+      supported: true,
+      version: 1,
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/retirement",
+      method: "PUT",
+      boardOnly: true,
+      exactReservationCas: true,
+      durableReceipt: true,
+      retiredRowsPreserved: true,
+      activeRunRefusal: true,
+      terminalRunObservationRequired: true,
+    },
+    preparedExecutionWorkspaceAdoption: {
+      supported: false,
+      enabled: false,
+      version: 1,
+      adoptionEndpoint: "/api/v1/projects/{projectId}/prepared-execution-workspaces/{lifecycleId}",
+      launchReceiptEndpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/executor-launch-receipt",
+      sameHostOnly: true,
+      boardOnly: true,
+      exactEnvelopeWorkspaceCas: true,
+      externalCustodyNonDestructive: true,
+      prerequisite: "enableIsolatedWorkspaces",
+      osProcessStartIdentity: ["linux", "darwin"],
+    },
     executionAuditAgentDeleteProtection: {
       supported: true,
       version: 1,
@@ -130,3 +180,20 @@ export const PAPERCLIP_CAPABILITIES_V1: PaperclipCapabilitiesResponseV1 = {
     },
   },
 };
+
+export function paperclipCapabilitiesV1(input: {
+  enableIsolatedWorkspaces: boolean;
+  exactProcessStartIdentityAvailable: boolean;
+}): PaperclipCapabilitiesResponseV1 {
+  return {
+    ...PAPERCLIP_CAPABILITIES_V1,
+    features: {
+      ...PAPERCLIP_CAPABILITIES_V1.features,
+      preparedExecutionWorkspaceAdoption: {
+        ...PAPERCLIP_CAPABILITIES_V1.features.preparedExecutionWorkspaceAdoption,
+        supported: input.exactProcessStartIdentityAvailable,
+        enabled: input.enableIsolatedWorkspaces && input.exactProcessStartIdentityAvailable,
+      },
+    },
+  };
+}

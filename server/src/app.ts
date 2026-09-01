@@ -414,7 +414,7 @@ export async function createApp(
       databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
-  api.use("/capabilities", capabilityRoutes());
+  api.use("/capabilities", capabilityRoutes(db));
   api.use(openApiRoutes());
   api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));

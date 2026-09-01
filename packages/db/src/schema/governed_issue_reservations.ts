@@ -15,6 +15,7 @@ import { agentWakeupRequests } from "./agent_wakeup_requests.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
+import { executionWorkspaces } from "./execution_workspaces.js";
 
 /**
  * Durable versioned reservation/activation contract for governed issues.
@@ -47,6 +48,11 @@ export const governedIssueReservations = pgTable(
     executionProfileReceipt: jsonb("execution_profile_receipt").$type<Record<string, unknown>>(),
     wakeupRequestId: uuid("wakeup_request_id").references(() => agentWakeupRequests.id, { onDelete: "restrict" }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "restrict" }),
+    executionWorkspaceId: uuid("execution_workspace_id")
+      .references(() => executionWorkspaces.id, { onDelete: "restrict" }),
+    retirementSha256: text("retirement_sha256"),
+    retirementReceipt: jsonb("retirement_receipt").$type<Record<string, unknown>>(),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -57,6 +63,9 @@ export const governedIssueReservations = pgTable(
     ),
     issueUq: uniqueIndex("governed_issue_reservations_issue_uq").on(table.issueId),
     builderIdx: index("governed_issue_reservations_builder_idx").on(table.builderAgentId),
+    executionWorkspaceUq: uniqueIndex("governed_issue_reservations_execution_workspace_uq").on(
+      table.executionWorkspaceId,
+    ),
     companyCreatedIdx: index("governed_issue_reservations_company_created_idx").on(
       table.companyId,
       table.createdAt,
@@ -68,6 +77,7 @@ export const governedIssueReservations = pgTable(
         AND ${table.executionProfileIntentSha256} IS NULL
         AND ${table.executionProfileIntent} IS NULL
         AND ${table.executionProfileReceipt} IS NULL
+        AND ${table.executionWorkspaceId} IS NULL
       ) OR (
         ${table.contractVersion} = 2
         AND ${table.executionProfileIntentSha256} IS NOT NULL
@@ -76,6 +86,19 @@ export const governedIssueReservations = pgTable(
           (${table.activatedAt} IS NULL AND ${table.executionProfileReceipt} IS NULL)
           OR (${table.activatedAt} IS NOT NULL AND ${table.executionProfileReceipt} IS NOT NULL)
         )
+      )`,
+    ),
+    retirementShapeCheck: check(
+      "governed_issue_reservations_retirement_shape_check",
+      sql`(
+        ${table.retirementSha256} IS NULL
+        AND ${table.retirementReceipt} IS NULL
+        AND ${table.retiredAt} IS NULL
+      ) OR (
+        ${table.contractVersion} = 2
+        AND ${table.retirementSha256} ~ '^[0-9a-f]{64}$'
+        AND ${table.retirementReceipt} IS NOT NULL
+        AND ${table.retiredAt} IS NOT NULL
       )`,
     ),
   }),

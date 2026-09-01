@@ -1,17 +1,25 @@
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { PAPERCLIP_CAPABILITIES_V1 } from "@paperclipai/shared";
+import type { Db } from "@paperclipai/db";
+import { paperclipCapabilitiesV1 } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { capabilityRoutes } from "../routes/capabilities.js";
 
-function appForActor(actor: unknown) {
+function appForActor(
+  actor: unknown,
+  enableIsolatedWorkspaces = true,
+  supportsExactProcessStartIdentity = true,
+) {
   const app = express();
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api/capabilities", capabilityRoutes());
+  app.use("/api/capabilities", capabilityRoutes({} as Db, {
+    readIsolatedWorkspacesEnabled: async () => enableIsolatedWorkspaces,
+    supportsExactProcessStartIdentity: () => supportsExactProcessStartIdentity,
+  }));
   app.use(errorHandler);
   return app;
 }
@@ -26,7 +34,15 @@ describe("GET /api/capabilities", () => {
     })).get("/api/capabilities");
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(PAPERCLIP_CAPABILITIES_V1);
+    expect(response.body).toEqual(paperclipCapabilitiesV1({
+      enableIsolatedWorkspaces: true,
+      exactProcessStartIdentityAvailable: true,
+    }));
+    expect(response.body.features.preparedExecutionWorkspaceAdoption).toMatchObject({
+      supported: true,
+      enabled: true,
+      prerequisite: "enableIsolatedWorkspaces",
+    });
     expect(response.body.features.artifactBoundDirectorShip).toEqual({
       supported: true,
       version: 1,
@@ -42,6 +58,49 @@ describe("GET /api/capabilities", () => {
       preIntentMergedReceiptForbidden: true,
       genericFinalApprovalQuarantined: true,
       durableCompletionReceipt: true,
+    });
+    expect(response.body.features.governedIssueReservationRetirement).toEqual({
+      supported: true,
+      version: 1,
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/retirement",
+      method: "PUT",
+      boardOnly: true,
+      exactReservationCas: true,
+      durableReceipt: true,
+      retiredRowsPreserved: true,
+      activeRunRefusal: true,
+      terminalRunObservationRequired: true,
+    });
+  });
+
+  it("advertises prepared-worktree adoption as disabled when isolated workspaces are disabled", async () => {
+    const response = await request(appForActor({
+      type: "agent",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: null,
+    }, false)).get("/api/capabilities");
+
+    expect(response.status).toBe(200);
+    expect(response.body.features.preparedExecutionWorkspaceAdoption).toMatchObject({
+      supported: true,
+      enabled: false,
+      prerequisite: "enableIsolatedWorkspaces",
+    });
+  });
+
+  it("advertises prepared-worktree adoption as disabled on hosts without exact process identity", async () => {
+    const response = await request(appForActor({
+      type: "agent",
+      agentId: "11111111-1111-4111-8111-111111111111",
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: null,
+    }, true, false)).get("/api/capabilities");
+
+    expect(response.status).toBe(200);
+    expect(response.body.features.preparedExecutionWorkspaceAdoption).toMatchObject({
+      supported: false,
+      enabled: false,
     });
   });
 

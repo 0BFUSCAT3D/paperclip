@@ -238,11 +238,35 @@ not lose the durable queued wake. Generic issue mutation paths and a database
 guard reject assignment, status, checkout, release, or envelope changes while a
 reservation remains unactivated.
 
+Version 2 reservations can be retired through the board-only retirement CAS.
+Reserved retirement requires the issue to remain the exact unassigned backlog
+snapshot; activated retirement requires the activation run and every bound
+execution or review run to be terminal. Retirement cancels nonterminal work and
+stores an immutable receipt on the reservation row instead of deleting it.
+Lookup and exact retries return that receipt, while activation and executor
+launch-receipt reads reject retired reservations.
+
 The capability advertises the dedicated reservation, read-only lookup, and
 activation endpoint templates. These versioned routes are the contract boundary
 for governed clients; the generic issue create and PATCH routes remain available
 for existing clients but are not a substitute for reservation CAS and durable
 activation receipts.
+
+An `execution_workspaces` row with `custody_kind = external_prepared` records a
+same-host worktree that Reeve owns. Its connection, lifecycle, task, reviewed
+head, receipt hashes, canonical root, and common Git directory form an immutable
+identity. Paperclip re-proves the registered worktree, branch, exact head, and
+cleanliness before reservation, activation, and spawn, but never refreshes,
+rebuilds, removes, or runs cleanup commands in that worktree. Only a version 2
+governed reservation can claim one such row, through
+`governed_issue_reservations.execution_workspace_id`.
+
+`governed_executor_launch_receipts` stores the immutable post-spawn evidence for
+that claim: the exact execution workspace, cwd, branch, head, Reeve lifecycle,
+PID, and OS process-start token. Reservation and heartbeat-run uniqueness make
+replay exact. The adapter withholds prompt stdin and terminates the child when
+this receipt cannot be persisted, so a governed external worktree never begins
+an unreceipted run.
 
 ## Decision training snapshot retention
 

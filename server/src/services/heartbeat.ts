@@ -84,6 +84,10 @@ import {
 // git-credentials module became its canonical home; existing importers keep working.
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
+import {
+  captureGovernedExecutorProcessIdentityForSpawn,
+  governedExecutorLaunchReceiptService,
+} from "./governed-executor-launch-receipts.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -6766,6 +6770,50 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+export function assertExternalPreparedWorkspaceSameHost(input: {
+  workspace: Pick<ExecutionWorkspace, "custodyKind"> | null;
+  executionTarget: { kind?: string } | null;
+}): void {
+  if (
+    input.workspace?.custodyKind === "external_prepared"
+    && (input.executionTarget?.kind ?? "local") !== "local"
+  ) {
+    throw conflict("External prepared workspaces can execute only on the same local host", {
+      code: "external_prepared_workspace_same_host_required",
+    });
+  }
+}
+
+export async function lockGovernedV2ExecutionReservationForQueuedRun(
+  authorityDb: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+  },
+) {
+  const reservation = await authorityDb
+    .select({
+      executionProfileIntent: governedIssueReservations.executionProfileIntent,
+      retiredAt: governedIssueReservations.retiredAt,
+    })
+    .from(governedIssueReservations)
+    .where(and(
+      eq(governedIssueReservations.companyId, input.companyId),
+      eq(governedIssueReservations.issueId, input.issueId),
+      eq(governedIssueReservations.contractVersion, 2),
+      isNotNull(governedIssueReservations.activatedAt),
+    ))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+  if (reservation?.retiredAt) {
+    throw conflict("Governed issue reservation is retired", {
+      code: "governed_issue_reservation_retired",
+      issueId: input.issueId,
+    });
+  }
+  return reservation;
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -11469,7 +11517,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             | "issue_cancelled"
             | "issue_terminal_status"
             | "issue_not_in_progress"
-            | "issue_execution_lock_changed";
+            | "issue_execution_lock_changed"
+            | "external_prepared_workspace_validation_retry_held";
           issueId: string | null;
           details: Record<string, unknown>;
         };
@@ -11484,6 +11533,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await tx.execute(
             sql`select id from heartbeat_runs where company_id = ${run.companyId} and id = ${run.id} for update`,
           );
+        }
+
+        const lockedIssueWorkspaceId = issueId
+          ? await tx
+              .select({ executionWorkspaceId: issues.executionWorkspaceId })
+              .from(issues)
+              .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+              .then((rows) => rows[0]?.executionWorkspaceId ?? null)
+          : null;
+        const failedExecutionWorkspaceId = readNonEmptyString(
+          workspaceValidationRetryPayload?.executionWorkspaceId,
+        );
+        const retryWorkspaceIds = shouldQuarantineWorkspaceForRetry
+          ? [...new Set([
+              lockedIssueWorkspaceId,
+              failedExecutionWorkspaceId,
+            ].filter((value): value is string => Boolean(value)))]
+          : [];
+        const externalPreparedWorkspace = retryWorkspaceIds.length > 0
+          ? await tx
+              .select({ id: executionWorkspaces.id })
+              .from(executionWorkspaces)
+              .where(and(
+                eq(executionWorkspaces.companyId, run.companyId),
+                inArray(executionWorkspaces.id, retryWorkspaceIds),
+                eq(executionWorkspaces.custodyKind, "external_prepared"),
+              ))
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+          : null;
+        if (externalPreparedWorkspace) {
+          return {
+            outcome: "not_scheduled",
+            reason:
+              "Interaction continuation retry held because the failed worktree remains under Reeve custody",
+            errorCode: "external_prepared_workspace_validation_retry_held",
+            issueId,
+            details: {
+              issueId,
+              executionWorkspaceId: externalPreparedWorkspace.id,
+            },
+          };
         }
 
         const existingContinuation = await tx
@@ -14235,17 +14326,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     if (existing) return existing;
 
-    const reservation = await authorityDb
-      .select({ executionProfileIntent: governedIssueReservations.executionProfileIntent })
-      .from(governedIssueReservations)
-      .where(and(
-        eq(governedIssueReservations.companyId, input.run.companyId),
-        eq(governedIssueReservations.issueId, issueId),
-        eq(governedIssueReservations.contractVersion, 2),
-        isNotNull(governedIssueReservations.activatedAt),
-      ))
-      .for("update")
-      .then((rows) => rows[0] ?? null);
+    const reservation = await lockGovernedV2ExecutionReservationForQueuedRun(authorityDb, {
+      companyId: input.run.companyId,
+      issueId,
+    });
     if (!reservation) return null;
 
     const intent = governedExecutionProfileIntentV2Schema.safeParse(reservation.executionProfileIntent);
@@ -15490,6 +15574,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 repoUrl: reusableExistingExecutionWorkspace.repoUrl,
                 baseRef: reusableExistingExecutionWorkspace.baseRef,
                 branchName: reusableExistingExecutionWorkspace.branchName,
+                custodyKind: reusableExistingExecutionWorkspace.custodyKind,
+                externalConnectionId: reusableExistingExecutionWorkspace.externalConnectionId,
+                externalLifecycleId: reusableExistingExecutionWorkspace.externalLifecycleId,
+                externalTaskId: reusableExistingExecutionWorkspace.externalTaskId,
+                preparedIdentitySha256: reusableExistingExecutionWorkspace.preparedIdentitySha256,
+                authorizedStartHeadSha: reusableExistingExecutionWorkspace.authorizedStartHeadSha,
+                repositoryIdentitySha256: reusableExistingExecutionWorkspace.repositoryIdentitySha256,
+                inspectionReceiptSha256: reusableExistingExecutionWorkspace.inspectionReceiptSha256,
+                externalRoot: reusableExistingExecutionWorkspace.externalRoot,
+                externalCommonGitDirectory: reusableExistingExecutionWorkspace.externalCommonGitDirectory,
                 metadata: reusableExistingExecutionWorkspace.metadata as Record<string, unknown> | null,
                 config: {
                   provisionCommand:
@@ -16421,7 +16515,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (branchInspection) {
             let inspection = branchInspection.inspection;
             const initialManagedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(inspection);
-            if (!inspection.valid && inspection.reasonCode === "branch_mismatch" && inspection.repoRoot) {
+            if (
+              branchInspection.workspaceRecord.custodyKind !== "external_prepared"
+              && !inspection.valid
+              && inspection.reasonCode === "branch_mismatch"
+              && inspection.repoRoot
+            ) {
               let repairedExpectedBranchName = inspection.expectedBranchName;
               try {
                 const coherence = await ensureGitWorktreeBranchCoherent({
@@ -16609,6 +16708,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             code: "execution_profile_prepare_missing",
           });
         }
+        assertExternalPreparedWorkspaceSameHost({
+          workspace: persistedExecutionWorkspace,
+          executionTarget,
+        });
+        const governedLaunchReceiptService = governedExecutorLaunchReceiptService(db);
+        // Resolve the exact activated reservation/workspace binding before the
+        // child exists. The returned immutable requirement lets onSpawn decide
+        // synchronously whether it must capture a birth identity before its
+        // first await.
+        const governedExecutorLaunchReceiptRequirement =
+          await governedLaunchReceiptService.resolveRequirementForExecution({
+            companyId: agent.companyId,
+            runId: run.id,
+            issueId,
+            governedContractVersion: asNumber(adapterContext.governedContractVersion, 0),
+            selectedCwd: executionWorkspace.cwd,
+            workspace: persistedExecutionWorkspace,
+          });
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
@@ -16639,6 +16756,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
           onSpawn: async (meta) => {
+            // Only Reeve-custody execution requires a launch receipt. Capture
+            // its OS process-instance proof synchronously as the first callback
+            // action; ordinary Paperclip runs retain their existing metadata
+            // path even when exact local process observation is unavailable.
+            const capturedProcessIdentity = captureGovernedExecutorProcessIdentityForSpawn({
+              requiresLaunchReceipt: governedExecutorLaunchReceiptRequirement !== null,
+              pid: meta.pid,
+            });
             await persistRunProcessMetadata(run.id, {
               pid: meta.pid,
               processGroupId:
@@ -16647,6 +16772,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   : null,
               startedAt: meta.startedAt,
             });
+            if (capturedProcessIdentity) {
+              await governedLaunchReceiptService.persistForSpawn({
+                companyId: agent.companyId,
+                runId: run.id,
+                executionWorkspaceId: governedExecutorLaunchReceiptRequirement!.executionWorkspaceId,
+                expectedReservationId: governedExecutorLaunchReceiptRequirement!.reservationId,
+                selectedCwd: executionWorkspace.cwd,
+                capturedProcessIdentity,
+              });
+            }
           },
           authToken: authToken ?? undefined,
         });

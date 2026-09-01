@@ -269,6 +269,16 @@ export interface ExecutionWorkspace {
   branchName: string | null;
   providerType: ExecutionWorkspaceProviderType;
   providerRef: string | null;
+  custodyKind: "paperclip" | "external_prepared";
+  externalConnectionId: string | null;
+  externalLifecycleId: string | null;
+  externalTaskId: string | null;
+  preparedIdentitySha256: string | null;
+  authorizedStartHeadSha: string | null;
+  repositoryIdentitySha256: string | null;
+  inspectionReceiptSha256: string | null;
+  externalRoot: string | null;
+  externalCommonGitDirectory: string | null;
   derivedFromExecutionWorkspaceId: string | null;
   lastUsedAt: Date;
   openedAt: Date;

@@ -1065,6 +1065,16 @@ function toExecutionWorkspace(
     branchName: row.branchName ?? null,
     providerType: row.providerType as ExecutionWorkspace["providerType"],
     providerRef: row.providerRef ?? null,
+    custodyKind: row.custodyKind as ExecutionWorkspace["custodyKind"],
+    externalConnectionId: row.externalConnectionId ?? null,
+    externalLifecycleId: row.externalLifecycleId ?? null,
+    externalTaskId: row.externalTaskId ?? null,
+    preparedIdentitySha256: row.preparedIdentitySha256 ?? null,
+    authorizedStartHeadSha: row.authorizedStartHeadSha ?? null,
+    repositoryIdentitySha256: row.repositoryIdentitySha256 ?? null,
+    inspectionReceiptSha256: row.inspectionReceiptSha256 ?? null,
+    externalRoot: row.externalRoot ?? null,
+    externalCommonGitDirectory: row.externalCommonGitDirectory ?? null,
     derivedFromExecutionWorkspaceId: row.derivedFromExecutionWorkspaceId ?? null,
     lastUsedAt: row.lastUsedAt,
     openedAt: row.openedAt,
@@ -1663,6 +1673,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+    if (workspace.custodyKind === "external_prepared") {
+      return {
+        cleaned: true,
+        warnings: [
+          "This worktree remains under Reeve custody; Paperclip did not acquire Git locks, run cleanup commands, remove it, or rewrite its branch.",
+        ],
+      };
+    }
     const [
       {
         acquireGitWorktreeCleanupLock,
@@ -2287,11 +2305,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+      const isExternalCustody = executionWorkspace.custodyKind === "external_prepared";
       const {
         git,
         warnings: gitWarnings,
         statusInspectionSucceeded,
-      } = await inspectGitCloseReadiness(executionWorkspace);
+      } = isExternalCustody
+        ? { git: null, warnings: [], statusInspectionSucceeded: true }
+        : await inspectGitCloseReadiness(executionWorkspace);
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
@@ -2329,6 +2350,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       if (isSharedWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
+      }
+      if (isExternalCustody) {
+        warnings.push("This worktree remains under Reeve custody; Paperclip will not run cleanup commands, remove it, or delete its branch.");
       }
 
       if (runtimeServices.some((service) => service.status !== "stopped")) {
@@ -2394,7 +2418,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
       }
 
-      const configuredCleanupCommands = [
+      const configuredCleanupCommands = isExternalCustody ? [] : [
         {
           kind: "cleanup_command" as const,
           label: "Run workspace cleanup command",
@@ -2414,7 +2438,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
 
       const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
-      if (teardownCommand) {
+      if (teardownCommand && !isExternalCustody) {
         plannedActions.push({
           kind: "teardown_command",
           label: "Run teardown command",
@@ -2423,7 +2447,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
       }
 
-      if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
+      if (!isExternalCustody && executionWorkspace.providerType === "git_worktree" && workspacePath) {
         plannedActions.push({
           kind: "git_worktree_remove",
           label: "Remove git worktree",
@@ -2432,7 +2456,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
       }
 
-      if (git?.createdByRuntime && executionWorkspace.branchName) {
+      if (!isExternalCustody && git?.createdByRuntime && executionWorkspace.branchName) {
         plannedActions.push({
           kind: "git_branch_delete",
           label: "Delete runtime-created branch",
@@ -2441,7 +2465,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
       }
 
-      if (executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
+      if (!isExternalCustody && executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
         const resolvedWorkspacePath = path.resolve(workspacePath);
         const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
         const containsProjectWorkspace = resolvedProjectWorkspacePath
@@ -2502,6 +2526,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedReopened: 0,
           skippedCooldown: 0,
           clearedStaleReopenPending: 0,
+          heldExternalCustody: 0,
         };
       }
       terminalSweepInProgress = true;
@@ -2566,9 +2591,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedReopened: 0,
         skippedCooldown: 0,
         clearedStaleReopenPending: 0,
+        heldExternalCustody: 0,
       };
 
       for (const workspace of candidates) {
+        // Reeve owns the complete lifecycle of an adopted prepared worktree.
+        // Paperclip's generic terminal reaper must not inspect it (a repository
+        // may configure executable Git helpers), archive it, or start any
+        // cleanup/finalization path. Reeve explicitly disposes the lifecycle
+        // through its owner contract after it has settled publication.
+        if (workspace.custodyKind === "external_prepared") {
+          result.heldExternalCustody += 1;
+          continue;
+        }
         const executionWorkspace = toExecutionWorkspace(workspace);
         const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
         if (!statusInspectionSucceeded) {
@@ -2850,6 +2885,43 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
       const row = await db.transaction(async (tx) => {
         await assertWorkspaceArtifactDirectorShipMutationAllowed(tx as unknown as Db, id);
+        const current = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (current?.custodyKind === "external_prepared") {
+          const immutableKeys = [
+            "companyId",
+            "projectId",
+            "projectWorkspaceId",
+            "cwd",
+            "repoUrl",
+            "baseRef",
+            "branchName",
+            "providerType",
+            "providerRef",
+            "custodyKind",
+            "externalConnectionId",
+            "externalLifecycleId",
+            "externalTaskId",
+            "preparedIdentitySha256",
+            "authorizedStartHeadSha",
+            "repositoryIdentitySha256",
+            "inspectionReceiptSha256",
+            "externalRoot",
+            "externalCommonGitDirectory",
+            "status",
+            "closedAt",
+            "cleanupEligibleAt",
+            "cleanupReason",
+          ] as const;
+          if (immutableKeys.some((key) => patch[key] !== undefined && patch[key] !== current[key])) {
+            throw conflict("External prepared workspace identity is immutable", {
+              code: "external_prepared_workspace_identity_immutable",
+            });
+          }
+        }
         return tx.update(executionWorkspaces)
           .set({ ...patch, updatedAt: new Date() })
           .where(eq(executionWorkspaces.id, id))
@@ -2990,6 +3062,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               repoUrl: row.repoUrl,
               baseRef: row.baseRef,
               branchName: row.branchName,
+              custodyKind: row.custodyKind,
+              externalConnectionId: row.externalConnectionId,
+              externalLifecycleId: row.externalLifecycleId,
+              externalTaskId: row.externalTaskId,
+              preparedIdentitySha256: row.preparedIdentitySha256,
+              authorizedStartHeadSha: row.authorizedStartHeadSha,
+              repositoryIdentitySha256: row.repositoryIdentitySha256,
+              inspectionReceiptSha256: row.inspectionReceiptSha256,
+              externalRoot: row.externalRoot,
+              externalCommonGitDirectory: row.externalCommonGitDirectory,
               metadata: row.metadata as Record<string, unknown> | null,
               config: {
                 ...config,
@@ -3211,8 +3293,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }): Promise<
       | { outcome: "archived"; workspace: ExecutionWorkspace; capturedGeneration: number }
       | { outcome: "reopen_pending" }
+      | { outcome: "external_custody_held" }
       | null
     > => {
+      const custody = await db
+        .select({ custodyKind: executionWorkspaces.custodyKind })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, input.id))
+        .then((rows) => rows[0]?.custodyKind ?? null);
+      if (custody === "external_prepared") {
+        return { outcome: "external_custody_held" };
+      }
       return db.transaction(async (tx) => {
         await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
         await assertWorkspaceArtifactDirectorShipMutationAllowed(tx as unknown as Db, input.id);
@@ -3371,6 +3462,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (!existingRow) throw notFound("Execution workspace not found");
 
       const existing = toExecutionWorkspace(existingRow);
+      if (existing.custodyKind === "external_prepared") {
+        throw conflict("External prepared worktrees are validation-only in Paperclip", {
+          code: "external_prepared_workspace_mutation_forbidden",
+        });
+      }
       if (!existing.sourceIssueId) {
         throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
       }

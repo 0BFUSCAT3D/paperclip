@@ -3432,6 +3432,41 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("never removes or runs cleanup commands for an external-custody worktree", async () => {
+    const repoRoot = await createTempRepo();
+    const marker = path.join(repoRoot, "cleanup-ran");
+    let safetyChecks = 0;
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "external-workspace-1",
+        cwd: repoRoot,
+        providerType: "git_worktree",
+        providerRef: repoRoot,
+        branchName: "main",
+        repoUrl: null,
+        baseRef: "HEAD",
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        sourceIssueId: "issue-1",
+        custodyKind: "external_prepared",
+        metadata: { createdByRuntime: false },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: `touch ${marker}`,
+      },
+      assertSafeToCleanup: async () => {
+        safetyChecks += 1;
+        throw new Error("external custody must return before Git safety/lock acquisition");
+      },
+    });
+
+    expect(cleanup).toEqual({ cleaned: true, warnings: [] });
+    expect(safetyChecks).toBe(0);
+    await expect(fs.stat(repoRoot)).resolves.toBeDefined();
+    await expect(fs.stat(marker)).rejects.toThrow();
+  });
+
   it("keeps a runtime-created branch when its tip changes after guarded worktree removal", async () => {
     const repoRoot = await createTempRepo();
     const workspace = await realizeExecutionWorkspace({
@@ -3597,6 +3632,7 @@ describe("realizeExecutionWorkspace", () => {
     const instanceId = deriveWorktreeInstanceId(workspace.cwd);
     const instanceRoot = path.join(worktreesDir, "instances", instanceId);
     await fs.mkdir(path.join(instanceRoot, "db"), { recursive: true });
+    const canonicalInstanceRoot = await fs.realpath(instanceRoot);
     await fs.mkdir(path.join(workspace.cwd, ".paperclip"), { recursive: true });
     await fs.writeFile(
       path.join(workspace.cwd, ".paperclip", ".env"),
@@ -3638,7 +3674,7 @@ describe("realizeExecutionWorkspace", () => {
     expect(operations[0]?.command).toBe("printf 'cleanup ok\\n'");
     expect(operations[1]?.metadata).toMatchObject({
       cleanupAction: "remove_worktree_instance",
-      instanceRoot,
+      instanceRoot: canonicalInstanceRoot,
     });
     expect(operations[2]?.metadata).toMatchObject({
       cleanupAction: "worktree_remove",
@@ -6772,19 +6808,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = `runtime-https-backfill-${randomUUID()}`;
 
-    const reservePort = async () => {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-        const address = probe.address();
-        const port = typeof address === "object" && address ? address.port : null;
-        await new Promise<void>((resolve, reject) => {
-          probe.close((error) => error ? reject(error) : resolve());
-        });
-        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
-      }
-      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
-    };
     const isLoopbackPortFree = async (port: number) => {
       const probe = net.createServer();
       return await new Promise<boolean>((resolve) => {
@@ -6793,6 +6816,14 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
           probe.close(() => resolve(true));
         });
       });
+    };
+    const reservePort = async () => {
+      const start = Math.floor(Math.random() * 2_000);
+      for (let attempt = 0; attempt < 2_000; attempt += 1) {
+        const port = 30_000 + ((start + attempt) % 2_000);
+        if (await isLoopbackPortFree(port) && await isLoopbackPortFree(port + 10_000)) return port;
+      }
+      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
     };
 
     // Stands in for the persisted template's hard-coded 45439: a pinned port
@@ -7064,7 +7095,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     expect(service?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
 
-    await fs.rm(paperclipHome, { recursive: true, force: true });
     await resetRuntimeServicesForTests();
 
     const result = await reconcilePersistedRuntimeServicesOnStartup(db);
@@ -7085,6 +7115,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
+    await fs.rm(paperclipHome, { recursive: true, force: true });
   });
 
   it("does not reuse a stopped auto-port service port while another process owns it", async () => {

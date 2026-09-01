@@ -98,6 +98,7 @@ import {
   assertIssueExecutionPolicyParticipants,
 } from "./issue-execution-policy-participants.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { validateStoredPreparedExecutionWorkspace } from "./prepared-execution-workspaces.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -7240,6 +7241,7 @@ export function issueService(db: Db) {
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+        let governedPreparedWorkspaceId: string | null = null;
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
@@ -7341,6 +7343,41 @@ export function issueService(db: Db) {
         }
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
+          const candidate = await tx
+            .select()
+            .from(executionWorkspaces)
+            .where(and(
+              eq(executionWorkspaces.id, executionWorkspaceId),
+              eq(executionWorkspaces.companyId, companyId),
+            ))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (candidate?.custodyKind === "external_prepared") {
+            if (governanceReservation?.contractVersion !== 2) {
+              throw conflict("External prepared workspaces require a version 2 governed reservation", {
+                code: "external_prepared_workspace_governed_v2_required",
+              });
+            }
+            const settings = parseIssueExecutionWorkspaceSettings(executionWorkspaceSettings);
+            if (
+              candidate.status !== "active"
+              || candidate.sourceIssueId !== null
+              || candidate.projectId !== issueData.projectId
+              || candidate.projectWorkspaceId !== projectWorkspaceId
+              || executionWorkspacePreference !== "reuse_existing"
+              || settings?.mode !== "isolated_workspace"
+            ) {
+              throw conflict("Governed prepared workspace binding is not exact", {
+                code: "governed_prepared_workspace_binding_mismatch",
+              });
+            }
+            await validateStoredPreparedExecutionWorkspace({
+              db: tx as unknown as Db,
+              companyId,
+              workspace: candidate,
+            });
+            governedPreparedWorkspaceId = candidate.id;
+          }
         }
         if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
           assertExplicitPinnedWorktreeIssueRunnable({
@@ -7419,6 +7456,22 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (governedPreparedWorkspaceId) {
+          const bound = await tx
+            .update(executionWorkspaces)
+            .set({ sourceIssueId: issue.id, updatedAt: new Date() })
+            .where(and(
+              eq(executionWorkspaces.id, governedPreparedWorkspaceId),
+              isNull(executionWorkspaces.sourceIssueId),
+              eq(executionWorkspaces.status, "active"),
+            ))
+            .returning({ id: executionWorkspaces.id });
+          if (bound.length !== 1) {
+            throw conflict("Prepared workspace was claimed concurrently", {
+              code: "governed_prepared_workspace_claim_conflict",
+            });
+          }
+        }
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
             companyId,
@@ -7445,6 +7498,7 @@ export function issueService(db: Db) {
             executionProfileIntent: governanceReservation.executionProfileIntent ?? null,
             reservedIssueSnapshot: governedIssueReservedSnapshot(issue),
             reservedIssueUpdatedAt: issue.updatedAt,
+            executionWorkspaceId: governedPreparedWorkspaceId,
           });
         }
         if (watchdog) {
@@ -7856,6 +7910,42 @@ export function issueService(db: Db) {
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
           : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
+      const existingExecutionWorkspace = existing.executionWorkspaceId
+        ? await dbOrTx
+            .select({
+              id: executionWorkspaces.id,
+              custodyKind: executionWorkspaces.custodyKind,
+            })
+            .from(executionWorkspaces)
+            .where(eq(executionWorkspaces.id, existing.executionWorkspaceId))
+            .then((rows: Array<{ id: string; custodyKind: string }>) => rows[0] ?? null)
+        : null;
+      if (existingExecutionWorkspace?.custodyKind === "external_prepared") {
+        const currentSettings = parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
+        const changedBinding =
+          (issueData.projectId !== undefined && issueData.projectId !== existing.projectId)
+          || (
+            issueData.projectWorkspaceId !== undefined
+            && issueData.projectWorkspaceId !== existing.projectWorkspaceId
+          )
+          || (
+            issueData.executionWorkspaceId !== undefined
+            && issueData.executionWorkspaceId !== existing.executionWorkspaceId
+          )
+          || (
+            issueData.executionWorkspacePreference !== undefined
+            && issueData.executionWorkspacePreference !== existing.executionWorkspacePreference
+          )
+          || (
+            issueData.executionWorkspaceSettings !== undefined
+            && JSON.stringify(nextExecutionWorkspaceSettings) !== JSON.stringify(currentSettings)
+          );
+        if (changedBinding) {
+          throw conflict("Governed prepared workspace binding is immutable after reservation", {
+            code: "governed_prepared_workspace_binding_immutable",
+          });
+        }
+      }
       if (issueData.executionWorkspaceSettings !== undefined) {
         patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
           ? { ...nextExecutionWorkspaceSettings }
@@ -7883,6 +7973,22 @@ export function issueService(db: Db) {
       if (nextExecutionWorkspaceId) {
         if (!validatedExecutionWorkspace) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+        }
+        const selectedWorkspace = await dbOrTx
+          .select({
+            id: executionWorkspaces.id,
+            custodyKind: executionWorkspaces.custodyKind,
+          })
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, nextExecutionWorkspaceId))
+          .then((rows: Array<{ id: string; custodyKind: string }>) => rows[0] ?? null);
+        if (
+          selectedWorkspace?.custodyKind === "external_prepared"
+          && existing.executionWorkspaceId !== selectedWorkspace.id
+        ) {
+          throw conflict("Governed prepared workspace binding is immutable after reservation", {
+            code: "governed_prepared_workspace_binding_immutable",
+          });
         }
       }
       if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
