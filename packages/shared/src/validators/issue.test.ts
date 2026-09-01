@@ -9,6 +9,8 @@ import {
   reserveGovernedIssueV2Schema,
   activateGovernedIssueV2Schema,
   retireGovernedIssueReservationV1Schema,
+  observeGovernedIssueReservationTerminalV1Schema,
+  releaseGovernedIssueReservationWithDraftPullRequestV1Schema,
   governedIssueLifecycleIssueV1Schema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -195,6 +197,65 @@ describe("issue validators", () => {
     expect(retireGovernedIssueReservationV1Schema.safeParse({
       ...request,
       unknownAuthority: true,
+    }).success).toBe(false);
+  });
+
+  it("keeps terminal outcome fields server-owned and draft release provider-exact", () => {
+    const terminalRequest = {
+      version: 1 as const,
+      expectedIssueId: "11111111-1111-4111-8111-111111111111",
+      expectedEnvelopeSha256: "a".repeat(64),
+      expectedActivationSha256: "b".repeat(64),
+      expectedBuilderAgentId: "22222222-2222-4222-8222-222222222222",
+      expectedHeartbeatRunId: "33333333-3333-4333-8333-333333333333",
+      expectedExecutionWorkspaceId: "44444444-4444-4444-8444-444444444444",
+      expectedLaunchReceiptId: "55555555-5555-4555-8555-555555555555",
+      expectedLaunchInstanceId: "66666666-6666-4666-8666-666666666666",
+      expectedPid: 42,
+      expectedStartToken: "c".repeat(64),
+      expectedHeadSha: "d".repeat(40),
+    };
+    expect(observeGovernedIssueReservationTerminalV1Schema.safeParse(terminalRequest).success).toBe(true);
+    expect(observeGovernedIssueReservationTerminalV1Schema.safeParse({
+      ...terminalRequest,
+      status: "succeeded",
+      exitCode: 0,
+    }).success).toBe(false);
+
+    const releaseRequest = {
+      version: 1 as const,
+      expectedIssueId: terminalRequest.expectedIssueId,
+      expectedIssueUpdatedAt: "2026-08-31T12:00:00.000Z",
+      expectedEnvelopeSha256: terminalRequest.expectedEnvelopeSha256,
+      expectedTerminalObservationSha256: "e".repeat(64),
+      expectedHeartbeatRunId: terminalRequest.expectedHeartbeatRunId,
+      expectedExecutionWorkspaceId: terminalRequest.expectedExecutionWorkspaceId,
+      expectedHeadSha: "f".repeat(40),
+      pullRequest: {
+        provider: "github" as const,
+        owner: "0BFUSCAT3D",
+        repository: "vantage",
+        pullRequestNumber: 17,
+        url: "https://github.com/0BFUSCAT3D/vantage/pull/17",
+        headSha: "f".repeat(40),
+        baseRef: "main",
+        headRef: "reeve/vantage-fix",
+        draft: true as const,
+      },
+    };
+    expect(releaseGovernedIssueReservationWithDraftPullRequestV1Schema.safeParse(releaseRequest).success)
+      .toBe(true);
+    expect(releaseGovernedIssueReservationWithDraftPullRequestV1Schema.safeParse({
+      ...releaseRequest,
+      pullRequest: { ...releaseRequest.pullRequest, draft: false },
+    }).success).toBe(false);
+    expect(releaseGovernedIssueReservationWithDraftPullRequestV1Schema.safeParse({
+      ...releaseRequest,
+      pullRequest: { ...releaseRequest.pullRequest, url: "https://example.com/pull/17" },
+    }).success).toBe(false);
+    expect(releaseGovernedIssueReservationWithDraftPullRequestV1Schema.safeParse({
+      ...releaseRequest,
+      pullRequest: { ...releaseRequest.pullRequest, headSha: "0".repeat(40) },
     }).success).toBe(false);
   });
 

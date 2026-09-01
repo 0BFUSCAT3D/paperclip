@@ -349,6 +349,11 @@ export function governedIssueContractService(db: Db) {
           activityPublication: null,
         };
       }
+      if (reservation.releasedAt) {
+        throw conflict("Governed issue reservation is already released", {
+          code: "governed_issue_reservation_released",
+        });
+      }
 
       if (input.request.expectedIssueId !== reservation.issueId) {
         throw preconditionFailed("Governed issue retirement targets a different issue", {
@@ -562,6 +567,11 @@ export function governedIssueContractService(db: Db) {
       if (reservation.retiredAt) {
         throw conflict("Governed issue reservation is retired", {
           code: "governed_issue_reservation_retired",
+        });
+      }
+      if (reservation.releasedAt) {
+        throw conflict("Governed issue reservation is released", {
+          code: "governed_issue_reservation_released",
         });
       }
 
@@ -1005,7 +1015,9 @@ export function serializeGovernedIssueRetirementReceipt(
 
 export function governedIssueReservationState(
   reservation: typeof governedIssueReservations.$inferSelect,
-): "reserved" | "activated" | "retired" {
+): "reserved" | "activated" | "terminal_observed" | "released" | "retired" {
   if (reservation.retiredAt) return "retired";
+  if (reservation.releasedAt) return "released";
+  if (reservation.terminalObservedAt) return "terminal_observed";
   return reservation.activatedAt ? "activated" : "reserved";
 }

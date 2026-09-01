@@ -6795,6 +6795,7 @@ export async function lockGovernedV2ExecutionReservationForQueuedRun(
     .select({
       executionProfileIntent: governedIssueReservations.executionProfileIntent,
       retiredAt: governedIssueReservations.retiredAt,
+      releasedAt: governedIssueReservations.releasedAt,
     })
     .from(governedIssueReservations)
     .where(and(
@@ -6808,6 +6809,12 @@ export async function lockGovernedV2ExecutionReservationForQueuedRun(
   if (reservation?.retiredAt) {
     throw conflict("Governed issue reservation is retired", {
       code: "governed_issue_reservation_retired",
+      issueId: input.issueId,
+    });
+  }
+  if (reservation?.releasedAt) {
+    throw conflict("Governed issue reservation is released", {
+      code: "governed_issue_reservation_released",
       issueId: input.issueId,
     });
   }

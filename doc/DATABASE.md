@@ -268,6 +268,17 @@ replay exact. The adapter withholds prompt stdin and terminates the child when
 this receipt cannot be persisted, so a governed external worktree never begins
 an unreceipted run.
 
+After that executor terminates, the board-only terminal-observation endpoint
+freezes a path-free receipt derived exclusively from Paperclip's reservation,
+activation, launch, heartbeat-run, workspace, issue, and builder records. The
+client supplies only expected CAS identities; it cannot assert run status or
+exit outcome. An exact successful observation can then be paired with a
+provider-observed GitHub draft pull request. That release transaction creates
+the issue's primary pull-request work product, clears execution locks, preserves
+the `in_review` issue and reviewer assignment, and stores an immutable replay
+receipt. Released reservations cannot be launched, retried, or retired, and
+neither endpoint merges or deploys code.
+
 ## Decision training snapshot retention
 
 `decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.

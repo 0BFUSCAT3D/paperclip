@@ -76,6 +76,32 @@ export interface PaperclipCapabilitiesResponseV1 {
       activeRunRefusal: true;
       terminalRunObservationRequired: true;
     };
+    governedIssueReservationTerminalObservation: {
+      supported: true;
+      version: 1;
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/terminal-observation";
+      method: "PUT";
+      boardOnly: true;
+      paperclipDerivedRuntimeOutcome: true;
+      exactLaunchReceiptBinding: true;
+      durableReceipt: true;
+      pathFree: true;
+    };
+    governedIssueReservationDraftPullRequestRelease: {
+      supported: true;
+      version: 1;
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/draft-pull-request-release";
+      method: "PUT";
+      boardOnly: true;
+      provider: "github";
+      draftRequired: true;
+      successfulTerminalObservationRequired: true;
+      exactHeadCas: true;
+      registersPrimaryWorkProduct: true;
+      preservesInReviewIssue: true;
+      mergeOrDeploy: false;
+      durableReceipt: true;
+    };
     preparedExecutionWorkspaceAdoption: {
       supported: boolean;
       enabled: boolean;
@@ -156,6 +182,32 @@ export const PAPERCLIP_CAPABILITIES_V1: PaperclipCapabilitiesResponseV1 = {
       retiredRowsPreserved: true,
       activeRunRefusal: true,
       terminalRunObservationRequired: true,
+    },
+    governedIssueReservationTerminalObservation: {
+      supported: true,
+      version: 1,
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/terminal-observation",
+      method: "PUT",
+      boardOnly: true,
+      paperclipDerivedRuntimeOutcome: true,
+      exactLaunchReceiptBinding: true,
+      durableReceipt: true,
+      pathFree: true,
+    },
+    governedIssueReservationDraftPullRequestRelease: {
+      supported: true,
+      version: 1,
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/draft-pull-request-release",
+      method: "PUT",
+      boardOnly: true,
+      provider: "github",
+      draftRequired: true,
+      successfulTerminalObservationRequired: true,
+      exactHeadCas: true,
+      registersPrimaryWorkProduct: true,
+      preservesInReviewIssue: true,
+      mergeOrDeploy: false,
+      durableReceipt: true,
     },
     preparedExecutionWorkspaceAdoption: {
       supported: false,

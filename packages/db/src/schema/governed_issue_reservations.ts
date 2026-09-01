@@ -16,6 +16,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
+import { issueWorkProducts } from "./issue_work_products.js";
 
 /**
  * Durable versioned reservation/activation contract for governed issues.
@@ -50,6 +51,16 @@ export const governedIssueReservations = pgTable(
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "restrict" }),
     executionWorkspaceId: uuid("execution_workspace_id")
       .references(() => executionWorkspaces.id, { onDelete: "restrict" }),
+    terminalObservationIntentSha256: text("terminal_observation_intent_sha256"),
+    terminalObservationSha256: text("terminal_observation_sha256"),
+    terminalObservationReceipt: jsonb("terminal_observation_receipt").$type<Record<string, unknown>>(),
+    terminalObservedAt: timestamp("terminal_observed_at", { withTimezone: true }),
+    releaseIntentSha256: text("release_intent_sha256"),
+    releaseSha256: text("release_sha256"),
+    releaseReceipt: jsonb("release_receipt").$type<Record<string, unknown>>(),
+    completionWorkProductId: uuid("completion_work_product_id")
+      .references(() => issueWorkProducts.id, { onDelete: "restrict" }),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
     retirementSha256: text("retirement_sha256"),
     retirementReceipt: jsonb("retirement_receipt").$type<Record<string, unknown>>(),
     retiredAt: timestamp("retired_at", { withTimezone: true }),
@@ -99,6 +110,42 @@ export const governedIssueReservations = pgTable(
         AND ${table.retirementSha256} ~ '^[0-9a-f]{64}$'
         AND ${table.retirementReceipt} IS NOT NULL
         AND ${table.retiredAt} IS NOT NULL
+      )`,
+    ),
+    terminalObservationShapeCheck: check(
+      "governed_issue_reservations_terminal_observation_shape_check",
+      sql`(
+        ${table.terminalObservationIntentSha256} IS NULL
+        AND ${table.terminalObservationSha256} IS NULL
+        AND ${table.terminalObservationReceipt} IS NULL
+        AND ${table.terminalObservedAt} IS NULL
+      ) OR (
+        ${table.contractVersion} = 2
+        AND ${table.activatedAt} IS NOT NULL
+        AND ${table.retiredAt} IS NULL
+        AND ${table.terminalObservationIntentSha256} ~ '^[0-9a-f]{64}$'
+        AND ${table.terminalObservationSha256} ~ '^[0-9a-f]{64}$'
+        AND ${table.terminalObservationReceipt} IS NOT NULL
+        AND ${table.terminalObservedAt} IS NOT NULL
+      )`,
+    ),
+    releaseShapeCheck: check(
+      "governed_issue_reservations_release_shape_check",
+      sql`(
+        ${table.releaseIntentSha256} IS NULL
+        AND ${table.releaseSha256} IS NULL
+        AND ${table.releaseReceipt} IS NULL
+        AND ${table.completionWorkProductId} IS NULL
+        AND ${table.releasedAt} IS NULL
+      ) OR (
+        ${table.contractVersion} = 2
+        AND ${table.retiredAt} IS NULL
+        AND ${table.terminalObservedAt} IS NOT NULL
+        AND ${table.releaseIntentSha256} ~ '^[0-9a-f]{64}$'
+        AND ${table.releaseSha256} ~ '^[0-9a-f]{64}$'
+        AND ${table.releaseReceipt} IS NOT NULL
+        AND ${table.completionWorkProductId} IS NOT NULL
+        AND ${table.releasedAt} IS NOT NULL
       )`,
     ),
   }),

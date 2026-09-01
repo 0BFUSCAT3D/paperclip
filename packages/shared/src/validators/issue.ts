@@ -660,6 +660,84 @@ export const retireGovernedIssueReservationV1Schema = z.object({
 }).strict();
 
 /**
+ * Exact client-side bindings for asking Paperclip to freeze its own terminal
+ * run observation. Runtime outcome fields are deliberately absent: status,
+ * exit, process and issue facts are read from Paperclip's database.
+ */
+export const observeGovernedIssueReservationTerminalV1Schema = z.object({
+  version: z.literal(1),
+  expectedIssueId: z.string().uuid(),
+  expectedEnvelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  expectedActivationSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  expectedBuilderAgentId: z.string().uuid(),
+  expectedHeartbeatRunId: z.string().uuid(),
+  expectedExecutionWorkspaceId: z.string().uuid(),
+  expectedLaunchReceiptId: z.string().uuid(),
+  expectedLaunchInstanceId: z.string().uuid(),
+  expectedPid: z.number().int().safe().positive(),
+  expectedStartToken: z.string().regex(/^[0-9a-f]{64}$/),
+  expectedHeadSha: z.string().regex(/^([0-9a-f]{40}|[0-9a-f]{64})$/),
+}).strict();
+
+const governedDraftPullRequestRefSchema = z.string()
+  .min(1)
+  .max(255)
+  .regex(/^[A-Za-z0-9._\/-]+$/)
+  .refine((value) => (
+    !value.startsWith("/")
+    && !value.endsWith("/")
+    && !value.includes("//")
+    && !value.includes("..")
+    && !value.includes("@{")
+    && !value.endsWith(".lock")
+  ), "Invalid Git ref");
+
+export const governedDraftPullRequestReceiptV1Schema = z.object({
+  provider: z.literal("github"),
+  owner: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/),
+  repository: z.string().regex(/^[A-Za-z0-9._-]{1,100}$/),
+  pullRequestNumber: z.number().int().safe().positive(),
+  url: z.string().url(),
+  headSha: z.string().regex(/^([0-9a-f]{40}|[0-9a-f]{64})$/),
+  baseRef: governedDraftPullRequestRefSchema,
+  headRef: governedDraftPullRequestRefSchema,
+  draft: z.literal(true),
+}).strict().superRefine((pullRequest, ctx) => {
+  const expectedUrl = `https://github.com/${pullRequest.owner}/${pullRequest.repository}/pull/${pullRequest.pullRequestNumber}`;
+  if (pullRequest.url !== expectedUrl) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["url"],
+      message: "GitHub pull request URL must exactly match owner, repository, and number",
+    });
+  }
+});
+
+/**
+ * Provider-observed draft-PR identity plus exact Paperclip CAS bindings. The
+ * request contains no merge/deploy instruction and cannot assert run success.
+ */
+export const releaseGovernedIssueReservationWithDraftPullRequestV1Schema = z.object({
+  version: z.literal(1),
+  expectedIssueId: z.string().uuid(),
+  expectedIssueUpdatedAt: z.string().datetime(),
+  expectedEnvelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  expectedTerminalObservationSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  expectedHeartbeatRunId: z.string().uuid(),
+  expectedExecutionWorkspaceId: z.string().uuid(),
+  expectedHeadSha: z.string().regex(/^([0-9a-f]{40}|[0-9a-f]{64})$/),
+  pullRequest: governedDraftPullRequestReceiptV1Schema,
+}).strict().superRefine((request, ctx) => {
+  if (request.pullRequest.headSha !== request.expectedHeadSha) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["pullRequest", "headSha"],
+      message: "Draft pull request head must match the expected governed workspace head",
+    });
+  }
+});
+
+/**
  * Immutable issue projection used by the governed reservation lifecycle.
  *
  * This deliberately excludes mutable runtime/read-model decorations (labels,
@@ -723,6 +801,71 @@ export const governedIssueLifecycleIssueV1Schema = z.object({
   updatedAt: z.string().datetime(),
 }).strict();
 
+export const governedIssueReservationTerminalObservationReceiptV1Schema = z.object({
+  version: z.literal(1),
+  reservationId: z.string().uuid(),
+  idempotencyKey: z.string().min(1).max(255),
+  issueId: z.string().uuid(),
+  envelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  activation: z.object({
+    activationSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    builderAgentId: z.string().uuid(),
+    activatedAt: z.string().datetime(),
+    heartbeatRunId: z.string().uuid(),
+  }).strict(),
+  launch: z.object({
+    receiptId: z.string().uuid(),
+    instanceId: z.string().uuid(),
+    executionWorkspaceId: z.string().uuid(),
+    branch: z.string().min(1),
+    headSha: z.string().regex(/^([0-9a-f]{40}|[0-9a-f]{64})$/),
+    pid: z.number().int().safe().positive(),
+    startToken: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict(),
+  terminalRun: z.object({
+    status: z.enum(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]),
+    exitCode: z.number().int().nullable(),
+    signal: z.string().nullable(),
+    finishedAt: z.string().datetime(),
+  }).strict(),
+  issue: z.object({
+    status: z.enum(["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"]),
+    updatedAt: z.string().datetime(),
+  }).strict(),
+  terminalObservationSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  observedAt: z.string().datetime(),
+}).strict();
+
+export const governedIssueReservationDraftPullRequestReleaseReceiptV1Schema = z.object({
+  version: z.literal(1),
+  reservationId: z.string().uuid(),
+  idempotencyKey: z.string().min(1).max(255),
+  issueId: z.string().uuid(),
+  envelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  terminalObservationSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  heartbeatRunId: z.string().uuid(),
+  builderAgentId: z.string().uuid(),
+  executionWorkspaceId: z.string().uuid(),
+  headSha: z.string().regex(/^([0-9a-f]{40}|[0-9a-f]{64})$/),
+  pullRequest: governedDraftPullRequestReceiptV1Schema,
+  workProduct: z.object({
+    id: z.string().uuid(),
+    type: z.literal("pull_request"),
+    provider: z.literal("github"),
+    externalId: z.string().min(1),
+    title: z.string().min(1),
+    url: z.string().url(),
+    status: z.literal("draft"),
+    reviewState: z.literal("needs_board_review"),
+    isPrimary: z.literal(true),
+    createdByRunId: z.string().uuid(),
+  }).strict(),
+  releaseSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  releasedAt: z.string().datetime(),
+  issueUpdatedAt: z.string().datetime(),
+  issueSnapshot: governedIssueLifecycleIssueV1Schema,
+}).strict();
+
 export type GovernedIssueEnvelope = z.infer<typeof governedIssueEnvelopeSchema>;
 export type ReserveGovernedIssueV1 = z.infer<typeof reserveGovernedIssueV1Schema>;
 export type ActivateGovernedIssueV1 = z.infer<typeof activateGovernedIssueV1Schema>;
@@ -731,6 +874,19 @@ export type GovernedExecutionProfileIntentV2 = z.infer<typeof governedExecutionP
 export type ReserveGovernedIssueV2 = z.infer<typeof reserveGovernedIssueV2Schema>;
 export type ActivateGovernedIssueV2 = z.infer<typeof activateGovernedIssueV2Schema>;
 export type RetireGovernedIssueReservationV1 = z.infer<typeof retireGovernedIssueReservationV1Schema>;
+export type ObserveGovernedIssueReservationTerminalV1 = z.infer<
+  typeof observeGovernedIssueReservationTerminalV1Schema
+>;
+export type GovernedDraftPullRequestReceiptV1 = z.infer<typeof governedDraftPullRequestReceiptV1Schema>;
+export type ReleaseGovernedIssueReservationWithDraftPullRequestV1 = z.infer<
+  typeof releaseGovernedIssueReservationWithDraftPullRequestV1Schema
+>;
+export type GovernedIssueReservationTerminalObservationReceiptV1 = z.infer<
+  typeof governedIssueReservationTerminalObservationReceiptV1Schema
+>;
+export type GovernedIssueReservationDraftPullRequestReleaseReceiptV1 = z.infer<
+  typeof governedIssueReservationDraftPullRequestReleaseReceiptV1Schema
+>;
 export type GovernedIssueLifecycleIssueV1 = z.infer<typeof governedIssueLifecycleIssueV1Schema>;
 
 export const upsertIssueWatchdogSchema = z.object({

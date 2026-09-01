@@ -112,6 +112,11 @@ export {
   type GovernedIssueRetirementReceiptV1,
 } from "./governed-issue-contract.js";
 export { governedExecutorLaunchReceiptService } from "./governed-executor-launch-receipts.js";
+export {
+  governedIssueCompletionService,
+  serializeGovernedTerminalObservationReceipt,
+  serializeGovernedDraftPullRequestReleaseReceipt,
+} from "./governed-issue-completion.js";
 export { deriveLocalProcessStartToken } from "./process-start-identity.js";
 export {
   productivityReviewService,

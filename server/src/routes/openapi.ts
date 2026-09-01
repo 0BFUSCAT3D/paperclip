@@ -31,6 +31,10 @@ import {
   reserveGovernedIssueV2Schema,
   activateGovernedIssueV2Schema,
   retireGovernedIssueReservationV1Schema,
+  observeGovernedIssueReservationTerminalV1Schema,
+  releaseGovernedIssueReservationWithDraftPullRequestV1Schema,
+  governedIssueReservationTerminalObservationReceiptV1Schema,
+  governedIssueReservationDraftPullRequestReleaseReceiptV1Schema,
   governedExecutionProfileIntentV2Schema,
   governedIssueLifecycleIssueV1Schema,
   approveIssueReviewEvidenceSchema,
@@ -808,6 +812,8 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PUT /api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/terminal-observation",
+  "PUT /api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/draft-pull-request-release",
   "GET /api/cloud/stacks",
   "GET /api/companies",
   "POST /api/companies",
@@ -1238,6 +1244,36 @@ const PaperclipCapabilitiesSchema = z.object({
       retiredRowsPreserved: z.literal(true),
       activeRunRefusal: z.literal(true),
       terminalRunObservationRequired: z.literal(true),
+    }).strict(),
+    governedIssueReservationTerminalObservation: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      endpoint: z.literal(
+        "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/terminal-observation",
+      ),
+      method: z.literal("PUT"),
+      boardOnly: z.literal(true),
+      paperclipDerivedRuntimeOutcome: z.literal(true),
+      exactLaunchReceiptBinding: z.literal(true),
+      durableReceipt: z.literal(true),
+      pathFree: z.literal(true),
+    }).strict(),
+    governedIssueReservationDraftPullRequestRelease: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      endpoint: z.literal(
+        "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/draft-pull-request-release",
+      ),
+      method: z.literal("PUT"),
+      boardOnly: z.literal(true),
+      provider: z.literal("github"),
+      draftRequired: z.literal(true),
+      successfulTerminalObservationRequired: z.literal(true),
+      exactHeadCas: z.literal(true),
+      registersPrimaryWorkProduct: z.literal(true),
+      preservesInReviewIssue: z.literal(true),
+      mergeOrDeploy: z.literal(false),
+      durableReceipt: z.literal(true),
     }).strict(),
     preparedExecutionWorkspaceAdoption: z.object({
       supported: z.boolean(),
@@ -2473,10 +2509,12 @@ const GovernedIssueRetirementReceiptV1Schema = z.object({
 const GovernedIssueReservationResponseV2Schema = z.object({
   version: z.literal(2),
   replayed: z.boolean().optional(),
-  state: z.enum(["reserved", "activated", "retired"]),
+  state: z.enum(["reserved", "activated", "terminal_observed", "released", "retired"]),
   reservation: GovernedIssueReservationReceiptV2Schema,
   activationReceipt: GovernedIssueActivationReceiptV2Schema.nullable(),
   retirementReceipt: GovernedIssueRetirementReceiptV1Schema.nullable(),
+  terminalObservationReceipt: governedIssueReservationTerminalObservationReceiptV1Schema.nullable(),
+  releaseReceipt: governedIssueReservationDraftPullRequestReleaseReceiptV1Schema.nullable(),
   issue: governedIssueLifecycleIssueV1Schema,
 }).strict();
 const GovernedIssueActivationResponseV2Schema = z.object({
@@ -2492,6 +2530,20 @@ const GovernedIssueRetirementResponseV2Schema = z.object({
   reservation: GovernedIssueReservationReceiptV2Schema,
   activationReceipt: GovernedIssueActivationReceiptV2Schema.nullable(),
   retirementReceipt: GovernedIssueRetirementReceiptV1Schema,
+  issue: governedIssueLifecycleIssueV1Schema,
+}).strict();
+const GovernedIssueTerminalObservationResponseV2Schema = z.object({
+  version: z.literal(2),
+  replayed: z.boolean(),
+  state: z.literal("terminal_observed"),
+  terminalObservationReceipt: governedIssueReservationTerminalObservationReceiptV1Schema,
+}).strict();
+const GovernedIssueDraftPullRequestReleaseResponseV2Schema = z.object({
+  version: z.literal(2),
+  replayed: z.boolean(),
+  state: z.literal("released"),
+  terminalObservationReceipt: governedIssueReservationTerminalObservationReceiptV1Schema,
+  releaseReceipt: governedIssueReservationDraftPullRequestReleaseReceiptV1Schema,
   issue: governedIssueLifecycleIssueV1Schema,
 }).strict();
 
@@ -2551,6 +2603,54 @@ registry.registerPath({
   },
   responses: {
     200: r.ok(GovernedIssueRetirementResponseV2Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/terminal-observation",
+  tags: ["issues"],
+  summary: "Persist Paperclip's exact terminal observation for a governed local executor",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+    body: jsonBody(observeGovernedIssueReservationTerminalV1Schema),
+  },
+  responses: {
+    200: r.ok(GovernedIssueTerminalObservationResponseV2Schema),
+    201: r.ok(GovernedIssueTerminalObservationResponseV2Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/draft-pull-request-release",
+  tags: ["issues"],
+  summary: "Register an exact GitHub draft pull request and safely release governed execution",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+    body: jsonBody(releaseGovernedIssueReservationWithDraftPullRequestV1Schema),
+  },
+  responses: {
+    200: r.ok(GovernedIssueDraftPullRequestReleaseResponseV2Schema),
+    201: r.ok(GovernedIssueDraftPullRequestReleaseResponseV2Schema),
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,
