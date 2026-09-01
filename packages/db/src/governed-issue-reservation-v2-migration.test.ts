@@ -13,6 +13,7 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const MIGRATION_FILE = "0229_normal_gertrude_yorkes.sql";
 const WORKSPACE_CONSTRAINT_MIGRATION_FILE = "0232_last_jetstream.sql";
+const RETIREMENT_MIGRATION_FILE = "0233_large_morlun.sql";
 
 async function migrationHash(file = MIGRATION_FILE): Promise<string> {
   const content = await fs.promises.readFile(new URL(`./migrations/${file}`, import.meta.url), "utf8");
@@ -34,6 +35,92 @@ async function expectPostgresCode(promise: Promise<unknown>, code: string) {
 }
 
 describeEmbeddedPostgres("governed issue reservation version 2 migration", () => {
+  it("adds durable retirement state and releases the pending-activation guard only after retirement", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-governed-retirement-upgrade-");
+    cleanups.push(database.cleanup);
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => sql.end());
+
+    await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash(RETIREMENT_MIGRATION_FILE)}`;
+    await sql`DROP TRIGGER IF EXISTS "governed_issue_reservation_retirement_immutable" ON "governed_issue_reservations"`;
+    await sql`DROP FUNCTION IF EXISTS enforce_governed_issue_reservation_retirement_immutable()`;
+    await sql`ALTER TABLE "governed_issue_reservations" DROP CONSTRAINT "governed_issue_reservations_retirement_shape_check"`;
+    await sql`ALTER TABLE "governed_issue_reservations" DROP COLUMN "retirement_sha256"`;
+    await sql`ALTER TABLE "governed_issue_reservations" DROP COLUMN "retirement_receipt"`;
+    await sql`ALTER TABLE "governed_issue_reservations" DROP COLUMN "retired_at"`;
+
+    await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
+
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const reservationId = randomUUID();
+    await sql`
+      INSERT INTO "companies" ("id", "name", "issue_prefix")
+      VALUES (${companyId}, 'Retirement migration', 'RET')
+    `;
+    await sql`
+      INSERT INTO "issues" ("id", "company_id", "title", "identifier", "status")
+      VALUES (${issueId}, ${companyId}, 'Retirable reservation', 'RET-1', 'backlog')
+    `;
+    await sql`
+      INSERT INTO "governed_issue_reservations" (
+        "id", "company_id", "idempotency_key", "issue_id", "contract_version",
+        "request_intent_sha256", "envelope_sha256", "envelope",
+        "execution_profile_intent_sha256", "execution_profile_intent",
+        "reserved_issue_snapshot", "reserved_issue_updated_at"
+      ) VALUES (
+        ${reservationId}, ${companyId}, 'retirement-migration', ${issueId}, 2,
+        ${"a".repeat(64)}, ${"b".repeat(64)}, '{}'::jsonb,
+        ${"c".repeat(64)}, '{}'::jsonb, '{}'::jsonb, now()
+      )
+    `;
+
+    await expectPostgresCode(sql`
+      UPDATE "governed_issue_reservations"
+      SET "retirement_sha256" = ${"d".repeat(64)}
+      WHERE "id" = ${reservationId}
+    `, "23514");
+    await expectPostgresCode(sql`
+      UPDATE "issues" SET "title" = 'still guarded' WHERE "id" = ${issueId}
+    `, "55000");
+
+    await sql`
+      UPDATE "governed_issue_reservations"
+      SET "retirement_sha256" = ${"d".repeat(64)},
+        "retirement_receipt" = '{}'::jsonb,
+        "retired_at" = now()
+      WHERE "id" = ${reservationId}
+    `;
+    await expect(sql`
+      UPDATE "issues" SET "status" = 'cancelled' WHERE "id" = ${issueId}
+    `).resolves.toBeDefined();
+    await expectPostgresCode(sql`
+      UPDATE "governed_issue_reservations"
+      SET "retirement_receipt" = '{"changed":true}'::jsonb
+      WHERE "id" = ${reservationId}
+    `, "55000");
+    await expectPostgresCode(sql`
+      UPDATE "governed_issue_reservations"
+      SET "envelope_sha256" = ${"e".repeat(64)}
+      WHERE "id" = ${reservationId}
+    `, "55000");
+    await expectPostgresCode(sql`
+      UPDATE "governed_issue_reservations"
+      SET "idempotency_key" = 'retirement-migration-drifted'
+      WHERE "id" = ${reservationId}
+    `, "55000");
+    await expectPostgresCode(sql`
+      UPDATE "governed_issue_reservations"
+      SET "activated_at" = now()
+      WHERE "id" = ${reservationId}
+    `, "55000");
+    await expectPostgresCode(sql`
+      UPDATE "governed_issue_reservations"
+      SET "retired_at" = NULL, "retirement_sha256" = NULL, "retirement_receipt" = NULL
+      WHERE "id" = ${reservationId}
+    `, "55000");
+  }, 45_000);
+
   it("clears legacy version 1 workspace bindings before enforcing v2-only ownership", async () => {
     const database = await startEmbeddedPostgresTestDatabase("paperclip-governed-workspace-upgrade-");
     cleanups.push(database.cleanup);

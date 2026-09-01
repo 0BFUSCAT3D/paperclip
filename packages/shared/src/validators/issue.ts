@@ -643,6 +643,23 @@ export const activateGovernedIssueV2Schema = z.object({
 });
 
 /**
+ * One-use retirement request for a version 2 governed reservation.
+ *
+ * `expectedHeartbeatRunId` is deliberately present for both states. A reserved
+ * reservation must bind it to null; an activated reservation must bind the
+ * exact durable run minted by activation. The service enforces that
+ * state-dependent rule while this schema keeps the wire shape exact.
+ */
+export const retireGovernedIssueReservationV1Schema = z.object({
+  version: z.literal(1),
+  expectedIssueId: z.string().uuid(),
+  expectedEnvelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  expectedState: z.enum(["reserved", "activated"]),
+  expectedHeartbeatRunId: z.string().uuid().nullable(),
+  reason: z.string().trim().min(1).max(1_000),
+}).strict();
+
+/**
  * Immutable issue projection used by the governed reservation lifecycle.
  *
  * This deliberately excludes mutable runtime/read-model decorations (labels,
@@ -713,6 +730,7 @@ export type GovernedExecutionProfileParticipantV2 = z.infer<typeof governedExecu
 export type GovernedExecutionProfileIntentV2 = z.infer<typeof governedExecutionProfileIntentV2Schema>;
 export type ReserveGovernedIssueV2 = z.infer<typeof reserveGovernedIssueV2Schema>;
 export type ActivateGovernedIssueV2 = z.infer<typeof activateGovernedIssueV2Schema>;
+export type RetireGovernedIssueReservationV1 = z.infer<typeof retireGovernedIssueReservationV1Schema>;
 export type GovernedIssueLifecycleIssueV1 = z.infer<typeof governedIssueLifecycleIssueV1Schema>;
 
 export const upsertIssueWatchdogSchema = z.object({

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   executionWorkspaces,
@@ -95,6 +95,7 @@ export function governedExecutorLaunchReceiptService(
           eq(governedIssueReservations.contractVersion, 2),
           eq(governedIssueReservations.executionWorkspaceId, input.workspace.id),
           isNotNull(governedIssueReservations.activatedAt),
+          isNull(governedIssueReservations.retiredAt),
         )).then((rows) => rows[0] ?? null),
         db.select().from(executionWorkspaces).where(and(
           eq(executionWorkspaces.companyId, input.companyId),
@@ -156,6 +157,11 @@ export function governedExecutorLaunchReceiptService(
           });
         }
         return null;
+      }
+      if (reservation.retiredAt) {
+        throw conflict("Governed issue reservation is retired", {
+          code: "governed_issue_reservation_retired",
+        });
       }
       if (input.expectedReservationId && reservation.id !== input.expectedReservationId) {
         throw conflict("Governed executor launch reservation changed before spawn", {

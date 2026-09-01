@@ -59,6 +59,18 @@ describe("GET /api/capabilities", () => {
       genericFinalApprovalQuarantined: true,
       durableCompletionReceipt: true,
     });
+    expect(response.body.features.governedIssueReservationRetirement).toEqual({
+      supported: true,
+      version: 1,
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/retirement",
+      method: "PUT",
+      boardOnly: true,
+      exactReservationCas: true,
+      durableReceipt: true,
+      retiredRowsPreserved: true,
+      activeRunRefusal: true,
+      terminalRunObservationRequired: true,
+    });
   });
 
   it("advertises prepared-worktree adoption as disabled when isolated workspaces are disabled", async () => {

@@ -34,6 +34,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockGovernedIssueContractService = vi.hoisted(() => ({
   getReservation: vi.fn(),
   activate: vi.fn(),
+  retire: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -125,11 +126,21 @@ function registerModuleMocks() {
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     governedIssueContractService: () => mockGovernedIssueContractService,
+    governedExecutorLaunchReceiptService: () => ({
+      getForReservation: vi.fn(async () => null),
+    }),
     governedIssueEnvelopeSha256: vi.fn(() => "a".repeat(64)),
     governedIssueSha256: vi.fn(() => "c".repeat(64)),
     governedIssueReservationResponseIssue: (reservation: any) => reservation.activatedAt
-      ? reservation.activatedIssueSnapshot
-      : reservation.reservedIssueSnapshot,
+      ? reservation.retiredAt
+        ? reservation.retirementReceipt.issueSnapshot
+        : reservation.activatedIssueSnapshot
+      : reservation.retiredAt
+        ? reservation.retirementReceipt.issueSnapshot
+        : reservation.reservedIssueSnapshot,
+    governedIssueReservationState: (reservation: any) => reservation.retiredAt
+      ? "retired"
+      : reservation.activatedAt ? "activated" : "reserved",
     serializeGovernedIssueReservation: (reservation: any) => ({
       idempotencyKey: reservation.idempotencyKey,
       issueId: reservation.issueId,
@@ -165,8 +176,11 @@ function registerModuleMocks() {
         ? { executionProfile: reservation.executionProfileReceipt }
         : {}),
     }) : null,
+    serializeGovernedIssueRetirementReceipt: (reservation: any) =>
+      reservation.retiredAt ? reservation.retirementReceipt : null,
     GOVERNED_ISSUE_LIFECYCLE_VERSION: 1,
     GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION: 2,
+    GOVERNED_ISSUE_RETIREMENT_VERSION: 1,
     environmentService: () => ({
       getById: vi.fn(async () => null),
     }),
@@ -2937,6 +2951,285 @@ describe("issue execution policy routes", () => {
     expect(mockGovernedIssueContractService.activate).toHaveBeenLastCalledWith(
       expect.objectContaining({ inspectExecutionProfile: expect.any(Function) }),
     );
+  });
+
+  it("retires only through the board route and returns retired state on an exact reserve replay", async () => {
+    const builderAgentId = "44444444-4444-4444-8444-444444444444";
+    const reviewerAgentId = "55555555-5555-4555-8555-555555555555";
+    const issueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const idempotencyKey = "reeve-build:retired-route";
+    const executionProfiles = {
+      builderAgentId,
+      participants: [
+        { agentId: builderAgentId, executionProfileRevision: 7 },
+        { agentId: reviewerAgentId, executionProfileRevision: 11 },
+      ],
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: reviewerAgentId }],
+      }],
+    })!;
+    const issueSnapshot = {
+      id: issueId,
+      companyId: "company-1",
+      projectId: null,
+      projectWorkspaceId: null,
+      goalId: null,
+      parentId: null,
+      title: "Retired governed work",
+      description: null,
+      status: "cancelled",
+      workMode: "standard",
+      harnessKind: null,
+      priority: "high",
+      reviewPolicy: "not_creator",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+      responsibleUserId: "local-board",
+      issueNumber: 2003,
+      identifier: "PAP-2003",
+      requestDepth: 0,
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionPolicy: policy,
+      executionState: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+      executionWorkspaceSettings: null,
+      createdAt: "2026-08-21T12:00:00.000Z",
+      updatedAt: "2026-08-21T12:01:00.000Z",
+    };
+    const retirementReceipt = {
+      version: 1,
+      idempotencyKey,
+      issueId,
+      envelopeSha256: "a".repeat(64),
+      priorState: "reserved",
+      heartbeatRunId: null,
+      reason: "pre-launch coordinator abort",
+      retirementSha256: "d".repeat(64),
+      retiredAt: "2026-08-21T12:01:00.000Z",
+      issueUpdatedAt: issueSnapshot.updatedAt,
+      issueSnapshot,
+    };
+    const reservation = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      companyId: "company-1",
+      contractVersion: 2,
+      idempotencyKey,
+      issueId,
+      requestIntentSha256: "c".repeat(64),
+      envelopeSha256: "a".repeat(64),
+      envelope: {},
+      executionProfileIntentSha256: "c".repeat(64),
+      executionProfileIntent: executionProfiles,
+      executionProfileReceipt: null,
+      reservedIssueSnapshot: issueSnapshot,
+      reservedIssueUpdatedAt: new Date("2026-08-21T12:00:00.000Z"),
+      createdAt: new Date("2026-08-21T12:00:00.000Z"),
+      activatedAt: null,
+      retiredAt: new Date(retirementReceipt.retiredAt),
+      retirementSha256: retirementReceipt.retirementSha256,
+      retirementReceipt,
+    };
+    mockGovernedIssueContractService.getReservation.mockResolvedValue(reservation);
+    mockIssueService.create.mockImplementation(async (_companyId: string, input: any) => {
+      input.onDeduplicated?.("idempotency_key");
+      return issueSnapshot;
+    });
+    mockGovernedIssueContractService.retire.mockResolvedValue({
+      reservation,
+      receipt: retirementReceipt,
+      replayed: true,
+    });
+    const app = await createApp();
+
+    const reserveReplay = await request(app)
+      .post("/api/v2/companies/company-1/governed-issue-reservations")
+      .send({
+        version: 2,
+        idempotencyKey,
+        issue: {
+          title: issueSnapshot.title,
+          priority: "high",
+          reviewPolicy: "not_creator",
+          executionPolicy: policy,
+        },
+        executionProfiles,
+      });
+    expect(reserveReplay.status).toBe(200);
+    expect(reserveReplay.body).toMatchObject({
+      version: 2,
+      replayed: true,
+      state: "retired",
+      retirementReceipt: {
+        retirementSha256: retirementReceipt.retirementSha256,
+        issueSnapshot: { id: issueId, status: "cancelled" },
+      },
+    });
+
+    const retirementReplay = await request(app)
+      .put(`/api/v2/companies/company-1/governed-issue-reservations/${idempotencyKey}/retirement`)
+      .send({
+        version: 1,
+        expectedIssueId: issueId,
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        expectedState: "reserved",
+        expectedHeartbeatRunId: null,
+        reason: retirementReceipt.reason,
+      });
+    expect(retirementReplay.status).toBe(200);
+    expect(retirementReplay.body).toMatchObject({ state: "retired", replayed: true });
+    expect(mockLogActivity).not.toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue.governed_reservation_retired",
+    }));
+
+    const launchReceiptDenied = await request(app)
+      .get(`/api/v2/companies/company-1/governed-issue-reservations/${idempotencyKey}/executor-launch-receipt`);
+    expect(launchReceiptDenied.status).toBe(409);
+    expect(launchReceiptDenied.body.details?.code).toBe("governed_issue_reservation_retired");
+
+    const activationDenied = await request(app)
+      .put(`/api/v2/companies/company-1/governed-issue-reservations/${idempotencyKey}/activation`)
+      .send({
+        version: 2,
+        expectedIssueId: issueId,
+        expectedIssueUpdatedAt: reservation.reservedIssueUpdatedAt.toISOString(),
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        expectedExecutionProfileIntentSha256: reservation.executionProfileIntentSha256,
+        issue: {
+          title: issueSnapshot.title,
+          priority: issueSnapshot.priority,
+          reviewPolicy: issueSnapshot.reviewPolicy,
+          executionPolicy: policy,
+        },
+        executionProfiles,
+      });
+    expect(activationDenied.status).toBe(409);
+    expect(activationDenied.body.details?.code).toBe("governed_issue_reservation_retired");
+    expect(mockGovernedIssueContractService.activate).not.toHaveBeenCalled();
+
+    const agentDenied = await request(await createApp({
+      type: "agent",
+      agentId: builderAgentId,
+      companyId: "company-1",
+      runId: null,
+    }))
+      .put(`/api/v2/companies/company-1/governed-issue-reservations/${idempotencyKey}/retirement`)
+      .send({
+        version: 1,
+        expectedIssueId: issueId,
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        expectedState: "reserved",
+        expectedHeartbeatRunId: null,
+        reason: retirementReceipt.reason,
+      });
+    expect(agentDenied.status).toBe(403);
+    expect(mockGovernedIssueContractService.retire).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the immutable activation snapshot in an activated-retirement route response", async () => {
+    const issueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const builderAgentId = "44444444-4444-4444-8444-444444444444";
+    const heartbeatRunId = "66666666-6666-4666-8666-666666666666";
+    const idempotencyKey = "reeve-build:activated-retirement";
+    const activationUpdatedAt = "2026-08-21T12:01:00.000Z";
+    const retirementUpdatedAt = "2026-08-21T12:02:00.000Z";
+    const activatedIssueSnapshot = {
+      id: issueId,
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: builderAgentId,
+      updatedAt: activationUpdatedAt,
+    };
+    const retiredIssueSnapshot = {
+      ...activatedIssueSnapshot,
+      status: "cancelled",
+      assigneeAgentId: null,
+      updatedAt: retirementUpdatedAt,
+    };
+    const retirementReceipt = {
+      version: 1,
+      idempotencyKey,
+      issueId,
+      envelopeSha256: "a".repeat(64),
+      priorState: "activated",
+      heartbeatRunId,
+      reason: "terminal run observed",
+      retirementSha256: "d".repeat(64),
+      retiredAt: retirementUpdatedAt,
+      issueUpdatedAt: retirementUpdatedAt,
+      issueSnapshot: retiredIssueSnapshot,
+    };
+    const reservation = {
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      companyId: "company-1",
+      contractVersion: 2,
+      idempotencyKey,
+      issueId,
+      requestIntentSha256: "c".repeat(64),
+      envelopeSha256: "a".repeat(64),
+      executionProfileIntentSha256: "c".repeat(64),
+      executionProfileIntent: { builderAgentId, participants: [] },
+      reservedIssueUpdatedAt: new Date("2026-08-21T12:00:00.000Z"),
+      createdAt: new Date("2026-08-21T12:00:00.000Z"),
+      activationSha256: "e".repeat(64),
+      builderAgentId,
+      activatedAt: new Date(activationUpdatedAt),
+      activatedIssueUpdatedAt: new Date(activationUpdatedAt),
+      activatedIssueSnapshot,
+      executionProfileReceipt: { version: 2 },
+      wakeupRequestId: "77777777-7777-4777-8777-777777777777",
+      heartbeatRunId,
+      retiredAt: new Date(retirementUpdatedAt),
+      retirementSha256: retirementReceipt.retirementSha256,
+      retirementReceipt,
+    };
+    mockGovernedIssueContractService.retire.mockResolvedValue({
+      reservation,
+      receipt: retirementReceipt,
+      replayed: false,
+      activityPublication: null,
+    });
+
+    const response = await request(await createApp())
+      .put(`/api/v2/companies/company-1/governed-issue-reservations/${idempotencyKey}/retirement`)
+      .send({
+        version: 1,
+        expectedIssueId: issueId,
+        expectedEnvelopeSha256: reservation.envelopeSha256,
+        expectedState: "activated",
+        expectedHeartbeatRunId: heartbeatRunId,
+        reason: retirementReceipt.reason,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      state: "retired",
+      activationReceipt: {
+        issueUpdatedAt: activationUpdatedAt,
+        issueSnapshot: {
+          status: "in_progress",
+          updatedAt: activationUpdatedAt,
+        },
+      },
+      retirementReceipt: {
+        issueUpdatedAt: retirementUpdatedAt,
+        issueSnapshot: {
+          status: "cancelled",
+          updatedAt: retirementUpdatedAt,
+        },
+      },
+      issue: {
+        status: "cancelled",
+        updatedAt: retirementUpdatedAt,
+      },
+    });
   });
 
   it("reads an issue by create idempotency key without creating or waking", async () => {

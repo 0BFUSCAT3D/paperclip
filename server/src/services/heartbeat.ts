@@ -6784,6 +6784,36 @@ export function assertExternalPreparedWorkspaceSameHost(input: {
   }
 }
 
+export async function lockGovernedV2ExecutionReservationForQueuedRun(
+  authorityDb: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+  },
+) {
+  const reservation = await authorityDb
+    .select({
+      executionProfileIntent: governedIssueReservations.executionProfileIntent,
+      retiredAt: governedIssueReservations.retiredAt,
+    })
+    .from(governedIssueReservations)
+    .where(and(
+      eq(governedIssueReservations.companyId, input.companyId),
+      eq(governedIssueReservations.issueId, input.issueId),
+      eq(governedIssueReservations.contractVersion, 2),
+      isNotNull(governedIssueReservations.activatedAt),
+    ))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+  if (reservation?.retiredAt) {
+    throw conflict("Governed issue reservation is retired", {
+      code: "governed_issue_reservation_retired",
+      issueId: input.issueId,
+    });
+  }
+  return reservation;
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -14296,17 +14326,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     if (existing) return existing;
 
-    const reservation = await authorityDb
-      .select({ executionProfileIntent: governedIssueReservations.executionProfileIntent })
-      .from(governedIssueReservations)
-      .where(and(
-        eq(governedIssueReservations.companyId, input.run.companyId),
-        eq(governedIssueReservations.issueId, issueId),
-        eq(governedIssueReservations.contractVersion, 2),
-        isNotNull(governedIssueReservations.activatedAt),
-      ))
-      .for("update")
-      .then((rows) => rows[0] ?? null);
+    const reservation = await lockGovernedV2ExecutionReservationForQueuedRun(authorityDb, {
+      companyId: input.run.companyId,
+      issueId,
+    });
     if (!reservation) return null;
 
     const intent = governedExecutionProfileIntentV2Schema.safeParse(reservation.executionProfileIntent);

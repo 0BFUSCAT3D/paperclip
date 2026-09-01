@@ -64,6 +64,18 @@ export interface PaperclipCapabilitiesResponseV1 {
       codexAuthAuthority: "managed_chatgpt_profile";
       nativeHostClaudeLoginAccepted: false;
     };
+    governedIssueReservationRetirement: {
+      supported: true;
+      version: 1;
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/retirement";
+      method: "PUT";
+      boardOnly: true;
+      exactReservationCas: true;
+      durableReceipt: true;
+      retiredRowsPreserved: true;
+      activeRunRefusal: true;
+      terminalRunObservationRequired: true;
+    };
     preparedExecutionWorkspaceAdoption: {
       supported: boolean;
       enabled: boolean;
@@ -132,6 +144,18 @@ export const PAPERCLIP_CAPABILITIES_V1: PaperclipCapabilitiesResponseV1 = {
       claudeAuthAuthority: "owner_secret_version",
       codexAuthAuthority: "managed_chatgpt_profile",
       nativeHostClaudeLoginAccepted: false,
+    },
+    governedIssueReservationRetirement: {
+      supported: true,
+      version: 1,
+      endpoint: "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/retirement",
+      method: "PUT",
+      boardOnly: true,
+      exactReservationCas: true,
+      durableReceipt: true,
+      retiredRowsPreserved: true,
+      activeRunRefusal: true,
+      terminalRunObservationRequired: true,
     },
     preparedExecutionWorkspaceAdoption: {
       supported: false,

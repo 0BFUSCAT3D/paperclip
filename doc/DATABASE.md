@@ -238,6 +238,14 @@ not lose the durable queued wake. Generic issue mutation paths and a database
 guard reject assignment, status, checkout, release, or envelope changes while a
 reservation remains unactivated.
 
+Version 2 reservations can be retired through the board-only retirement CAS.
+Reserved retirement requires the issue to remain the exact unassigned backlog
+snapshot; activated retirement requires the activation run and every bound
+execution or review run to be terminal. Retirement cancels nonterminal work and
+stores an immutable receipt on the reservation row instead of deleting it.
+Lookup and exact retries return that receipt, while activation and executor
+launch-receipt reads reject retired reservations.
+
 The capability advertises the dedicated reservation, read-only lookup, and
 activation endpoint templates. These versioned routes are the contract boundary
 for governed clients; the generic issue create and PATCH routes remain available

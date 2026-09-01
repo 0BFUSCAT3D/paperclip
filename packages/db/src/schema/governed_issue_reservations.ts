@@ -50,6 +50,9 @@ export const governedIssueReservations = pgTable(
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "restrict" }),
     executionWorkspaceId: uuid("execution_workspace_id")
       .references(() => executionWorkspaces.id, { onDelete: "restrict" }),
+    retirementSha256: text("retirement_sha256"),
+    retirementReceipt: jsonb("retirement_receipt").$type<Record<string, unknown>>(),
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -83,6 +86,19 @@ export const governedIssueReservations = pgTable(
           (${table.activatedAt} IS NULL AND ${table.executionProfileReceipt} IS NULL)
           OR (${table.activatedAt} IS NOT NULL AND ${table.executionProfileReceipt} IS NOT NULL)
         )
+      )`,
+    ),
+    retirementShapeCheck: check(
+      "governed_issue_reservations_retirement_shape_check",
+      sql`(
+        ${table.retirementSha256} IS NULL
+        AND ${table.retirementReceipt} IS NULL
+        AND ${table.retiredAt} IS NULL
+      ) OR (
+        ${table.contractVersion} = 2
+        AND ${table.retirementSha256} ~ '^[0-9a-f]{64}$'
+        AND ${table.retirementReceipt} IS NOT NULL
+        AND ${table.retiredAt} IS NOT NULL
       )`,
     ),
   }),

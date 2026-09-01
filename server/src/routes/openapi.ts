@@ -30,6 +30,7 @@ import {
   activateGovernedIssueV1Schema,
   reserveGovernedIssueV2Schema,
   activateGovernedIssueV2Schema,
+  retireGovernedIssueReservationV1Schema,
   governedExecutionProfileIntentV2Schema,
   governedIssueLifecycleIssueV1Schema,
   approveIssueReviewEvidenceSchema,
@@ -1223,6 +1224,20 @@ const PaperclipCapabilitiesSchema = z.object({
       claudeAuthAuthority: z.literal("owner_secret_version"),
       codexAuthAuthority: z.literal("managed_chatgpt_profile"),
       nativeHostClaudeLoginAccepted: z.literal(false),
+    }).strict(),
+    governedIssueReservationRetirement: z.object({
+      supported: z.literal(true),
+      version: z.literal(1),
+      endpoint: z.literal(
+        "/api/v2/companies/{companyId}/governed-issue-reservations/{encodedKey}/retirement",
+      ),
+      method: z.literal("PUT"),
+      boardOnly: z.literal(true),
+      exactReservationCas: z.literal(true),
+      durableReceipt: z.literal(true),
+      retiredRowsPreserved: z.literal(true),
+      activeRunRefusal: z.literal(true),
+      terminalRunObservationRequired: z.literal(true),
     }).strict(),
     preparedExecutionWorkspaceAdoption: z.object({
       supported: z.boolean(),
@@ -2442,12 +2457,26 @@ const GovernedIssueActivationReceiptV2Schema = z.object({
   }).strict(),
   executionProfile: GovernedExecutionProfileReceiptSchema,
 }).strict();
+const GovernedIssueRetirementReceiptV1Schema = z.object({
+  version: z.literal(1),
+  idempotencyKey: z.string(),
+  issueId: z.string().uuid(),
+  envelopeSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  priorState: z.enum(["reserved", "activated"]),
+  heartbeatRunId: z.string().uuid().nullable(),
+  reason: z.string().min(1).max(1_000),
+  retirementSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  retiredAt: z.string().datetime(),
+  issueUpdatedAt: z.string().datetime(),
+  issueSnapshot: governedIssueLifecycleIssueV1Schema,
+}).strict();
 const GovernedIssueReservationResponseV2Schema = z.object({
   version: z.literal(2),
   replayed: z.boolean().optional(),
-  state: z.enum(["reserved", "activated"]),
+  state: z.enum(["reserved", "activated", "retired"]),
   reservation: GovernedIssueReservationReceiptV2Schema,
   activationReceipt: GovernedIssueActivationReceiptV2Schema.nullable(),
+  retirementReceipt: GovernedIssueRetirementReceiptV1Schema.nullable(),
   issue: governedIssueLifecycleIssueV1Schema,
 }).strict();
 const GovernedIssueActivationResponseV2Schema = z.object({
@@ -2455,6 +2484,15 @@ const GovernedIssueActivationResponseV2Schema = z.object({
   replayed: z.boolean(),
   issue: governedIssueLifecycleIssueV1Schema,
   activationReceipt: GovernedIssueActivationReceiptV2Schema,
+}).strict();
+const GovernedIssueRetirementResponseV2Schema = z.object({
+  version: z.literal(2),
+  replayed: z.boolean(),
+  state: z.literal("retired"),
+  reservation: GovernedIssueReservationReceiptV2Schema,
+  activationReceipt: GovernedIssueActivationReceiptV2Schema.nullable(),
+  retirementReceipt: GovernedIssueRetirementReceiptV1Schema,
+  issue: governedIssueLifecycleIssueV1Schema,
 }).strict();
 
 registry.registerPath({
@@ -2496,6 +2534,29 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/retirement",
+  tags: ["issues"],
+  summary: "Retire a governed reservation after an exact safe-state observation",
+  request: {
+    params: z.object({
+      companyId: z.string().uuid(),
+      idempotencyKey: z.string().min(1).max(255),
+    }),
+    body: jsonBody(retireGovernedIssueReservationV1Schema),
+  },
+  responses: {
+    200: r.ok(GovernedIssueRetirementResponseV2Schema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    412: r.preconditionFailed,
   },
 });
 

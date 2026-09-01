@@ -15,6 +15,7 @@ import {
   type GovernedIssueEnvelope,
   type GovernedExecutionProfileIntentV2,
   type GovernedIssueLifecycleIssueV1,
+  type RetireGovernedIssueReservationV1,
 } from "@paperclipai/shared";
 import { conflict, notFound, preconditionFailed } from "../errors.js";
 import { assertIssueExecutionPolicyParticipants } from "./issue-execution-policy-participants.js";
@@ -25,9 +26,34 @@ import {
   inspectedExecutionProfileBindingMatchesScope,
   type InspectedExecutionProfileBinding,
 } from "./execution-profile-binding.js";
+import { persistActivity } from "./activity-log.js";
 
 export const GOVERNED_ISSUE_LIFECYCLE_VERSION = 1 as const;
 export const GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION = 2 as const;
+export const GOVERNED_ISSUE_RETIREMENT_VERSION = 1 as const;
+
+const ACTIVE_GOVERNED_RUN_STATUSES = ["queued", "scheduled_retry", "running"] as const;
+const TERMINAL_GOVERNED_RUN_STATUSES = new Set([
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
+
+export type GovernedIssueRetirementReceiptV1 = Readonly<{
+  version: typeof GOVERNED_ISSUE_RETIREMENT_VERSION;
+  idempotencyKey: string;
+  issueId: string;
+  envelopeSha256: string;
+  priorState: "reserved" | "activated";
+  heartbeatRunId: string | null;
+  reason: string;
+  retirementSha256: string;
+  retiredAt: string;
+  issueUpdatedAt: string;
+  issueSnapshot: GovernedIssueLifecycleIssueV1;
+}>;
 
 function canonicalJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJsonValue);
@@ -118,6 +144,7 @@ export async function assertIssueNotPendingGovernedReservation(
     .where(and(
       eq(governedIssueReservations.issueId, issueId),
       isNull(governedIssueReservations.activatedAt),
+      isNull(governedIssueReservations.retiredAt),
     ))
     .for("update")
     .then((rows) => rows[0] ?? null);
@@ -140,9 +167,109 @@ function storedLifecycleSnapshot(value: unknown, field: string): GovernedIssueLi
 export function governedIssueReservationResponseIssue(
   reservation: typeof governedIssueReservations.$inferSelect,
 ): GovernedIssueLifecycleIssueV1 {
+  if (reservation.retiredAt) {
+    return storedGovernedIssueRetirementReceipt(reservation).issueSnapshot;
+  }
   return reservation.activatedAt
     ? storedLifecycleSnapshot(reservation.activatedIssueSnapshot, "activatedIssueSnapshot")
     : storedLifecycleSnapshot(reservation.reservedIssueSnapshot, "reservedIssueSnapshot");
+}
+
+function storedGovernedIssueRetirementReceipt(
+  reservation: typeof governedIssueReservations.$inferSelect,
+): GovernedIssueRetirementReceiptV1 {
+  const value = reservation.retirementReceipt;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw conflict("Governed issue retirement receipt is invalid", {
+      code: "governed_issue_retirement_receipt_invalid",
+    });
+  }
+  const receipt = value as Record<string, unknown>;
+  const issueSnapshot = governedIssueLifecycleIssueV1Schema.safeParse(receipt.issueSnapshot);
+  const priorState = reservation.activatedAt ? "activated" as const : "reserved" as const;
+  const expectedHeartbeatRunId = priorState === "activated" ? reservation.heartbeatRunId : null;
+  const heartbeatBindingIsValid = priorState === "activated"
+    ? expectedHeartbeatRunId !== null && receipt.heartbeatRunId === expectedHeartbeatRunId
+    : reservation.heartbeatRunId === null && receipt.heartbeatRunId === null;
+  const reasonIsCanonical = typeof receipt.reason === "string"
+    && receipt.reason.length >= 1
+    && receipt.reason.length <= 1_000
+    && receipt.reason.trim() === receipt.reason;
+  const recomputedRetirementSha256 = typeof receipt.reason === "string"
+    && (receipt.priorState === "reserved" || receipt.priorState === "activated")
+    && (receipt.heartbeatRunId === null || typeof receipt.heartbeatRunId === "string")
+    ? governedIssueRetirementIntentSha256({
+        version: GOVERNED_ISSUE_RETIREMENT_VERSION,
+        idempotencyKey: reservation.idempotencyKey,
+        issueId: reservation.issueId,
+        envelopeSha256: reservation.envelopeSha256,
+        priorState: receipt.priorState,
+        heartbeatRunId: receipt.heartbeatRunId,
+        reason: receipt.reason,
+      })
+    : null;
+  const exact = Object.keys(receipt).length === 11
+    && receipt.version === GOVERNED_ISSUE_RETIREMENT_VERSION
+    && receipt.idempotencyKey === reservation.idempotencyKey
+    && receipt.issueId === reservation.issueId
+    && receipt.envelopeSha256 === reservation.envelopeSha256
+    && receipt.priorState === priorState
+    && heartbeatBindingIsValid
+    && reasonIsCanonical
+    && receipt.retirementSha256 === reservation.retirementSha256
+    && receipt.retirementSha256 === recomputedRetirementSha256
+    && typeof receipt.retiredAt === "string"
+    && receipt.retiredAt === reservation.retiredAt?.toISOString()
+    && typeof receipt.issueUpdatedAt === "string"
+    && issueSnapshot.success
+    && issueSnapshot.data.id === reservation.issueId
+    && issueSnapshot.data.companyId === reservation.companyId
+    && receipt.issueUpdatedAt === issueSnapshot.data.updatedAt;
+  if (!exact) {
+    throw conflict("Governed issue retirement receipt is invalid", {
+      code: "governed_issue_retirement_receipt_invalid",
+    });
+  }
+  return {
+    version: GOVERNED_ISSUE_RETIREMENT_VERSION,
+    idempotencyKey: receipt.idempotencyKey as string,
+    issueId: receipt.issueId as string,
+    envelopeSha256: receipt.envelopeSha256 as string,
+    priorState: receipt.priorState as "reserved" | "activated",
+    heartbeatRunId: receipt.heartbeatRunId as string | null,
+    reason: receipt.reason as string,
+    retirementSha256: receipt.retirementSha256 as string,
+    retiredAt: receipt.retiredAt as string,
+    issueUpdatedAt: receipt.issueUpdatedAt as string,
+    issueSnapshot: issueSnapshot.data,
+  };
+}
+
+function governedIssueRetirementIntentSha256(input: {
+  version: typeof GOVERNED_ISSUE_RETIREMENT_VERSION;
+  idempotencyKey: string;
+  issueId: string;
+  envelopeSha256: string;
+  priorState: "reserved" | "activated";
+  heartbeatRunId: string | null;
+  reason: string;
+}): string {
+  return governedIssueSha256(input);
+}
+
+function governedIssueRetirementSha256(input: {
+  reservation: typeof governedIssueReservations.$inferSelect;
+  request: RetireGovernedIssueReservationV1;
+}): string {
+  return governedIssueRetirementIntentSha256({
+    version: input.request.version,
+    idempotencyKey: input.reservation.idempotencyKey,
+    issueId: input.request.expectedIssueId,
+    envelopeSha256: input.request.expectedEnvelopeSha256,
+    priorState: input.request.expectedState,
+    heartbeatRunId: input.request.expectedHeartbeatRunId,
+    reason: input.request.reason,
+  });
 }
 
 export type GovernedIssueActivationInput = {
@@ -186,6 +313,233 @@ export function governedIssueContractService(db: Db) {
         .then((rows) => rows[0] ?? null);
     },
 
+    retire: async (input: {
+      companyId: string;
+      idempotencyKey: string;
+      request: RetireGovernedIssueReservationV1;
+      requestedByActorId: string;
+    }) => db.transaction(async (tx) => {
+      const reservation = await tx
+        .select()
+        .from(governedIssueReservations)
+        .where(and(
+          eq(governedIssueReservations.companyId, input.companyId),
+          eq(governedIssueReservations.idempotencyKey, input.idempotencyKey),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!reservation || reservation.contractVersion !== GOVERNED_ISSUE_EXECUTION_PROFILE_VERSION) {
+        throw notFound("Governed issue reservation not found");
+      }
+
+      const retirementSha256 = governedIssueRetirementSha256({
+        reservation,
+        request: input.request,
+      });
+      if (reservation.retiredAt) {
+        if (reservation.retirementSha256 !== retirementSha256) {
+          throw conflict("Governed issue reservation was already retired with different intent", {
+            code: "governed_issue_retirement_conflict",
+          });
+        }
+        return {
+          reservation,
+          receipt: storedGovernedIssueRetirementReceipt(reservation),
+          replayed: true as const,
+          activityPublication: null,
+        };
+      }
+
+      if (input.request.expectedIssueId !== reservation.issueId) {
+        throw preconditionFailed("Governed issue retirement targets a different issue", {
+          code: "governed_issue_retirement_issue_mismatch",
+          expectedIssueId: input.request.expectedIssueId,
+          actualIssueId: reservation.issueId,
+        });
+      }
+      if (input.request.expectedEnvelopeSha256 !== reservation.envelopeSha256) {
+        throw preconditionFailed("Governed issue retirement envelope does not match", {
+          code: "governed_issue_retirement_envelope_mismatch",
+        });
+      }
+
+      const priorState = reservation.activatedAt ? "activated" as const : "reserved" as const;
+      if (input.request.expectedState !== priorState) {
+        throw preconditionFailed("Governed issue retirement state changed", {
+          code: "governed_issue_retirement_state_mismatch",
+          expectedState: input.request.expectedState,
+          actualState: priorState,
+        });
+      }
+      if (
+        priorState === "reserved"
+        && (input.request.expectedHeartbeatRunId !== null || reservation.heartbeatRunId !== null)
+      ) {
+        throw preconditionFailed("A reserved governed issue has no heartbeat run", {
+          code: "governed_issue_retirement_run_mismatch",
+          actualHeartbeatRunId: reservation.heartbeatRunId,
+        });
+      }
+      if (
+        priorState === "activated"
+        && (
+          !reservation.heartbeatRunId
+          || input.request.expectedHeartbeatRunId !== reservation.heartbeatRunId
+        )
+      ) {
+        throw preconditionFailed("Governed issue retirement run does not match activation", {
+          code: "governed_issue_retirement_run_mismatch",
+          expectedHeartbeatRunId: input.request.expectedHeartbeatRunId,
+          actualHeartbeatRunId: reservation.heartbeatRunId,
+        });
+      }
+
+      const issue = await tx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, reservation.issueId), eq(issues.companyId, input.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!issue) {
+        throw conflict("Governed issue reservation target no longer exists", {
+          code: "governed_issue_reservation_target_missing",
+          issueId: reservation.issueId,
+        });
+      }
+
+      if (priorState === "reserved") {
+        if (issue.status !== "backlog" || issue.assigneeAgentId || issue.assigneeUserId) {
+          throw conflict("Reserved governed issue must remain backlog and unassigned before retirement", {
+            code: "governed_issue_retirement_state_conflict",
+          });
+        }
+        assertGovernedReservationIssueUnchanged({
+          issue,
+          reservedIssueSnapshot: reservation.reservedIssueSnapshot,
+        });
+      } else {
+        const activeRuns = await tx
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, input.companyId),
+            inArray(heartbeatRuns.status, [...ACTIVE_GOVERNED_RUN_STATUSES]),
+            sql`(
+              ${heartbeatRuns.id} = ${reservation.heartbeatRunId}
+              OR ${heartbeatRuns.id} = ${issue.executionRunId}
+              OR ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}
+              OR ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}
+            )`,
+          ))
+          .orderBy(asc(heartbeatRuns.id))
+          .for("update");
+        if (activeRuns.length > 0) {
+          throw conflict("Governed issue reservation still has an active execution or review run", {
+            code: "governed_issue_retirement_run_active",
+            runIds: activeRuns.map((run) => run.id),
+          });
+        }
+        const activationRun = await tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, reservation.heartbeatRunId!),
+            eq(heartbeatRuns.companyId, input.companyId),
+          ))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!activationRun || !TERMINAL_GOVERNED_RUN_STATUSES.has(activationRun.status)) {
+          throw conflict("Governed issue activation run has no exact terminal observation", {
+            code: "governed_issue_retirement_terminal_run_required",
+            runStatus: activationRun?.status ?? null,
+          });
+        }
+      }
+
+      const now = new Date();
+      let retiredIssue = issue;
+      if (issue.status !== "done" && issue.status !== "cancelled") {
+        await tx.execute(sql`select set_config('paperclip.governed_activation_issue_id', ${issue.id}, true)`);
+        const cancelledIssue = await tx
+          .update(issues)
+          .set({
+            status: "cancelled",
+            completedAt: null,
+            cancelledAt: now,
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, input.companyId)))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!cancelledIssue) {
+          throw conflict("Governed issue retirement lost its issue compare-and-set race", {
+            code: "governed_issue_retirement_issue_cas_conflict",
+          });
+        }
+        retiredIssue = cancelledIssue;
+      }
+      const issueSnapshot = governedIssueLifecycleIssueSnapshot(retiredIssue);
+      const receipt: GovernedIssueRetirementReceiptV1 = {
+        version: GOVERNED_ISSUE_RETIREMENT_VERSION,
+        idempotencyKey: reservation.idempotencyKey,
+        issueId: reservation.issueId,
+        envelopeSha256: reservation.envelopeSha256,
+        priorState,
+        heartbeatRunId: reservation.heartbeatRunId,
+        reason: input.request.reason,
+        retirementSha256,
+        retiredAt: now.toISOString(),
+        issueUpdatedAt: retiredIssue.updatedAt.toISOString(),
+        issueSnapshot,
+      };
+      const retiredReservation = await tx
+        .update(governedIssueReservations)
+        .set({
+          retirementSha256,
+          retirementReceipt: receipt as unknown as Record<string, unknown>,
+          retiredAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(governedIssueReservations.id, reservation.id),
+          isNull(governedIssueReservations.retiredAt),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!retiredReservation) {
+        throw conflict("Governed issue retirement lost its compare-and-set race", {
+          code: "governed_issue_retirement_cas_conflict",
+        });
+      }
+      const { publication: activityPublication } = await persistActivity(tx as unknown as Db, {
+        companyId: input.companyId,
+        actorType: "user",
+        actorId: input.requestedByActorId,
+        action: "issue.governed_reservation_retired",
+        entityType: "issue",
+        entityId: retiredReservation.issueId,
+        issueId: retiredReservation.issueId,
+        details: {
+          idempotencyKey: retiredReservation.idempotencyKey,
+          envelopeSha256: retiredReservation.envelopeSha256,
+          priorState: receipt.priorState,
+          heartbeatRunId: receipt.heartbeatRunId,
+          retirementSha256: receipt.retirementSha256,
+          reason: receipt.reason,
+        },
+      });
+      return {
+        reservation: retiredReservation,
+        receipt,
+        replayed: false as const,
+        activityPublication,
+      };
+    }),
+
     activate: async (input: GovernedIssueActivationInput) => db.transaction(async (tx) => {
       const reservation = await tx
         .select()
@@ -203,6 +557,11 @@ export function governedIssueContractService(db: Db) {
           code: "governed_issue_contract_version_mismatch",
           reservationVersion: reservation.contractVersion,
           requestVersion: contractVersion,
+        });
+      }
+      if (reservation.retiredAt) {
+        throw conflict("Governed issue reservation is retired", {
+          code: "governed_issue_reservation_retired",
         });
       }
 
@@ -621,7 +980,10 @@ export function serializeGovernedIssueActivationReceipt(
     activationSha256: reservation.activationSha256,
     activatedAt: reservation.activatedAt.toISOString(),
     issueUpdatedAt: reservation.activatedIssueUpdatedAt.toISOString(),
-    issueSnapshot: governedIssueReservationResponseIssue(reservation),
+    issueSnapshot: storedLifecycleSnapshot(
+      reservation.activatedIssueSnapshot,
+      "activatedIssueSnapshot",
+    ),
     wake: {
       durable: true as const,
       idempotencyKey: `governed_issue_activation:v${reservation.contractVersion}:${reservation.id}`,
@@ -633,4 +995,17 @@ export function serializeGovernedIssueActivationReceipt(
       ? { executionProfile: reservation.executionProfileReceipt }
       : {}),
   };
+}
+
+export function serializeGovernedIssueRetirementReceipt(
+  reservation: typeof governedIssueReservations.$inferSelect,
+): GovernedIssueRetirementReceiptV1 | null {
+  return reservation.retiredAt ? storedGovernedIssueRetirementReceipt(reservation) : null;
+}
+
+export function governedIssueReservationState(
+  reservation: typeof governedIssueReservations.$inferSelect,
+): "reserved" | "activated" | "retired" {
+  if (reservation.retiredAt) return "retired";
+  return reservation.activatedAt ? "activated" : "reserved";
 }

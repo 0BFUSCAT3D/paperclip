@@ -308,6 +308,9 @@ describe("openapi routes", () => {
     const governedActivationV2 = spec.paths[
       "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/activation"
     ].put;
+    const governedRetirementV2 = spec.paths[
+      "/api/v2/companies/{companyId}/governed-issue-reservations/{idempotencyKey}/retirement"
+    ].put;
     expect(governedReservation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
     expect(governedActivation.requestBody.content["application/json"].schema.additionalProperties).toBe(false);
     expect(governedActivation.responses["201"].content["application/json"].schema.properties.activationReceipt)
@@ -323,6 +326,12 @@ describe("openapi routes", () => {
       .toBe(false);
     expect(governedActivationV2.requestBody.content["application/json"].schema.additionalProperties)
       .toBe(false);
+    expect(governedRetirementV2.requestBody.content["application/json"].schema.additionalProperties)
+      .toBe(false);
+    expect(governedRetirementV2.responses["200"].content["application/json"].schema.properties
+      .retirementReceipt.additionalProperties).toBe(false);
+    expect(governedRetirementV2.responses["409"]).toBeDefined();
+    expect(governedRetirementV2.responses["412"]).toBeDefined();
     const activationV2Response = governedActivationV2.responses["201"].content["application/json"].schema;
     expect(activationV2Response.properties.activationReceipt.properties.executionProfile.additionalProperties)
       .toBe(false);
