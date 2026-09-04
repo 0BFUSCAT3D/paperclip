@@ -3567,6 +3567,13 @@ export function secretService(db: Db) {
         ...resolution,
         manifestEntry: {
           ...resolution.manifestEntry,
+          // A user secret's stored `key` is namespaced per owner
+          // (`user.<definition>.<owner-uuid>`) so it stays unique across owners.
+          // Consumers of the manifest reason about the logical secret, not the
+          // physical row, so the manifest carries the definition key here — the
+          // same value the execution-profile auth-authority gate matches against
+          // (`secretKey === "CLAUDE_CODE_OAUTH_TOKEN"`).
+          secretKey: definition.key,
           bindingId: declaration?.id ?? resolution.manifestEntry.bindingId ?? null,
         },
       };
