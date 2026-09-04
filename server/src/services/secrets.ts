@@ -657,6 +657,15 @@ export type RuntimeSecretManifestEntry = {
   /** Concrete immutable secret-version row selected for this resolution. */
   versionId: string;
   bindingId?: string | null;
+  /**
+   * Scope-dependent logical identity used by runtime consumers:
+   * - company scope: the persisted company-secret key (`company_secrets.key`)
+   * - user scope: the user-secret definition key (`user_secret_definitions.key`)
+   *
+   * A user-scoped entry never exposes its owner-namespaced physical storage key
+   * (`user.<definition>.<owner-uuid>`); `secretId` and `versionId` identify the
+   * concrete stored value and immutable version when those identities are needed.
+   */
   secretKey: string;
   version: number;
   provider: SecretProvider;
@@ -3567,6 +3576,13 @@ export function secretService(db: Db) {
         ...resolution,
         manifestEntry: {
           ...resolution.manifestEntry,
+          // A user secret's stored `key` is namespaced per owner
+          // (`user.<definition>.<owner-uuid>`) so it stays unique across owners.
+          // Consumers of the manifest reason about the logical secret, not the
+          // physical row, so the manifest carries the definition key here — the
+          // same value the execution-profile auth-authority gate matches against
+          // (`secretKey === "CLAUDE_CODE_OAUTH_TOKEN"`).
+          secretKey: definition.key,
           bindingId: declaration?.id ?? resolution.manifestEntry.bindingId ?? null,
         },
       };

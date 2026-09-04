@@ -5,6 +5,12 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  SUBSCRIPTION_AUTH_AUTHORITY_SCHEMA,
+  SUBSCRIPTION_AUTH_AUTHORITY_VERSION,
+  SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
+  type InspectSubscriptionAuthAuthority,
+} from "@paperclipai/adapter-utils";
+import {
   activityLog,
   agents,
   companies,
@@ -24,6 +30,10 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
+import {
+  executionProfileSha256,
+  inspectExecutionProfileBinding,
+} from "../services/execution-profile-binding.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1042,9 +1052,10 @@ describeEmbeddedPostgres("secretService", () => {
       configPath: "env.GITHUB_TOKEN",
       envKey: "GITHUB_TOKEN",
       secretId: userOneSecret.id,
-      secretKey: userOneSecret.key,
+      secretKey: definition.key,
       outcome: "success",
     });
+    expect(resolved.manifest[0]?.secretKey).not.toBe(userOneSecret.key);
     expect((await svc.list(companyId)).map((secret) => secret.id)).not.toContain(userOneSecret.id);
     await expect(
       svc.resolveSecretValue(companyId, userOneSecret.id, "latest", {
@@ -1071,6 +1082,130 @@ describeEmbeddedPostgres("secretService", () => {
       outcome: "success",
     });
     expect(JSON.stringify(events)).not.toContain("user-one-secret");
+  });
+
+  it("binds a resolved owner Claude OAuth secret through the exact execution-profile auth path", async () => {
+    const companyId = await seedCompany();
+    const ownerUserId = "user-1";
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await seedCompanyMember(companyId, ownerUserId, "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "CLAUDE_CODE_OAUTH_TOKEN",
+      name: "Claude OAuth token",
+      provider: "local_encrypted",
+    });
+    const adapterConfig = {
+      billingPolicy: "subscription_only",
+      engine: "cli",
+      model: "claude-opus-4-1",
+      env: {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          type: "user_secret_ref" as const,
+          key: definition.key,
+          version: "latest" as const,
+          required: true,
+        },
+      },
+    };
+    await svc.syncEnvBindingsForTarget(
+      companyId,
+      { targetType: "agent", targetId: agentId },
+      adapterConfig.env,
+    );
+    const storedSecret = await svc.createCurrentUserSecretValue(companyId, ownerUserId, {
+      definitionId: definition.id,
+      value: "owner-oauth-token",
+    });
+
+    const resolved = await svc.resolveAdapterConfigForRuntime(companyId, adapterConfig, {
+      consumerType: "agent",
+      consumerId: agentId,
+      actorType: "agent",
+      actorId: agentId,
+      responsibleUserId: ownerUserId,
+      issueId,
+    }, { adapterType: "claude_local" });
+
+    expect(resolved.manifest).toHaveLength(1);
+    const manifestEntry = resolved.manifest[0]!;
+    expect(manifestEntry).toMatchObject({
+      configPath: "env.CLAUDE_CODE_OAUTH_TOKEN",
+      envKey: "CLAUDE_CODE_OAUTH_TOKEN",
+      secretId: storedSecret.id,
+      secretScope: "user",
+      secretKey: definition.key,
+      outcome: "success",
+    });
+    expect(manifestEntry.secretKey).not.toBe(storedSecret.key);
+
+    const inspect = vi.fn<InspectSubscriptionAuthAuthority>(async (input) => {
+      expect(input.authSource).toEqual({
+        kind: "resolved_user_secret_version",
+        configPath: "env.CLAUDE_CODE_OAUTH_TOKEN",
+        key: "CLAUDE_CODE_OAUTH_TOKEN",
+        secretId: manifestEntry.secretId,
+        versionId: manifestEntry.versionId,
+        version: manifestEntry.version,
+        value: "owner-oauth-token",
+      });
+      const opaque = (character: string) => `decision-spec-v1.${character.repeat(64)}`;
+      return {
+        proof: {
+          schema: SUBSCRIPTION_AUTH_AUTHORITY_SCHEMA,
+          version: SUBSCRIPTION_AUTH_AUTHORITY_VERSION,
+          adapterType: "claude_local",
+          companyId,
+          agentId,
+          authKind: "claude_oauth_user_secret",
+          sourceKind: "user_secret_version",
+          authProfile: {
+            evidence: "credential_bound",
+            identityFingerprint: opaque("a"),
+            revisionFingerprint: opaque("b"),
+          },
+          account: {
+            evidence: "credential_bound",
+            identityFingerprint: opaque("c"),
+            revisionFingerprint: opaque("d"),
+          },
+          principal: {
+            evidence: "credential_bound",
+            identityFingerprint: opaque("e"),
+            revisionFingerprint: opaque("f"),
+          },
+          credentialRevisionFingerprint: opaque("0"),
+        },
+      };
+    });
+
+    const binding = await inspectExecutionProfileBinding({
+      mode: "inspect",
+      companyId,
+      agentId,
+      issueId,
+      adapterType: "claude_local",
+      resolvedConfig: resolved.config,
+      secretManifest: resolved.manifest,
+      environment: { id: randomUUID(), driver: "local" },
+      agentExecutionProfileRevision: 1,
+      issueAssigneeProfileRevision: 1,
+      instructionsSha256: executionProfileSha256({ kind: "none" }),
+      subscriptionOnlyBilling: SUBSCRIPTION_ONLY_BILLING_CAPABILITY,
+      inspectSubscriptionAuthAuthority: inspect,
+      codexManagedHome: null,
+    });
+
+    expect(inspect).toHaveBeenCalledOnce();
+    expect(binding.projection).toMatchObject({
+      companyId,
+      agentId,
+      issueId,
+      adapterType: "claude_local",
+      billingPolicy: "subscription_only",
+    });
+    expect(JSON.stringify(binding)).not.toContain("owner-oauth-token");
   });
 
   it("can skip user-secret refs while resolving adapter config for non-runtime skill discovery", async () => {
