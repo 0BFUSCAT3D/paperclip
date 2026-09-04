@@ -657,6 +657,15 @@ export type RuntimeSecretManifestEntry = {
   /** Concrete immutable secret-version row selected for this resolution. */
   versionId: string;
   bindingId?: string | null;
+  /**
+   * Scope-dependent logical identity used by runtime consumers:
+   * - company scope: the persisted company-secret key (`company_secrets.key`)
+   * - user scope: the user-secret definition key (`user_secret_definitions.key`)
+   *
+   * A user-scoped entry never exposes its owner-namespaced physical storage key
+   * (`user.<definition>.<owner-uuid>`); `secretId` and `versionId` identify the
+   * concrete stored value and immutable version when those identities are needed.
+   */
   secretKey: string;
   version: number;
   provider: SecretProvider;
