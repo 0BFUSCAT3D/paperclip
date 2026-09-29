@@ -114,6 +114,31 @@ export interface AgentDetail extends Agent {
 
 export type ClearAgentErrorResponse = Agent;
 
+/**
+ * How the API decided who an authenticated request belongs to.
+ *
+ * Kept in one place because the server mirrors this union across the Express
+ * actor, the authorization actor, and several access/audit contexts; a value
+ * added to one copy and missed in another silently degrades attribution.
+ *
+ *  - `local_implicit` — `local_trusted` deployment, no credential: the implicit
+ *    board user.
+ *  - `run_header` — `local_trusted` agent run with no injected credential,
+ *    attributed from a live `X-Paperclip-Run-Id` (REEA-11). Carries agent
+ *    identity for attribution and authorization, but NOT the cryptographic
+ *    proof that `agent_jwt` does — surfaces that need proof (agent secret
+ *    reads) must keep requiring `agent_jwt` explicitly.
+ */
+export type ActorAuthSource =
+  | "local_implicit"
+  | "session"
+  | "board_key"
+  | "agent_key"
+  | "agent_jwt"
+  | "run_header"
+  | "cloud_tenant"
+  | "none";
+
 export interface AgentKeyCreated {
   id: string;
   name: string;
